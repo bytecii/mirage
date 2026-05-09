@@ -36,6 +36,12 @@ ws = Workspace({"/notion": resource}, mode=MountMode.WRITE)
       <child-page-title>__<child-id>/
         page.json
         ...
+  databases/
+    <database-title>__<database-id>/
+      database.json
+      <row-page-title>__<page-id>/
+        page.json
+        ...
 ```
 
 Example:
@@ -53,9 +59,12 @@ Example:
       page.json
 ```
 
-The hierarchy mirrors Notion's page tree. Each page directory contains
-a `page.json` file with the page metadata and content. Child pages
-appear as nested directories.
+The `pages/` hierarchy mirrors Notion's standalone page tree. The
+`databases/` hierarchy lists databases shared with the integration and
+then the row pages returned by querying each database. Each database
+directory contains `database.json` with schema metadata and row objects.
+Each page directory contains a `page.json` file with the page metadata and
+content. Child pages appear as nested directories.
 
 ## Cache
 
@@ -85,6 +94,10 @@ async def main():
 
     # List top-level pages
     r = await ws.execute("ls /notion/pages/")
+    print(await r.stdout_str())
+
+    # List shared databases and rows in a database
+    r = await ws.execute("ls /notion/databases/")
     print(await r.stdout_str())
 
     # Read a page
