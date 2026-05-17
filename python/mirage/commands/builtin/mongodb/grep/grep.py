@@ -32,9 +32,12 @@ from mirage.core.mongodb.glob import resolve_glob
 from mirage.core.mongodb.read import read as mongodb_read
 from mirage.core.mongodb.readdir import readdir as _readdir
 from mirage.core.mongodb.scope import detect_scope
-from mirage.core.mongodb.search import format_grep_results, search_database
+from mirage.core.mongodb.search import (format_grep_results, search_collection,
+                                        search_database)
 from mirage.core.mongodb.stat import stat as _stat
-from mirage.io.stream import exit_on_empty, quiet_match, yield_bytes
+from mirage.core.mongodb.stream import read_stream
+from mirage.core.mongodb.types import ScopeLevel
+from mirage.io.stream import exit_on_empty, quiet_match
 from mirage.io.types import ByteSource, IOResult
 from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
@@ -94,17 +97,25 @@ async def grep(
     before_ctx = int(B) if B is not None else (int(C) if C is not None else 0)
 
     config = accessor.config
-    single_db = config.databases is not None and len(config.databases) == 1
-    single_db_name = config.databases[0] if single_db else None
     limit = config.default_search_limit
 
     if paths:
-        scope = detect_scope(paths[0],
-                             single_db=single_db,
-                             single_db_name=single_db_name)
+        scope = detect_scope(paths[0])
 
-        if scope.level in ("database", "root"):
-            if scope.level == "database" and scope.database:
+        if scope.level in (ScopeLevel.ENTITY, ScopeLevel.DATABASE,
+                           ScopeLevel.ROOT):
+            entity_match = (scope.level == ScopeLevel.ENTITY and scope.database
+                            and scope.name)
+            if entity_match:
+                docs = await search_collection(
+                    accessor.client,
+                    scope.database,
+                    scope.name,
+                    pattern,
+                    limit=limit,
+                )
+                results = [(scope.database, scope.name, docs)] if docs else []
+            elif scope.level == ScopeLevel.DATABASE and scope.database:
                 results = await search_database(
                     accessor.client,
                     scope.database,
@@ -196,8 +207,7 @@ async def grep(
                 return b"", IOResult(exit_code=1)
             return "\n".join(all_results).encode(), IOResult()
 
-        data = await rb(paths[0].original)
-        source = yield_bytes(data)
+        source = read_stream(accessor, paths[0], index)
         stream = grep_stream(
             source,
             pat,
