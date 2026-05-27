@@ -38,6 +38,7 @@ async def rg(
     hidden: bool = False,
     file_type: str | None = None,
     glob_pattern: str | None = None,
+    scope_check: Callable[..., Awaitable[str | None]] | None = None,
     index: IndexCacheStore | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     if paths:
@@ -47,19 +48,28 @@ async def rg(
                      accessor,
                      index=index,
                      prefix=mount_prefix)
-        st = partial(call_stat, stat, accessor, prefix=mount_prefix)
+        st = partial(call_stat,
+                     stat,
+                     accessor,
+                     index=index,
+                     prefix=mount_prefix)
         rb = partial(call_read_bytes,
                      read_bytes,
                      accessor,
+                     index=index,
                      prefix=mount_prefix)
+
+        scope_warning_str: str | None = None
+        if scope_check is not None and not paths[0].resolved:
+            scope_warning_str = await scope_check(rd, st, paths[0], True)
 
         is_dir = False
         try:
-            s = await stat(accessor, paths[0])
+            s = await st(paths[0].original)
             is_dir = s.type == FileType.DIRECTORY
         except (FileNotFoundError, ValueError):
             try:
-                await readdir(accessor, paths[0], index)
+                await rd(paths[0].original)
                 is_dir = True
             except (FileNotFoundError, ValueError):
                 pass
@@ -68,6 +78,8 @@ async def rg(
                       or file_type or glob_pattern)
         if needs_full:
             warnings_f: list[str] = []
+            if scope_warning_str:
+                warnings_f.append(scope_warning_str)
             results = await rg_full(
                 rd,
                 st,
@@ -93,8 +105,6 @@ async def rg(
             stderr = "\n".join(warnings_f).encode() if warnings_f else None
             if not results:
                 return b"", IOResult(exit_code=1, stderr=stderr)
-            if mount_prefix and files_only:
-                results = [mount_prefix + "/" + r.lstrip("/") for r in results]
             return "\n".join(results).encode(), IOResult(stderr=stderr)
 
         pat = compile_pattern(pattern, ignore_case, fixed_string, whole_word)
@@ -102,8 +112,8 @@ async def rg(
         if len(paths) > 1:
             all_results: list[str] = []
             for p in paths:
-                data = split_lines(
-                    (await read_bytes(accessor, p)).decode(errors="replace"))
+                data = split_lines((await
+                                    rb(p.original)).decode(errors="replace"))
                 hits = grep_lines(p.original, data, pat, invert, line_numbers,
                                   count_only, files_only, only_matching,
                                   max_count)
@@ -116,16 +126,12 @@ async def rg(
                     all_results.extend(f"{p.original}:{r}" for r in hits)
             if not all_results:
                 return b"", IOResult(exit_code=1)
-            if mount_prefix:
-                all_results = [
-                    mount_prefix + "/" + r.lstrip("/") for r in all_results
-                ]
             return "\n".join(all_results).encode(), IOResult()
 
         if read_stream is not None:
             source: AsyncIterator[bytes] = read_stream(accessor, paths[0])
         else:
-            data = await read_bytes(accessor, paths[0])
+            data = await rb(paths[0].original)
             source = _wrap_bytes(data)
         stream = grep_stream(
             source,

@@ -38,6 +38,7 @@ async def grep(
     max_count: int | None = None,
     after_context: int = 0,
     before_context: int = 0,
+    scope_check: Callable[..., Awaitable[str | None]] | None = None,
     index: IndexCacheStore | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     if paths:
@@ -47,14 +48,25 @@ async def grep(
                      accessor,
                      index=index,
                      prefix=mount_prefix)
-        st = partial(call_stat, stat, accessor, prefix=mount_prefix)
+        st = partial(call_stat,
+                     stat,
+                     accessor,
+                     index=index,
+                     prefix=mount_prefix)
         rb = partial(call_read_bytes,
                      read_bytes,
                      accessor,
+                     index=index,
                      prefix=mount_prefix)
+
+        scope_warning_str: str | None = None
+        if scope_check is not None and not paths[0].resolved:
+            scope_warning_str = await scope_check(rd, st, paths[0], recursive)
 
         if files_only:
             warnings: list[str] = []
+            if scope_warning_str:
+                warnings.append(scope_warning_str)
             results: list[str] = []
             for p in paths:
                 hits = await grep_files_only(
@@ -86,8 +98,10 @@ async def grep(
                                   whole_word)
             all_results: list[str] = []
             warnings = []
+            if scope_warning_str:
+                warnings.append(scope_warning_str)
             for p in paths:
-                s = await stat(accessor, p)
+                s = await st(p.original)
                 if s.type == FileType.DIRECTORY:
                     res = await grep_recursive(
                         rd,
@@ -107,8 +121,7 @@ async def grep(
                     all_results.extend(res)
                 else:
                     data = split_lines(
-                        (await read_bytes(accessor,
-                                          p)).decode(errors="replace"))
+                        (await rb(p.original)).decode(errors="replace"))
                     hits = grep_lines(p.original, data, pat, invert,
                                       line_numbers, count_only, files_only,
                                       only_matching, max_count)
@@ -128,8 +141,8 @@ async def grep(
         if len(paths) > 1:
             all_results = []
             for p in paths:
-                data = split_lines(
-                    (await read_bytes(accessor, p)).decode(errors="replace"))
+                data = split_lines((await
+                                    rb(p.original)).decode(errors="replace"))
                 hits = grep_lines(p.original, data, pat, invert, line_numbers,
                                   count_only, files_only, only_matching,
                                   max_count)
@@ -147,7 +160,7 @@ async def grep(
         if read_stream is not None:
             source: AsyncIterator[bytes] = read_stream(accessor, paths[0])
         else:
-            data = await read_bytes(accessor, paths[0])
+            data = await rb(paths[0].original)
             source = _wrap_bytes(data)
         stream = grep_stream(
             source,
