@@ -132,6 +132,13 @@
                 ]
               },
               {
+                "group": "Microsoft",
+                "icon": "microsoft",
+                "pages": [
+                  "home/setup/onedrive"
+                ]
+              },
+              {
                 "group": "Cloud Files",
                 "icon": "folder-open",
                 "pages": [
