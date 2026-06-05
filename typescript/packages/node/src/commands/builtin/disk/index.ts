@@ -14,7 +14,7 @@
 
 import type { RegisteredCommand } from '@struktoai/mirage-core'
 import { DISK_AWK } from './awk.ts'
-import { RAM_BASE64 } from './base64_cmd.ts'
+import { DISK_BASE64 } from './base64_cmd.ts'
 import { DISK_BASENAME } from './basename.ts'
 import { DISK_CAT } from './cat/cat.ts'
 import { DISK_CAT_FEATHER } from './cat/cat_feather.ts'
@@ -59,7 +59,7 @@ import { DISK_LS } from './ls/ls.ts'
 import { DISK_LS_FEATHER } from './ls/ls_feather.ts'
 import { RAM_LS_HDF5 } from './ls/ls_hdf5.ts'
 import { DISK_LS_PARQUET } from './ls/ls_parquet.ts'
-import { RAM_MD5 } from './md5.ts'
+import { DISK_MD5 } from './md5.ts'
 import { DISK_MKDIR } from './mkdir.ts'
 import { DISK_MKTEMP } from './mktemp.ts'
 import { DISK_MV } from './mv.ts'
@@ -72,7 +72,7 @@ import { DISK_REV } from './rev.ts'
 import { DISK_RG } from './rg.ts'
 import { DISK_RM } from './rm.ts'
 import { DISK_SED } from './sed.ts'
-import { RAM_SHA256SUM } from './sha256sum.ts'
+import { DISK_SHA256SUM } from './sha256sum.ts'
 import { DISK_SHUF } from './shuf.ts'
 import { DISK_SORT } from './sort.ts'
 import { DISK_SPLIT } from './split.ts'
@@ -106,7 +106,7 @@ import { DISK_ZIP } from './zip_cmd.ts'
 
 export const DISK_COMMANDS: readonly RegisteredCommand[] = [
   ...DISK_AWK,
-  ...RAM_BASE64,
+  ...DISK_BASE64,
   ...DISK_BASENAME,
   ...DISK_CAT,
   ...DISK_CAT_FEATHER,
@@ -151,7 +151,7 @@ export const DISK_COMMANDS: readonly RegisteredCommand[] = [
   ...DISK_LS_FEATHER,
   ...RAM_LS_HDF5,
   ...DISK_LS_PARQUET,
-  ...RAM_MD5,
+  ...DISK_MD5,
   ...DISK_MKDIR,
   ...DISK_MKTEMP,
   ...DISK_MV,
@@ -164,7 +164,7 @@ export const DISK_COMMANDS: readonly RegisteredCommand[] = [
   ...DISK_RG,
   ...DISK_RM,
   ...DISK_SED,
-  ...RAM_SHA256SUM,
+  ...DISK_SHA256SUM,
   ...DISK_SHUF,
   ...DISK_SORT,
   ...DISK_SPLIT,

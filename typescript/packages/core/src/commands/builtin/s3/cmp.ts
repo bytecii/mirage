@@ -75,7 +75,7 @@ async function cmpCommand(
     if (data1[idx] !== data2[idx]) {
       let line = 1
       for (let k = 0; k < idx; k++) if (data1[k] === 0x0a) line += 1
-      let msg = `${p0.original} ${p1.original} differ: byte ${String(idx + 1)}, line ${String(line)}`
+      let msg = `${p0.original} ${p1.original} differ: char ${String(idx + 1)}, line ${String(line)}`
       if (opts.flags.b === true) {
         msg += ` is ${octal(data1[idx] ?? 0)} ${String.fromCharCode(data1[idx] ?? 0)} ${octal(data2[idx] ?? 0)} ${String.fromCharCode(data2[idx] ?? 0)}`
       }

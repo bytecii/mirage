@@ -22,5 +22,5 @@ export const rmdirOp: RegisteredOp = {
   resource: ResourceName.OPFS,
   filetype: null,
   write: true,
-  fn: (accessor: OPFSAccessor, path: PathSpec) => coreRmdir(accessor.rootHandle, path),
+  fn: (accessor: OPFSAccessor, path: PathSpec) => coreRmdir(accessor, path),
 }

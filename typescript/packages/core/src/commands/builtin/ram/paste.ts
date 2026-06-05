@@ -12,66 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { stream as ramStream } from '../../../core/ram/stream.ts'
 import type { RAMAccessor } from '../../../accessor/ram.ts'
-import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { stream as ramStream } from '../../../core/ram/stream.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
+import { pasteGeneric } from '../generic/paste.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { readStdinAsync } from '../utils/stream.ts'
-
-const ENC = new TextEncoder()
-const DEC = new TextDecoder('utf-8', { fatal: false })
-
-function splitLinesNoEnds(text: string): string[] {
-  const stripped = text.endsWith('\n') ? text.slice(0, -1) : text
-  return stripped === '' ? [] : stripped.split('\n')
-}
-
-async function pasteCommand(
-  accessor: RAMAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const delimiter = typeof opts.flags.d === 'string' ? opts.flags.d : '\t'
-  const serial = opts.flags.s === true
-  const fileLines: string[][] = []
-  let stdinConsumed = false
-  for (const p of paths) {
-    if (p.original === '-') {
-      const raw = stdinConsumed ? null : await readStdinAsync(opts.stdin)
-      stdinConsumed = true
-      fileLines.push(splitLinesNoEnds(raw !== null ? DEC.decode(raw) : ''))
-    } else {
-      const data = await materialize(ramStream(accessor, p))
-      fileLines.push(splitLinesNoEnds(DEC.decode(data)))
-    }
-  }
-  if (fileLines.length === 0 && !stdinConsumed) {
-    const raw = await readStdinAsync(opts.stdin)
-    if (raw !== null) fileLines.push(splitLinesNoEnds(DEC.decode(raw)))
-  }
-  if (fileLines.length === 0) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('paste: missing operand\n') })]
-  }
-  let outLines: string[]
-  if (serial) {
-    outLines = fileLines.map((lines) => lines.join(delimiter))
-  } else {
-    const maxLen = Math.max(...fileLines.map((l) => l.length))
-    outLines = []
-    for (let i = 0; i < maxLen; i++) {
-      outLines.push(fileLines.map((lines) => lines[i] ?? '').join(delimiter))
-    }
-  }
-  const out: ByteSource = ENC.encode(outLines.join('\n') + '\n')
-  return [out, new IOResult()]
-}
 
 export const RAM_PASTE = command({
   name: 'paste',
   resource: ResourceName.RAM,
   spec: specOf('paste'),
-  fn: pasteCommand,
+  fn: (accessor: RAMAccessor, paths, _texts, opts) =>
+    pasteGeneric(paths, opts, (p) => ramStream(accessor, p)),
 })

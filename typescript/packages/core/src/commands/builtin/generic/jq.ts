@@ -1,0 +1,117 @@
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+import {
+  concatBytes,
+  evalJsonlStream,
+  formatJqOutput,
+  isJsonlPath,
+  isStreamableJsonlExpr,
+  jqEval,
+  parseJsonAuto,
+  parseJsonPath,
+} from '../../../core/jq/index.ts'
+import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
+import { Precision, ProvisionResult } from '../../../provision/types.ts'
+import type { FileStat, PathSpec } from '../../../types.ts'
+import type { CommandFnResult, CommandOpts } from '../../config.ts'
+import { readStdinAsync } from '../utils/stream.ts'
+
+const ENC = new TextEncoder()
+
+type Stream = (p: PathSpec) => AsyncIterable<Uint8Array>
+
+export async function jqProvisionGeneric(
+  paths: PathSpec[],
+  texts: string[],
+  stat: (p: PathSpec) => Promise<FileStat>,
+): Promise<ProvisionResult> {
+  const [first] = paths
+  const [expr] = texts
+  if (first === undefined || expr === undefined) return new ProvisionResult({ command: 'jq' })
+  try {
+    const s = await stat(first)
+    const fileSize = s.size ?? 0
+    if (isJsonlPath(first.original) && isStreamableJsonlExpr(expr)) {
+      return new ProvisionResult({
+        command: `jq '${expr}' ${first.original}`,
+        networkReadLow: 0,
+        networkReadHigh: fileSize,
+        readOps: 1,
+        precision: Precision.RANGE,
+      })
+    }
+    return new ProvisionResult({
+      command: `jq '${expr}' ${first.original}`,
+      networkReadLow: fileSize,
+      networkReadHigh: fileSize,
+      readOps: 1,
+      precision: Precision.EXACT,
+    })
+  } catch {
+    return new ProvisionResult({ command: 'jq' })
+  }
+}
+
+export async function jqGeneric(
+  paths: PathSpec[],
+  texts: string[],
+  opts: CommandOpts,
+  stream: Stream,
+): Promise<CommandFnResult> {
+  const expression = texts[0]
+  if (expression === undefined) {
+    return [
+      null,
+      new IOResult({ exitCode: 1, stderr: ENC.encode('jq: usage: jq EXPRESSION [path]\n') }),
+    ]
+  }
+  const raw = opts.flags.r === true
+  const compact = opts.flags.c === true
+  const slurp = opts.flags.s === true
+
+  if (paths.length > 0) {
+    const first = paths[0]
+    if (first === undefined) return [null, new IOResult()]
+    if (isJsonlPath(first.original) && isStreamableJsonlExpr(expression)) {
+      return [evalJsonlStream(stream(first), expression), new IOResult()]
+    }
+    const outputs: Uint8Array[] = []
+    const spread = expression.includes('[]')
+    for (const p of paths) {
+      const bytes = await materialize(stream(p))
+      let data = parseJsonPath(bytes, p.original)
+      if (isJsonlPath(p.original) && Array.isArray(data) && !slurp) {
+        for (const item of data) {
+          const result = await jqEval(item, expression.trim())
+          outputs.push(formatJqOutput(result, raw, compact, spread))
+        }
+        continue
+      }
+      if (slurp && !Array.isArray(data)) data = [data]
+      const result = await jqEval(data, expression.trim())
+      outputs.push(formatJqOutput(result, raw, compact, spread))
+    }
+    const out: ByteSource = concatBytes(outputs)
+    return [out, new IOResult()]
+  }
+
+  const stdinBytes = await readStdinAsync(opts.stdin)
+  if (stdinBytes === null) return [null, new IOResult()]
+  let stdinData = parseJsonAuto(stdinBytes)
+  if (slurp && !Array.isArray(stdinData)) stdinData = [stdinData]
+  const stdinResult = await jqEval(stdinData, expression.trim())
+  const stdinSpread = expression.includes('[]')
+  return [formatJqOutput(stdinResult, raw, compact, stdinSpread), new IOResult()]
+}

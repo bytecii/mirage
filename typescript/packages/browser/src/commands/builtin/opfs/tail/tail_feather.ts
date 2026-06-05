@@ -42,7 +42,7 @@ async function tailFeatherCommand(
   if (first === undefined) return [null, new IOResult()]
   const n = typeof opts.flags.n === 'string' ? Number.parseInt(opts.flags.n, 10) : 10
   try {
-    const raw = await materialize(opfsStream(accessor.rootHandle, first))
+    const raw = await materialize(opfsStream(accessor, first))
     const result = featherTail(raw, n)
     const out: ByteSource = result
     return [out, new IOResult({ cache: [first.stripPrefix] })]

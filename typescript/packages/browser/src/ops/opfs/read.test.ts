@@ -13,28 +13,20 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { OPFSAccessor } from '../../accessor/opfs.ts'
 import { writeBytes } from '../../core/opfs/write.ts'
-import { fakeOPFSResource, makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { readOp } from './read.ts'
 
 describe('readOp (opfs)', () => {
   it('returns file bytes', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/x'), new TextEncoder().encode('hi'))
-    const out = (await readOp.fn(
-      new OPFSAccessor(fakeOPFSResource(root)),
-      spec('/x'),
-      [],
-      {},
-    )) as Uint8Array
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/x'), new TextEncoder().encode('hi'))
+    const out = (await readOp.fn(accessor, spec('/x'), [], {})) as Uint8Array
     expect(new TextDecoder().decode(out)).toBe('hi')
   })
 
   it('throws on missing file', async () => {
-    const root = makeMockRoot()
-    await expect(
-      readOp.fn(new OPFSAccessor(fakeOPFSResource(root)), spec('/nope'), [], {}),
-    ).rejects.toThrow(/file not found/)
+    const accessor = makeMockAccessor()
+    await expect(readOp.fn(accessor, spec('/nope'), [], {})).rejects.toThrow(/file not found/)
   })
 })

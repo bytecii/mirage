@@ -15,49 +15,20 @@
 import { stat as ramStat } from '../../../../core/ram/stat.ts'
 import { read as ramRead } from '../../../../core/ram/read.ts'
 import type { RAMAccessor } from '../../../../accessor/ram.ts'
-import { IOResult, type ByteSource } from '../../../../io/types.ts'
-import { FileType, ResourceName, type PathSpec } from '../../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../../config.ts'
-import { detectFileType, formatFileResult } from '../../file_helper.ts'
+import { ResourceName } from '../../../../types.ts'
+import { command } from '../../../config.ts'
 import { specOf } from '../../../spec/builtins.ts'
-
-const ENC = new TextEncoder()
-
-async function fileCommand(
-  accessor: RAMAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  if (paths.length === 0) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('file: missing operand\n') })]
-  }
-  const brief = opts.flags.b === true
-  const mime = opts.flags.i === true
-  const lines: string[] = []
-  for (const p of paths) {
-    const s = await ramStat(accessor, p)
-    if (s.type === FileType.DIRECTORY) {
-      lines.push(formatFileResult(p.original, FileType.DIRECTORY, brief, mime))
-      continue
-    }
-    let header: Uint8Array
-    try {
-      const raw = await ramRead(accessor, p)
-      header = raw.subarray(0, 512)
-    } catch {
-      header = new Uint8Array(0)
-    }
-    const result = detectFileType(header, s)
-    lines.push(formatFileResult(p.original, result, brief, mime))
-  }
-  const out: ByteSource = ENC.encode(lines.join('\n'))
-  return [out, new IOResult()]
-}
+import { fileGeneric } from '../../generic/file.ts'
 
 export const RAM_FILE = command({
   name: 'file',
   resource: ResourceName.RAM,
   spec: specOf('file'),
-  fn: fileCommand,
+  fn: (accessor: RAMAccessor, paths, _texts, opts) =>
+    fileGeneric(
+      paths,
+      opts,
+      (p) => ramStat(accessor, p),
+      (p) => ramRead(accessor, p),
+    ),
 })

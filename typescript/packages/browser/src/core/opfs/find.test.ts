@@ -13,27 +13,27 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { find } from './find.ts'
 import { mkdir } from './mkdir.ts'
 import { writeBytes } from './write.ts'
 
 describe('opfs/find', () => {
   it('returns all entries when no filters', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/a.json'), new Uint8Array())
-    await writeBytes(root, spec('/b.txt'), new Uint8Array())
-    await mkdir(root, spec('/sub'))
-    await writeBytes(root, spec('/sub/c.json'), new Uint8Array())
-    const out = await find(root, spec('/'))
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/a.json'), new Uint8Array())
+    await writeBytes(accessor, spec('/b.txt'), new Uint8Array())
+    await mkdir(accessor, spec('/sub'))
+    await writeBytes(accessor, spec('/sub/c.json'), new Uint8Array())
+    const out = await find(accessor, spec('/'))
     expect(out.sort()).toEqual(['/a.json', '/b.txt', '/sub', '/sub/c.json'])
   })
 
   it('filters by name pattern', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/a.json'), new Uint8Array())
-    await writeBytes(root, spec('/b.txt'), new Uint8Array())
-    const out = await find(root, spec('/'), { name: '*.json' })
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/a.json'), new Uint8Array())
+    await writeBytes(accessor, spec('/b.txt'), new Uint8Array())
+    const out = await find(accessor, spec('/'), { name: '*.json' })
     expect(out).toEqual(['/a.json'])
   })
 })

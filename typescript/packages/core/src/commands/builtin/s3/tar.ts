@@ -30,6 +30,18 @@ function makePathSpec(original: string, prefix: string): PathSpec {
   return new PathSpec({ original, directory: original, resolved: true, prefix })
 }
 
+function fnmatch(name: string, pattern: string): boolean {
+  let re = '^'
+  for (const ch of pattern) {
+    if (ch === '*') re += '.*'
+    else if (ch === '?') re += '.'
+    else if (/[.+^${}()|[\]\\]/.test(ch)) re += '\\' + ch
+    else re += ch
+  }
+  re += '$'
+  return new RegExp(re).test(name)
+}
+
 async function compress(data: Uint8Array, z: boolean): Promise<Uint8Array> {
   if (!z) return data
   return gzip(data)
@@ -50,6 +62,7 @@ async function tarCommand(
   const extract = opts.flags.x === true
   const list = opts.flags.t === true
   const z = opts.flags.z === true
+  const verbose = opts.flags.v === true
   if (opts.flags.j === true || opts.flags.J === true) {
     return [
       null,
@@ -76,16 +89,20 @@ async function tarCommand(
     }
     const filtered =
       exclude !== null
-        ? resolved.filter((p) => !p.original.split('/').pop()?.includes(exclude))
+        ? resolved.filter((p) => !fnmatch(p.original.split('/').pop() ?? '', exclude))
         : resolved
     const entries: TarEntry[] = []
+    const verboseLines: string[] = []
     for (const p of filtered) {
       const data = await s3Read(accessor, p, opts.index ?? undefined)
-      entries.push({ name: p.original.replace(/^\/+/, ''), data, isFile: true })
+      const name = p.original.replace(/^\/+/, '')
+      entries.push({ name, data, isFile: true })
+      if (verbose) verboseLines.push(name)
     }
     const archive = await compress(writeTar(entries), z)
     await s3Write(accessor, makePathSpec(archivePath, mountPrefix), archive)
-    return [null, new IOResult({ writes: { [archivePath]: archive } })]
+    const stdout = verbose ? ENC.encode(verboseLines.join('\n') + '\n') : null
+    return [stdout, new IOResult({ writes: { [archivePath]: archive } })]
   }
 
   if (list) {
@@ -108,6 +125,7 @@ async function tarCommand(
     const raw = await s3Read(accessor, archiveSpec, opts.index ?? undefined)
     const data = await decompress(raw, z)
     const writes: Record<string, Uint8Array> = {}
+    const verboseLines: string[] = []
     for (const entry of readTar(data)) {
       if (!entry.isFile) continue
       const nameParts = entry.name.split('/')
@@ -125,8 +143,10 @@ async function tarCommand(
       }
       await s3Write(accessor, makePathSpec(outPath, mountPrefix), entry.data)
       writes[outPath] = entry.data
+      if (verbose) verboseLines.push(entry.name)
     }
-    return [null, new IOResult({ writes })]
+    const stdout = verbose ? ENC.encode(verboseLines.join('\n') + '\n') : null
+    return [stdout, new IOResult({ writes })]
   }
 
   return [

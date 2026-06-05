@@ -72,7 +72,7 @@ describe('head', () => {
     const resource = new RAMResource()
     resource.store.files.set('/tmp/f.txt', ENC.encode('a\nb\nc'))
     expect(await runHead(resource, [PathSpec.fromStrPath('/tmp/f.txt')], { n: '100' })).toBe(
-      'a\nb\nc\n',
+      'a\nb\nc',
     )
   })
 
@@ -103,6 +103,6 @@ describe('head', () => {
   it('single line without newline', async () => {
     const resource = new RAMResource()
     resource.store.files.set('/tmp/f.txt', ENC.encode('hello'))
-    expect(await runHead(resource, [PathSpec.fromStrPath('/tmp/f.txt')])).toBe('hello\n')
+    expect(await runHead(resource, [PathSpec.fromStrPath('/tmp/f.txt')])).toBe('hello')
   })
 })

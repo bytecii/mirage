@@ -15,111 +15,17 @@
 import { stream as ramStream } from '../../../core/ram/stream.ts'
 import { stat as ramStat } from '../../../core/ram/stat.ts'
 import type { RAMAccessor } from '../../../accessor/ram.ts'
-import {
-  concatBytes,
-  evalJsonlStream,
-  formatJqOutput,
-  isJsonlPath,
-  isStreamableJsonlExpr,
-  jqEval,
-  parseJsonAuto,
-  parseJsonPath,
-} from '../../../core/jq/index.ts'
-import { Precision, ProvisionResult } from '../../../provision/types.ts'
-import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { readStdinAsync } from '../utils/stream.ts'
-
-const ENC = new TextEncoder()
-
-export async function jqProvision(
-  accessor: RAMAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  _opts: CommandOpts,
-): Promise<ProvisionResult> {
-  const [first] = paths
-  const [expr] = texts
-  if (first === undefined || expr === undefined) return new ProvisionResult({ command: 'jq' })
-  try {
-    const s = await ramStat(accessor, first)
-    const fileSize = s.size ?? 0
-    if (isJsonlPath(first.original) && isStreamableJsonlExpr(expr)) {
-      return new ProvisionResult({
-        command: `jq '${expr}' ${first.original}`,
-        networkReadLow: 0,
-        networkReadHigh: fileSize,
-        readOps: 1,
-        precision: Precision.RANGE,
-      })
-    }
-    return new ProvisionResult({
-      command: `jq '${expr}' ${first.original}`,
-      networkReadLow: fileSize,
-      networkReadHigh: fileSize,
-      readOps: 1,
-      precision: Precision.EXACT,
-    })
-  } catch {
-    return new ProvisionResult({ command: 'jq' })
-  }
-}
-
-async function readFile(accessor: RAMAccessor, p: PathSpec): Promise<Uint8Array> {
-  return materialize(ramStream(accessor, p))
-}
-
-async function jqCommand(
-  accessor: RAMAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const expression = texts[0]
-  if (expression === undefined) {
-    return [
-      null,
-      new IOResult({ exitCode: 1, stderr: ENC.encode('jq: usage: jq EXPRESSION [path]\n') }),
-    ]
-  }
-  const raw = opts.flags.r === true
-  const compact = opts.flags.c === true
-  const slurp = opts.flags.s === true
-
-  if (paths.length > 0) {
-    const first = paths[0]
-    if (first === undefined) return [null, new IOResult()]
-    if (isJsonlPath(first.original) && isStreamableJsonlExpr(expression)) {
-      return [evalJsonlStream(ramStream(accessor, first), expression), new IOResult()]
-    }
-    const outputs: Uint8Array[] = []
-    for (const p of paths) {
-      const bytes = await readFile(accessor, p)
-      let data = parseJsonPath(bytes, p.original)
-      if (slurp) data = Array.isArray(data) ? data : [data]
-      const result = await jqEval(data, expression.trim())
-      const spread = expression.includes('[]')
-      outputs.push(formatJqOutput(result, raw, compact, spread))
-    }
-    const out: ByteSource = concatBytes(outputs)
-    return [out, new IOResult()]
-  }
-
-  const bytes = await readStdinAsync(opts.stdin)
-  if (bytes === null) return [null, new IOResult()]
-  let data = parseJsonAuto(bytes)
-  if (slurp && !Array.isArray(data)) data = [data]
-  const result = await jqEval(data, expression.trim())
-  const spread = expression.includes('[]')
-  return [formatJqOutput(result, raw, compact, spread), new IOResult()]
-}
+import { jqGeneric, jqProvisionGeneric } from '../generic/jq.ts'
 
 export const RAM_JQ = command({
   name: 'jq',
   resource: ResourceName.RAM,
   spec: specOf('jq'),
-  fn: jqCommand,
-  provision: jqProvision,
+  fn: (accessor: RAMAccessor, paths, texts, opts) =>
+    jqGeneric(paths, texts, opts, (p) => ramStream(accessor, p)),
+  provision: (accessor: RAMAccessor, paths, texts, _opts) =>
+    jqProvisionGeneric(paths, texts, (p) => ramStat(accessor, p)),
 })

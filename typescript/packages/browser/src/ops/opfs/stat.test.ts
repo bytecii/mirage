@@ -14,34 +14,23 @@
 
 import { describe, expect, it } from 'vitest'
 import { type FileStat, FileType } from '@struktoai/mirage-core'
-import { OPFSAccessor } from '../../accessor/opfs.ts'
 import { mkdir } from '../../core/opfs/mkdir.ts'
 import { writeBytes } from '../../core/opfs/write.ts'
-import { fakeOPFSResource, makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { statOp } from './stat.ts'
 
 describe('statOp (opfs)', () => {
   it('returns FileStat with size for files', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/x'), new TextEncoder().encode('abc'))
-    const s = (await statOp.fn(
-      new OPFSAccessor(fakeOPFSResource(root)),
-      spec('/x'),
-      [],
-      {},
-    )) as FileStat
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/x'), new TextEncoder().encode('abc'))
+    const s = (await statOp.fn(accessor, spec('/x'), [], {})) as FileStat
     expect(s.size).toBe(3)
     expect(s.type).not.toBe(FileType.DIRECTORY)
   })
   it('returns DIRECTORY for directories', async () => {
-    const root = makeMockRoot()
-    await mkdir(root, spec('/d'))
-    const s = (await statOp.fn(
-      new OPFSAccessor(fakeOPFSResource(root)),
-      spec('/d'),
-      [],
-      {},
-    )) as FileStat
+    const accessor = makeMockAccessor()
+    await mkdir(accessor, spec('/d'))
+    const s = (await statOp.fn(accessor, spec('/d'), [], {})) as FileStat
     expect(s.type).toBe(FileType.DIRECTORY)
   })
 })

@@ -12,29 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { Accessor } from '../../../accessor/base.ts'
-import { IOResult, type ByteSource } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-
-function basenameCommand(
-  _accessor: Accessor,
-  paths: PathSpec[],
-  texts: string[],
-  _opts: CommandOpts,
-): CommandFnResult {
-  const arg = texts[0] ?? paths[0]?.original ?? ''
-  const stripped = arg.replace(/\/+$/, '')
-  const idx = stripped.lastIndexOf('/')
-  const base = idx >= 0 ? stripped.slice(idx + 1) : stripped
-  const out: ByteSource = new TextEncoder().encode(`${base}\n`)
-  return [out, new IOResult()]
-}
+import { basenameFn } from '../path_helper.ts'
 
 export const RAM_BASENAME = command({
   name: 'basename',
   resource: ResourceName.RAM,
   spec: specOf('basename'),
-  fn: basenameCommand,
+  fn: basenameFn,
 })

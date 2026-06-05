@@ -47,19 +47,19 @@ async function rmCommand(
   for (const p of paths) {
     let isDir = false
     try {
-      const st = await opfsStat(accessor.rootHandle, p)
+      const st = await opfsStat(accessor, p)
       isDir = st.type === FileType.DIRECTORY
     } catch {
       isDir = false
     }
     if (isDir) {
       if (recursive) {
-        await opfsRmR(accessor.rootHandle, p)
+        await opfsRmR(accessor, p)
       } else {
-        await opfsRmdir(accessor.rootHandle, p)
+        await opfsRmdir(accessor, p)
       }
     } else {
-      await opfsUnlink(accessor.rootHandle, p)
+      await opfsUnlink(accessor, p)
     }
   }
   return [null, new IOResult()]

@@ -158,7 +158,10 @@ export class PathSpec {
 
   get stripPrefix(): string {
     if (this.prefix && this.original.startsWith(this.prefix)) {
-      return this.original.slice(this.prefix.length) || '/'
+      const rest = this.original.slice(this.prefix.length)
+      if (this.prefix.endsWith('/') || rest === '' || rest.startsWith('/')) {
+        return rest === '' ? '/' : rest
+      }
     }
     return this.original
   }

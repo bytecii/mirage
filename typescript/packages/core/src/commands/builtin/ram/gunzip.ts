@@ -12,93 +12,26 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { unlink as ramUnlink } from '../../../core/ram/unlink.ts'
-import { writeBytes as ramWrite } from '../../../core/ram/write.ts'
-import { stream as ramStream } from '../../../core/ram/stream.ts'
 import type { RAMAccessor } from '../../../accessor/ram.ts'
-import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
-import { PathSpec, ResourceName } from '../../../types.ts'
-import { gunzip } from '../../../utils/compress.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { stream as ramStream } from '../../../core/ram/stream.ts'
+import { writeBytes as ramWrite } from '../../../core/ram/write.ts'
+import { unlink as ramUnlink } from '../../../core/ram/unlink.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
+import { gunzipGeneric } from '../generic/gunzip.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { resolveSource } from '../utils/stream.ts'
-
-const ENC = new TextEncoder()
-
-function makePathSpec(original: string): PathSpec {
-  return new PathSpec({ original, directory: original, resolved: true })
-}
-
-async function gunzipCommand(
-  accessor: RAMAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const keep = opts.flags.k === true
-  const stdoutMode = opts.flags.c === true
-  const testMode = opts.flags.t === true
-
-  if (paths.length === 0) {
-    let source: AsyncIterable<Uint8Array>
-    try {
-      source = resolveSource(opts.stdin, 'gunzip: missing input')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
-    const data = await materialize(source)
-    const out = await gunzip(data)
-    const result: ByteSource = out
-    return [result, new IOResult()]
-  }
-
-  if (testMode) {
-    for (const p of paths) {
-      const raw = await materialize(ramStream(accessor, p))
-      await gunzip(raw)
-    }
-    return [null, new IOResult()]
-  }
-
-  if (stdoutMode) {
-    const chunks: Uint8Array[] = []
-    for (const p of paths) {
-      const raw = await materialize(ramStream(accessor, p))
-      chunks.push(await gunzip(raw))
-    }
-    return [concat(chunks), new IOResult()]
-  }
-
-  const writes: Record<string, Uint8Array> = {}
-  for (const p of paths) {
-    const raw = await materialize(ramStream(accessor, p))
-    const pStripped = p.stripPrefix
-    const outPath = pStripped.endsWith('.gz') ? pStripped.slice(0, -3) : pStripped + '.out'
-    const outData = await gunzip(raw)
-    await ramWrite(accessor, makePathSpec(outPath), outData)
-    writes[outPath] = outData
-    if (!keep) await ramUnlink(accessor, p)
-  }
-  return [null, new IOResult({ writes })]
-}
-
-function concat(chunks: Uint8Array[]): Uint8Array {
-  let total = 0
-  for (const c of chunks) total += c.byteLength
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const c of chunks) {
-    out.set(c, offset)
-    offset += c.byteLength
-  }
-  return out
-}
 
 export const RAM_GUNZIP = command({
   name: 'gunzip',
   resource: ResourceName.RAM,
   spec: specOf('gunzip'),
-  fn: gunzipCommand,
+  fn: (accessor: RAMAccessor, paths, _texts, opts) =>
+    gunzipGeneric(
+      paths,
+      opts,
+      (p) => ramStream(accessor, p),
+      (p, d) => ramWrite(accessor, p, d),
+      (p) => ramUnlink(accessor, p),
+    ),
   write: true,
 })

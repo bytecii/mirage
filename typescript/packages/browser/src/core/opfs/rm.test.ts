@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { exists } from './exists.ts'
 import { mkdir } from './mkdir.ts'
 import { rmR } from './rm.ts'
@@ -21,16 +21,16 @@ import { writeBytes } from './write.ts'
 
 describe('opfs/rm.rmR', () => {
   it('removes a directory recursively', async () => {
-    const root = makeMockRoot()
-    await mkdir(root, spec('/d'))
-    await writeBytes(root, spec('/d/x'), new TextEncoder().encode('x'))
-    await rmR(root, spec('/d'))
-    expect(await exists(root, spec('/d'))).toBe(false)
+    const accessor = makeMockAccessor()
+    await mkdir(accessor, spec('/d'))
+    await writeBytes(accessor, spec('/d/x'), new TextEncoder().encode('x'))
+    await rmR(accessor, spec('/d'))
+    expect(await exists(accessor, spec('/d'))).toBe(false)
   })
   it('removes a single file', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/x'), new Uint8Array())
-    await rmR(root, spec('/x'))
-    expect(await exists(root, spec('/x'))).toBe(false)
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/x'), new Uint8Array())
+    await rmR(accessor, spec('/x'))
+    expect(await exists(accessor, spec('/x'))).toBe(false)
   })
 })

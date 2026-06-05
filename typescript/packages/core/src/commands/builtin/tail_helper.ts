@@ -25,14 +25,22 @@ export function tailBytes(
   plusMode = false,
 ): Uint8Array {
   if (bytesMode !== null) {
-    if (bytesMode === 0) return new Uint8Array(0)
-    const start = Math.max(0, data.byteLength - bytesMode)
+    const targetBytes = Math.abs(bytesMode)
+    if (targetBytes === 0) return new Uint8Array(0)
+    const start = Math.max(0, data.byteLength - targetBytes)
     return data.slice(start)
   }
   const parts = splitLines(data)
   const trimmed =
     parts.length > 0 && parts[parts.length - 1]?.byteLength === 0 ? parts.slice(0, -1) : parts
-  const selected = plusMode ? trimmed.slice(lines - 1) : trimmed.slice(-lines)
+  let selected: Uint8Array[]
+  if (plusMode) {
+    selected = trimmed.slice(Math.max(0, lines - 1))
+  } else {
+    const targetLines = Math.abs(lines)
+    if (targetLines === 0) return new Uint8Array(0)
+    selected = trimmed.slice(-targetLines)
+  }
   if (selected.length === 0) return new Uint8Array(0)
   const result = joinWith(selected, 0x0a)
   if (data.byteLength > 0 && data[data.byteLength - 1] === 0x0a) {

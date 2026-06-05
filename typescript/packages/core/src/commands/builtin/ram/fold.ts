@@ -12,78 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { stream as ramStream } from '../../../core/ram/stream.ts'
 import type { RAMAccessor } from '../../../accessor/ram.ts'
-import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { stream as ramStream } from '../../../core/ram/stream.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
+import { foldGeneric } from '../generic/fold.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { readStdinAsync } from '../utils/stream.ts'
-
-const ENC = new TextEncoder()
-const DEC = new TextDecoder('utf-8', { fatal: false })
-
-function splitLinesNoTrailing(text: string): string[] {
-  const stripped = text.endsWith('\n') ? text.slice(0, -1) : text
-  return stripped === '' ? [] : stripped.split('\n')
-}
-
-function foldLine(line: string, width: number, breakSpaces: boolean): string {
-  if (line.length <= width) return line
-  const parts: string[] = []
-  let rest = line
-  while (rest.length > width) {
-    if (breakSpaces) {
-      const idx = rest.lastIndexOf(' ', width - 1)
-      if (idx > 0) {
-        parts.push(rest.slice(0, idx + 1))
-        rest = rest.slice(idx + 1)
-      } else {
-        parts.push(rest.slice(0, width))
-        rest = rest.slice(width)
-      }
-    } else {
-      parts.push(rest.slice(0, width))
-      rest = rest.slice(width)
-    }
-  }
-  if (rest !== '') parts.push(rest)
-  return parts.join('\n')
-}
-
-async function foldCommand(
-  accessor: RAMAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const width = typeof opts.flags.w === 'string' ? Number.parseInt(opts.flags.w, 10) : 80
-  const breakSpaces = opts.flags.s === true
-  if (paths.length > 0) {
-    const allLines: string[] = []
-    for (const p of paths) {
-      const data = DEC.decode(await materialize(ramStream(accessor, p)))
-      for (const line of splitLinesNoTrailing(data)) {
-        allLines.push(foldLine(line, width, breakSpaces))
-      }
-    }
-    const result: ByteSource = ENC.encode(allLines.join('\n') + '\n')
-    return [result, new IOResult()]
-  }
-  const stdinData = await readStdinAsync(opts.stdin)
-  if (stdinData === null) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('fold: missing operand\n') })]
-  }
-  const lines = splitLinesNoTrailing(DEC.decode(stdinData))
-  const result: ByteSource = ENC.encode(
-    lines.map((ln) => foldLine(ln, width, breakSpaces)).join('\n') + '\n',
-  )
-  return [result, new IOResult()]
-}
 
 export const RAM_FOLD = command({
   name: 'fold',
   resource: ResourceName.RAM,
   spec: specOf('fold'),
-  fn: foldCommand,
+  fn: (accessor: RAMAccessor, paths, _texts, opts) =>
+    foldGeneric(paths, opts, (p) => ramStream(accessor, p)),
 })

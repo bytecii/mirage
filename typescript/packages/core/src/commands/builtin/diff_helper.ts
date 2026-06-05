@@ -12,13 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-export type Opcode = readonly [
-  'equal' | 'replace' | 'delete' | 'insert',
-  number,
-  number,
-  number,
-  number,
-]
+import { DiffOpTag } from './diff_types.ts'
+
+export type Opcode = readonly [DiffOpTag, number, number, number, number]
 
 interface Match {
   a: number
@@ -126,10 +122,10 @@ export function getOpcodes(a: readonly string[], b: readonly string[]): Opcode[]
   let i = 0
   let j = 0
   for (const m of matches) {
-    if (i < m.a && j < m.b) opcodes.push(['replace', i, m.a, j, m.b] as const)
-    else if (i < m.a) opcodes.push(['delete', i, m.a, j, m.b] as const)
-    else if (j < m.b) opcodes.push(['insert', i, m.a, j, m.b] as const)
-    if (m.size > 0) opcodes.push(['equal', m.a, m.a + m.size, m.b, m.b + m.size] as const)
+    if (i < m.a && j < m.b) opcodes.push([DiffOpTag.REPLACE, i, m.a, j, m.b] as const)
+    else if (i < m.a) opcodes.push([DiffOpTag.DELETE, i, m.a, j, m.b] as const)
+    else if (j < m.b) opcodes.push([DiffOpTag.INSERT, i, m.a, j, m.b] as const)
+    if (m.size > 0) opcodes.push([DiffOpTag.EQUAL, m.a, m.a + m.size, m.b, m.b + m.size] as const)
     i = m.a + m.size
     j = m.b + m.size
   }
@@ -146,7 +142,7 @@ export function unifiedDiff(
   const out: string[] = []
   if (a.length === 0 && b.length === 0) return out
   const opcodes = getOpcodes(a, b)
-  if (opcodes.every((op) => op[0] === 'equal')) return out
+  if (opcodes.every((op) => op[0] === DiffOpTag.EQUAL)) return out
   out.push(`--- ${fromFile}\n`)
   out.push(`+++ ${toFile}\n`)
   const groups = groupOpcodes(opcodes, n)
@@ -160,14 +156,14 @@ export function unifiedDiff(
     const j2 = last[4]
     out.push(`@@ -${String(i1 + 1)},${String(i2 - i1)} +${String(j1 + 1)},${String(j2 - j1)} @@\n`)
     for (const [tag, ai1, ai2, bj1, bj2] of group) {
-      if (tag === 'equal') {
+      if (tag === DiffOpTag.EQUAL) {
         for (let k = ai1; k < ai2; k++) out.push(' ' + (a[k] ?? ''))
         continue
       }
-      if (tag === 'replace' || tag === 'delete') {
+      if (tag === DiffOpTag.REPLACE || tag === DiffOpTag.DELETE) {
         for (let k = ai1; k < ai2; k++) out.push('-' + (a[k] ?? ''))
       }
-      if (tag === 'replace' || tag === 'insert') {
+      if (tag === DiffOpTag.REPLACE || tag === DiffOpTag.INSERT) {
         for (let k = bj1; k < bj2; k++) out.push('+' + (b[k] ?? ''))
       }
     }
@@ -180,12 +176,12 @@ function groupOpcodes(opcodes: readonly Opcode[], n: number): Opcode[][] {
   const codes = opcodes.map((op) => [...op] as [Opcode[0], number, number, number, number])
   const first = codes[0]
   const last = codes[codes.length - 1]
-  if (first?.[0] === 'equal') {
+  if (first?.[0] === DiffOpTag.EQUAL) {
     const [, i1, i2, j1, j2] = first
     first[1] = Math.max(i1, i2 - n)
     first[3] = Math.max(j1, j2 - n)
   }
-  if (last?.[0] === 'equal') {
+  if (last?.[0] === DiffOpTag.EQUAL) {
     const [, i1, i2, j1, j2] = last
     last[2] = Math.min(i2, i1 + n)
     last[4] = Math.min(j2, j1 + n)
@@ -194,18 +190,61 @@ function groupOpcodes(opcodes: readonly Opcode[], n: number): Opcode[][] {
   let current: Opcode[] = []
   for (const op of codes) {
     const [tag, i1, i2, j1, j2] = op
-    if (tag === 'equal' && i2 - i1 > 2 * n) {
-      current.push(['equal', i1, Math.min(i2, i1 + n), j1, Math.min(j2, j1 + n)] as Opcode)
+    if (tag === DiffOpTag.EQUAL && i2 - i1 > 2 * n) {
+      current.push([DiffOpTag.EQUAL, i1, Math.min(i2, i1 + n), j1, Math.min(j2, j1 + n)] as Opcode)
       groups.push(current)
-      current = [['equal', Math.max(i1, i2 - n), i2, Math.max(j1, j2 - n), j2] as Opcode]
+      current = [[DiffOpTag.EQUAL, Math.max(i1, i2 - n), i2, Math.max(j1, j2 - n), j2] as Opcode]
       continue
     }
     current.push([tag, i1, i2, j1, j2] as Opcode)
   }
-  if (current.length > 0 && !(current.length === 1 && current[0]?.[0] === 'equal')) {
+  if (current.length > 0 && !(current.length === 1 && current[0]?.[0] === DiffOpTag.EQUAL)) {
     groups.push(current)
   }
   return groups
+}
+
+function addrA(i1: number, i2: number): string {
+  return i2 - i1 > 1 ? `${String(i1 + 1)},${String(i2)}` : String(i1 + 1)
+}
+
+function addrB(j1: number, j2: number): string {
+  if (j2 - j1 > 1) return `${String(j1 + 1)},${String(j2)}`
+  if (j2 - j1 === 1) return String(j1 + 1)
+  return String(j1)
+}
+
+export function normalDiff(a: readonly string[], b: readonly string[]): string[] {
+  const opcodes = getOpcodes(a, b)
+  const out: string[] = []
+  for (const [tag, i1, i2, j1, j2] of opcodes) {
+    if (tag === DiffOpTag.EQUAL) continue
+    if (tag === DiffOpTag.DELETE) {
+      out.push(`${addrA(i1, i2)}d${String(j1)}\n`)
+      for (let k = i1; k < i2; k++) {
+        const line = a[k] ?? ''
+        out.push('< ' + (line.endsWith('\n') ? line : line + '\n'))
+      }
+    } else if (tag === DiffOpTag.INSERT) {
+      out.push(`${String(i1)}a${addrB(j1, j2)}\n`)
+      for (let k = j1; k < j2; k++) {
+        const line = b[k] ?? ''
+        out.push('> ' + (line.endsWith('\n') ? line : line + '\n'))
+      }
+    } else {
+      out.push(`${addrA(i1, i2)}c${addrB(j1, j2)}\n`)
+      for (let k = i1; k < i2; k++) {
+        const line = a[k] ?? ''
+        out.push('< ' + (line.endsWith('\n') ? line : line + '\n'))
+      }
+      out.push('---\n')
+      for (let k = j1; k < j2; k++) {
+        const line = b[k] ?? ''
+        out.push('> ' + (line.endsWith('\n') ? line : line + '\n'))
+      }
+    }
+  }
+  return out
 }
 
 export function edScript(aLines: readonly string[], bLines: readonly string[]): string[] {
@@ -215,11 +254,11 @@ export function edScript(aLines: readonly string[], bLines: readonly string[]): 
     const op = opcodes[i]
     if (op === undefined) continue
     const [tag, i1, i2, j1, j2] = op
-    if (tag === 'equal') continue
-    if (tag === 'delete') {
+    if (tag === DiffOpTag.EQUAL) continue
+    if (tag === DiffOpTag.DELETE) {
       const addr = i2 - i1 > 1 ? `${String(i1 + 1)},${String(i2)}` : String(i1 + 1)
       edits.push(`${addr}d\n`)
-    } else if (tag === 'insert') {
+    } else if (tag === DiffOpTag.INSERT) {
       edits.push(`${String(i1)}a\n`)
       for (let k = j1; k < j2; k++) {
         const line = bLines[k] ?? ''
@@ -227,7 +266,6 @@ export function edScript(aLines: readonly string[], bLines: readonly string[]): 
       }
       edits.push('.\n')
     } else {
-      // replace
       const addr = i2 - i1 > 1 ? `${String(i1 + 1)},${String(i2)}` : String(i1 + 1)
       edits.push(`${addr}c\n`)
       for (let k = j1; k < j2; k++) {

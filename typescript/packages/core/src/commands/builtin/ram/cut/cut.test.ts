@@ -74,6 +74,26 @@ describe('cut', () => {
     )
   })
 
+  it('-f reorders to file order, not spec order', async () => {
+    expect(await runCut(ENC.encode('a\tb\tc\n'), { f: '3,1' })).toBe('a\tc\n')
+  })
+
+  it('-f open range to end of line', async () => {
+    expect(await runCut(ENC.encode('a\tb\tc\td\n'), { f: '2-' })).toBe('b\tc\td\n')
+  })
+
+  it('-f line without delimiter passes through whole', async () => {
+    expect(await runCut(ENC.encode('nodelim\na\tb\n'), { f: '2' })).toBe('nodelim\nb\n')
+  })
+
+  it('-c overlapping ranges dedup ascending', async () => {
+    expect(await runCut(ENC.encode('abcdef\n'), { c: '1-3,2-4' })).toBe('abcd\n')
+  })
+
+  it('-c open range to end of line', async () => {
+    expect(await runCut(ENC.encode('abcdef\n'), { c: '3-' })).toBe('cdef\n')
+  })
+
   it('missing stdin returns error', async () => {
     const resource = new RAMResource()
     const cmd = RAM_CUT[0]

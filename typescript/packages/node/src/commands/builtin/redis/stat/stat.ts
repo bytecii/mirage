@@ -13,92 +13,20 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
-  FileType,
-  IOResult,
-  ProvisionResult,
   ResourceName,
   command,
   specOf,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-  type FileStat,
-  type PathSpec,
+  statGeneric,
+  statProvisionGeneric,
 } from '@struktoai/mirage-core'
 import { stat as redisStat } from '../../../../core/redis/stat.ts'
 import type { RedisAccessor } from '../../../../accessor/redis.ts'
-
-const TYPE_LABELS: Record<string, string> = {
-  [FileType.DIRECTORY]: 'directory',
-  [FileType.TEXT]: 'regular file',
-  [FileType.BINARY]: 'regular file',
-  [FileType.JSON]: 'regular file',
-  [FileType.CSV]: 'regular file',
-}
-
-function formatStat(fmt: string, s: FileStat): string {
-  return fmt.replace(/%(.)/g, (_, spec: string) => {
-    if (spec === 'n') return s.name
-    if (spec === 's') return String(s.size ?? 0)
-    if (spec === 'F') return s.type ? (TYPE_LABELS[s.type] ?? 'regular file') : 'regular file'
-    if (spec === 'y') return s.modified ?? ''
-    return '?'
-  })
-}
-
-export function statProvision(
-  accessor: RedisAccessor,
-  paths: PathSpec[],
-  _texts: string[],
-  _opts: CommandOpts,
-): ProvisionResult {
-  const [first] = paths
-  return new ProvisionResult({
-    command: first !== undefined ? `stat ${first.original}` : 'stat',
-  })
-}
-
-async function statCommand(
-  accessor: RedisAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  if (paths.length === 0) {
-    return [
-      null,
-      new IOResult({
-        exitCode: 1,
-        stderr: new TextEncoder().encode('stat: missing operand\n'),
-      }),
-    ]
-  }
-  const fmt =
-    typeof opts.flags.c === 'string'
-      ? opts.flags.c
-      : typeof opts.flags.f === 'string'
-        ? opts.flags.f
-        : null
-  const lines: string[] = []
-  for (const p of paths) {
-    const s = await redisStat(accessor, p)
-    if (fmt !== null) {
-      lines.push(formatStat(fmt, s))
-    } else {
-      const sizeStr = s.size === null ? 'None' : String(s.size)
-      const modStr = s.modified ?? 'None'
-      const typeStr = s.type ?? 'None'
-      lines.push(`name=${s.name} size=${sizeStr} modified=${modStr} type=${typeStr}`)
-    }
-  }
-  const out: ByteSource = new TextEncoder().encode(lines.join('\n'))
-  return [out, new IOResult()]
-}
 
 export const REDIS_STAT = command({
   name: 'stat',
   resource: ResourceName.REDIS,
   spec: specOf('stat'),
-  fn: statCommand,
-  provision: statProvision,
+  fn: (accessor: RedisAccessor, paths, _texts, opts) =>
+    statGeneric(paths, opts, (p) => redisStat(accessor, p)),
+  provision: statProvisionGeneric,
 })

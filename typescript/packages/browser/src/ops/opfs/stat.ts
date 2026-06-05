@@ -22,5 +22,5 @@ export const statOp: RegisteredOp = {
   resource: ResourceName.OPFS,
   filetype: null,
   write: false,
-  fn: (accessor: OPFSAccessor, path: PathSpec) => coreStat(accessor.rootHandle, path),
+  fn: (accessor: OPFSAccessor, path: PathSpec) => coreStat(accessor, path),
 }

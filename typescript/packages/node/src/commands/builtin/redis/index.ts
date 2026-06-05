@@ -14,7 +14,7 @@
 
 import type { RegisteredCommand } from '@struktoai/mirage-core'
 import { REDIS_AWK } from './awk.ts'
-import { RAM_BASE64 } from './base64_cmd.ts'
+import { REDIS_BASE64 } from './base64_cmd.ts'
 import { REDIS_BASENAME } from './basename.ts'
 import { REDIS_CAT } from './cat/cat.ts'
 import { REDIS_CAT_FEATHER } from './cat/cat_feather.ts'
@@ -59,7 +59,7 @@ import { REDIS_LS } from './ls/ls.ts'
 import { REDIS_LS_FEATHER } from './ls/ls_feather.ts'
 import { RAM_LS_HDF5 } from './ls/ls_hdf5.ts'
 import { REDIS_LS_PARQUET } from './ls/ls_parquet.ts'
-import { RAM_MD5 } from './md5.ts'
+import { REDIS_MD5 } from './md5.ts'
 import { REDIS_MKDIR } from './mkdir.ts'
 import { REDIS_MKTEMP } from './mktemp.ts'
 import { REDIS_MV } from './mv.ts'
@@ -72,7 +72,7 @@ import { REDIS_REV } from './rev.ts'
 import { REDIS_RG } from './rg.ts'
 import { REDIS_RM } from './rm.ts'
 import { REDIS_SED } from './sed.ts'
-import { RAM_SHA256SUM } from './sha256sum.ts'
+import { REDIS_SHA256SUM } from './sha256sum.ts'
 import { REDIS_SHUF } from './shuf.ts'
 import { REDIS_SORT } from './sort.ts'
 import { REDIS_SPLIT } from './split.ts'
@@ -106,7 +106,7 @@ import { REDIS_ZIP } from './zip_cmd.ts'
 
 export const REDIS_COMMANDS: readonly RegisteredCommand[] = [
   ...REDIS_AWK,
-  ...RAM_BASE64,
+  ...REDIS_BASE64,
   ...REDIS_BASENAME,
   ...REDIS_CAT,
   ...REDIS_CAT_FEATHER,
@@ -151,7 +151,7 @@ export const REDIS_COMMANDS: readonly RegisteredCommand[] = [
   ...REDIS_LS_FEATHER,
   ...RAM_LS_HDF5,
   ...REDIS_LS_PARQUET,
-  ...RAM_MD5,
+  ...REDIS_MD5,
   ...REDIS_MKDIR,
   ...REDIS_MKTEMP,
   ...REDIS_MV,
@@ -164,7 +164,7 @@ export const REDIS_COMMANDS: readonly RegisteredCommand[] = [
   ...REDIS_RG,
   ...REDIS_RM,
   ...REDIS_SED,
-  ...RAM_SHA256SUM,
+  ...REDIS_SHA256SUM,
   ...REDIS_SHUF,
   ...REDIS_SORT,
   ...REDIS_SPLIT,

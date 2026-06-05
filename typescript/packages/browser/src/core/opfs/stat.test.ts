@@ -14,27 +14,27 @@
 
 import { describe, expect, it } from 'vitest'
 import { FileType } from '@struktoai/mirage-core'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { mkdir } from './mkdir.ts'
 import { stat } from './stat.ts'
 import { writeBytes } from './write.ts'
 
 describe('opfs/stat', () => {
   it('returns FileStat with size for files', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/x'), new TextEncoder().encode('abc'))
-    const s = await stat(root, spec('/x'))
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/x'), new TextEncoder().encode('abc'))
+    const s = await stat(accessor, spec('/x'))
     expect(s.size).toBe(3)
     expect(s.type).not.toBe(FileType.DIRECTORY)
   })
   it('returns DIRECTORY type for directories', async () => {
-    const root = makeMockRoot()
-    await mkdir(root, spec('/d'))
-    const s = await stat(root, spec('/d'))
+    const accessor = makeMockAccessor()
+    await mkdir(accessor, spec('/d'))
+    const s = await stat(accessor, spec('/d'))
     expect(s.type).toBe(FileType.DIRECTORY)
   })
   it('throws on missing path', async () => {
-    const root = makeMockRoot()
-    await expect(stat(root, spec('/nope'))).rejects.toThrow()
+    const accessor = makeMockAccessor()
+    await expect(stat(accessor, spec('/nope'))).rejects.toThrow()
   })
 })

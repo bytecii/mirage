@@ -157,71 +157,88 @@ export class OPFSResource implements Resource {
   }
 
   async *streamPath(p: PathSpec): AsyncIterable<Uint8Array> {
-    yield* streamCore(await this.ensureOpen(), p)
+    await this.ensureOpen()
+    yield* streamCore(this.accessor, p)
   }
 
   async readFile(p: PathSpec): Promise<Uint8Array> {
-    return readCoreFn(await this.ensureOpen(), p)
+    await this.ensureOpen()
+    return readCoreFn(this.accessor, p)
   }
 
   async writeFile(p: PathSpec, data: Uint8Array): Promise<void> {
-    return writeCore(await this.ensureOpen(), p, data)
+    await this.ensureOpen()
+    return writeCore(this.accessor, p, data)
   }
 
   async appendFile(p: PathSpec, data: Uint8Array): Promise<void> {
-    return appendCore(await this.ensureOpen(), p, data)
+    await this.ensureOpen()
+    return appendCore(this.accessor, p, data)
   }
 
   async readdir(p: PathSpec): Promise<string[]> {
-    return readdirCore(await this.ensureOpen(), p)
+    await this.ensureOpen()
+    return readdirCore(this.accessor, p)
   }
 
   async stat(p: PathSpec): Promise<FileStat> {
-    return statCore(await this.ensureOpen(), p)
+    await this.ensureOpen()
+    return statCore(this.accessor, p)
   }
 
   async exists(p: PathSpec): Promise<boolean> {
-    return existsCore(await this.ensureOpen(), p)
+    await this.ensureOpen()
+    return existsCore(this.accessor, p)
   }
 
   async mkdir(p: PathSpec, options?: { recursive?: boolean }): Promise<void> {
-    return mkdirCore(await this.ensureOpen(), p, options?.recursive === true)
+    await this.ensureOpen()
+    return mkdirCore(this.accessor, p, options?.recursive === true)
   }
 
   async rmdir(p: PathSpec): Promise<void> {
-    return rmdirCore(await this.ensureOpen(), p)
+    await this.ensureOpen()
+    return rmdirCore(this.accessor, p)
   }
 
   async unlink(p: PathSpec): Promise<void> {
-    return unlinkCore(await this.ensureOpen(), p)
+    await this.ensureOpen()
+    return unlinkCore(this.accessor, p)
   }
 
   async rename(src: PathSpec, dst: PathSpec): Promise<void> {
-    return renameCore(await this.ensureOpen(), src, dst)
+    await this.ensureOpen()
+    return renameCore(this.accessor, src, dst)
   }
 
   async truncate(p: PathSpec, length: number): Promise<void> {
-    return truncateCore(await this.ensureOpen(), p, length)
+    await this.ensureOpen()
+    return truncateCore(this.accessor, p, length)
   }
 
   async copy(src: PathSpec, dst: PathSpec): Promise<void> {
-    return copyCore(await this.ensureOpen(), src, dst)
+    await this.ensureOpen()
+    return copyCore(this.accessor, src, dst)
   }
 
   async rmR(p: PathSpec): Promise<void> {
-    return rmRCore(await this.ensureOpen(), p)
+    await this.ensureOpen()
+    return rmRCore(this.accessor, p)
   }
 
   async du(p: PathSpec): Promise<number> {
-    return duCore(await this.ensureOpen(), p)
+    await this.ensureOpen()
+    return duCore(this.accessor, p)
   }
 
   async find(p: PathSpec, options: FindOptions = {}): Promise<string[]> {
-    return findCore(await this.ensureOpen(), p, options as OPFSFindOptions)
+    await this.ensureOpen()
+    return findCore(this.accessor, p, options as OPFSFindOptions)
   }
 
   async glob(paths: readonly PathSpec[]): Promise<PathSpec[]> {
-    return globCore(await this.ensureOpen(), paths)
+    await this.ensureOpen()
+    return globCore(this.accessor, paths)
   }
 
   async getState(): Promise<OPFSResourceState> {

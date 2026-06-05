@@ -217,6 +217,64 @@ export { Accessor, NOOPAccessor, RAMAccessor } from './accessor/index.ts'
 export { cat as featherCat, describe as featherDescribe } from './core/filetype/feather.ts'
 export { cat as hdf5Cat, describe as hdf5Describe } from './core/filetype/hdf5.ts'
 export { cat as parquetCat, describe as parquetDescribe } from './core/filetype/parquet.ts'
+export { numberLines } from './commands/builtin/cat_helper.ts'
+export { CUT_OPEN_END, cutBytes, cutStream, parseCutRanges } from './commands/builtin/cut_helper.ts'
+export { cutGeneric } from './commands/builtin/generic/cut.ts'
+export { tacGeneric } from './commands/builtin/generic/tac.ts'
+export { nlGeneric } from './commands/builtin/generic/nl.ts'
+export { trGeneric } from './commands/builtin/generic/tr.ts'
+export { uniqGeneric } from './commands/builtin/generic/uniq.ts'
+export { xxdGeneric } from './commands/builtin/generic/xxd.ts'
+export { base64Generic } from './commands/builtin/generic/base64_cmd.ts'
+export { revGeneric } from './commands/builtin/generic/rev.ts'
+export { sortGeneric } from './commands/builtin/generic/sort.ts'
+export { shufGeneric } from './commands/builtin/generic/shuf.ts'
+export { stringsGeneric } from './commands/builtin/generic/strings.ts'
+export { tsortGeneric } from './commands/builtin/generic/tsort.ts'
+export { foldGeneric } from './commands/builtin/generic/fold.ts'
+export { lookGeneric } from './commands/builtin/generic/look.ts'
+export { expandGeneric } from './commands/builtin/generic/expand.ts'
+export { unexpandGeneric } from './commands/builtin/generic/unexpand.ts'
+export { md5Generic } from './commands/builtin/generic/md5.ts'
+export { columnGeneric } from './commands/builtin/generic/column.ts'
+export { pasteGeneric } from './commands/builtin/generic/paste.ts'
+export { zcatGeneric } from './commands/builtin/generic/zcat.ts'
+export { zgrepGeneric } from './commands/builtin/generic/zgrep.ts'
+export { cmpGeneric } from './commands/builtin/generic/cmp.ts'
+export { commGeneric } from './commands/builtin/generic/comm.ts'
+export { joinGeneric } from './commands/builtin/generic/join.ts'
+export { gzipGeneric } from './commands/builtin/generic/gzip.ts'
+export { gunzipGeneric } from './commands/builtin/generic/gunzip.ts'
+export { iconvGeneric } from './commands/builtin/generic/iconv.ts'
+export { sedGeneric } from './commands/builtin/generic/sed.ts'
+export { teeGeneric } from './commands/builtin/generic/tee.ts'
+export { splitGeneric } from './commands/builtin/generic/split.ts'
+export { csplitGeneric } from './commands/builtin/generic/csplit.ts'
+export { mktempGeneric } from './commands/builtin/generic/mktemp.ts'
+export { patchGeneric } from './commands/builtin/generic/patch.ts'
+export { unzipGeneric } from './commands/builtin/generic/unzip.ts'
+export { zipGeneric } from './commands/builtin/generic/zip_cmd.ts'
+export { tarGeneric } from './commands/builtin/generic/tar.ts'
+export { realpathGeneric } from './commands/builtin/generic/realpath.ts'
+export { findGeneric } from './commands/builtin/generic/find.ts'
+export { statGeneric, statProvisionGeneric } from './commands/builtin/generic/stat.ts'
+export { diffGeneric } from './commands/builtin/generic/diff.ts'
+export { duGeneric } from './commands/builtin/generic/du.ts'
+export { treeGeneric } from './commands/builtin/generic/tree.ts'
+export { lsGeneric } from './commands/builtin/generic/ls.ts'
+export { fileGeneric } from './commands/builtin/generic/file.ts'
+export { sha256sumGeneric } from './commands/builtin/generic/sha256sum.ts'
+export { jqGeneric, jqProvisionGeneric } from './commands/builtin/generic/jq.ts'
+export { grepGeneric } from './commands/builtin/generic/grep.ts'
+export { rgGeneric } from './commands/builtin/generic/rg.ts'
+export { awkGeneric } from './commands/builtin/generic/awk.ts'
+export { catGeneric, catProvisionGeneric } from './commands/builtin/generic/cat.ts'
+export { headGeneric, headProvisionGeneric } from './commands/builtin/generic/head.ts'
+export { tailGeneric } from './commands/builtin/generic/tail.ts'
+export { wcGeneric } from './commands/builtin/generic/wc.ts'
+export { readlinkGeneric } from './commands/builtin/generic/readlink.ts'
+export { headStream } from './commands/builtin/head_helper.ts'
+export { basenameFn, dirnameFn, gnuBasename, gnuDirname } from './commands/builtin/path_helper.ts'
 export { detectFileType, FILE_MIME_MAP, formatFileResult } from './commands/builtin/file_helper.ts'
 export {
   type AggregateResult,
@@ -246,7 +304,14 @@ export {
   rgMatchesFilter,
   TYPE_EXTENSIONS,
 } from './commands/builtin/rg_helper.ts'
-export { compareKeys, sortKey, type SortKeyOptions } from './commands/builtin/sort_helper.ts'
+export {
+  compareKeys,
+  parseKeyOptions,
+  sortAndDedupe,
+  sortKey,
+  splitSortLines,
+  type SortKeyOptions,
+} from './commands/builtin/sort_helper.ts'
 export { countNewlines, parseN, tailBytes } from './commands/builtin/tail_helper.ts'
 export { AsyncLineIterator } from './io/async_line_iterator.ts'
 export { readStdinAsync, resolveSource, wrapBytes } from './commands/builtin/utils/stream.ts'
@@ -264,7 +329,18 @@ export {
   parseJsonAuto,
   parseJsonPath,
 } from './core/jq/index.ts'
-export { edScript, unifiedDiff } from './commands/builtin/diff_helper.ts'
+export { DiffOpTag } from './commands/builtin/diff_types.ts'
+export { edScript, normalDiff, unifiedDiff } from './commands/builtin/diff_helper.ts'
+export {
+  AwkBlock,
+  AwkBoolOp,
+  AwkBuiltin,
+  AwkCmpOp,
+  CMP_OP_PATTERN,
+  FIELD_PREFIX,
+  PRINT_STMT,
+} from './commands/builtin/generic/awk_types.ts'
+export { awkStream } from './commands/builtin/generic/awk_helper.ts'
 export {
   executeProgram,
   executeProgram as sedExecuteProgram,
@@ -873,10 +949,6 @@ export {
   type GmailSearchRow,
 } from './core/gmail/search.ts'
 export { GMAIL_PROMPT, GMAIL_WRITE_PROMPT } from './resource/gmail/prompt.ts'
-export { catProvision } from './commands/builtin/ram/cat/cat.ts'
-export { headProvision } from './commands/builtin/ram/head/head.ts'
-export { jqProvision } from './commands/builtin/ram/jq.ts'
-export { statProvision } from './commands/builtin/ram/stat/stat.ts'
 export { loadOptionalPeer, type OptionalPeerConfig } from './utils/optional_peer.ts'
 export {
   type FieldNormalizer,

@@ -13,8 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '@struktoai/mirage-core'
+import type { OPFSAccessor } from '../../accessor/opfs.ts'
 import { writeBytes } from './write.ts'
 
-export function create(root: FileSystemDirectoryHandle, path: PathSpec): Promise<void> {
-  return writeBytes(root, path, new Uint8Array())
+export function create(accessor: OPFSAccessor, path: PathSpec): Promise<void> {
+  return writeBytes(accessor, path, new Uint8Array())
 }

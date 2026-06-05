@@ -13,20 +13,20 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { exists } from './exists.ts'
 import { unlink } from './unlink.ts'
 import { writeBytes } from './write.ts'
 
 describe('opfs/unlink', () => {
   it('removes an existing file', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/x'), new Uint8Array([1]))
-    await unlink(root, spec('/x'))
-    expect(await exists(root, spec('/x'))).toBe(false)
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/x'), new Uint8Array([1]))
+    await unlink(accessor, spec('/x'))
+    expect(await exists(accessor, spec('/x'))).toBe(false)
   })
   it('is a no-op on missing', async () => {
-    const root = makeMockRoot()
-    await expect(unlink(root, spec('/missing'))).resolves.toBeUndefined()
+    const accessor = makeMockAccessor()
+    await expect(unlink(accessor, spec('/missing'))).resolves.toBeUndefined()
   })
 })

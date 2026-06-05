@@ -13,129 +13,30 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
-  AsyncLineIterator,
-  IOResult,
-  Precision,
-  ProvisionResult,
   ResourceName,
   command,
+  headGeneric,
+  headProvisionGeneric,
   headerAggregate,
-  resolveSource,
   specOf,
-  type CommandFnResult,
-  type CommandOpts,
-  type PathSpec,
 } from '@struktoai/mirage-core'
 import { stream as redisStream } from '../../../../core/redis/stream.ts'
 import { stat as redisStat } from '../../../../core/redis/stat.ts'
 import type { RedisAccessor } from '../../../../accessor/redis.ts'
 
-const ENC = new TextEncoder()
-
-async function* headStream(
-  source: AsyncIterable<Uint8Array>,
-  lines: number,
-  bytesMode: number | null,
-): AsyncIterable<Uint8Array> {
-  if (bytesMode !== null) {
-    let remaining = bytesMode
-    for await (const chunk of source) {
-      if (chunk.byteLength <= remaining) {
-        yield chunk
-        remaining -= chunk.byteLength
-        if (remaining <= 0) return
-      } else {
-        yield chunk.slice(0, remaining)
-        return
-      }
-    }
-    return
-  }
-  let count = 0
-  const lineIter = new AsyncLineIterator(source)
-  for await (const line of lineIter) {
-    const out = new Uint8Array(line.byteLength + 1)
-    out.set(line, 0)
-    out[line.byteLength] = 0x0a
-    yield out
-    count += 1
-    if (count >= lines) return
-  }
-}
-
-async function* headMulti(
-  accessor: RedisAccessor,
-  paths: readonly PathSpec[],
-  lines: number,
-  bytesMode: number | null,
-): AsyncIterable<Uint8Array> {
-  for (let i = 0; i < paths.length; i++) {
-    const p = paths[i]
-    if (p === undefined) continue
-    if (paths.length > 1) {
-      const prefix = i > 0 ? '\n' : ''
-      yield ENC.encode(`${prefix}==> ${p.original} <==\n`)
-    }
-    const source = redisStream(accessor, p)
-    for await (const chunk of headStream(source, lines, bytesMode)) yield chunk
-  }
-}
-
-export async function headProvision(
-  accessor: RedisAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<ProvisionResult> {
-  const [first] = paths
-  if (first === undefined) return new ProvisionResult({ command: 'head' })
-  try {
-    const s = await redisStat(accessor, first)
-    const fileSize = s.size ?? 0
-    const nFlag = typeof opts.flags.n === 'string' ? Number.parseInt(opts.flags.n, 10) : null
-    const lines = nFlag !== null && Number.isFinite(nFlag) ? nFlag : 10
-    const avgLine = 80
-    const low = Math.min(lines * avgLine, fileSize)
-    return new ProvisionResult({
-      command: `head ${first.original}`,
-      networkReadLow: low,
-      networkReadHigh: fileSize,
-      readOps: 1,
-      precision: Precision.RANGE,
-    })
-  } catch {
-    return new ProvisionResult({ command: 'head' })
-  }
-}
-
-async function headCommand(
-  accessor: RedisAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const nRaw = typeof opts.flags.n === 'string' ? opts.flags.n : null
-  const cRaw = typeof opts.flags.c === 'string' ? opts.flags.c : null
-  const lineCount = nRaw !== null ? Number.parseInt(nRaw, 10) : 10
-  const byteCount = cRaw !== null ? Number.parseInt(cRaw, 10) : null
-  if (paths.length > 0) {
-    for (const p of paths) await redisStat(accessor, p)
-    return [headMulti(accessor, paths, lineCount, byteCount), new IOResult()]
-  }
-  try {
-    const source = resolveSource(opts.stdin, 'head: missing operand')
-    return [headStream(source, lineCount, byteCount), new IOResult()]
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-  }
-}
-
 export const REDIS_HEAD = command({
   name: 'head',
   resource: ResourceName.REDIS,
   spec: specOf('head'),
-  fn: headCommand,
-  provision: headProvision,
+  fn: (accessor: RedisAccessor, paths, texts, opts) =>
+    headGeneric(
+      paths,
+      texts,
+      opts,
+      (p) => redisStat(accessor, p),
+      (p) => redisStream(accessor, p),
+    ),
+  provision: (accessor: RedisAccessor, paths, texts, opts) =>
+    headProvisionGeneric(paths, texts, opts, (p) => redisStat(accessor, p)),
   aggregate: headerAggregate,
 })

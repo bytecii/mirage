@@ -73,7 +73,7 @@ describe('md5', () => {
   it('hashes stdin when no paths', async () => {
     const resource = new RAMResource()
     const data = ENC.encode('disk content')
-    const expected = md5Hex(data)
+    const expected = `${md5Hex(data)}  -`
     const r = await runMd5(resource, [], data)
     expect(r.exitCode).toBe(0)
     expect(r.out).toBe(expected)

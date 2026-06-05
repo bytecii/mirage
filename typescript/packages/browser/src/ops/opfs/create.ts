@@ -22,5 +22,5 @@ export const createOp: RegisteredOp = {
   resource: ResourceName.OPFS,
   filetype: null,
   write: true,
-  fn: (accessor: OPFSAccessor, path: PathSpec) => coreCreate(accessor.rootHandle, path),
+  fn: (accessor: OPFSAccessor, path: PathSpec) => coreCreate(accessor, path),
 }

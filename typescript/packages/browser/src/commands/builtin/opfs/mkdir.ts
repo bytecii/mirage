@@ -41,7 +41,7 @@ async function mkdirCommand(
     ]
   }
   for (const p of paths) {
-    await opfsMkdir(accessor.rootHandle, p, parents)
+    await opfsMkdir(accessor, p, parents)
   }
   return [null, new IOResult()]
 }

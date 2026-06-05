@@ -14,102 +14,15 @@
 
 import { stream as ramStream } from '../../../core/ram/stream.ts'
 import type { RAMAccessor } from '../../../accessor/ram.ts'
-import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { edScript, unifiedDiff } from '../diff_helper.ts'
-
-const ENC = new TextEncoder()
-const DEC = new TextDecoder('utf-8', { fatal: false })
-
-interface DiffFlags {
-  i: boolean
-  w: boolean
-  b: boolean
-  e: boolean
-  q: boolean
-}
-
-function splitLinesKeepEnds(text: string): string[] {
-  const lines: string[] = []
-  let start = 0
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] === '\n') {
-      lines.push(text.slice(start, i + 1))
-      start = i + 1
-    }
-  }
-  if (start < text.length) lines.push(text.slice(start))
-  return lines
-}
-
-async function readFile(accessor: RAMAccessor, p: PathSpec): Promise<Uint8Array> {
-  return materialize(ramStream(accessor, p))
-}
-
-async function diffPair(
-  accessor: RAMAccessor,
-  path1: PathSpec,
-  path2: PathSpec,
-  flags: DiffFlags,
-): Promise<Uint8Array> {
-  const dataA = await readFile(accessor, path1)
-  const dataB = await readFile(accessor, path2)
-  let textA = DEC.decode(dataA)
-  let textB = DEC.decode(dataB)
-  if (flags.i) {
-    textA = textA.toLowerCase()
-    textB = textB.toLowerCase()
-  }
-  if (flags.w) {
-    textA = textA.replace(/\s+/g, '')
-    textB = textB.replace(/\s+/g, '')
-  }
-  if (flags.b) {
-    textA = textA.replace(/[ \t]+/g, ' ')
-    textB = textB.replace(/[ \t]+/g, ' ')
-  }
-  if (flags.q) {
-    if (textA !== textB) return ENC.encode(`Files ${path1.original} and ${path2.original} differ\n`)
-    return new Uint8Array(0)
-  }
-  const aLines = splitLinesKeepEnds(textA)
-  const bLines = splitLinesKeepEnds(textB)
-  const result = flags.e
-    ? edScript(aLines, bLines)
-    : unifiedDiff(aLines, bLines, path1.original, path2.original)
-  return ENC.encode(result.join(''))
-}
-
-async function diffCommand(
-  accessor: RAMAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  if (paths.length < 2) {
-    return [null, new IOResult({ exitCode: 2, stderr: ENC.encode('diff: requires two paths\n') })]
-  }
-  const flags: DiffFlags = {
-    i: opts.flags.i === true,
-    w: opts.flags.w === true,
-    b: opts.flags.b === true,
-    e: opts.flags.e === true,
-    q: opts.flags.q === true,
-  }
-  const p0 = paths[0]
-  const p1 = paths[1]
-  if (p0 === undefined || p1 === undefined) return [null, new IOResult()]
-  const output = await diffPair(accessor, p0, p1, flags)
-  const exitCode = output.byteLength > 0 ? 1 : 0
-  const out: ByteSource = output
-  return [out, new IOResult({ exitCode, cache: [p0.stripPrefix, p1.stripPrefix] })]
-}
+import { diffGeneric } from '../generic/diff.ts'
 
 export const RAM_DIFF = command({
   name: 'diff',
   resource: ResourceName.RAM,
   spec: specOf('diff'),
-  fn: diffCommand,
+  fn: (accessor: RAMAccessor, paths, _texts, opts) =>
+    diffGeneric(paths, opts, (p) => ramStream(accessor, p)),
 })

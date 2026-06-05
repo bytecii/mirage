@@ -12,58 +12,22 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  PathSpec,
-  ResourceName,
-  command,
-  specOf,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-} from '@struktoai/mirage-core'
-import { du as redisDu } from '../../../core/redis/du.ts'
+import { ResourceName, command, duGeneric, specOf } from '@struktoai/mirage-core'
+import { du as redisDu, duAll as redisDuAll } from '../../../core/redis/du.ts'
 import type { RedisAccessor } from '../../../accessor/redis.ts'
-
-function humanSize(n: number): string {
-  const units = ['', 'K', 'M', 'G', 'T']
-  let v = n
-  let i = 0
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i += 1
-  }
-  const s = v >= 10 || i === 0 ? Math.round(v).toString() : v.toFixed(1)
-  return `${s}${units[i] ?? ''}`
-}
-
-async function duCommand(
-  accessor: RedisAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const human = opts.flags.h === true
-  const targets =
-    paths.length > 0 ? paths : [new PathSpec({ original: '/', directory: '/', resolved: false })]
-  const lines: string[] = []
-  for (const root of targets) {
-    let total = 0
-    try {
-      total = await redisDu(accessor, root)
-    } catch {
-      total = 0
-    }
-    const sizeStr = human ? humanSize(total) : String(total)
-    lines.push(`${sizeStr}\t${root.original}`)
-  }
-  const out: ByteSource = new TextEncoder().encode(lines.join('\n'))
-  return [out, new IOResult()]
-}
 
 export const REDIS_DU = command({
   name: 'du',
   resource: ResourceName.REDIS,
   spec: specOf('du'),
-  fn: duCommand,
+  fn: (accessor: RedisAccessor, paths, _texts, opts) =>
+    duGeneric(
+      paths,
+      opts,
+      (p) => redisDu(accessor, p),
+      async (p) => {
+        const { entries, total } = await redisDuAll(accessor, p)
+        return [entries, total]
+      },
+    ),
 })

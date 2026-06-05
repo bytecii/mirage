@@ -13,20 +13,20 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { exists } from './exists.ts'
 import { mkdir } from './mkdir.ts'
 import { rmdir } from './rmdir.ts'
 
 describe('opfs/rmdir', () => {
   it('removes an empty directory', async () => {
-    const root = makeMockRoot()
-    await mkdir(root, spec('/d'))
-    await rmdir(root, spec('/d'))
-    expect(await exists(root, spec('/d'))).toBe(false)
+    const accessor = makeMockAccessor()
+    await mkdir(accessor, spec('/d'))
+    await rmdir(accessor, spec('/d'))
+    expect(await exists(accessor, spec('/d'))).toBe(false)
   })
   it('is a no-op on missing', async () => {
-    const root = makeMockRoot()
-    await expect(rmdir(root, spec('/missing'))).resolves.toBeUndefined()
+    const accessor = makeMockAccessor()
+    await expect(rmdir(accessor, spec('/missing'))).resolves.toBeUndefined()
   })
 })

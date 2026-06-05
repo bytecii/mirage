@@ -13,13 +13,15 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { type PathSpec, record, ResourceName } from '@struktoai/mirage-core'
+import type { OPFSAccessor } from '../../accessor/opfs.ts'
 import { resolveFileHandle, toWritableChunk } from './utils.ts'
 
 export async function appendBytes(
-  root: FileSystemDirectoryHandle,
+  accessor: OPFSAccessor,
   p: PathSpec,
   data: Uint8Array,
 ): Promise<void> {
+  const root = accessor.rootHandle
   const start = performance.now()
   const virtual = p.stripPrefix
   const handle = await resolveFileHandle(root, virtual, { create: true })

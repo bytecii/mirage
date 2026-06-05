@@ -13,15 +13,15 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { create } from './create.ts'
 import { read } from './read.ts'
 
 describe('opfs/create', () => {
   it('creates an empty file', async () => {
-    const root = makeMockRoot()
-    await create(root, spec('/empty'))
-    const data = await read(root, spec('/empty'))
+    const accessor = makeMockAccessor()
+    await create(accessor, spec('/empty'))
+    const data = await read(accessor, spec('/empty'))
     expect(data.byteLength).toBe(0)
   })
 })

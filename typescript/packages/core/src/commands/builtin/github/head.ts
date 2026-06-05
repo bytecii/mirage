@@ -13,9 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { GitHubAccessor } from '../../../accessor/github.ts'
+import { headStream } from '../head_helper.ts'
 import { resolveGlob } from '../../../core/github/glob.ts'
 import { stream as githubStream } from '../../../core/github/read.ts'
-import { AsyncLineIterator } from '../../../io/async_line_iterator.ts'
 import { IOResult } from '../../../io/types.ts'
 import { ResourceName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
@@ -24,37 +24,6 @@ import { resolveSource } from '../utils/stream.ts'
 import { headTailProvision } from './provision.ts'
 
 const ENC = new TextEncoder()
-
-async function* headStream(
-  source: AsyncIterable<Uint8Array>,
-  lines: number,
-  bytesMode: number | null,
-): AsyncIterable<Uint8Array> {
-  if (bytesMode !== null) {
-    let remaining = bytesMode
-    for await (const chunk of source) {
-      if (chunk.byteLength <= remaining) {
-        yield chunk
-        remaining -= chunk.byteLength
-        if (remaining <= 0) return
-      } else {
-        yield chunk.slice(0, remaining)
-        return
-      }
-    }
-    return
-  }
-  let count = 0
-  const lineIter = new AsyncLineIterator(source)
-  for await (const line of lineIter) {
-    const out = new Uint8Array(line.byteLength + 1)
-    out.set(line, 0)
-    out[line.byteLength] = 0x0a
-    yield out
-    count += 1
-    if (count >= lines) return
-  }
-}
 
 async function headCommand(
   accessor: GitHubAccessor,

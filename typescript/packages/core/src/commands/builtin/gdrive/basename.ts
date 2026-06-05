@@ -12,34 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { GDriveAccessor } from '../../../accessor/gdrive.ts'
-import { IOResult, type ByteSource } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-
-const ENC = new TextEncoder()
-
-function basenameOf(p: string): string {
-  const trimmed = p.replace(/\/+$/, '')
-  const idx = trimmed.lastIndexOf('/')
-  return idx === -1 ? trimmed : trimmed.slice(idx + 1)
-}
-
-function basenameCommand(
-  _accessor: GDriveAccessor,
-  _paths: PathSpec[],
-  texts: string[],
-  _opts: CommandOpts,
-): CommandFnResult {
-  const lines = texts.map((t) => basenameOf(t))
-  const out: ByteSource = ENC.encode(lines.join('\n') + '\n')
-  return [out, new IOResult()]
-}
+import { basenameFn } from '../path_helper.ts'
 
 export const GDRIVE_BASENAME = command({
   name: 'basename',
   resource: ResourceName.GDRIVE,
   spec: specOf('basename'),
-  fn: basenameCommand,
+  fn: basenameFn,
 })

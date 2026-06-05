@@ -13,9 +13,11 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '@struktoai/mirage-core'
+import type { OPFSAccessor } from '../../accessor/opfs.ts'
 import { isNotFound, iterEntries, norm, resolveDirHandle } from './utils.ts'
 
-export async function readdir(root: FileSystemDirectoryHandle, path: PathSpec): Promise<string[]> {
+export async function readdir(accessor: OPFSAccessor, path: PathSpec): Promise<string[]> {
+  const root = accessor.rootHandle
   const virtual = path.pattern !== null ? path.directory : path.stripPrefix
   let dir: FileSystemDirectoryHandle
   try {

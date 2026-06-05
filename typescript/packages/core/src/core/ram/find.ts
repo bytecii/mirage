@@ -48,7 +48,7 @@ export function find(
 ): Promise<string[]> {
   const p = norm(path.stripPrefix)
   const prefix = p.replace(/\/+$/, '') + '/'
-  const baseDepth = (p.match(/\//g) ?? []).length
+  const baseDepth = p === '/' ? 0 : (p.match(/\//g) ?? []).length
   const results: string[] = []
   const candidates: [string, 'f' | 'd'][] = []
   if (options.type !== 'd') {

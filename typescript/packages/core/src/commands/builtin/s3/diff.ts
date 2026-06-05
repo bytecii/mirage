@@ -19,7 +19,7 @@ import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { ResourceName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { edScript, unifiedDiff } from '../diff_helper.ts'
+import { edScript, normalDiff, unifiedDiff } from '../diff_helper.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { fatal: false })
@@ -30,6 +30,7 @@ interface DiffFlags {
   b: boolean
   e: boolean
   q: boolean
+  u: boolean
 }
 
 function splitLinesKeepEnds(text: string): string[] {
@@ -72,9 +73,10 @@ async function diffPair(
   }
   const aLines = splitLinesKeepEnds(textA)
   const bLines = splitLinesKeepEnds(textB)
-  const result = flags.e
-    ? edScript(aLines, bLines)
-    : unifiedDiff(aLines, bLines, path1.original, path2.original)
+  let result: string[]
+  if (flags.e) result = edScript(aLines, bLines)
+  else if (flags.u) result = unifiedDiff(aLines, bLines, path1.original, path2.original)
+  else result = normalDiff(aLines, bLines)
   return ENC.encode(result.join(''))
 }
 
@@ -100,6 +102,7 @@ async function diffCommand(
     b: opts.flags.b === true,
     e: opts.flags.e === true,
     q: opts.flags.q === true,
+    u: opts.flags.u === true,
   }
   const p0 = resolved[0]
   const p1 = resolved[1]

@@ -13,13 +13,11 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '@struktoai/mirage-core'
+import type { OPFSAccessor } from '../../accessor/opfs.ts'
 import { isNotFound, resolveFileHandle, toWritableChunk } from './utils.ts'
 
-export async function copy(
-  root: FileSystemDirectoryHandle,
-  src: PathSpec,
-  dst: PathSpec,
-): Promise<void> {
+export async function copy(accessor: OPFSAccessor, src: PathSpec, dst: PathSpec): Promise<void> {
+  const root = accessor.rootHandle
   let srcHandle: FileSystemFileHandle
   try {
     srcHandle = await resolveFileHandle(root, src.stripPrefix, { create: false })

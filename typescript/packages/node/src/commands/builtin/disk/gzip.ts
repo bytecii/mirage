@@ -12,101 +12,23 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  PathSpec,
-  ResourceName,
-  command,
-  gunzip,
-  gzip,
-  materialize,
-  resolveSource,
-  specOf,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-} from '@struktoai/mirage-core'
-import { unlink as diskUnlink } from '../../../core/disk/unlink.ts'
-import { writeBytes as diskWrite } from '../../../core/disk/write.ts'
-import { stream as diskStream } from '../../../core/disk/stream.ts'
+import { ResourceName, command, specOf, gzipGeneric } from '@struktoai/mirage-core'
 import type { DiskAccessor } from '../../../accessor/disk.ts'
-
-const ENC = new TextEncoder()
-
-function makePathSpec(original: string): PathSpec {
-  return new PathSpec({ original, directory: original, resolved: true })
-}
-
-async function gzipCommand(
-  accessor: DiskAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const decompress = opts.flags.d === true
-  const keep = opts.flags.k === true
-  const stdoutMode = opts.flags.c === true
-
-  if (paths.length === 0) {
-    let source: AsyncIterable<Uint8Array>
-    try {
-      source = resolveSource(opts.stdin, 'gzip: missing input')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
-    const data = await materialize(source)
-    const out = decompress ? await gunzip(data) : await gzip(data)
-    const result: ByteSource = out
-    return [result, new IOResult()]
-  }
-
-  if (stdoutMode) {
-    const chunks: Uint8Array[] = []
-    for (const p of paths) {
-      const raw = await materialize(diskStream(accessor, p))
-      const out = decompress ? await gunzip(raw) : await gzip(raw)
-      chunks.push(out)
-    }
-    return [concat(chunks), new IOResult()]
-  }
-
-  const writes: Record<string, Uint8Array> = {}
-  for (const p of paths) {
-    const raw = await materialize(diskStream(accessor, p))
-    const pStripped = p.stripPrefix
-    let outPath: string
-    let outData: Uint8Array
-    if (decompress) {
-      outPath = pStripped.endsWith('.gz') ? pStripped.slice(0, -3) : pStripped + '.out'
-      outData = await gunzip(raw)
-    } else {
-      outPath = pStripped + '.gz'
-      outData = await gzip(raw)
-    }
-    await diskWrite(accessor, makePathSpec(outPath), outData)
-    writes[outPath] = outData
-    if (!keep) await diskUnlink(accessor, p)
-  }
-  return [null, new IOResult({ writes })]
-}
-
-function concat(chunks: Uint8Array[]): Uint8Array {
-  let total = 0
-  for (const c of chunks) total += c.byteLength
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const c of chunks) {
-    out.set(c, offset)
-    offset += c.byteLength
-  }
-  return out
-}
+import { stream as diskStream } from '../../../core/disk/stream.ts'
+import { writeBytes as diskWrite } from '../../../core/disk/write.ts'
+import { unlink as diskUnlink } from '../../../core/disk/unlink.ts'
 
 export const DISK_GZIP = command({
   name: 'gzip',
   resource: ResourceName.DISK,
   spec: specOf('gzip'),
-  fn: gzipCommand,
+  fn: (accessor: DiskAccessor, paths, _texts, opts) =>
+    gzipGeneric(
+      paths,
+      opts,
+      (p) => diskStream(accessor, p),
+      (p, d) => diskWrite(accessor, p, d),
+      (p) => diskUnlink(accessor, p),
+    ),
   write: true,
 })

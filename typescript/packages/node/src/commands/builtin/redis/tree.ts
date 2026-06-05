@@ -12,78 +12,20 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  PathSpec,
-  ResourceName,
-  command,
-  specOf,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-} from '@struktoai/mirage-core'
+import { ResourceName, command, specOf, treeGeneric } from '@struktoai/mirage-core'
 import { readdir as redisReaddir } from '../../../core/redis/readdir.ts'
+import { stat as redisStat } from '../../../core/redis/stat.ts'
 import type { RedisAccessor } from '../../../accessor/redis.ts'
-
-async function walkTree(
-  accessor: RedisAccessor,
-  path: PathSpec,
-  prefix: string,
-  lines: string[],
-): Promise<void> {
-  let entries: string[]
-  try {
-    entries = await redisReaddir(accessor, path)
-  } catch {
-    return
-  }
-  entries.sort()
-  for (let i = 0; i < entries.length; i++) {
-    const childPath = entries[i]
-    if (childPath === undefined) continue
-    const last = i === entries.length - 1
-    const connector = last ? '└── ' : '├── '
-    const displayName = childPath.slice(childPath.lastIndexOf('/') + 1)
-    lines.push(`${prefix}${connector}${displayName}`)
-    const sub = new PathSpec({
-      original: childPath,
-      directory: childPath,
-      resolved: false,
-      prefix: path.prefix,
-    })
-    const nextPrefix = prefix + (last ? '    ' : '│   ')
-    await walkTree(accessor, sub, nextPrefix, lines)
-  }
-}
-
-async function treeCommand(
-  accessor: RedisAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const targets =
-    paths.length > 0
-      ? paths
-      : [
-          new PathSpec({
-            original: opts.cwd,
-            directory: opts.cwd,
-            resolved: false,
-            prefix: opts.mountPrefix ?? '',
-          }),
-        ]
-  const lines: string[] = []
-  for (const p of targets) {
-    await walkTree(accessor, p, '', lines)
-  }
-  const out: ByteSource = new TextEncoder().encode(lines.join('\n'))
-  return [out, new IOResult()]
-}
 
 export const REDIS_TREE = command({
   name: 'tree',
   resource: ResourceName.REDIS,
   spec: specOf('tree'),
-  fn: treeCommand,
+  fn: (accessor: RedisAccessor, paths, _texts, opts) =>
+    treeGeneric(
+      paths,
+      opts,
+      (p) => redisReaddir(accessor, p),
+      (p) => redisStat(accessor, p),
+    ),
 })

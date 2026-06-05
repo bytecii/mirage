@@ -12,78 +12,20 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  PathSpec,
-  ResourceName,
-  command,
-  specOf,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-} from '@struktoai/mirage-core'
+import { ResourceName, command, specOf, treeGeneric } from '@struktoai/mirage-core'
 import { readdir as opfsReaddir } from '../../../core/opfs/readdir.ts'
+import { stat as opfsStat } from '../../../core/opfs/stat.ts'
 import type { OPFSAccessor } from '../../../accessor/opfs.ts'
-
-async function walkTree(
-  accessor: OPFSAccessor,
-  path: PathSpec,
-  prefix: string,
-  lines: string[],
-): Promise<void> {
-  let entries: string[]
-  try {
-    entries = await opfsReaddir(accessor.rootHandle, path)
-  } catch {
-    return
-  }
-  entries.sort()
-  for (let i = 0; i < entries.length; i++) {
-    const childPath = entries[i]
-    if (childPath === undefined) continue
-    const last = i === entries.length - 1
-    const connector = last ? '└── ' : '├── '
-    const displayName = childPath.slice(childPath.lastIndexOf('/') + 1)
-    lines.push(`${prefix}${connector}${displayName}`)
-    const sub = new PathSpec({
-      original: childPath,
-      directory: childPath,
-      resolved: false,
-      prefix: path.prefix,
-    })
-    const nextPrefix = prefix + (last ? '    ' : '│   ')
-    await walkTree(accessor, sub, nextPrefix, lines)
-  }
-}
-
-async function treeCommand(
-  accessor: OPFSAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const targets =
-    paths.length > 0
-      ? paths
-      : [
-          new PathSpec({
-            original: opts.cwd,
-            directory: opts.cwd,
-            resolved: false,
-            prefix: opts.mountPrefix ?? '',
-          }),
-        ]
-  const lines: string[] = []
-  for (const p of targets) {
-    await walkTree(accessor, p, '', lines)
-  }
-  const out: ByteSource = new TextEncoder().encode(lines.join('\n'))
-  return [out, new IOResult()]
-}
 
 export const OPFS_TREE = command({
   name: 'tree',
   resource: ResourceName.OPFS,
   spec: specOf('tree'),
-  fn: treeCommand,
+  fn: (accessor: OPFSAccessor, paths, _texts, opts) =>
+    treeGeneric(
+      paths,
+      opts,
+      (p) => opfsReaddir(accessor, p),
+      (p) => opfsStat(accessor, p),
+    ),
 })

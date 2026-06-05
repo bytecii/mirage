@@ -12,42 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  ResourceName,
-  command,
-  specOf,
-  type Accessor,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-  type PathSpec,
-} from '@struktoai/mirage-core'
-
-const ENC = new TextEncoder()
-
-function dirnameOf(p: string): string {
-  const trimmed = p.replace(/\/+$/, '')
-  const idx = trimmed.lastIndexOf('/')
-  if (idx === -1) return '.'
-  if (idx === 0) return '/'
-  return trimmed.slice(0, idx)
-}
-
-function dirnameCommand(
-  _accessor: Accessor,
-  _paths: PathSpec[],
-  texts: string[],
-  _opts: CommandOpts,
-): CommandFnResult {
-  const lines = texts.map((t) => dirnameOf(t))
-  const out: ByteSource = ENC.encode(lines.join('\n') + '\n')
-  return [out, new IOResult()]
-}
+import { ResourceName, command, specOf, dirnameFn } from '@struktoai/mirage-core'
 
 export const EMAIL_DIRNAME = command({
   name: 'dirname',
   resource: ResourceName.EMAIL,
   spec: specOf('dirname'),
-  fn: dirnameCommand,
+  fn: dirnameFn,
 })

@@ -44,8 +44,8 @@ async function cpCommand(
   const dst = paths[paths.length - 1]
   if (dst === undefined) return [null, new IOResult()]
   for (const src of sources) {
-    const data = await opfsRead(accessor.rootHandle, src)
-    await opfsWrite(accessor.rootHandle, dst, data)
+    const data = await opfsRead(accessor, src)
+    await opfsWrite(accessor, dst, data)
   }
   return [null, new IOResult()]
 }

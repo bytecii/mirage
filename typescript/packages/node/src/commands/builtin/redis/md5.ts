@@ -12,44 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  ResourceName,
-  command,
-  materialize,
-  md5Hex,
-  specOf,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-  type PathSpec,
-} from '@struktoai/mirage-core'
-import { read as redisRead } from '../../../core/redis/read.ts'
+import { ResourceName, command, specOf, md5Generic } from '@struktoai/mirage-core'
 import type { RedisAccessor } from '../../../accessor/redis.ts'
+import { stream as redisStream } from '../../../core/redis/stream.ts'
 
-async function md5Command(
-  accessor: RedisAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const lines: string[] = []
-  if (paths.length > 0) {
-    for (const p of paths) {
-      const data = await redisRead(accessor, p)
-      lines.push(`${md5Hex(data)}  ${p.original}`)
-    }
-  } else if (opts.stdin !== null) {
-    const data = await materialize(opts.stdin)
-    lines.push(md5Hex(data))
-  }
-  const out: ByteSource = new TextEncoder().encode(lines.join('\n'))
-  return [out, new IOResult()]
-}
-
-export const RAM_MD5 = command({
+export const REDIS_MD5 = command({
   name: 'md5',
   resource: ResourceName.REDIS,
   spec: specOf('md5'),
-  fn: md5Command,
+  fn: (accessor: RedisAccessor, paths, _texts, opts) =>
+    md5Generic(paths, opts, (p) => redisStream(accessor, p)),
 })

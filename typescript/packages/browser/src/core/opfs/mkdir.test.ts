@@ -13,28 +13,28 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { exists } from './exists.ts'
 import { mkdir } from './mkdir.ts'
 
 describe('opfs/mkdir', () => {
   it('creates a single directory', async () => {
-    const root = makeMockRoot()
-    await mkdir(root, spec('/d'))
-    expect(await exists(root, spec('/d'))).toBe(true)
+    const accessor = makeMockAccessor()
+    await mkdir(accessor, spec('/d'))
+    expect(await exists(accessor, spec('/d'))).toBe(true)
   })
   it('throws when parent does not exist and parents=false', async () => {
-    const root = makeMockRoot()
-    await expect(mkdir(root, spec('/a/b'))).rejects.toThrow(/parent directory does not exist/)
+    const accessor = makeMockAccessor()
+    await expect(mkdir(accessor, spec('/a/b'))).rejects.toThrow(/parent directory does not exist/)
   })
   it('creates nested directories with parents=true', async () => {
-    const root = makeMockRoot()
-    await mkdir(root, spec('/a/b/c'), true)
-    expect(await exists(root, spec('/a/b/c'))).toBe(true)
+    const accessor = makeMockAccessor()
+    await mkdir(accessor, spec('/a/b/c'), true)
+    expect(await exists(accessor, spec('/a/b/c'))).toBe(true)
   })
   it('is a no-op when directory already exists', async () => {
-    const root = makeMockRoot()
-    await mkdir(root, spec('/d'))
-    await expect(mkdir(root, spec('/d'))).resolves.toBeUndefined()
+    const accessor = makeMockAccessor()
+    await mkdir(accessor, spec('/d'))
+    await expect(mkdir(accessor, spec('/d'))).resolves.toBeUndefined()
   })
 })

@@ -12,60 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { stream as ramStream } from '../../../core/ram/stream.ts'
 import type { RAMAccessor } from '../../../accessor/ram.ts'
-import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { stream as ramStream } from '../../../core/ram/stream.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
+import { lookGeneric } from '../generic/look.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { readStdinAsync } from '../utils/stream.ts'
-
-const ENC = new TextEncoder()
-const DEC = new TextDecoder('utf-8', { fatal: false })
-
-function splitLinesNoTrailing(text: string): string[] {
-  const stripped = text.endsWith('\n') ? text.slice(0, -1) : text
-  return stripped === '' ? [] : stripped.split('\n')
-}
-
-async function lookCommand(
-  accessor: RAMAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  if (texts.length === 0) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('look: missing prefix\n') })]
-  }
-  const prefix = texts[0] ?? ''
-  const caseInsensitive = opts.flags.f === true
-  let raw: Uint8Array
-  if (paths.length > 0) {
-    const first = paths[0]
-    if (first === undefined) return [null, new IOResult()]
-    raw = await materialize(ramStream(accessor, first))
-  } else {
-    const stdinData = await readStdinAsync(opts.stdin)
-    if (stdinData === null) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('look: missing input\n') })]
-    }
-    raw = stdinData
-  }
-  const lines = splitLinesNoTrailing(DEC.decode(raw))
-  const cmpPrefix = caseInsensitive ? prefix.toLowerCase() : prefix
-  const matched: string[] = []
-  for (const line of lines) {
-    const cmpLine = caseInsensitive ? line.toLowerCase() : line
-    if (cmpLine.startsWith(cmpPrefix)) matched.push(line)
-  }
-  if (matched.length === 0) return [null, new IOResult({ exitCode: 1 })]
-  const result: ByteSource = ENC.encode(matched.join('\n') + '\n')
-  return [result, new IOResult()]
-}
 
 export const RAM_LOOK = command({
   name: 'look',
   resource: ResourceName.RAM,
   spec: specOf('look'),
-  fn: lookCommand,
+  fn: (accessor: RAMAccessor, paths, texts, opts) =>
+    lookGeneric(paths, texts, opts, (p) => ramStream(accessor, p)),
 })

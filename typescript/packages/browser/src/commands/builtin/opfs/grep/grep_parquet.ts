@@ -43,7 +43,7 @@ async function grepParquetCommand(
   const pattern = texts[0] ?? ''
   const ignoreCase = opts.flags.i === true
   try {
-    const raw = await materialize(opfsStream(accessor.rootHandle, first))
+    const raw = await materialize(opfsStream(accessor, first))
     const result = await parquetGrep(raw, pattern, ignoreCase)
     const out: ByteSource = result
     return [out, new IOResult({ cache: [first.stripPrefix] })]

@@ -12,92 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { stream as ramStream } from '../../../core/ram/stream.ts'
 import type { RAMAccessor } from '../../../accessor/ram.ts'
-import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { stream as ramStream } from '../../../core/ram/stream.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
+import { sortGeneric } from '../generic/sort.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { compareKeys, sortKey, type SortKeyOptions } from '../sort_helper.ts'
-import { readStdinAsync } from '../utils/stream.ts'
-
-const ENC = new TextEncoder()
-const DEC = new TextDecoder('utf-8', { fatal: false })
-
-function parseKeyOptions(flags: Record<string, string | boolean>): SortKeyOptions {
-  return {
-    keyField: typeof flags.k === 'string' ? Number.parseInt(flags.k, 10) : null,
-    fieldSep: typeof flags.t === 'string' ? flags.t : null,
-    ignoreCase: flags.f === true,
-    numeric: flags.n === true,
-    humanNumeric: flags.h === true,
-    version: flags.V === true,
-    month: flags.M === true,
-  }
-}
-
-function sortAndDedupe(
-  lines: string[],
-  opts: SortKeyOptions,
-  reverse: boolean,
-  unique: boolean,
-): string[] {
-  const keyed = lines.map((l) => ({ l, k: sortKey(l, opts) }))
-  keyed.sort((a, b) => compareKeys(a.k, b.k))
-  let sorted = keyed.map((x) => x.l)
-  if (reverse) sorted.reverse()
-  if (unique) {
-    const seen = new Set<string>()
-    sorted = sorted.filter((l) => {
-      if (seen.has(l)) return false
-      seen.add(l)
-      return true
-    })
-  }
-  return sorted
-}
-
-function splitLinesNoEnds(text: string): string[] {
-  if (text === '') return []
-  const stripped = text.endsWith('\n') ? text.slice(0, -1) : text
-  return stripped.split('\n')
-}
-
-async function readFile(accessor: RAMAccessor, p: PathSpec): Promise<Uint8Array> {
-  return materialize(ramStream(accessor, p))
-}
-
-async function sortCommand(
-  accessor: RAMAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const keyOpts = parseKeyOptions(opts.flags)
-  const reverse = opts.flags.r === true
-  const unique = opts.flags.u === true
-  let allLines: string[] = []
-  if (paths.length > 0) {
-    for (const p of paths) {
-      const data = DEC.decode(await readFile(accessor, p))
-      allLines = allLines.concat(splitLinesNoEnds(data))
-    }
-  } else {
-    const raw = await readStdinAsync(opts.stdin)
-    if (raw === null) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('sort: missing operand\n') })]
-    }
-    allLines = splitLinesNoEnds(DEC.decode(raw))
-  }
-  const sorted = sortAndDedupe(allLines, keyOpts, reverse, unique)
-  const output = sorted.join('\n')
-  const out: ByteSource = output === '' ? new Uint8Array(0) : ENC.encode(output + '\n')
-  return [out, new IOResult()]
-}
 
 export const RAM_SORT = command({
   name: 'sort',
   resource: ResourceName.RAM,
   spec: specOf('sort'),
-  fn: sortCommand,
+  fn: (accessor: RAMAccessor, paths, _texts, opts) =>
+    sortGeneric(paths, opts, (p) => ramStream(accessor, p)),
 })

@@ -22,5 +22,5 @@ export const readOp: RegisteredOp = {
   resource: ResourceName.OPFS,
   filetype: null,
   write: false,
-  fn: (accessor: OPFSAccessor, path: PathSpec) => coreRead(accessor.rootHandle, path),
+  fn: (accessor: OPFSAccessor, path: PathSpec) => coreRead(accessor, path),
 }

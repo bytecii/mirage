@@ -13,23 +13,20 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { OPFSAccessor } from '../../accessor/opfs.ts'
 import { exists } from '../../core/opfs/exists.ts'
 import { mkdir } from '../../core/opfs/mkdir.ts'
-import { fakeOPFSResource, makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { rmdirOp } from './rmdir.ts'
 
 describe('rmdirOp (opfs)', () => {
   it('removes an empty directory', async () => {
-    const root = makeMockRoot()
-    await mkdir(root, spec('/d'))
-    await rmdirOp.fn(new OPFSAccessor(fakeOPFSResource(root)), spec('/d'), [], {})
-    expect(await exists(root, spec('/d'))).toBe(false)
+    const accessor = makeMockAccessor()
+    await mkdir(accessor, spec('/d'))
+    await rmdirOp.fn(accessor, spec('/d'), [], {})
+    expect(await exists(accessor, spec('/d'))).toBe(false)
   })
   it('is a no-op on missing', async () => {
-    const root = makeMockRoot()
-    await expect(
-      rmdirOp.fn(new OPFSAccessor(fakeOPFSResource(root)), spec('/missing'), [], {}),
-    ).resolves.toBeUndefined()
+    const accessor = makeMockAccessor()
+    await expect(rmdirOp.fn(accessor, spec('/missing'), [], {})).resolves.toBeUndefined()
   })
 })

@@ -94,25 +94,32 @@ async function jqCommand(
       return [evalJsonlStream(s3Stream(accessor, first), expression), new IOResult()]
     }
     const outputs: Uint8Array[] = []
+    const spread = expression.includes('[]')
     for (const p of resolved) {
       const bytes = await s3Read(accessor, p)
       let data = parseJsonPath(bytes, p.original)
-      if (slurp) data = Array.isArray(data) ? data : [data]
+      if (isJsonlPath(p.original) && Array.isArray(data) && !slurp) {
+        for (const item of data) {
+          const result = await jqEval(item, expression.trim())
+          outputs.push(formatJqOutput(result, raw, compact, spread))
+        }
+        continue
+      }
+      if (slurp && !Array.isArray(data)) data = [data]
       const result = await jqEval(data, expression.trim())
-      const spread = expression.includes('[]')
       outputs.push(formatJqOutput(result, raw, compact, spread))
     }
     const out: ByteSource = concatBytes(outputs)
     return [out, new IOResult()]
   }
 
-  const bytes = await readStdinAsync(opts.stdin)
-  if (bytes === null) return [null, new IOResult()]
-  let data = parseJsonAuto(bytes)
-  if (slurp && !Array.isArray(data)) data = [data]
-  const result = await jqEval(data, expression.trim())
-  const spread = expression.includes('[]')
-  return [formatJqOutput(result, raw, compact, spread), new IOResult()]
+  const stdinBytes = await readStdinAsync(opts.stdin)
+  if (stdinBytes === null) return [null, new IOResult()]
+  let stdinData = parseJsonAuto(stdinBytes)
+  if (slurp && !Array.isArray(stdinData)) stdinData = [stdinData]
+  const stdinResult = await jqEval(stdinData, expression.trim())
+  const stdinSpread = expression.includes('[]')
+  return [formatJqOutput(stdinResult, raw, compact, stdinSpread), new IOResult()]
 }
 
 export const S3_JQ = command({

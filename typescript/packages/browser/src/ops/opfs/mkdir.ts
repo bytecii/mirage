@@ -22,5 +22,5 @@ export const mkdirOp: RegisteredOp = {
   resource: ResourceName.OPFS,
   filetype: null,
   write: true,
-  fn: (accessor: OPFSAccessor, path: PathSpec) => coreMkdir(accessor.rootHandle, path, true),
+  fn: (accessor: OPFSAccessor, path: PathSpec) => coreMkdir(accessor, path, true),
 }

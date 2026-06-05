@@ -41,7 +41,7 @@ async function catFeatherCommand(
   const first = paths[0]
   if (first === undefined) return [null, new IOResult()]
   try {
-    const raw = await materialize(opfsStream(accessor.rootHandle, first))
+    const raw = await materialize(opfsStream(accessor, first))
     const result = featherCat(raw)
     const out: ByteSource = result
     return [

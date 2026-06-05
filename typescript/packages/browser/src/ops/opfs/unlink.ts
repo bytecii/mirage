@@ -22,5 +22,5 @@ export const unlinkOp: RegisteredOp = {
   resource: ResourceName.OPFS,
   filetype: null,
   write: true,
-  fn: (accessor: OPFSAccessor, path: PathSpec) => coreUnlink(accessor.rootHandle, path),
+  fn: (accessor: OPFSAccessor, path: PathSpec) => coreUnlink(accessor, path),
 }

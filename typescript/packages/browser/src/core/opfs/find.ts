@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '@struktoai/mirage-core'
+import type { OPFSAccessor } from '../../accessor/opfs.ts'
 import { isNotFound, iterEntries, norm, resolveDirHandle } from './utils.ts'
 
 export interface FindOptions {
@@ -166,10 +167,11 @@ async function walk(
 }
 
 export async function find(
-  root: FileSystemDirectoryHandle,
+  accessor: OPFSAccessor,
   p: PathSpec,
   options: FindOptions = {},
 ): Promise<string[]> {
+  const root = accessor.rootHandle
   const virtual = norm(p.stripPrefix)
   const results: string[] = []
   let dir: FileSystemDirectoryHandle

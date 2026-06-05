@@ -32,7 +32,6 @@ async function lsEntries(
   allFiles: boolean,
   sortBy: 'name' | 'time' | 'size',
   reverse: boolean,
-  recursive: boolean,
   listDir: boolean,
   warnings: string[],
   indexCache: CommandOpts['index'],
@@ -76,35 +75,72 @@ async function lsEntries(
     stats.sort((a, b) => a.name.localeCompare(b.name))
     if (reverse) stats.reverse()
   }
-  if (recursive) {
-    const subEntries: FileStat[] = []
-    for (const s of stats) {
-      subEntries.push(s)
-      if (s.type === FileType.DIRECTORY) {
-        const entryPath = path.child(s.name)
-        const entrySpec = new PathSpec({
-          original: entryPath,
-          directory: entryPath,
-          resolved: false,
-          prefix: path.prefix,
-        })
-        const sub = await lsEntries(
-          accessor,
-          entrySpec,
-          allFiles,
-          sortBy,
-          reverse,
-          recursive,
-          false,
-          warnings,
-          indexCache,
-        )
-        subEntries.push(...sub)
-      }
-    }
-    return subEntries
-  }
   return stats
+}
+
+async function walkGrouped(
+  accessor: S3Accessor,
+  path: PathSpec,
+  allFiles: boolean,
+  sortBy: 'name' | 'time' | 'size',
+  reverse: boolean,
+  groups: [PathSpec, FileStat[]][],
+  warnings: string[],
+  indexCache: CommandOpts['index'],
+): Promise<void> {
+  const here = await lsEntries(
+    accessor,
+    path,
+    allFiles,
+    sortBy,
+    reverse,
+    false,
+    warnings,
+    indexCache,
+  )
+  groups.push([path, here])
+  for (const s of here) {
+    if (s.type === FileType.DIRECTORY) {
+      const entryPath = path.child(s.name)
+      const entrySpec = new PathSpec({
+        original: entryPath,
+        directory: entryPath,
+        resolved: false,
+        prefix: path.prefix,
+      })
+      await walkGrouped(
+        accessor,
+        entrySpec,
+        allFiles,
+        sortBy,
+        reverse,
+        groups,
+        warnings,
+        indexCache,
+      )
+    }
+  }
+}
+
+function formatEntries(
+  entries: readonly FileStat[],
+  results: string[],
+  long: boolean,
+  human: boolean,
+  classify: boolean,
+): void {
+  if (long) {
+    for (const e of entries) {
+      const sizeStr = human ? humanSize(e.size ?? 0) : String(e.size ?? 0)
+      results.push(`${e.type ?? '-'}\t${sizeStr}\t${e.modified ?? ''}\t${e.name}`)
+    }
+  } else {
+    for (const e of entries) {
+      const isDir = classify && e.type === FileType.DIRECTORY
+      const name = isDir ? e.name + '/' : e.name
+      results.push(name)
+    }
+  }
 }
 
 async function lsCommand(
@@ -136,36 +172,39 @@ async function lsCommand(
     opts.flags.t === true ? 'time' : opts.flags.S === true ? 'size' : 'name'
   const warnings: string[] = []
   const results: string[] = []
-  for (const p of targets) {
-    let entries: FileStat[]
-    try {
-      entries = await lsEntries(
-        accessor,
-        p,
-        allFiles,
-        sortBy,
-        reverse,
-        recursive,
-        listDir,
-        warnings,
-        opts.index,
-      )
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      warnings.push(`ls: cannot access '${p.original}': ${msg}`)
-      continue
+  if (recursive && !listDir) {
+    const groups: [PathSpec, FileStat[]][] = []
+    for (const p of targets) {
+      await walkGrouped(accessor, p, allFiles, sortBy, reverse, groups, warnings, opts.index)
     }
-    if (long) {
-      for (const e of entries) {
-        const sizeStr = human ? humanSize(e.size ?? 0) : String(e.size ?? 0)
-        results.push(`${e.type ?? '-'}\t${sizeStr}\t${e.modified ?? ''}\t${e.name}`)
+    for (let i = 0; i < groups.length; i++) {
+      const group = groups[i]
+      if (group === undefined) continue
+      const [dirSpec, entries] = group
+      if (i > 0) results.push('')
+      results.push(`${dirSpec.original}:`)
+      formatEntries(entries, results, long, human, classify)
+    }
+  } else {
+    for (const p of targets) {
+      let entries: FileStat[]
+      try {
+        entries = await lsEntries(
+          accessor,
+          p,
+          allFiles,
+          sortBy,
+          reverse,
+          listDir,
+          warnings,
+          opts.index,
+        )
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        warnings.push(`ls: cannot access '${p.original}': ${msg}`)
+        continue
       }
-    } else {
-      for (const e of entries) {
-        const isDir = classify && e.type === FileType.DIRECTORY
-        const name = isDir ? e.name + '/' : e.name
-        results.push(name)
-      }
+      formatEntries(entries, results, long, human, classify)
     }
   }
   const stderr = warnings.length > 0 ? ENC.encode(warnings.join('\n')) : null

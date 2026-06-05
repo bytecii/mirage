@@ -12,65 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  AsyncLineIterator,
-  IOResult,
-  ResourceName,
-  command,
-  resolveSource,
-  specOf,
-  type CommandFnResult,
-  type CommandOpts,
-  type PathSpec,
-} from '@struktoai/mirage-core'
-import { stream as opfsStream } from '../../../core/opfs/stream.ts'
+import { ResourceName, command, specOf, revGeneric } from '@struktoai/mirage-core'
 import type { OPFSAccessor } from '../../../accessor/opfs.ts'
-
-const ENC = new TextEncoder()
-const DEC = new TextDecoder('utf-8', { fatal: false })
-
-function reverseString(s: string): string {
-  return Array.from(s).reverse().join('')
-}
-
-async function* revStream(source: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
-  const iter = new AsyncLineIterator(source)
-  for await (const line of iter) {
-    yield ENC.encode(reverseString(DEC.decode(line)) + '\n')
-  }
-}
-
-async function* revMulti(
-  accessor: OPFSAccessor,
-  paths: readonly PathSpec[],
-): AsyncIterable<Uint8Array> {
-  for (const p of paths) {
-    for await (const chunk of revStream(opfsStream(accessor.rootHandle, p))) yield chunk
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/require-await
-async function revCommand(
-  accessor: OPFSAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  if (paths.length > 0) {
-    return [revMulti(accessor, paths), new IOResult()]
-  }
-  try {
-    const source = resolveSource(opts.stdin, 'rev: missing operand')
-    return [revStream(source), new IOResult()]
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-  }
-}
+import { stream as opfsStream } from '../../../core/opfs/stream.ts'
 
 export const OPFS_REV = command({
   name: 'rev',
   resource: ResourceName.OPFS,
   spec: specOf('rev'),
-  fn: revCommand,
+  fn: (accessor: OPFSAccessor, paths, _texts, opts) =>
+    revGeneric(paths, opts, (p) => opfsStream(accessor, p)),
 })

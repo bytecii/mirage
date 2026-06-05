@@ -170,6 +170,16 @@ export function translateReplacement(repl: string): string {
         i += 1
         continue
       }
+      if (next === 'n') {
+        out += '\n'
+        i += 1
+        continue
+      }
+      if (next === 't') {
+        out += '\t'
+        i += 1
+        continue
+      }
       out += next ?? ''
       i += 1
       continue

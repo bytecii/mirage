@@ -50,7 +50,7 @@ export async function find(
         const key = obj.Key
         if (key === undefined || key === pfx) continue
         const relative = key.slice(pfx.length)
-        const depth = (relative.match(/\//g) ?? []).length
+        const depth = (relative.match(/\//g) ?? []).length + 1
         if (
           options.maxDepth !== null &&
           options.maxDepth !== undefined &&

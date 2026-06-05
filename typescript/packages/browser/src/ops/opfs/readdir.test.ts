@@ -13,18 +13,15 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { OPFSAccessor } from '../../accessor/opfs.ts'
 import { writeBytes } from '../../core/opfs/write.ts'
-import { fakeOPFSResource, makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { readdirOp } from './readdir.ts'
 
 describe('readdirOp (opfs)', () => {
   it('lists entries with full virtual paths', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/b'), new Uint8Array())
-    await writeBytes(root, spec('/a'), new Uint8Array())
-    expect(await readdirOp.fn(new OPFSAccessor(fakeOPFSResource(root)), spec('/'), [], {})).toEqual(
-      ['/a', '/b'],
-    )
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/b'), new Uint8Array())
+    await writeBytes(accessor, spec('/a'), new Uint8Array())
+    expect(await readdirOp.fn(accessor, spec('/'), [], {})).toEqual(['/a', '/b'])
   })
 })

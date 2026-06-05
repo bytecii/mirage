@@ -27,6 +27,6 @@ export const renameOp: RegisteredOp = {
     if (dst === undefined || dst === null || typeof dst !== 'object' || !('original' in dst)) {
       throw new TypeError('rename op requires a PathSpec destination as the first arg')
     }
-    return coreRename(accessor.rootHandle, path, dst as PathSpec)
+    return coreRename(accessor, path, dst as PathSpec)
   },
 }

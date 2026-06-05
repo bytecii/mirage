@@ -15,7 +15,7 @@
 import type { DropboxAccessor } from '../../../accessor/dropbox.ts'
 import { resolveGlob } from '../../../core/dropbox/glob.ts'
 import { read as dropboxRead } from '../../../core/dropbox/read.ts'
-import { AsyncLineIterator } from '../../../io/async_line_iterator.ts'
+import { numberLines } from '../cat_helper.ts'
 import { IOResult } from '../../../io/types.ts'
 import { ResourceName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
@@ -24,17 +24,6 @@ import { resolveSource, wrapBytes } from '../utils/stream.ts'
 import { fileReadProvision } from './provision.ts'
 
 const ENC = new TextEncoder()
-
-async function* numberLinesStream(source: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
-  let num = 1
-  const lineIter = new AsyncLineIterator(source)
-  for await (const line of lineIter) {
-    yield ENC.encode(`     ${String(num)}\t`)
-    yield line
-    yield ENC.encode('\n')
-    num += 1
-  }
-}
 
 async function catCommand(
   accessor: DropboxAccessor,
@@ -49,12 +38,12 @@ async function catCommand(
     if (first === undefined) return [null, new IOResult()]
     const data = await dropboxRead(accessor, first, opts.index ?? undefined)
     const io = new IOResult({ reads: { [first.stripPrefix]: data }, cache: [first.stripPrefix] })
-    if (nFlag) return [numberLinesStream(wrapBytes(data)), io]
+    if (nFlag) return [numberLines(wrapBytes(data)), io]
     return [data, io]
   }
   try {
     const source = resolveSource(opts.stdin, 'cat: missing operand')
-    if (nFlag) return [numberLinesStream(source), new IOResult()]
+    if (nFlag) return [numberLines(source), new IOResult()]
     return [source, new IOResult()]
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

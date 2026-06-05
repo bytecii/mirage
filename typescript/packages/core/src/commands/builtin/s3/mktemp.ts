@@ -22,10 +22,10 @@ import { specOf } from '../../spec/builtins.ts'
 
 const ENC = new TextEncoder()
 
-function randomSuffix(): string {
+function randomSuffix(length: number): string {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
   let out = ''
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < length; i++) {
     out += chars[Math.floor(Math.random() * chars.length)] ?? ''
   }
   return out
@@ -43,15 +43,14 @@ async function mktempCommand(
 ): Promise<CommandFnResult> {
   const tFlag = opts.flags.t === true
   const parent = tFlag ? '/tmp' : typeof opts.flags.p === 'string' ? opts.flags.p : '/tmp'
-  const suffix = randomSuffix()
   const templateArg = texts[0]
   const template = templateArg !== undefined && templateArg !== '' ? templateArg : 'tmp.XXXXXXXXXX'
   const xRun = /X+$/.exec(template)
   let name: string
   if (xRun !== null) {
-    name = template.slice(0, xRun.index) + suffix
+    name = template.slice(0, xRun.index) + randomSuffix(xRun[0].length)
   } else {
-    name = `${template}.${suffix}`
+    name = `${template}.${randomSuffix(8)}`
   }
   const path = `${parent.replace(/\/+$/, '')}/${name}`
   const spec = makePathSpec(path)

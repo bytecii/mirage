@@ -12,63 +12,22 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  ResourceName,
-  command,
-  materialize,
-  readStdinAsync,
-  specOf,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-  type PathSpec,
-} from '@struktoai/mirage-core'
-import { writeBytes as redisWrite } from '../../../core/redis/write.ts'
-import { stream as redisStream } from '../../../core/redis/stream.ts'
+import { ResourceName, command, specOf, teeGeneric } from '@struktoai/mirage-core'
 import type { RedisAccessor } from '../../../accessor/redis.ts'
-
-const ENC = new TextEncoder()
-
-async function teeCommand(
-  accessor: RedisAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  if (paths.length === 0) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('tee: missing operand\n') })]
-  }
-  const first = paths[0]
-  if (first === undefined) return [null, new IOResult()]
-  const stdinData = await readStdinAsync(opts.stdin)
-  const raw: Uint8Array = stdinData ?? ENC.encode(texts.join(' '))
-  let writeData = raw
-  if (opts.flags.a === true) {
-    try {
-      const existing = await materialize(redisStream(accessor, first))
-      writeData = new Uint8Array(existing.byteLength + raw.byteLength)
-      writeData.set(existing, 0)
-      writeData.set(raw, existing.byteLength)
-    } catch (err) {
-      if (!(err instanceof Error) || !/not found/i.test(err.message)) throw err
-    }
-  }
-  await redisWrite(accessor, first, writeData)
-  const out: ByteSource = raw
-  return [
-    out,
-    new IOResult({
-      writes: { [first.stripPrefix]: writeData },
-      cache: [first.stripPrefix],
-    }),
-  ]
-}
+import { stream as redisStream } from '../../../core/redis/stream.ts'
+import { writeBytes as redisWrite } from '../../../core/redis/write.ts'
 
 export const REDIS_TEE = command({
   name: 'tee',
   resource: ResourceName.REDIS,
   spec: specOf('tee'),
-  fn: teeCommand,
+  fn: (accessor: RedisAccessor, paths, texts, opts) =>
+    teeGeneric(
+      paths,
+      texts,
+      opts,
+      (p) => redisStream(accessor, p),
+      (p, d) => redisWrite(accessor, p, d),
+    ),
   write: true,
 })

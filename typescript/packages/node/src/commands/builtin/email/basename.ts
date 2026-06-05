@@ -12,40 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  ResourceName,
-  command,
-  specOf,
-  type Accessor,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-  type PathSpec,
-} from '@struktoai/mirage-core'
-
-const ENC = new TextEncoder()
-
-function basenameOf(p: string): string {
-  const trimmed = p.replace(/\/+$/, '')
-  const idx = trimmed.lastIndexOf('/')
-  return idx === -1 ? trimmed : trimmed.slice(idx + 1)
-}
-
-function basenameCommand(
-  _accessor: Accessor,
-  _paths: PathSpec[],
-  texts: string[],
-  _opts: CommandOpts,
-): CommandFnResult {
-  const lines = texts.map((t) => basenameOf(t))
-  const out: ByteSource = ENC.encode(lines.join('\n') + '\n')
-  return [out, new IOResult()]
-}
+import { ResourceName, command, specOf, basenameFn } from '@struktoai/mirage-core'
 
 export const EMAIL_BASENAME = command({
   name: 'basename',
   resource: ResourceName.EMAIL,
   spec: specOf('basename'),
-  fn: basenameCommand,
+  fn: basenameFn,
 })

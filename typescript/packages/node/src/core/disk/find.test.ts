@@ -56,7 +56,7 @@ describe('core/disk/find', () => {
   })
 
   it('respects maxDepth', async () => {
-    const out = await find(accessor, spec('/'), { maxDepth: 0, type: 'f' })
+    const out = await find(accessor, spec('/'), { maxDepth: 1, type: 'f' })
     expect(out).toEqual(['/a.json', '/b.txt'])
   })
 

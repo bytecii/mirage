@@ -39,8 +39,8 @@ async function touchCommand(
   const createOnly = opts.flags.c === true
   for (const p of paths) {
     if (createOnly) continue
-    if (!(await opfsExists(accessor.rootHandle, p))) {
-      await opfsWrite(accessor.rootHandle, p, new Uint8Array(0))
+    if (!(await opfsExists(accessor, p))) {
+      await opfsWrite(accessor, p, new Uint8Array(0))
     }
   }
   return [null, new IOResult()]

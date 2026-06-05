@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { S3Accessor } from '../../../accessor/s3.ts'
-import { AsyncLineIterator } from '../../../io/async_line_iterator.ts'
+import { numberLines } from '../cat_helper.ts'
 import { CachableAsyncIterator } from '../../../io/cachable_iterator.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { resolveGlob } from '../../../core/s3/glob.ts'
@@ -27,14 +27,11 @@ import { fileReadProvision } from './provision.ts'
 
 const ENC = new TextEncoder()
 
-async function* numberLinesStream(source: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
-  let num = 1
-  const lineIter = new AsyncLineIterator(source)
-  for await (const line of lineIter) {
-    yield ENC.encode(`     ${String(num)}\t`)
-    yield line
-    yield ENC.encode('\n')
-    num += 1
+async function* chainStreams(
+  streams: readonly AsyncIterable<Uint8Array>[],
+): AsyncIterable<Uint8Array> {
+  for (const s of streams) {
+    for await (const chunk of s) yield chunk
   }
 }
 
@@ -47,20 +44,24 @@ async function catCommand(
   const nFlag = opts.flags.n === true
   if (paths.length > 0) {
     const resolved = await resolveGlob(accessor, paths, opts.index ?? undefined)
-    const first = resolved[0]
-    if (first === undefined) return [null, new IOResult()]
-    await s3Stat(accessor, first)
-    const cachable = new CachableAsyncIterator(s3Stream(accessor, first))
-    const io = new IOResult({
-      reads: { [first.stripPrefix]: cachable },
-      cache: [first.stripPrefix],
-    })
-    const out: ByteSource = nFlag ? numberLinesStream(cachable) : cachable
-    return [out, io]
+    if (resolved.length === 0) return [null, new IOResult()]
+    for (const p of resolved) await s3Stat(accessor, p)
+    const reads: Record<string, AsyncIterable<Uint8Array>> = {}
+    const cacheKeys: string[] = []
+    const outputs: AsyncIterable<Uint8Array>[] = []
+    for (const p of resolved) {
+      const cachable = new CachableAsyncIterator(s3Stream(accessor, p))
+      reads[p.stripPrefix] = cachable
+      cacheKeys.push(p.stripPrefix)
+      outputs.push(cachable)
+    }
+    const merged = chainStreams(outputs)
+    const out: ByteSource = nFlag ? numberLines(merged) : merged
+    return [out, new IOResult({ reads, cache: cacheKeys })]
   }
   try {
     const source = resolveSource(opts.stdin, 'cat: missing operand')
-    if (nFlag) return [numberLinesStream(source), new IOResult()]
+    if (nFlag) return [numberLines(source), new IOResult()]
     return [source, new IOResult()]
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

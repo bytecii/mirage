@@ -27,6 +27,6 @@ export const appendOp: RegisteredOp = {
     if (!(data instanceof Uint8Array)) {
       throw new TypeError('append op requires a Uint8Array as the first arg')
     }
-    return coreAppend(accessor.rootHandle, path, data)
+    return coreAppend(accessor, path, data)
   },
 }

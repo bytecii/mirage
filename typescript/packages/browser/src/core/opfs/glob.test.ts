@@ -14,30 +14,30 @@
 
 import { describe, expect, it } from 'vitest'
 import { PathSpec } from '@struktoai/mirage-core'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { resolveGlob } from './glob.ts'
 import { writeBytes } from './write.ts'
 
 describe('opfs/glob.resolveGlob', () => {
   it('expands a glob into matching paths', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/a.json'), new Uint8Array())
-    await writeBytes(root, spec('/b.json'), new Uint8Array())
-    await writeBytes(root, spec('/c.txt'), new Uint8Array())
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/a.json'), new Uint8Array())
+    await writeBytes(accessor, spec('/b.json'), new Uint8Array())
+    await writeBytes(accessor, spec('/c.txt'), new Uint8Array())
     const pattern = new PathSpec({
       original: '/*.json',
       directory: '/',
       pattern: '*.json',
       resolved: false,
     })
-    const out = await resolveGlob(root, [pattern])
+    const out = await resolveGlob(accessor, [pattern])
     const originals = out.map((p) => p.original).sort()
     expect(originals).toEqual(['/a.json', '/b.json'])
   })
 
   it('passes through resolved paths unchanged', async () => {
-    const root = makeMockRoot()
-    const out = await resolveGlob(root, [spec('/x')])
+    const accessor = makeMockAccessor()
+    const out = await resolveGlob(accessor, [spec('/x')])
     expect(out.map((p) => p.original)).toEqual(['/x'])
   })
 })

@@ -13,16 +13,15 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { OPFSAccessor } from '../../accessor/opfs.ts'
 import { read } from '../../core/opfs/read.ts'
-import { fakeOPFSResource, makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { createOp } from './create.ts'
 
 describe('createOp (opfs)', () => {
   it('creates an empty file', async () => {
-    const root = makeMockRoot()
-    await createOp.fn(new OPFSAccessor(fakeOPFSResource(root)), spec('/empty'), [], {})
-    const data = await read(root, spec('/empty'))
+    const accessor = makeMockAccessor()
+    await createOp.fn(accessor, spec('/empty'), [], {})
+    const data = await read(accessor, spec('/empty'))
     expect(data.byteLength).toBe(0)
   })
 })

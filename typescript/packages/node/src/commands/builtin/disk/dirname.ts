@@ -12,35 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  ResourceName,
-  command,
-  specOf,
-  type Accessor,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-  type PathSpec,
-} from '@struktoai/mirage-core'
-
-function dirnameCommand(
-  _accessor: Accessor,
-  paths: PathSpec[],
-  texts: string[],
-  _opts: CommandOpts,
-): CommandFnResult {
-  const arg = texts[0] ?? paths[0]?.original ?? ''
-  const stripped = arg.replace(/\/+$/, '')
-  const idx = stripped.lastIndexOf('/')
-  const dir = idx > 0 ? stripped.slice(0, idx) : idx === 0 ? '/' : '.'
-  const out: ByteSource = new TextEncoder().encode(`${dir}\n`)
-  return [out, new IOResult()]
-}
+import { ResourceName, command, specOf, dirnameFn } from '@struktoai/mirage-core'
 
 export const DISK_DIRNAME = command({
   name: 'dirname',
   resource: ResourceName.DISK,
   spec: specOf('dirname'),
-  fn: dirnameCommand,
+  fn: dirnameFn,
 })

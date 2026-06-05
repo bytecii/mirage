@@ -46,7 +46,7 @@ async function cutHdf5Command(
     return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('cut: -f required\n') })]
   }
   try {
-    const raw = await materialize(opfsStream(accessor.rootHandle, first))
+    const raw = await materialize(opfsStream(accessor, first))
     const result = await hdf5Cut(raw, columns)
     const out: ByteSource = result
     return [out, new IOResult({ cache: [first.stripPrefix] })]

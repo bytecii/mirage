@@ -1,0 +1,23 @@
+{
+  "name": "@struktoai/mirage-integ",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ram": "tsx ram.ts",
+    "disk": "tsx disk.ts",
+    "redis": "tsx redis.ts",
+    "opfs": "tsx opfs.ts",
+    "s3": "tsx s3.ts"
+  },
+  "dependencies": {
+    "@struktoai/mirage-browser": "workspace:*",
+    "@struktoai/mirage-core": "workspace:*",
+    "@struktoai/mirage-node": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^6.0.3"
+  }
+}

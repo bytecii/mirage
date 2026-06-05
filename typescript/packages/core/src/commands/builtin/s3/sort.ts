@@ -19,50 +19,11 @@ import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { ResourceName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { compareKeys, sortKey, type SortKeyOptions } from '../sort_helper.ts'
+import { parseKeyOptions, sortAndDedupe, splitSortLines } from '../sort_helper.ts'
 import { readStdinAsync } from '../utils/stream.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { fatal: false })
-
-function parseKeyOptions(flags: Record<string, string | boolean>): SortKeyOptions {
-  return {
-    keyField: typeof flags.k === 'string' ? Number.parseInt(flags.k, 10) : null,
-    fieldSep: typeof flags.t === 'string' ? flags.t : null,
-    ignoreCase: flags.f === true,
-    numeric: flags.n === true,
-    humanNumeric: flags.h === true,
-    version: flags.V === true,
-    month: flags.M === true,
-  }
-}
-
-function sortAndDedupe(
-  lines: string[],
-  opts: SortKeyOptions,
-  reverse: boolean,
-  unique: boolean,
-): string[] {
-  const keyed = lines.map((l) => ({ l, k: sortKey(l, opts) }))
-  keyed.sort((a, b) => compareKeys(a.k, b.k))
-  let sorted = keyed.map((x) => x.l)
-  if (reverse) sorted.reverse()
-  if (unique) {
-    const seen = new Set<string>()
-    sorted = sorted.filter((l) => {
-      if (seen.has(l)) return false
-      seen.add(l)
-      return true
-    })
-  }
-  return sorted
-}
-
-function splitLinesNoEnds(text: string): string[] {
-  if (text === '') return []
-  const stripped = text.endsWith('\n') ? text.slice(0, -1) : text
-  return stripped.split('\n')
-}
 
 async function sortCommand(
   accessor: S3Accessor,
@@ -76,16 +37,16 @@ async function sortCommand(
   let allLines: string[] = []
   if (paths.length > 0) {
     const resolved = await resolveGlob(accessor, paths, opts.index ?? undefined)
-    const first = resolved[0]
-    if (first === undefined) return [null, new IOResult()]
-    const data = DEC.decode(await s3Read(accessor, first, opts.index ?? undefined))
-    allLines = splitLinesNoEnds(data)
+    for (const p of resolved) {
+      const data = DEC.decode(await s3Read(accessor, p, opts.index ?? undefined))
+      allLines = allLines.concat(splitSortLines(data))
+    }
   } else {
     const raw = await readStdinAsync(opts.stdin)
     if (raw === null) {
       return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('sort: missing operand\n') })]
     }
-    allLines = splitLinesNoEnds(DEC.decode(raw))
+    allLines = splitSortLines(DEC.decode(raw))
   }
   const sorted = sortAndDedupe(allLines, keyOpts, reverse, unique)
   const output = sorted.join('\n')

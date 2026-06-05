@@ -13,27 +13,19 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { OPFSAccessor } from '../../accessor/opfs.ts'
 import { read } from '../../core/opfs/read.ts'
-import { fakeOPFSResource, makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { writeOp } from './write.ts'
 
 describe('writeOp (opfs)', () => {
   it('writes bytes', async () => {
-    const root = makeMockRoot()
-    await writeOp.fn(
-      new OPFSAccessor(fakeOPFSResource(root)),
-      spec('/x'),
-      [new TextEncoder().encode('hi')],
-      {},
-    )
-    expect(new TextDecoder().decode(await read(root, spec('/x')))).toBe('hi')
+    const accessor = makeMockAccessor()
+    await writeOp.fn(accessor, spec('/x'), [new TextEncoder().encode('hi')], {})
+    expect(new TextDecoder().decode(await read(accessor, spec('/x')))).toBe('hi')
   })
 
   it('throws on non-Uint8Array', () => {
-    const root = makeMockRoot()
-    expect(() =>
-      writeOp.fn(new OPFSAccessor(fakeOPFSResource(root)), spec('/x'), ['not bytes'], {}),
-    ).toThrow(/Uint8Array/)
+    const accessor = makeMockAccessor()
+    expect(() => writeOp.fn(accessor, spec('/x'), ['not bytes'], {})).toThrow(/Uint8Array/)
   })
 })

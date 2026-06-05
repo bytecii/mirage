@@ -13,13 +13,15 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '@struktoai/mirage-core'
+import type { OPFSAccessor } from '../../accessor/opfs.ts'
 import { isNotFound, resolveFileHandle, toWritableChunk } from './utils.ts'
 
 export async function truncate(
-  root: FileSystemDirectoryHandle,
+  accessor: OPFSAccessor,
   path: PathSpec,
   length: number,
 ): Promise<void> {
+  const root = accessor.rootHandle
   const virtual = path.stripPrefix
   let handle: FileSystemFileHandle
   let existing: Uint8Array

@@ -12,44 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  ResourceName,
-  command,
-  specOf,
-  type Accessor,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-  type PathSpec,
-} from '@struktoai/mirage-core'
-
-function normalize(p: string, cwd: string): string {
-  const path = p.startsWith('/') ? p : `${cwd.replace(/\/+$/, '')}/${p}`
-  const parts = path.split('/').filter((s) => s !== '' && s !== '.')
-  const out: string[] = []
-  for (const part of parts) {
-    if (part === '..') out.pop()
-    else out.push(part)
-  }
-  return '/' + out.join('/')
-}
-
-function realpathCommand(
-  _accessor: Accessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): CommandFnResult {
-  const args = paths.length > 0 ? paths.map((p) => p.original) : texts
-  const lines = args.map((a) => normalize(a, opts.cwd))
-  const out: ByteSource = new TextEncoder().encode(lines.join('\n') + '\n')
-  return [out, new IOResult()]
-}
+import { ResourceName, command, realpathGeneric, specOf } from '@struktoai/mirage-core'
+import { stat as redisStat } from '../../../core/redis/stat.ts'
+import type { RedisAccessor } from '../../../accessor/redis.ts'
 
 export const REDIS_REALPATH = command({
   name: 'realpath',
   resource: ResourceName.REDIS,
   spec: specOf('realpath'),
-  fn: realpathCommand,
+  fn: (accessor: RedisAccessor, paths, texts, opts) =>
+    realpathGeneric(paths, texts, opts, (p) => redisStat(accessor, p)),
 })

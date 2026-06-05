@@ -13,23 +13,20 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { OPFSAccessor } from '../../accessor/opfs.ts'
 import { exists } from '../../core/opfs/exists.ts'
 import { writeBytes } from '../../core/opfs/write.ts'
-import { fakeOPFSResource, makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { unlinkOp } from './unlink.ts'
 
 describe('unlinkOp (opfs)', () => {
   it('removes a file', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/x'), new Uint8Array([1]))
-    await unlinkOp.fn(new OPFSAccessor(fakeOPFSResource(root)), spec('/x'), [], {})
-    expect(await exists(root, spec('/x'))).toBe(false)
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/x'), new Uint8Array([1]))
+    await unlinkOp.fn(accessor, spec('/x'), [], {})
+    expect(await exists(accessor, spec('/x'))).toBe(false)
   })
   it('is a no-op on missing', async () => {
-    const root = makeMockRoot()
-    await expect(
-      unlinkOp.fn(new OPFSAccessor(fakeOPFSResource(root)), spec('/missing'), [], {}),
-    ).resolves.toBeUndefined()
+    const accessor = makeMockAccessor()
+    await expect(unlinkOp.fn(accessor, spec('/missing'), [], {})).resolves.toBeUndefined()
   })
 })

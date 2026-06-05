@@ -14,7 +14,7 @@
 
 import type { RegisteredCommand } from '@struktoai/mirage-core'
 import { OPFS_AWK } from './awk.ts'
-import { RAM_BASE64 } from './base64_cmd.ts'
+import { OPFS_BASE64 } from './base64_cmd.ts'
 import { OPFS_BASENAME } from './basename.ts'
 import { OPFS_CAT } from './cat/cat.ts'
 import { OPFS_CAT_FEATHER } from './cat/cat_feather.ts'
@@ -59,7 +59,7 @@ import { OPFS_LS } from './ls/ls.ts'
 import { OPFS_LS_FEATHER } from './ls/ls_feather.ts'
 import { RAM_LS_HDF5 } from './ls/ls_hdf5.ts'
 import { OPFS_LS_PARQUET } from './ls/ls_parquet.ts'
-import { RAM_MD5 } from './md5.ts'
+import { OPFS_MD5 } from './md5.ts'
 import { OPFS_MKDIR } from './mkdir.ts'
 import { OPFS_MKTEMP } from './mktemp.ts'
 import { OPFS_MV } from './mv.ts'
@@ -72,7 +72,7 @@ import { OPFS_REV } from './rev.ts'
 import { OPFS_RG } from './rg.ts'
 import { OPFS_RM } from './rm.ts'
 import { OPFS_SED } from './sed.ts'
-import { RAM_SHA256SUM } from './sha256sum.ts'
+import { OPFS_SHA256SUM } from './sha256sum.ts'
 import { OPFS_SHUF } from './shuf.ts'
 import { OPFS_SORT } from './sort.ts'
 import { OPFS_SPLIT } from './split.ts'
@@ -106,7 +106,7 @@ import { OPFS_ZIP } from './zip_cmd.ts'
 
 export const OPFS_COMMANDS: readonly RegisteredCommand[] = [
   ...OPFS_AWK,
-  ...RAM_BASE64,
+  ...OPFS_BASE64,
   ...OPFS_BASENAME,
   ...OPFS_CAT,
   ...OPFS_CAT_FEATHER,
@@ -151,7 +151,7 @@ export const OPFS_COMMANDS: readonly RegisteredCommand[] = [
   ...OPFS_LS_FEATHER,
   ...RAM_LS_HDF5,
   ...OPFS_LS_PARQUET,
-  ...RAM_MD5,
+  ...OPFS_MD5,
   ...OPFS_MKDIR,
   ...OPFS_MKTEMP,
   ...OPFS_MV,
@@ -164,7 +164,7 @@ export const OPFS_COMMANDS: readonly RegisteredCommand[] = [
   ...OPFS_RG,
   ...OPFS_RM,
   ...OPFS_SED,
-  ...RAM_SHA256SUM,
+  ...OPFS_SHA256SUM,
   ...OPFS_SHUF,
   ...OPFS_SORT,
   ...OPFS_SPLIT,

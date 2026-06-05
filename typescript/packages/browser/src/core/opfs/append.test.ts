@@ -13,21 +13,21 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { appendBytes } from './append.ts'
 import { read } from './read.ts'
 import { writeBytes } from './write.ts'
 
 describe('opfs/append', () => {
   it('appends to existing file', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/x'), new TextEncoder().encode('A'))
-    await appendBytes(root, spec('/x'), new TextEncoder().encode('B'))
-    expect(new TextDecoder().decode(await read(root, spec('/x')))).toBe('AB')
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/x'), new TextEncoder().encode('A'))
+    await appendBytes(accessor, spec('/x'), new TextEncoder().encode('B'))
+    expect(new TextDecoder().decode(await read(accessor, spec('/x')))).toBe('AB')
   })
   it('creates the file if missing', async () => {
-    const root = makeMockRoot()
-    await appendBytes(root, spec('/new'), new TextEncoder().encode('hi'))
-    expect(new TextDecoder().decode(await read(root, spec('/new')))).toBe('hi')
+    const accessor = makeMockAccessor()
+    await appendBytes(accessor, spec('/new'), new TextEncoder().encode('hi'))
+    expect(new TextDecoder().decode(await read(accessor, spec('/new')))).toBe('hi')
   })
 })

@@ -43,7 +43,7 @@ async function mvCommand(
   const dst = paths[paths.length - 1]
   if (dst === undefined) return [null, new IOResult()]
   for (const src of sources) {
-    await opfsRename(accessor.rootHandle, src, dst)
+    await opfsRename(accessor, src, dst)
   }
   return [null, new IOResult()]
 }

@@ -14,83 +14,17 @@
 
 import { stream as ramStream } from '../../../../core/ram/stream.ts'
 import type { RAMAccessor } from '../../../../accessor/ram.ts'
-import { IOResult, materialize, type ByteSource } from '../../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../../config.ts'
+import { ResourceName } from '../../../../types.ts'
+import { command } from '../../../config.ts'
 import { specOf } from '../../../spec/builtins.ts'
 import { headerAggregate } from '../../aggregators.ts'
-import { countNewlines, parseN, tailBytes } from '../../tail_helper.ts'
-import { readStdinAsync } from '../../utils/stream.ts'
-
-const ENC = new TextEncoder()
-
-async function readFile(accessor: RAMAccessor, p: PathSpec): Promise<Uint8Array> {
-  return materialize(ramStream(accessor, p))
-}
-
-async function tailCommand(
-  accessor: RAMAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const nRaw = typeof opts.flags.n === 'string' ? opts.flags.n : null
-  const cRaw = typeof opts.flags.c === 'string' ? opts.flags.c : null
-  const qFlag = opts.flags.q === true
-  const vFlag = opts.flags.v === true
-  const [lines, plusMode] = parseN(nRaw)
-  const bytesMode = cRaw !== null ? Number.parseInt(cRaw, 10) : null
-
-  if (paths.length > 0) {
-    const chunks: Uint8Array[] = []
-    const cache: string[] = []
-    const showHeaders = (vFlag || paths.length > 1) && !qFlag
-    for (let i = 0; i < paths.length; i++) {
-      const p = paths[i]
-      if (p === undefined) continue
-      const raw = await readFile(accessor, p)
-      if (showHeaders) {
-        const header = i > 0 ? `\n==> ${p.original} <==\n` : `==> ${p.original} <==\n`
-        chunks.push(ENC.encode(header))
-      }
-      if (bytesMode !== null) {
-        chunks.push(bytesMode === 0 ? new Uint8Array(0) : raw.slice(-bytesMode))
-        if (bytesMode >= raw.byteLength) cache.push(p.original)
-      } else {
-        chunks.push(tailBytes(raw, lines, null, plusMode))
-        if (!plusMode && lines >= countNewlines(raw)) cache.push(p.original)
-      }
-    }
-    const out: ByteSource = concat(chunks)
-    return [out, new IOResult({ cache })]
-  }
-  const raw = await readStdinAsync(opts.stdin)
-  if (raw === null) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('tail: missing operand\n') })]
-  }
-  if (bytesMode !== null) {
-    const out: ByteSource = bytesMode === 0 ? new Uint8Array(0) : raw.slice(-bytesMode)
-    return [out, new IOResult()]
-  }
-  return [tailBytes(raw, lines, null, plusMode), new IOResult()]
-}
-
-function concat(chunks: Uint8Array[]): Uint8Array {
-  let total = 0
-  for (const c of chunks) total += c.byteLength
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const c of chunks) {
-    out.set(c, offset)
-    offset += c.byteLength
-  }
-  return out
-}
+import { tailGeneric } from '../../generic/tail.ts'
 
 export const RAM_TAIL = command({
   name: 'tail',
   resource: ResourceName.RAM,
   spec: specOf('tail'),
-  fn: tailCommand,
+  fn: (accessor: RAMAccessor, paths, texts, opts) =>
+    tailGeneric(paths, texts, opts, (p) => ramStream(accessor, p)),
   aggregate: headerAggregate,
 })

@@ -12,102 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  PathSpec,
-  ResourceName,
-  command,
-  materialize,
-  resolveSource,
-  sha256Hex,
-  specOf,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-} from '@struktoai/mirage-core'
+import { ResourceName, command, sha256sumGeneric, specOf } from '@struktoai/mirage-core'
 import { stream as opfsStream } from '../../../core/opfs/stream.ts'
 import type { OPFSAccessor } from '../../../accessor/opfs.ts'
 
-const ENC = new TextEncoder()
-const DEC = new TextDecoder('utf-8', { fatal: false })
-
-async function hashStream(source: AsyncIterable<Uint8Array>): Promise<string> {
-  const data = await materialize(source)
-  return sha256Hex(data)
-}
-
-async function* sha256SingleStream(
-  source: AsyncIterable<Uint8Array>,
-  label: string,
-): AsyncIterable<Uint8Array> {
-  const digest = await hashStream(source)
-  yield ENC.encode(`${digest}  ${label}\n`)
-}
-
-async function* sha256Multi(
-  accessor: OPFSAccessor,
-  paths: readonly PathSpec[],
-): AsyncIterable<Uint8Array> {
-  for (const p of paths) {
-    const digest = await hashStream(opfsStream(accessor.rootHandle, p))
-    yield ENC.encode(`${digest}  ${p.stripPrefix}\n`)
-  }
-}
-
-function makePathSpec(original: string): PathSpec {
-  return new PathSpec({ original, directory: original, resolved: true })
-}
-
-async function sha256Check(accessor: OPFSAccessor, p: PathSpec): Promise<[Uint8Array, number]> {
-  const data = DEC.decode(await materialize(opfsStream(accessor.rootHandle, p)))
-  const lines: string[] = []
-  let failed = false
-  for (const line of data.split('\n')) {
-    if (line.trim() === '') continue
-    const idx = line.indexOf('  ')
-    if (idx < 0) continue
-    const expected = line.slice(0, idx)
-    const filename = line.slice(idx + 2)
-    const digest = await hashStream(opfsStream(accessor.rootHandle, makePathSpec(filename)))
-    if (digest === expected) lines.push(`${filename}: OK`)
-    else {
-      lines.push(`${filename}: FAILED`)
-      failed = true
-    }
-  }
-  return [ENC.encode(lines.join('\n') + '\n'), failed ? 1 : 0]
-}
-
-async function sha256sumCommand(
-  accessor: OPFSAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const check = opts.flags.c === true
-  if (check && paths.length > 0) {
-    const first = paths[0]
-    if (first === undefined) return [null, new IOResult()]
-    const [out, exitCode] = await sha256Check(accessor, first)
-    const result: ByteSource = out
-    return [result, new IOResult({ exitCode })]
-  }
-  if (paths.length > 0) {
-    return [sha256Multi(accessor, paths), new IOResult({ cache: paths.map((p) => p.stripPrefix) })]
-  }
-  let source: AsyncIterable<Uint8Array>
-  try {
-    source = resolveSource(opts.stdin, 'sha256sum: missing input')
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-  }
-  return [sha256SingleStream(source, '-'), new IOResult()]
-}
-
-export const RAM_SHA256SUM = command({
+export const OPFS_SHA256SUM = command({
   name: 'sha256sum',
   resource: ResourceName.OPFS,
   spec: specOf('sha256sum'),
-  fn: sha256sumCommand,
+  fn: (accessor: OPFSAccessor, paths, _texts, opts) =>
+    sha256sumGeneric(paths, opts, (p) => opfsStream(accessor, p)),
 })

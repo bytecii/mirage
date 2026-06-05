@@ -12,37 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { read as ramRead } from '../../../core/ram/read.ts'
 import type { RAMAccessor } from '../../../accessor/ram.ts'
-import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
-import { md5Hex } from '../../../utils/hash.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { stream as ramStream } from '../../../core/ram/stream.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
+import { md5Generic } from '../generic/md5.ts'
 import { specOf } from '../../spec/builtins.ts'
-
-async function md5Command(
-  accessor: RAMAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const lines: string[] = []
-  if (paths.length > 0) {
-    for (const p of paths) {
-      const data = await ramRead(accessor, p)
-      lines.push(`${md5Hex(data)}  ${p.original}`)
-    }
-  } else if (opts.stdin !== null) {
-    const data = await materialize(opts.stdin)
-    lines.push(md5Hex(data))
-  }
-  const out: ByteSource = new TextEncoder().encode(lines.join('\n'))
-  return [out, new IOResult()]
-}
 
 export const RAM_MD5 = command({
   name: 'md5',
   resource: ResourceName.RAM,
   spec: specOf('md5'),
-  fn: md5Command,
+  fn: (accessor: RAMAccessor, paths, _texts, opts) =>
+    md5Generic(paths, opts, (p) => ramStream(accessor, p)),
 })

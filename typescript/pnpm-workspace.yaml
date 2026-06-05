@@ -3,6 +3,7 @@ packages:
   - examples/*
   - ../examples/typescript
   - ../examples/typescript/browser
+  - ../integ
 
 onlyBuiltDependencies:
   - '@zkochan/fuse-native'

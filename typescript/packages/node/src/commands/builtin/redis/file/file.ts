@@ -12,60 +12,20 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  FileType,
-  IOResult,
-  ResourceName,
-  command,
-  detectFileType,
-  formatFileResult,
-  specOf,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-  type PathSpec,
-} from '@struktoai/mirage-core'
+import { ResourceName, command, fileGeneric, specOf } from '@struktoai/mirage-core'
 import { stat as redisStat } from '../../../../core/redis/stat.ts'
 import { read as redisRead } from '../../../../core/redis/read.ts'
 import type { RedisAccessor } from '../../../../accessor/redis.ts'
-
-const ENC = new TextEncoder()
-
-async function fileCommand(
-  accessor: RedisAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  if (paths.length === 0) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('file: missing operand\n') })]
-  }
-  const brief = opts.flags.b === true
-  const mime = opts.flags.i === true
-  const lines: string[] = []
-  for (const p of paths) {
-    const s = await redisStat(accessor, p)
-    if (s.type === FileType.DIRECTORY) {
-      lines.push(formatFileResult(p.original, FileType.DIRECTORY, brief, mime))
-      continue
-    }
-    let header: Uint8Array
-    try {
-      const raw = await redisRead(accessor, p)
-      header = raw.subarray(0, 512)
-    } catch {
-      header = new Uint8Array(0)
-    }
-    const result = detectFileType(header, s)
-    lines.push(formatFileResult(p.original, result, brief, mime))
-  }
-  const out: ByteSource = ENC.encode(lines.join('\n'))
-  return [out, new IOResult()]
-}
 
 export const REDIS_FILE = command({
   name: 'file',
   resource: ResourceName.REDIS,
   spec: specOf('file'),
-  fn: fileCommand,
+  fn: (accessor: RedisAccessor, paths, _texts, opts) =>
+    fileGeneric(
+      paths,
+      opts,
+      (p) => redisStat(accessor, p),
+      (p) => redisRead(accessor, p),
+    ),
 })

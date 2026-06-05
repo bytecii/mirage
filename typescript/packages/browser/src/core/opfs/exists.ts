@@ -13,9 +13,11 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '@struktoai/mirage-core'
+import type { OPFSAccessor } from '../../accessor/opfs.ts'
 import { isNotFound, resolveDirHandle, resolveParentDirHandle } from './utils.ts'
 
-export async function exists(root: FileSystemDirectoryHandle, path: PathSpec): Promise<boolean> {
+export async function exists(accessor: OPFSAccessor, path: PathSpec): Promise<boolean> {
+  const root = accessor.rootHandle
   const virtual = path.stripPrefix
   if (virtual === '/' || virtual === '') return true
   try {

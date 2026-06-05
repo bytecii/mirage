@@ -40,22 +40,21 @@ describe('integration: find_pipe_while', () => {
     await ws.close()
   })
 
-  it('find -maxdepth 0 -type f', async () => {
+  it('find -maxdepth 0 -type f (search root is a dir, no matches)', async () => {
     const { ws } = await fresh()
     const result = (await run(ws, 'find /data -maxdepth 0 -type f | sort')).trim()
-    const lines = result.split('\n')
-    expect(lines).toEqual(['/data/data.json'])
+    expect(result).toBe('')
     await ws.close()
   })
 
-  it('find -maxdepth 1 -type f', async () => {
+  it('find -maxdepth 1 -type f (direct children only)', async () => {
     const { ws } = await fresh()
     const result = (await run(ws, 'find /data -maxdepth 1 -type f | sort')).trim()
     const lines = result.split('\n')
     expect(lines).toContain('/data/data.json')
-    expect(lines).toContain('/data/docs/notes.txt')
-    expect(lines).toContain('/data/docs/readme.txt')
-    expect(lines).toContain('/data/src/main.py')
+    expect(lines).not.toContain('/data/docs/notes.txt')
+    expect(lines).not.toContain('/data/docs/readme.txt')
+    expect(lines).not.toContain('/data/src/main.py')
     expect(lines).not.toContain('/data/src/utils/helpers.py')
     await ws.close()
   })

@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
-  AsyncLineIterator,
+  numberLines,
   CachableAsyncIterator,
   IOResult,
   ProvisionResult,
@@ -32,17 +32,6 @@ import { stat as sshStat } from '../../../../core/ssh/stat.ts'
 import type { SSHAccessor } from '../../../../accessor/ssh.ts'
 
 const ENC = new TextEncoder()
-
-async function* numberLinesStream(source: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
-  let num = 1
-  const lineIter = new AsyncLineIterator(source)
-  for await (const line of lineIter) {
-    yield ENC.encode(`     ${String(num)}\t`)
-    yield line
-    yield ENC.encode('\n')
-    num += 1
-  }
-}
 
 export async function catProvision(
   accessor: SSHAccessor,
@@ -92,12 +81,12 @@ async function catCommand(
       outputs.push(cachable)
     }
     const merged = chainStreams(outputs)
-    const out: ByteSource = nFlag ? numberLinesStream(merged) : merged
+    const out: ByteSource = nFlag ? numberLines(merged) : merged
     return [out, new IOResult({ reads, cache: cacheKeys })]
   }
   try {
     const source = resolveSource(opts.stdin, 'cat: missing operand')
-    const out: ByteSource = nFlag ? numberLinesStream(source) : source
+    const out: ByteSource = nFlag ? numberLines(source) : source
     return [out, new IOResult()]
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

@@ -13,24 +13,21 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { OPFSAccessor } from '../../accessor/opfs.ts'
 import { read } from '../../core/opfs/read.ts'
 import { writeBytes } from '../../core/opfs/write.ts'
-import { fakeOPFSResource, makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { truncateOp } from './truncate.ts'
 
 describe('truncateOp (opfs)', () => {
   it('truncates a file to the given length', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/x'), new TextEncoder().encode('hello world'))
-    await truncateOp.fn(new OPFSAccessor(fakeOPFSResource(root)), spec('/x'), [5], {})
-    expect(new TextDecoder().decode(await read(root, spec('/x')))).toBe('hello')
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/x'), new TextEncoder().encode('hello world'))
+    await truncateOp.fn(accessor, spec('/x'), [5], {})
+    expect(new TextDecoder().decode(await read(accessor, spec('/x')))).toBe('hello')
   })
 
   it('throws on non-numeric length', () => {
-    const root = makeMockRoot()
-    expect(() =>
-      truncateOp.fn(new OPFSAccessor(fakeOPFSResource(root)), spec('/x'), ['long'], {}),
-    ).toThrow(/number length/)
+    const accessor = makeMockAccessor()
+    expect(() => truncateOp.fn(accessor, spec('/x'), ['long'], {})).toThrow(/number length/)
   })
 })

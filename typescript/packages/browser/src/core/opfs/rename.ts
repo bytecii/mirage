@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '@struktoai/mirage-core'
+import type { OPFSAccessor } from '../../accessor/opfs.ts'
 import {
   isNotFound,
   iterEntries,
@@ -44,11 +45,8 @@ async function copyDirRecursive(
   }
 }
 
-export async function rename(
-  root: FileSystemDirectoryHandle,
-  src: PathSpec,
-  dst: PathSpec,
-): Promise<void> {
+export async function rename(accessor: OPFSAccessor, src: PathSpec, dst: PathSpec): Promise<void> {
+  const root = accessor.rootHandle
   const srcPath = src.stripPrefix
   const dstPath = dst.stripPrefix
   let srcParent: FileSystemDirectoryHandle

@@ -12,48 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  ResourceName,
-  command,
-  gunzip,
-  materialize,
-  readStdinAsync,
-  specOf,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-  type PathSpec,
-} from '@struktoai/mirage-core'
-import { stream as diskStream } from '../../../core/disk/stream.ts'
+import { ResourceName, command, specOf, zcatGeneric } from '@struktoai/mirage-core'
 import type { DiskAccessor } from '../../../accessor/disk.ts'
-
-const ENC = new TextEncoder()
-
-async function zcatCommand(
-  accessor: DiskAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  let raw: Uint8Array
-  if (paths.length > 0 && paths[0] !== undefined) {
-    raw = await materialize(diskStream(accessor, paths[0]))
-  } else {
-    const stdinBytes = await readStdinAsync(opts.stdin)
-    if (stdinBytes === null) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('zcat: missing input\n') })]
-    }
-    raw = stdinBytes
-  }
-  const out = await gunzip(raw)
-  const result: ByteSource = out
-  return [result, new IOResult()]
-}
+import { stream as diskStream } from '../../../core/disk/stream.ts'
 
 export const DISK_ZCAT = command({
   name: 'zcat',
   resource: ResourceName.DISK,
   spec: specOf('zcat'),
-  fn: zcatCommand,
+  fn: (accessor: DiskAccessor, paths, _texts, opts) =>
+    zcatGeneric(paths, opts, (p) => diskStream(accessor, p)),
 })

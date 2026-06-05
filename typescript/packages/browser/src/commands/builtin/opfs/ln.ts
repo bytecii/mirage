@@ -45,11 +45,11 @@ async function lnCommand(
   const source = paths[0]
   const dest = paths[1]
   if (source === undefined || dest === undefined) return [null, new IOResult()]
-  if (opts.flags.n === true && (await opfsExists(accessor.rootHandle, dest))) {
+  if (opts.flags.n === true && (await opfsExists(accessor, dest))) {
     return [null, new IOResult()]
   }
-  const data = await materialize(opfsStream(accessor.rootHandle, source))
-  await opfsWrite(accessor.rootHandle, dest, data)
+  const data = await materialize(opfsStream(accessor, source))
+  await opfsWrite(accessor, dest, data)
   const out: ByteSource | null =
     opts.flags.v === true ? ENC.encode(`'${source.original}' -> '${dest.original}'\n`) : null
   return [out, new IOResult({ writes: { [dest.stripPrefix]: data } })]

@@ -58,14 +58,30 @@ describe.each(NATIVE_BACKENDS)('native diff (%s backend)', (kind) => {
     }
   })
 
-  it('diff -u unified equals default output', async () => {
+  it('diff default is normal format (1c1 / < / ---)', async () => {
     const env = makeEnv(kind)
     try {
       env.createFile('a.txt', ENC.encode('hello\n'))
       env.createFile('b.txt', ENC.encode('world\n'))
-      const m1 = await env.mirage('diff -u /data/a.txt /data/b.txt')
-      const m2 = await env.mirage('diff /data/a.txt /data/b.txt')
-      expect(m1).toBe(m2)
+      const out = await env.mirage('diff /data/a.txt /data/b.txt')
+      expect(out).toContain('< hello')
+      expect(out).toContain('> world')
+      expect(out).toContain('---')
+    } finally {
+      await env.cleanup()
+    }
+  })
+
+  it('diff -u emits unified format', async () => {
+    const env = makeEnv(kind)
+    try {
+      env.createFile('a.txt', ENC.encode('hello\n'))
+      env.createFile('b.txt', ENC.encode('world\n'))
+      const out = await env.mirage('diff -u /data/a.txt /data/b.txt')
+      expect(out).toContain('--- /data/a.txt')
+      expect(out).toContain('+++ /data/b.txt')
+      expect(out).toContain('-hello')
+      expect(out).toContain('+world')
     } finally {
       await env.cleanup()
     }

@@ -12,62 +12,24 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { writeBytes as ramWrite } from '../../../core/ram/write.ts'
-import { mkdir as ramMkdir } from '../../../core/ram/mkdir.ts'
 import type { RAMAccessor } from '../../../accessor/ram.ts'
-import { IOResult, type ByteSource } from '../../../io/types.ts'
-import { PathSpec, ResourceName } from '../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { mkdir as ramMkdir } from '../../../core/ram/mkdir.ts'
+import { writeBytes as ramWrite } from '../../../core/ram/write.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
+import { mktempGeneric } from '../generic/mktemp.ts'
 import { specOf } from '../../spec/builtins.ts'
-
-const ENC = new TextEncoder()
-
-function randomSuffix(): string {
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
-  let out = ''
-  for (let i = 0; i < 8; i++) {
-    out += chars[Math.floor(Math.random() * chars.length)] ?? ''
-  }
-  return out
-}
-
-function makePathSpec(original: string): PathSpec {
-  return new PathSpec({ original, directory: original, resolved: true })
-}
-
-async function mktempCommand(
-  accessor: RAMAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const tFlag = opts.flags.t === true
-  const parent = tFlag ? '/tmp' : typeof opts.flags.p === 'string' ? opts.flags.p : '/tmp'
-  const suffix = randomSuffix()
-  const templateArg = texts[0]
-  const template = templateArg !== undefined && templateArg !== '' ? templateArg : 'tmp.XXXXXXXXXX'
-  const xRun = /X+$/.exec(template)
-  let name: string
-  if (xRun !== null) {
-    name = template.slice(0, xRun.index) + suffix
-  } else {
-    name = `${template}.${suffix}`
-  }
-  const path = `${parent.replace(/\/+$/, '')}/${name}`
-  await ramMkdir(accessor, makePathSpec(parent), true)
-  if (opts.flags.d === true) {
-    await ramMkdir(accessor, makePathSpec(path))
-  } else {
-    await ramWrite(accessor, makePathSpec(path), new Uint8Array(0))
-  }
-  const result: ByteSource = ENC.encode(path + '\n')
-  return [result, new IOResult()]
-}
 
 export const RAM_MKTEMP = command({
   name: 'mktemp',
   resource: ResourceName.RAM,
   spec: specOf('mktemp'),
-  fn: mktempCommand,
+  fn: (accessor: RAMAccessor, _paths, texts, opts) =>
+    mktempGeneric(
+      texts,
+      opts,
+      (p, parents) => ramMkdir(accessor, p, parents),
+      (p, d) => ramWrite(accessor, p, d),
+    ),
   write: true,
 })

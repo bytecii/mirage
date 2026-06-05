@@ -61,7 +61,11 @@ function extractOrNames(name: string | null, texts: readonly string[]): string[]
   let i = 0
   while (i < texts.length) {
     const pat = texts[i + 2]
-    if (texts[i] === '-or' && texts[i + 1] === '-name' && pat !== undefined) {
+    if (
+      (texts[i] === '-or' || texts[i] === '-o') &&
+      texts[i + 1] === '-name' &&
+      pat !== undefined
+    ) {
       names.push(pat)
       i += 3
     } else {

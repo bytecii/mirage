@@ -101,10 +101,20 @@ async function* xxdReverseStream(source: AsyncIterable<Uint8Array>): AsyncIterab
     buf.set(c, off)
     off += c.byteLength
   }
-  const text = DEC.decode(buf).replace(/[\n ]/g, '')
-  const out = new Uint8Array(text.length / 2)
-  for (let i = 0; i < out.byteLength; i++)
-    out[i] = Number.parseInt(text.slice(i * 2, i * 2 + 2), 16)
+  const text = DEC.decode(buf)
+  const hexParts: string[] = []
+  for (const rawLine of text.split('\n')) {
+    if (rawLine === '') continue
+    let line = rawLine
+    const colon = line.indexOf(':')
+    if (colon !== -1) line = line.slice(colon + 1)
+    const twoSpace = line.indexOf('  ')
+    if (twoSpace !== -1) line = line.slice(0, twoSpace)
+    hexParts.push(line.replace(/\s+/g, ''))
+  }
+  const hex = hexParts.join('')
+  const out = new Uint8Array(Math.floor(hex.length / 2))
+  for (let i = 0; i < out.byteLength; i++) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16)
   yield out
 }
 

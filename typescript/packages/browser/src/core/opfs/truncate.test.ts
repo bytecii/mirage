@@ -13,23 +13,23 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { read } from './read.ts'
 import { truncate } from './truncate.ts'
 import { writeBytes } from './write.ts'
 
 describe('opfs/truncate', () => {
   it('shrinks a file', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/x'), new TextEncoder().encode('hello world'))
-    await truncate(root, spec('/x'), 5)
-    expect(new TextDecoder().decode(await read(root, spec('/x')))).toBe('hello')
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/x'), new TextEncoder().encode('hello world'))
+    await truncate(accessor, spec('/x'), 5)
+    expect(new TextDecoder().decode(await read(accessor, spec('/x')))).toBe('hello')
   })
   it('zero-fills when growing', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/x'), new TextEncoder().encode('ab'))
-    await truncate(root, spec('/x'), 4)
-    const out = await read(root, spec('/x'))
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/x'), new TextEncoder().encode('ab'))
+    await truncate(accessor, spec('/x'), 4)
+    const out = await read(accessor, spec('/x'))
     expect(out.byteLength).toBe(4)
     expect(out[2]).toBe(0)
   })

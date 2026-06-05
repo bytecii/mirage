@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { PathSpec } from '@struktoai/mirage-core'
+import { OPFSAccessor } from './accessor/opfs.ts'
 
 export function spec(p: string): PathSpec {
   return PathSpec.fromStrPath(p)
@@ -146,6 +147,10 @@ export function fakeOPFSResource(handle: FileSystemDirectoryHandle): {
   requireHandle: () => FileSystemDirectoryHandle
 } {
   return { requireHandle: () => handle }
+}
+
+export function makeMockAccessor(name = 'root'): OPFSAccessor {
+  return new OPFSAccessor(fakeOPFSResource(makeMockRoot(name)))
 }
 
 export function installFakeNavigator(getRoot: () => FileSystemDirectoryHandle): () => void {

@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { exists } from './exists.ts'
 import { read } from './read.ts'
 import { rename } from './rename.ts'
@@ -21,14 +21,14 @@ import { writeBytes } from './write.ts'
 
 describe('opfs/rename', () => {
   it('moves a file', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/a'), new TextEncoder().encode('A'))
-    await rename(root, spec('/a'), spec('/b'))
-    expect(await exists(root, spec('/a'))).toBe(false)
-    expect(new TextDecoder().decode(await read(root, spec('/b')))).toBe('A')
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/a'), new TextEncoder().encode('A'))
+    await rename(accessor, spec('/a'), spec('/b'))
+    expect(await exists(accessor, spec('/a'))).toBe(false)
+    expect(new TextDecoder().decode(await read(accessor, spec('/b')))).toBe('A')
   })
   it('throws on missing source', async () => {
-    const root = makeMockRoot()
-    await expect(rename(root, spec('/missing'), spec('/x'))).rejects.toThrow()
+    const accessor = makeMockAccessor()
+    await expect(rename(accessor, spec('/missing'), spec('/x'))).rejects.toThrow()
   })
 })

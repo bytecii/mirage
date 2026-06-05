@@ -12,35 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { NotionAccessor } from '../../../accessor/notion.ts'
-import { IOResult, type ByteSource } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-
-const ENC = new TextEncoder()
-
-function posixBasename(p: string): string {
-  const stripped = p.replace(/\/+$/, '')
-  const idx = stripped.lastIndexOf('/')
-  return idx >= 0 ? stripped.slice(idx + 1) : stripped
-}
-
-// eslint-disable-next-line @typescript-eslint/require-await
-async function basenameCommand(
-  _accessor: NotionAccessor,
-  _paths: PathSpec[],
-  texts: string[],
-  _opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const lines = texts.map(posixBasename)
-  const out: ByteSource = ENC.encode(lines.join('\n') + '\n')
-  return [out, new IOResult()]
-}
+import { basenameFn } from '../path_helper.ts'
 
 export const NOTION_BASENAME = command({
   name: 'basename',
   resource: ResourceName.NOTION,
   spec: specOf('basename'),
-  fn: basenameCommand,
+  fn: basenameFn,
 })

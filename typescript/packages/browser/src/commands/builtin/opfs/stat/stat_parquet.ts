@@ -41,7 +41,7 @@ async function statParquetCommand(
   const first = paths[0]
   if (first === undefined) return [null, new IOResult()]
   try {
-    const raw = await materialize(opfsStream(accessor.rootHandle, first))
+    const raw = await materialize(opfsStream(accessor, first))
     const out: ByteSource = parquetStat(raw)
     return [out, new IOResult({ cache: [first.stripPrefix] })]
   } catch (err) {

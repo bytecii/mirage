@@ -13,22 +13,22 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { copy } from './copy.ts'
 import { read } from './read.ts'
 import { writeBytes } from './write.ts'
 
 describe('opfs/copy', () => {
   it('duplicates a file', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/src'), new TextEncoder().encode('CP'))
-    await copy(root, spec('/src'), spec('/dst'))
-    expect(new TextDecoder().decode(await read(root, spec('/dst')))).toBe('CP')
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/src'), new TextEncoder().encode('CP'))
+    await copy(accessor, spec('/src'), spec('/dst'))
+    expect(new TextDecoder().decode(await read(accessor, spec('/dst')))).toBe('CP')
   })
   it('creates parent directories for the destination', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/src'), new TextEncoder().encode('X'))
-    await copy(root, spec('/src'), spec('/a/b/dst'))
-    expect(new TextDecoder().decode(await read(root, spec('/a/b/dst')))).toBe('X')
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/src'), new TextEncoder().encode('X'))
+    await copy(accessor, spec('/src'), spec('/a/b/dst'))
+    expect(new TextDecoder().decode(await read(accessor, spec('/a/b/dst')))).toBe('X')
   })
 })

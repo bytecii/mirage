@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
-  AsyncLineIterator,
+  numberLines,
   IOResult,
   ResourceName,
   command,
@@ -31,17 +31,6 @@ import { fileReadProvision } from './provision.ts'
 
 const ENC = new TextEncoder()
 
-async function* numberLinesStream(source: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
-  let num = 1
-  const lineIter = new AsyncLineIterator(source)
-  for await (const line of lineIter) {
-    yield ENC.encode(`     ${String(num)}\t`)
-    yield line
-    yield ENC.encode('\n')
-    num += 1
-  }
-}
-
 async function catCommand(
   accessor: EmailAccessor,
   paths: PathSpec[],
@@ -55,12 +44,12 @@ async function catCommand(
     if (first === undefined) return [null, new IOResult()]
     const data = await emailRead(accessor, first, opts.index ?? undefined)
     const io = new IOResult({ reads: { [first.stripPrefix]: data }, cache: [first.stripPrefix] })
-    if (nFlag) return [numberLinesStream(wrapBytes(data)), io]
+    if (nFlag) return [numberLines(wrapBytes(data)), io]
     return [data, io]
   }
   try {
     const source = resolveSource(opts.stdin, 'cat: missing operand')
-    if (nFlag) return [numberLinesStream(source), new IOResult()]
+    if (nFlag) return [numberLines(source), new IOResult()]
     return [source, new IOResult()]
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

@@ -13,26 +13,23 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { OPFSAccessor } from '../../accessor/opfs.ts'
 import { exists } from '../../core/opfs/exists.ts'
 import { read } from '../../core/opfs/read.ts'
 import { writeBytes } from '../../core/opfs/write.ts'
-import { fakeOPFSResource, makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { renameOp } from './rename.ts'
 
 describe('renameOp (opfs)', () => {
   it('moves a file', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/a'), new TextEncoder().encode('hi'))
-    await renameOp.fn(new OPFSAccessor(fakeOPFSResource(root)), spec('/a'), [spec('/b')], {})
-    expect(await exists(root, spec('/a'))).toBe(false)
-    expect(new TextDecoder().decode(await read(root, spec('/b')))).toBe('hi')
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/a'), new TextEncoder().encode('hi'))
+    await renameOp.fn(accessor, spec('/a'), [spec('/b')], {})
+    expect(await exists(accessor, spec('/a'))).toBe(false)
+    expect(new TextDecoder().decode(await read(accessor, spec('/b')))).toBe('hi')
   })
 
   it('throws when dst is not a PathSpec', () => {
-    const root = makeMockRoot()
-    expect(() =>
-      renameOp.fn(new OPFSAccessor(fakeOPFSResource(root)), spec('/a'), ['plain'], {}),
-    ).toThrow(/PathSpec destination/)
+    const accessor = makeMockAccessor()
+    expect(() => renameOp.fn(accessor, spec('/a'), ['plain'], {})).toThrow(/PathSpec destination/)
   })
 })

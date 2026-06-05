@@ -70,7 +70,7 @@ async function fmtCommand(
   if (paths.length > 0) {
     const parts: string[] = []
     for (const p of paths) {
-      parts.push(DEC.decode(await materialize(opfsStream(accessor.rootHandle, p))))
+      parts.push(DEC.decode(await materialize(opfsStream(accessor, p))))
     }
     const result: ByteSource = ENC.encode(fmtText(parts.join(''), width))
     return [result, new IOResult()]

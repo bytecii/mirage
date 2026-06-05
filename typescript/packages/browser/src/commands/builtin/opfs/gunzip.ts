@@ -12,100 +12,23 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  PathSpec,
-  ResourceName,
-  command,
-  gunzip,
-  materialize,
-  resolveSource,
-  specOf,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-} from '@struktoai/mirage-core'
-import { unlink as opfsUnlink } from '../../../core/opfs/unlink.ts'
-import { writeBytes as opfsWrite } from '../../../core/opfs/write.ts'
-import { stream as opfsStream } from '../../../core/opfs/stream.ts'
+import { ResourceName, command, specOf, gunzipGeneric } from '@struktoai/mirage-core'
 import type { OPFSAccessor } from '../../../accessor/opfs.ts'
-
-const ENC = new TextEncoder()
-
-function makePathSpec(original: string): PathSpec {
-  return new PathSpec({ original, directory: original, resolved: true })
-}
-
-async function gunzipCommand(
-  accessor: OPFSAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const keep = opts.flags.k === true
-  const stdoutMode = opts.flags.c === true
-  const testMode = opts.flags.t === true
-
-  if (paths.length === 0) {
-    let source: AsyncIterable<Uint8Array>
-    try {
-      source = resolveSource(opts.stdin, 'gunzip: missing input')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
-    const data = await materialize(source)
-    const out = await gunzip(data)
-    const result: ByteSource = out
-    return [result, new IOResult()]
-  }
-
-  if (testMode) {
-    for (const p of paths) {
-      const raw = await materialize(opfsStream(accessor.rootHandle, p))
-      await gunzip(raw)
-    }
-    return [null, new IOResult()]
-  }
-
-  if (stdoutMode) {
-    const chunks: Uint8Array[] = []
-    for (const p of paths) {
-      const raw = await materialize(opfsStream(accessor.rootHandle, p))
-      chunks.push(await gunzip(raw))
-    }
-    return [concat(chunks), new IOResult()]
-  }
-
-  const writes: Record<string, Uint8Array> = {}
-  for (const p of paths) {
-    const raw = await materialize(opfsStream(accessor.rootHandle, p))
-    const pStripped = p.stripPrefix
-    const outPath = pStripped.endsWith('.gz') ? pStripped.slice(0, -3) : pStripped + '.out'
-    const outData = await gunzip(raw)
-    await opfsWrite(accessor.rootHandle, makePathSpec(outPath), outData)
-    writes[outPath] = outData
-    if (!keep) await opfsUnlink(accessor.rootHandle, p)
-  }
-  return [null, new IOResult({ writes })]
-}
-
-function concat(chunks: Uint8Array[]): Uint8Array {
-  let total = 0
-  for (const c of chunks) total += c.byteLength
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const c of chunks) {
-    out.set(c, offset)
-    offset += c.byteLength
-  }
-  return out
-}
+import { stream as opfsStream } from '../../../core/opfs/stream.ts'
+import { writeBytes as opfsWrite } from '../../../core/opfs/write.ts'
+import { unlink as opfsUnlink } from '../../../core/opfs/unlink.ts'
 
 export const OPFS_GUNZIP = command({
   name: 'gunzip',
   resource: ResourceName.OPFS,
   spec: specOf('gunzip'),
-  fn: gunzipCommand,
+  fn: (accessor: OPFSAccessor, paths, _texts, opts) =>
+    gunzipGeneric(
+      paths,
+      opts,
+      (p) => opfsStream(accessor, p),
+      (p, d) => opfsWrite(accessor, p, d),
+      (p) => opfsUnlink(accessor, p),
+    ),
   write: true,
 })

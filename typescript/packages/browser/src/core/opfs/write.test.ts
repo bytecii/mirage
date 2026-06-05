@@ -13,23 +13,23 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { read } from './read.ts'
 import { writeBytes } from './write.ts'
 
-let root: FileSystemDirectoryHandle
+let accessor: ReturnType<typeof makeMockAccessor>
 beforeEach(() => {
-  root = makeMockRoot()
+  accessor = makeMockAccessor()
 })
 afterEach(() => undefined)
 
 describe('opfs/write.writeBytes', () => {
   it('writes bytes and is readable back', async () => {
-    await writeBytes(root, spec('/x'), new TextEncoder().encode('hi'))
-    expect(new TextDecoder().decode(await read(root, spec('/x')))).toBe('hi')
+    await writeBytes(accessor, spec('/x'), new TextEncoder().encode('hi'))
+    expect(new TextDecoder().decode(await read(accessor, spec('/x')))).toBe('hi')
   })
   it('creates parent directories on demand', async () => {
-    await writeBytes(root, spec('/a/b/c'), new TextEncoder().encode('deep'))
-    expect(new TextDecoder().decode(await read(root, spec('/a/b/c')))).toBe('deep')
+    await writeBytes(accessor, spec('/a/b/c'), new TextEncoder().encode('deep'))
+    expect(new TextDecoder().decode(await read(accessor, spec('/a/b/c')))).toBe('deep')
   })
 })

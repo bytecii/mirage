@@ -12,41 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { stream as ramStream } from '../../../core/ram/stream.ts'
 import type { RAMAccessor } from '../../../accessor/ram.ts'
-import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
-import { gunzip } from '../../../utils/compress.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { stream as ramStream } from '../../../core/ram/stream.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
+import { zcatGeneric } from '../generic/zcat.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { readStdinAsync } from '../utils/stream.ts'
-
-const ENC = new TextEncoder()
-
-async function zcatCommand(
-  accessor: RAMAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  let raw: Uint8Array
-  if (paths.length > 0 && paths[0] !== undefined) {
-    raw = await materialize(ramStream(accessor, paths[0]))
-  } else {
-    const stdinBytes = await readStdinAsync(opts.stdin)
-    if (stdinBytes === null) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('zcat: missing input\n') })]
-    }
-    raw = stdinBytes
-  }
-  const out = await gunzip(raw)
-  const result: ByteSource = out
-  return [result, new IOResult()]
-}
 
 export const RAM_ZCAT = command({
   name: 'zcat',
   resource: ResourceName.RAM,
   spec: specOf('zcat'),
-  fn: zcatCommand,
+  fn: (accessor: RAMAccessor, paths, _texts, opts) =>
+    zcatGeneric(paths, opts, (p) => ramStream(accessor, p)),
 })

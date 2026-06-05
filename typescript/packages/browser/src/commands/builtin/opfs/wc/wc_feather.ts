@@ -41,7 +41,7 @@ async function wcFeatherCommand(
   const first = paths[0]
   if (first === undefined) return [null, new IOResult()]
   try {
-    const raw = await materialize(opfsStream(accessor.rootHandle, first))
+    const raw = await materialize(opfsStream(accessor, first))
     const rows = featherWc(raw)
     const out: ByteSource = ENC.encode(`${String(rows)}\t${first.original}\n`)
     return [out, new IOResult({ cache: [first.stripPrefix] })]

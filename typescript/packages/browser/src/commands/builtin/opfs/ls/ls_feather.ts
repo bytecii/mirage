@@ -41,10 +41,10 @@ async function lsFeatherCommand(
   if (first === undefined) {
     return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('ls: missing operand\n') })]
   }
-  const stat = await opfsStat(accessor.rootHandle, first)
+  const stat = await opfsStat(accessor, first)
   const meta = { size: stat.size ?? 0, modified: stat.modified, name: stat.name }
   try {
-    const raw = await materialize(opfsStream(accessor.rootHandle, first))
+    const raw = await materialize(opfsStream(accessor, first))
     const out: ByteSource = featherLs(raw, meta)
     return [out, new IOResult({ cache: [first.stripPrefix] })]
   } catch {

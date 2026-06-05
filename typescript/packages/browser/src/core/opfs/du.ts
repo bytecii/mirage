@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '@struktoai/mirage-core'
+import type { OPFSAccessor } from '../../accessor/opfs.ts'
 import { isNotFound, iterEntries, norm, resolveDirHandle, resolveParentDirHandle } from './utils.ts'
 
 async function walkSizes(dir: FileSystemDirectoryHandle): Promise<number> {
@@ -95,14 +96,15 @@ async function sizeOfPath(root: FileSystemDirectoryHandle, virtual: string): Pro
   }
 }
 
-export async function du(root: FileSystemDirectoryHandle, p: PathSpec): Promise<number> {
-  return sizeOfPath(root, p.stripPrefix)
+export async function du(accessor: OPFSAccessor, p: PathSpec): Promise<number> {
+  return sizeOfPath(accessor.rootHandle, p.stripPrefix)
 }
 
 export async function duAll(
-  root: FileSystemDirectoryHandle,
+  accessor: OPFSAccessor,
   p: PathSpec,
 ): Promise<[entries: [string, number][], total: number]> {
+  const root = accessor.rootHandle
   const virtual = norm(p.stripPrefix)
   const entries: [string, number][] = []
   try {

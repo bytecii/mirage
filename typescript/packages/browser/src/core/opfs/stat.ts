@@ -13,9 +13,11 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { FileStat, FileType, guessType, type PathSpec } from '@struktoai/mirage-core'
+import type { OPFSAccessor } from '../../accessor/opfs.ts'
 import { isNotFound, resolveDirHandle, resolveParentDirHandle, splitSegments } from './utils.ts'
 
-export async function stat(root: FileSystemDirectoryHandle, p: PathSpec): Promise<FileStat> {
+export async function stat(accessor: OPFSAccessor, p: PathSpec): Promise<FileStat> {
+  const root = accessor.rootHandle
   const virtual = p.stripPrefix
   const segs = splitSegments(virtual)
   const last = segs.at(-1)

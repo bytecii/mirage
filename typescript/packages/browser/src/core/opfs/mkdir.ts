@@ -13,13 +13,15 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '@struktoai/mirage-core'
+import type { OPFSAccessor } from '../../accessor/opfs.ts'
 import { isNotFound, resolveDirHandle, resolveParentDirHandle, splitSegments } from './utils.ts'
 
 export async function mkdir(
-  root: FileSystemDirectoryHandle,
+  accessor: OPFSAccessor,
   path: PathSpec,
   parents = false,
 ): Promise<void> {
+  const root = accessor.rootHandle
   const virtual = path.stripPrefix
   const segs = splitSegments(virtual)
   if (segs.length === 0) return

@@ -12,36 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { BoxAccessor } from '../../../accessor/box.ts'
-import { IOResult, type ByteSource } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-
-const ENC = new TextEncoder()
-
-function dirnameOf(p: string): string {
-  const trimmed = p.replace(/\/+$/, '')
-  const idx = trimmed.lastIndexOf('/')
-  if (idx === -1) return '.'
-  if (idx === 0) return '/'
-  return trimmed.slice(0, idx)
-}
-
-function dirnameCommand(
-  _accessor: BoxAccessor,
-  _paths: PathSpec[],
-  texts: string[],
-  _opts: CommandOpts,
-): CommandFnResult {
-  const lines = texts.map((t) => dirnameOf(t))
-  const out: ByteSource = ENC.encode(lines.join('\n') + '\n')
-  return [out, new IOResult()]
-}
+import { dirnameFn } from '../path_helper.ts'
 
 export const BOX_DIRNAME = command({
   name: 'dirname',
   resource: ResourceName.BOX,
   spec: specOf('dirname'),
-  fn: dirnameCommand,
+  fn: dirnameFn,
 })

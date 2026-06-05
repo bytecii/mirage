@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { PathSpec } from '@struktoai/mirage-core'
+import type { OPFSAccessor } from '../../accessor/opfs.ts'
 import { SCOPE_ERROR } from './constants.ts'
 import { readdir } from './readdir.ts'
 
@@ -33,7 +34,7 @@ function basenameOf(p: string): string {
 }
 
 export async function resolveGlob(
-  root: FileSystemDirectoryHandle,
+  accessor: OPFSAccessor,
   paths: readonly PathSpec[],
 ): Promise<PathSpec[]> {
   const result: PathSpec[] = []
@@ -47,7 +48,7 @@ export async function resolveGlob(
         resolved: true,
         prefix: p.prefix,
       })
-      const entries = await readdir(root, dirSpec)
+      const entries = await readdir(accessor, dirSpec)
       const matched: PathSpec[] = []
       for (const e of entries) {
         if (fnmatch(basenameOf(e), p.pattern)) {

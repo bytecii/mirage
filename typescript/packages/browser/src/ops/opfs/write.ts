@@ -27,6 +27,6 @@ export const writeOp: RegisteredOp = {
     if (!(data instanceof Uint8Array)) {
       throw new TypeError('write op requires a Uint8Array as the first arg')
     }
-    return writeBytes(accessor.rootHandle, path, data)
+    return writeBytes(accessor, path, data)
   },
 }

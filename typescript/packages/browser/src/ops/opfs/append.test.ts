@@ -13,29 +13,21 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { OPFSAccessor } from '../../accessor/opfs.ts'
 import { read } from '../../core/opfs/read.ts'
 import { writeBytes } from '../../core/opfs/write.ts'
-import { fakeOPFSResource, makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { appendOp } from './append.ts'
 
 describe('appendOp (opfs)', () => {
   it('appends to existing file', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/x'), new TextEncoder().encode('A'))
-    await appendOp.fn(
-      new OPFSAccessor(fakeOPFSResource(root)),
-      spec('/x'),
-      [new TextEncoder().encode('B')],
-      {},
-    )
-    expect(new TextDecoder().decode(await read(root, spec('/x')))).toBe('AB')
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/x'), new TextEncoder().encode('A'))
+    await appendOp.fn(accessor, spec('/x'), [new TextEncoder().encode('B')], {})
+    expect(new TextDecoder().decode(await read(accessor, spec('/x')))).toBe('AB')
   })
 
   it('throws on non-Uint8Array', () => {
-    const root = makeMockRoot()
-    expect(() =>
-      appendOp.fn(new OPFSAccessor(fakeOPFSResource(root)), spec('/x'), ['nope'], {}),
-    ).toThrow(/Uint8Array/)
+    const accessor = makeMockAccessor()
+    expect(() => appendOp.fn(accessor, spec('/x'), ['nope'], {})).toThrow(/Uint8Array/)
   })
 })

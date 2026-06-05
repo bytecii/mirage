@@ -163,7 +163,7 @@ export async function find(
 ): Promise<string[]> {
   const virtual = norm(p.stripPrefix)
   const full = resolveSafe(accessor.root, virtual)
-  const baseDepth = (virtual.match(/\//g) ?? []).length
+  const baseDepth = virtual === '/' ? 0 : (virtual.match(/\//g) ?? []).length
   const results: string[] = []
   await walk({ accessor, base: virtual, baseDepth, options, results }, full, virtual, 0)
   results.sort()

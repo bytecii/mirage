@@ -13,22 +13,22 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { stream } from './stream.ts'
 import { writeBytes } from './write.ts'
 
 describe('opfs/stream', () => {
   it('yields all bytes', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/x'), new TextEncoder().encode('hello stream'))
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/x'), new TextEncoder().encode('hello stream'))
     const chunks: Uint8Array[] = []
-    for await (const c of stream(root, spec('/x'))) chunks.push(c)
+    for await (const c of stream(accessor, spec('/x'))) chunks.push(c)
     const decoded = chunks.map((c) => new TextDecoder().decode(c)).join('')
     expect(decoded).toBe('hello stream')
   })
   it('throws "file not found" on missing', async () => {
-    const root = makeMockRoot()
-    const it = stream(root, spec('/missing'))
+    const accessor = makeMockAccessor()
+    const it = stream(accessor, spec('/missing'))
     await expect(it[Symbol.asyncIterator]().next()).rejects.toThrow(/file not found/)
   })
 })

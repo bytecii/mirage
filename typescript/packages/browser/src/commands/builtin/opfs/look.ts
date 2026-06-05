@@ -12,67 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  ResourceName,
-  command,
-  materialize,
-  readStdinAsync,
-  specOf,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-  type PathSpec,
-} from '@struktoai/mirage-core'
-import { stream as opfsStream } from '../../../core/opfs/stream.ts'
+import { ResourceName, command, specOf, lookGeneric } from '@struktoai/mirage-core'
 import type { OPFSAccessor } from '../../../accessor/opfs.ts'
-
-const ENC = new TextEncoder()
-const DEC = new TextDecoder('utf-8', { fatal: false })
-
-function splitLinesNoTrailing(text: string): string[] {
-  const stripped = text.endsWith('\n') ? text.slice(0, -1) : text
-  return stripped === '' ? [] : stripped.split('\n')
-}
-
-async function lookCommand(
-  accessor: OPFSAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  if (texts.length === 0) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('look: missing prefix\n') })]
-  }
-  const prefix = texts[0] ?? ''
-  const caseInsensitive = opts.flags.f === true
-  let raw: Uint8Array
-  if (paths.length > 0) {
-    const first = paths[0]
-    if (first === undefined) return [null, new IOResult()]
-    raw = await materialize(opfsStream(accessor.rootHandle, first))
-  } else {
-    const stdinData = await readStdinAsync(opts.stdin)
-    if (stdinData === null) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('look: missing input\n') })]
-    }
-    raw = stdinData
-  }
-  const lines = splitLinesNoTrailing(DEC.decode(raw))
-  const cmpPrefix = caseInsensitive ? prefix.toLowerCase() : prefix
-  const matched: string[] = []
-  for (const line of lines) {
-    const cmpLine = caseInsensitive ? line.toLowerCase() : line
-    if (cmpLine.startsWith(cmpPrefix)) matched.push(line)
-  }
-  if (matched.length === 0) return [null, new IOResult({ exitCode: 1 })]
-  const result: ByteSource = ENC.encode(matched.join('\n') + '\n')
-  return [result, new IOResult()]
-}
+import { stream as opfsStream } from '../../../core/opfs/stream.ts'
 
 export const OPFS_LOOK = command({
   name: 'look',
   resource: ResourceName.OPFS,
   spec: specOf('look'),
-  fn: lookCommand,
+  fn: (accessor: OPFSAccessor, paths, texts, opts) =>
+    lookGeneric(paths, texts, opts, (p) => opfsStream(accessor, p)),
 })

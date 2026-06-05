@@ -12,70 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  AsyncLineIterator,
-  IOResult,
-  ResourceName,
-  command,
-  resolveSource,
-  specOf,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-  type PathSpec,
-} from '@struktoai/mirage-core'
-import { stream as opfsStream } from '../../../core/opfs/stream.ts'
+import { ResourceName, command, specOf, tacGeneric } from '@struktoai/mirage-core'
 import type { OPFSAccessor } from '../../../accessor/opfs.ts'
-
-const ENC = new TextEncoder()
-
-async function collectLines(source: AsyncIterable<Uint8Array>): Promise<Uint8Array[]> {
-  const lines: Uint8Array[] = []
-  const iter = new AsyncLineIterator(source)
-  for await (const line of iter) lines.push(line)
-  return lines
-}
-
-async function tacCommand(
-  accessor: OPFSAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const cache: string[] = []
-  let source: AsyncIterable<Uint8Array>
-  if (paths.length > 0) {
-    const first = paths[0]
-    if (first === undefined) return [null, new IOResult()]
-    source = opfsStream(accessor.rootHandle, first)
-    cache.push(first.original)
-  } else {
-    try {
-      source = resolveSource(opts.stdin, 'tac: missing input')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
-  }
-  const lines = await collectLines(source)
-  lines.reverse()
-  let total = 0
-  for (const l of lines) total += l.byteLength + 1
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const l of lines) {
-    out.set(l, offset)
-    offset += l.byteLength
-    out[offset] = 0x0a
-    offset += 1
-  }
-  const result: ByteSource = out
-  return [result, new IOResult({ cache })]
-}
+import { stream as opfsStream } from '../../../core/opfs/stream.ts'
 
 export const OPFS_TAC = command({
   name: 'tac',
   resource: ResourceName.OPFS,
   spec: specOf('tac'),
-  fn: tacCommand,
+  fn: (accessor: OPFSAccessor, paths, _texts, opts) =>
+    tacGeneric(paths, opts, (p) => opfsStream(accessor, p)),
 })

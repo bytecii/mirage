@@ -29,15 +29,15 @@ describe.each(NATIVE_BACKENDS)('native find (%s backend)', (kind) => {
     }
   })
 
-  it('find -mindepth excludes top-level files', async () => {
+  it('find -mindepth 2 excludes top-level files', async () => {
     const env = makeEnv(kind)
     try {
       env.createFile('a.txt', ENC.encode('a'))
       env.createFile('sub/b.txt', ENC.encode('b'))
       const resultAll = await env.mirage('find /data -type f')
-      const resultDeep = await env.mirage('find /data -mindepth 1 -type f')
+      const resultDeep = await env.mirage('find /data -mindepth 2 -type f')
       expect(resultAll).toContain('a.txt')
-      expect(resultDeep).not.toContain('a.txt')
+      expect(resultDeep).not.toContain('/data/a.txt')
       expect(resultDeep).toContain('b.txt')
     } finally {
       await env.cleanup()

@@ -27,6 +27,6 @@ export const truncateOp: RegisteredOp = {
     if (typeof length !== 'number') {
       throw new TypeError('truncate op requires a number length as the first arg')
     }
-    return coreTruncate(accessor.rootHandle, path, length)
+    return coreTruncate(accessor, path, length)
   },
 }

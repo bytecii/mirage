@@ -13,15 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { OPFSAccessor } from '../../accessor/opfs.ts'
 import { exists } from '../../core/opfs/exists.ts'
-import { fakeOPFSResource, makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { mkdirOp } from './mkdir.ts'
 
 describe('mkdirOp (opfs)', () => {
   it('creates nested directories (parents=true default)', async () => {
-    const root = makeMockRoot()
-    await mkdirOp.fn(new OPFSAccessor(fakeOPFSResource(root)), spec('/a/b/c'), [], {})
-    expect(await exists(root, spec('/a/b/c'))).toBe(true)
+    const accessor = makeMockAccessor()
+    await mkdirOp.fn(accessor, spec('/a/b/c'), [], {})
+    expect(await exists(accessor, spec('/a/b/c'))).toBe(true)
   })
 })

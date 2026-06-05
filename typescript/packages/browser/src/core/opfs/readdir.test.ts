@@ -13,22 +13,22 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { mkdir } from './mkdir.ts'
 import { readdir } from './readdir.ts'
 import { writeBytes } from './write.ts'
 
 describe('opfs/readdir', () => {
   it('lists entries with full virtual paths sorted', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/b'), new Uint8Array())
-    await writeBytes(root, spec('/a'), new Uint8Array())
-    expect(await readdir(root, spec('/'))).toEqual(['/a', '/b'])
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/b'), new Uint8Array())
+    await writeBytes(accessor, spec('/a'), new Uint8Array())
+    expect(await readdir(accessor, spec('/'))).toEqual(['/a', '/b'])
   })
   it('lists nested directory', async () => {
-    const root = makeMockRoot()
-    await mkdir(root, spec('/sub'))
-    await writeBytes(root, spec('/sub/x'), new Uint8Array())
-    expect(await readdir(root, spec('/sub'))).toEqual(['/sub/x'])
+    const accessor = makeMockAccessor()
+    await mkdir(accessor, spec('/sub'))
+    await writeBytes(accessor, spec('/sub/x'), new Uint8Array())
+    expect(await readdir(accessor, spec('/sub'))).toEqual(['/sub/x'])
   })
 })

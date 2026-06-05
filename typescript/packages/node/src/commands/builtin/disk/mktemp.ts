@@ -12,68 +12,21 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  IOResult,
-  PathSpec,
-  ResourceName,
-  command,
-  specOf,
-  type ByteSource,
-  type CommandFnResult,
-  type CommandOpts,
-} from '@struktoai/mirage-core'
-import { writeBytes as diskWrite } from '../../../core/disk/write.ts'
-import { mkdir as diskMkdir } from '../../../core/disk/mkdir.ts'
+import { ResourceName, command, mktempGeneric, specOf } from '@struktoai/mirage-core'
 import type { DiskAccessor } from '../../../accessor/disk.ts'
-
-const ENC = new TextEncoder()
-
-function randomSuffix(): string {
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
-  let out = ''
-  for (let i = 0; i < 8; i++) {
-    out += chars[Math.floor(Math.random() * chars.length)] ?? ''
-  }
-  return out
-}
-
-function makePathSpec(original: string): PathSpec {
-  return new PathSpec({ original, directory: original, resolved: true })
-}
-
-async function mktempCommand(
-  accessor: DiskAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const tFlag = opts.flags.t === true
-  const parent = tFlag ? '/tmp' : typeof opts.flags.p === 'string' ? opts.flags.p : '/tmp'
-  const suffix = randomSuffix()
-  const templateArg = texts[0]
-  const template = templateArg !== undefined && templateArg !== '' ? templateArg : 'tmp.XXXXXXXXXX'
-  const xRun = /X+$/.exec(template)
-  let name: string
-  if (xRun !== null) {
-    name = template.slice(0, xRun.index) + suffix
-  } else {
-    name = `${template}.${suffix}`
-  }
-  const path = `${parent.replace(/\/+$/, '')}/${name}`
-  await diskMkdir(accessor, makePathSpec(parent), true)
-  if (opts.flags.d === true) {
-    await diskMkdir(accessor, makePathSpec(path))
-  } else {
-    await diskWrite(accessor, makePathSpec(path), new Uint8Array(0))
-  }
-  const result: ByteSource = ENC.encode(path + '\n')
-  return [result, new IOResult()]
-}
+import { mkdir as diskMkdir } from '../../../core/disk/mkdir.ts'
+import { writeBytes as diskWrite } from '../../../core/disk/write.ts'
 
 export const DISK_MKTEMP = command({
   name: 'mktemp',
   resource: ResourceName.DISK,
   spec: specOf('mktemp'),
-  fn: mktempCommand,
+  fn: (accessor: DiskAccessor, _paths, texts, opts) =>
+    mktempGeneric(
+      texts,
+      opts,
+      (p, parents) => diskMkdir(accessor, p, parents),
+      (p, d) => diskWrite(accessor, p, d),
+    ),
   write: true,
 })

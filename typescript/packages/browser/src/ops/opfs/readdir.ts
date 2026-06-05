@@ -22,5 +22,5 @@ export const readdirOp: RegisteredOp = {
   resource: ResourceName.OPFS,
   filetype: null,
   write: false,
-  fn: (accessor: OPFSAccessor, path: PathSpec) => coreReaddir(accessor.rootHandle, path),
+  fn: (accessor: OPFSAccessor, path: PathSpec) => coreReaddir(accessor, path),
 }

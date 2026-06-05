@@ -13,21 +13,21 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { du } from './du.ts'
 import { mkdir } from './mkdir.ts'
 import { writeBytes } from './write.ts'
 
 describe('opfs/du', () => {
   it('sums file sizes under a path', async () => {
-    const root = makeMockRoot()
-    await mkdir(root, spec('/d'))
-    await writeBytes(root, spec('/d/a'), new Uint8Array([1, 2, 3]))
-    await writeBytes(root, spec('/d/b'), new Uint8Array([4, 5]))
-    expect(await du(root, spec('/d'))).toBe(5)
+    const accessor = makeMockAccessor()
+    await mkdir(accessor, spec('/d'))
+    await writeBytes(accessor, spec('/d/a'), new Uint8Array([1, 2, 3]))
+    await writeBytes(accessor, spec('/d/b'), new Uint8Array([4, 5]))
+    expect(await du(accessor, spec('/d'))).toBe(5)
   })
   it('returns 0 for missing', async () => {
-    const root = makeMockRoot()
-    expect(await du(root, spec('/missing'))).toBe(0)
+    const accessor = makeMockAccessor()
+    expect(await du(accessor, spec('/missing'))).toBe(0)
   })
 })

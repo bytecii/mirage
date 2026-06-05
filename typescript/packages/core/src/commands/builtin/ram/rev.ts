@@ -12,60 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { stream as ramStream } from '../../../core/ram/stream.ts'
 import type { RAMAccessor } from '../../../accessor/ram.ts'
-import { AsyncLineIterator } from '../../../io/async_line_iterator.ts'
-import { IOResult } from '../../../io/types.ts'
-import { ResourceName, type PathSpec } from '../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { stream as ramStream } from '../../../core/ram/stream.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
+import { revGeneric } from '../generic/rev.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { resolveSource } from '../utils/stream.ts'
-
-const ENC = new TextEncoder()
-const DEC = new TextDecoder('utf-8', { fatal: false })
-
-function reverseString(s: string): string {
-  return Array.from(s).reverse().join('')
-}
-
-async function* revStream(source: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
-  const iter = new AsyncLineIterator(source)
-  for await (const line of iter) {
-    yield ENC.encode(reverseString(DEC.decode(line)) + '\n')
-  }
-}
-
-async function* revMulti(
-  accessor: RAMAccessor,
-  paths: readonly PathSpec[],
-): AsyncIterable<Uint8Array> {
-  for (const p of paths) {
-    for await (const chunk of revStream(ramStream(accessor, p))) yield chunk
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/require-await
-async function revCommand(
-  accessor: RAMAccessor,
-  paths: PathSpec[],
-  texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  if (paths.length > 0) {
-    return [revMulti(accessor, paths), new IOResult()]
-  }
-  try {
-    const source = resolveSource(opts.stdin, 'rev: missing operand')
-    return [revStream(source), new IOResult()]
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-  }
-}
 
 export const RAM_REV = command({
   name: 'rev',
   resource: ResourceName.RAM,
   spec: specOf('rev'),
-  fn: revCommand,
+  fn: (accessor: RAMAccessor, paths, _texts, opts) =>
+    revGeneric(paths, opts, (p) => ramStream(accessor, p)),
 })

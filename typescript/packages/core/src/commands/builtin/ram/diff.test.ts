@@ -71,7 +71,7 @@ describe('diff', () => {
     expect(r.out).toBe('')
   })
 
-  it('different files show +/- lines', async () => {
+  it('different files show < / > lines (normal diff)', async () => {
     const resource = new RAMResource()
     resource.store.files.set('/tmp/a.txt', ENC.encode('hello\n'))
     resource.store.files.set('/tmp/b.txt', ENC.encode('world\n'))
@@ -80,8 +80,8 @@ describe('diff', () => {
       PathSpec.fromStrPath('/tmp/b.txt'),
     ])
     expect(r.exitCode).toBe(1)
-    expect(r.out).toContain('-hello')
-    expect(r.out).toContain('+world')
+    expect(r.out).toContain('< hello')
+    expect(r.out).toContain('> world')
   })
 
   it('-i makes case-different files identical', async () => {

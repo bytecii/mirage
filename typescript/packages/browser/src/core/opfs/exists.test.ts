@@ -13,18 +13,18 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeMockRoot, spec } from '../../test-utils.ts'
+import { makeMockAccessor, spec } from '../../test-utils.ts'
 import { exists } from './exists.ts'
 import { writeBytes } from './write.ts'
 
 describe('opfs/exists', () => {
   it('true for existing file', async () => {
-    const root = makeMockRoot()
-    await writeBytes(root, spec('/x'), new Uint8Array())
-    expect(await exists(root, spec('/x'))).toBe(true)
+    const accessor = makeMockAccessor()
+    await writeBytes(accessor, spec('/x'), new Uint8Array())
+    expect(await exists(accessor, spec('/x'))).toBe(true)
   })
   it('false for missing', async () => {
-    const root = makeMockRoot()
-    expect(await exists(root, spec('/nope'))).toBe(false)
+    const accessor = makeMockAccessor()
+    expect(await exists(accessor, spec('/nope'))).toBe(false)
   })
 })
