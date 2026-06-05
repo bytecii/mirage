@@ -120,7 +120,7 @@ class RedisStore:
         return val.decode() if isinstance(val, bytes) else val
 
     async def set_modified(self, path: str, ts: str) -> None:
-        await self._client.set(self._mk(path), ts)
+        await self._client.set(self._mk(path), ts.replace("+00:00", "Z"))
 
     async def del_modified(self, path: str) -> None:
         await self._client.delete(self._mk(path))

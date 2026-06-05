@@ -104,3 +104,14 @@ async def test_write_bytes_sets_modified(accessor):
                       PathSpec(original="/file.txt", directory="/file.txt"),
                       b"data")
     assert await accessor.store.get_modified("/file.txt") is not None
+
+
+@pytest.mark.asyncio
+async def test_write_bytes_modified_uses_z_suffix(accessor):
+    await write_bytes(accessor,
+                      PathSpec(original="/file.txt", directory="/file.txt"),
+                      b"data")
+    modified = await accessor.store.get_modified("/file.txt")
+    assert modified is not None
+    assert modified.endswith("Z")
+    assert "+00:00" not in modified
