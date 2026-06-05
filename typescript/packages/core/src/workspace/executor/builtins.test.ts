@@ -42,7 +42,7 @@ import {
   handleTrap,
   handleUnset,
   handleWhoami,
-} from './builtins.ts'
+} from './builtins/index.ts'
 import { ReturnSignal } from './command.ts'
 
 function wireMount(mount: Mount): void {

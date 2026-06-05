@@ -458,7 +458,7 @@ export {
   handleTest,
   handleTrap,
   handleUnset,
-} from './workspace/executor/builtins.ts'
+} from './workspace/executor/builtins/index.ts'
 export { NodeType, Redirect, type RedirectInit, RedirectKind, ShellBuiltin } from './shell/types.ts'
 export {
   getCaseItems,

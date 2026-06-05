@@ -91,7 +91,7 @@ import {
   handleTrap,
   handleUnset,
   handleWhoami,
-} from '../executor/builtins.ts'
+} from '../executor/builtins/index.ts'
 import { handleBackground } from '../executor/jobs.ts'
 import { handleConnection, handlePipe, handleSubshell } from '../executor/pipes.ts'
 import { handleRedirect } from '../executor/redirect.ts'
