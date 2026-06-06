@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 PATH_TREE_ID = "__path_tree__"
+PAGE_CHUNK_BATCH_SIZE = 100
 
 
 async def fetch_path_tree(accessor) -> str:
@@ -29,16 +30,25 @@ async def iter_page_chunks(accessor, slug: str) -> AsyncIterator[str]:
 
 
 async def page_chunks(accessor, slug: str) -> list[dict[str, Any]]:
-    result = accessor.collection.get(where={accessor.config.slug_field: slug},
-                                     include=["documents", "metadatas"])
-    documents = result.get("documents") or []
-    metadatas = result.get("metadatas") or [{} for _ in documents]
     chunks: list[dict[str, Any]] = []
-    for document, metadata in zip(documents, metadatas, strict=False):
-        chunks.append({
-            "document": "" if document is None else str(document),
-            "metadata": metadata if isinstance(metadata, dict) else {},
-        })
+    offset = 0
+    while True:
+        result = accessor.collection.get(
+            where={accessor.config.slug_field: slug},
+            include=["documents", "metadatas"],
+            limit=PAGE_CHUNK_BATCH_SIZE,
+            offset=offset,
+        )
+        documents = result.get("documents") or []
+        metadatas = result.get("metadatas") or [{} for _ in documents]
+        for document, metadata in zip(documents, metadatas, strict=False):
+            chunks.append({
+                "document": "" if document is None else str(document),
+                "metadata": metadata if isinstance(metadata, dict) else {},
+            })
+        if len(documents) < PAGE_CHUNK_BATCH_SIZE:
+            break
+        offset += PAGE_CHUNK_BATCH_SIZE
     return sorted(chunks,
                   key=lambda item: chunk_index(
                       item["metadata"], accessor.config.chunk_index_field))

@@ -12,10 +12,12 @@ class FakeCollection:
     def __init__(self) -> None:
         self.documents: dict[str, str] = {}
         self.chunks: dict[str, list[dict]] = {}
+        self.get_calls: list[dict] = []
         self.queries: list[dict] = []
         self.contains_queries: list[dict] = []
 
     def get(self, **kwargs):
+        self.get_calls.append(kwargs)
         ids = kwargs.get("ids")
         if ids == ["__path_tree__"]:
             return {"documents": [self.documents["__path_tree__"]]}
@@ -26,6 +28,12 @@ class FakeCollection:
             slug = slug.get("$eq")
         if slug is not None:
             chunks = self.chunks.get(slug, [])
+            offset = kwargs.get("offset") or 0
+            limit = kwargs.get("limit")
+            if limit is not None:
+                chunks = chunks[offset:offset + limit]
+            elif offset:
+                chunks = chunks[offset:]
             return {
                 "documents": [item["document"] for item in chunks],
                 "metadatas": [item["metadata"] for item in chunks],

@@ -1,6 +1,23 @@
 import pytest
 
-from mirage.core.chroma import read
+from mirage.core.chroma import _client, read
+
+
+@pytest.mark.asyncio
+async def test_page_chunks_reads_in_batches(monkeypatch, chroma_accessor,
+                                            chroma_collection):
+    monkeypatch.setattr(_client, "PAGE_CHUNK_BATCH_SIZE", 1)
+
+    chunks = await _client.page_chunks(chroma_accessor, "guides/quickstart")
+
+    assert [chunk["document"] for chunk in chunks] == ["first", "second"]
+    page_calls = [
+        call for call in chroma_collection.get_calls if call.get("where") == {
+            "page_slug": "guides/quickstart"
+        }
+    ]
+    assert [call["limit"] for call in page_calls] == [1, 1, 1]
+    assert [call["offset"] for call in page_calls] == [0, 1, 2]
 
 
 @pytest.mark.asyncio
