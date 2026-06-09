@@ -57,6 +57,7 @@ async function treeRecurse(
     warnings.push(`tree: '${path.original}': ${msg}`)
     return lines
   }
+  entries.sort()
   const filtered: [PathSpec, FileStat][] = []
   for (const entry of entries) {
     try {
