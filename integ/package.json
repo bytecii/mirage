@@ -13,11 +13,13 @@
     "mongodb": "tsx mongodb.ts",
     "notion": "tsx notion.ts",
     "postgres": "tsx postgres.ts",
-    "safeguard": "tsx safeguard.ts"
+    "safeguard": "tsx safeguard.ts",
+    "chroma": "tsx chroma.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.0.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "chromadb": "^3.4.3",
     "@struktoai/mirage-browser": "workspace:*",
     "@struktoai/mirage-core": "workspace:*",
     "@struktoai/mirage-node": "workspace:*",

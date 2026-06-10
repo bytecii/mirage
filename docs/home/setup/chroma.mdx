@@ -1,0 +1,107 @@
+---
+title: Chroma
+icon: database
+description: Prepare a ChromaDB collection for the Chroma resource.
+---
+
+## Requirements
+
+Mirage mounts an existing ChromaDB collection as a read-only virtual
+filesystem. The collection must already contain:
+
+- One path tree document with ID `__path_tree__`.
+- One or more page chunk documents.
+- A metadata field that maps each chunk to a virtual file path slug.
+- A metadata field that orders chunks within each file.
+
+The Python resource connects via Chroma's `AsyncHttpClient`.
+
+## Path Tree Document
+
+The path tree document defines the filesystem tree. Store it in Chroma with the
+ID `__path_tree__`. Its document content must be either plain JSON or
+gzip-compressed base64 JSON.
+
+```json
+{
+  "README.md": {
+    "size": 1024,
+    "created_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-02T00:00:00Z"
+  },
+  "guides/quickstart.md": {
+    "size": 4096,
+    "updated_at": "2026-01-03T00:00:00Z"
+  }
+}
+```
+
+Path tree keys become file paths below the Mirage mount. Use forward slashes to
+create directories.
+
+Path rules:
+
+- Do not use an empty path.
+- Do not use `.`, `..`, or empty path segments.
+- Keep every path unique after trimming leading and trailing slashes.
+- Do not use a path both as a file and as a directory prefix. For example,
+  `guides` and `guides/quickstart.md` cannot both be files.
+
+Metadata fields are optional. Mirage uses `size`, `created_at`, and
+`updated_at` when present.
+
+## Chunk Documents
+
+Each file is materialized from one or more Chroma documents. Every chunk must
+include metadata that identifies the file slug and chunk order:
+
+```json
+{
+  "page_slug": "guides/quickstart.md",
+  "chunk_index": 0
+}
+```
+
+Default metadata fields:
+
+| Field | Default | Purpose |
+| ----- | ------- | ------- |
+| Slug field | `page_slug` | File path in the virtual tree |
+| Chunk index field | `chunk_index` | Sort order when assembling file content |
+
+If your collection uses different metadata names, configure
+`ChromaConfig(slug_field="...", chunk_index_field="...")`.
+
+## Environment Variables
+
+```bash
+# .env.development
+CHROMA_COLLECTION=knowledge
+CHROMA_HOST=localhost
+CHROMA_PORT=8000
+CHROMA_SSL=false
+CHROMA_SLUG_FIELD=page_slug
+CHROMA_CHUNK_INDEX_FIELD=chunk_index
+CHROMA_EXAMPLE_QUERY=getting started
+```
+
+## Validate the Collection
+
+Before mounting, verify that the collection contains the path tree document and
+at least one chunk with matching slug metadata:
+
+```python
+import chromadb
+
+client = chromadb.HttpClient(host="localhost", port=8000)
+collection = client.get_collection("knowledge")
+
+tree = collection.get(ids=["__path_tree__"])
+chunks = collection.get(where={"page_slug": "guides/quickstart.md"})
+
+print(tree["documents"][0])
+print(len(chunks["documents"]))
+```
+
+For Python configuration, see the [Python Chroma Setup](/python/setup/chroma)
+guide.

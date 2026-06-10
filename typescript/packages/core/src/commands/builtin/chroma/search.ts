@@ -1,0 +1,69 @@
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+import type { ChromaAccessor } from '../../../accessor/chroma.ts'
+import { resolveGlob } from '../../../core/chroma/glob.ts'
+import { searchSegments } from '../../../core/chroma/search.ts'
+import { IOResult } from '../../../io/types.ts'
+import { PathSpec, ResourceName } from '../../../types.ts'
+import { rstripSlash } from '../../../util/slash.ts'
+import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { specOf } from '../../spec/builtins.ts'
+
+const ENC = new TextEncoder()
+
+function defaultPaths(paths: PathSpec[], cwd: string, mountPrefix: string): PathSpec[] {
+  if (paths.length > 0) return paths
+  return [PathSpec.fromStrPath(cwd, mountPrefix)]
+}
+
+function isMountRoot(path: PathSpec): boolean {
+  let root = path.prefix !== '' ? rstripSlash(path.prefix) : '/'
+  root = root !== '' ? root : '/'
+  const value = rstripSlash(path.original) !== '' ? rstripSlash(path.original) : '/'
+  return value === '/' || value === root
+}
+
+async function searchCommand(
+  accessor: ChromaAccessor,
+  paths: PathSpec[],
+  texts: string[],
+  opts: CommandOpts,
+): Promise<CommandFnResult> {
+  const query = texts[0]
+  if (query === undefined || query === '') {
+    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('search: query is required\n') })]
+  }
+  const index = opts.index ?? undefined
+  const targetPaths = defaultPaths(paths, opts.cwd, opts.mountPrefix ?? '')
+  const mountPrefix = targetPaths[0]?.prefix ?? ''
+  const resolvedPaths = targetPaths.some(isMountRoot)
+    ? []
+    : await resolveGlob(accessor, targetPaths, index)
+  const topK = typeof opts.flags.top_k === 'string' ? Number.parseInt(opts.flags.top_k, 10) : 10
+  try {
+    const out = await searchSegments(accessor, query, resolvedPaths, index, topK, mountPrefix)
+    return [out, new IOResult()]
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
+  }
+}
+
+export const CHROMA_SEARCH = command({
+  name: 'chroma-query',
+  resource: ResourceName.CHROMA,
+  spec: specOf('search'),
+  fn: searchCommand,
+})

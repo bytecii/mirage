@@ -1049,6 +1049,23 @@ export {
   ScopeLevel as LanceScopeLevel,
   type LanceDBScope,
 } from './core/lancedb/scope.ts'
+export { ChromaAccessor } from './accessor/chroma.ts'
+export {
+  resolveChromaConfig,
+  type ChromaConfig,
+  type ChromaConfigResolved,
+} from './resource/chroma/config.ts'
+export { CHROMA_PROMPT } from './resource/chroma/prompt.ts'
+export { CHROMA_OPS } from './ops/chroma/index.ts'
+export { CHROMA_COMMANDS } from './commands/builtin/chroma/index.ts'
+export { ChromaResource, type ChromaResourceOptions } from './resource/chroma/chroma.ts'
+export { readBytes as chromaRead, readStream as chromaReadStream } from './core/chroma/read.ts'
+export { readdir as chromaReaddir } from './core/chroma/readdir.ts'
+export { stat as chromaStat } from './core/chroma/stat.ts'
+export { resolveGlob as resolveChromaGlob } from './core/chroma/glob.ts'
+export { grepBytes as chromaGrep } from './core/chroma/grep.ts'
+export { searchSegments as chromaSearch } from './core/chroma/search.ts'
+export { scoreFromDistance } from './util/score.ts'
 export {
   countDocuments as mongoCountDocuments,
   findDocuments as mongoFindDocuments,

@@ -7,6 +7,7 @@ from mirage.core.dify.path import resolve_path
 from mirage.core.dify.tree import normalize_slug
 from mirage.core.dify.walk import walk
 from mirage.types import PathSpec
+from mirage.utils.score import format_score
 
 logger = logging.getLogger(__name__)
 
@@ -217,12 +218,6 @@ def document_path(
     if name is None:
         return None
     return str(name)
-
-
-def format_score(value: object) -> str | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return f"{value:.2f}"
 
 
 def segment_content(segment: dict[str, Any]) -> str:

@@ -177,6 +177,7 @@ class ResourceName(str, Enum):
     GCS = "gcs"
     EMAIL = "email"
     DIFY = "dify"
+    CHROMA = "chroma"
     DATABRICKS_VOLUME = "databricks_volume"
     HF_BUCKETS = "hf_buckets"
     HF_DATASETS = "hf_datasets"

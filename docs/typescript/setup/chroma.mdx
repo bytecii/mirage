@@ -1,0 +1,45 @@
+---
+title: Chroma
+icon: database
+description: Mount a ChromaDB collection as a Mirage filesystem in TypeScript, with shell commands and native vector retrieval.
+---
+
+`ChromaResource` exposes a ChromaDB collection as a read-only filesystem: the
+directory tree comes from the collection's `__path_tree__` document, pages are
+chunk sets joined in `chunk_index` order, and vector retrieval is the
+`chroma-query` command. The TypeScript backend mirrors the
+[Python one](/python/resource/chroma) and returns identical results.
+
+## Node
+
+The `chromadb` client is an optional peer dependency; install it alongside
+Mirage:
+
+```bash
+pnpm add @struktoai/mirage-node chromadb
+```
+
+```ts
+import { ChromaResource, MountMode, Workspace } from '@struktoai/mirage-node'
+
+const knowledge = new ChromaResource({
+  config: {
+    host: 'localhost',
+    port: 8000,
+    collectionName: 'knowledge',
+    // slugField: 'page_slug',      (default)
+    // chunkIndexField: 'chunk_index', (default)
+  },
+})
+
+const ws = new Workspace({ '/knowledge': knowledge }, { mode: MountMode.READ })
+
+console.log(await (await ws.execute('tree /knowledge/')).stdoutStr())
+console.log(await (await ws.execute('grep -r refund /knowledge/policies/')).stdoutStr())
+console.log(
+  await (await ws.execute('chroma-query "how am I throttled" /knowledge/')).stdoutStr(),
+)
+```
+
+`grep` pushes `$contains` / `$regex` filters down to ChromaDB before fine
+filtering locally, so recursive searches avoid fetching the whole collection.
