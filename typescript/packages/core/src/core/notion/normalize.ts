@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { formatSegment, stripDashes } from './pathing.ts'
+import { blocksToMarkdown } from './render.ts'
 
 type Json = Record<string, unknown>
 
@@ -23,9 +24,14 @@ function pickStringOrNull(record: Json, key: string): string | null {
   return typeof value === 'string' ? value : null
 }
 
-function pickBoolOrNull(record: Json, key: string): boolean | null {
+function strOf(record: Json, key: string): string {
   const value = record[key]
-  return typeof value === 'boolean' ? value : null
+  return typeof value === 'string' ? value : ''
+}
+
+function boolOf(record: Json, key: string): boolean {
+  const value = record[key]
+  return typeof value === 'boolean' ? value : false
 }
 
 function asObject(value: unknown): Json {
@@ -76,32 +82,57 @@ export function extractIdNoDashes(page: Json): string {
 }
 
 export function pageSegmentName(page: Json): string {
-  return formatSegment({ id: extractIdNoDashes(page), title: extractTitle(page) })
+  return formatSegment({ id: strOf(page, 'id'), title: pageContentTitle(page) })
+}
+
+function pageContentTitle(page: Json): string {
+  const properties = asObject(page.properties)
+  for (const value of Object.values(properties)) {
+    const prop = asObject(value)
+    if (strOf(prop, 'type') === 'title') {
+      return joinTitleFragments(asArray(prop.title))
+    }
+  }
+  return ''
 }
 
 export interface NormalizedPage {
-  id: string
+  page_id: string
   title: string
-  url: string | null
-  created_time: string | null
-  last_edited_time: string | null
-  archived: boolean | null
-  parent: Json
-  properties: Json
+  url: string
+  created_time: string
+  last_edited_time: string
+  parent_type: string
+  parent_id: string
+  archived: boolean
+  created_by: string
+  last_edited_by: string
+  markdown: string
   blocks: Json[]
 }
 
 export function normalizePage(page: Json, blocks: readonly Json[]): NormalizedPage {
+  const parent = asObject(page.parent)
+  const parentType = strOf(parent, 'type')
+  const rawParentId = parent[parentType]
+  const parentId = typeof rawParentId === 'string' ? rawParentId : ''
+  const contentBlocks = (blocks as Json[]).filter((block) => {
+    const type = strOf(block, 'type')
+    return type !== 'child_page' && type !== 'child_database'
+  })
   return {
-    id: extractIdNoDashes(page),
-    title: extractTitle(page),
-    url: pickStringOrNull(page, 'url'),
-    created_time: pickStringOrNull(page, 'created_time'),
-    last_edited_time: pickStringOrNull(page, 'last_edited_time'),
-    archived: pickBoolOrNull(page, 'archived'),
-    parent: asObject(page.parent),
-    properties: asObject(page.properties),
-    blocks: blocks as Json[],
+    page_id: strOf(page, 'id'),
+    title: pageContentTitle(page),
+    url: strOf(page, 'url'),
+    created_time: strOf(page, 'created_time'),
+    last_edited_time: strOf(page, 'last_edited_time'),
+    parent_type: parentType,
+    parent_id: parentId,
+    archived: boolOf(page, 'archived'),
+    created_by: strOf(asObject(page.created_by), 'id'),
+    last_edited_by: strOf(asObject(page.last_edited_by), 'id'),
+    markdown: blocksToMarkdown(contentBlocks),
+    blocks: contentBlocks,
   }
 }
 

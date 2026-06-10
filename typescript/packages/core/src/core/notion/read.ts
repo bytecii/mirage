@@ -16,7 +16,7 @@ import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { PathSpec } from '../../types.ts'
 import type { NotionTransport } from './_client.ts'
 import { normalizePage, toJsonBytes } from './normalize.ts'
-import { getChildBlocks, getPage } from './pages.ts'
+import { getBlockTree, getPage } from './pages.ts'
 import { parseSegment } from './pathing.ts'
 import { stripSlash } from '../../util/slash.ts'
 
@@ -46,7 +46,7 @@ export async function read(
   const parts = key.split('/')
   const last = parts[parts.length - 1] ?? ''
   if (last !== 'page.json') throw enoent(path.original)
-  if (parts.length < 2) throw enoent(path.original)
+  if (parts.length < 3 || parts[0] !== 'pages') throw enoent(path.original)
   const parentSegment = parts[parts.length - 2] ?? ''
   let parsed: { id: string; title: string }
   try {
@@ -56,7 +56,7 @@ export async function read(
   }
   const [page, blocks] = await Promise.all([
     getPage(accessor.transport, parsed.id),
-    getChildBlocks(accessor.transport, parsed.id),
+    getBlockTree(accessor.transport, parsed.id),
   ])
   return toJsonBytes(normalizePage(page, blocks))
 }

@@ -49,14 +49,10 @@ function spec(original: string, prefix = ''): PathSpec {
   return new PathSpec({ original, directory: original, prefix })
 }
 
-const TOP1_ID_DASHED = 'aaaa1111-2222-3333-4444-555566667777'
-const TOP1_ID = 'aaaa1111222233334444555566667777'
-const TOP2_ID_DASHED = 'bbbb2222-3333-4444-5555-666677778888'
-const TOP2_ID = 'bbbb2222333344445555666677778888'
-const CHILD1_ID_DASHED = 'cccc1111-2222-3333-4444-555566667777'
-const CHILD1_ID = 'cccc1111222233334444555566667777'
-const CHILD2_ID_DASHED = 'dddd2222-3333-4444-5555-666677778888'
-const CHILD2_ID = 'dddd2222333344445555666677778888'
+const TOP1_ID = 'aaaa1111-2222-3333-4444-555566667777'
+const TOP2_ID = 'bbbb2222-3333-4444-5555-666677778888'
+const CHILD1_ID = 'cccc1111-2222-3333-4444-555566667777'
+const CHILD2_ID = 'dddd2222-3333-4444-5555-666677778888'
 
 function topPage(id: string, title: string): Record<string, unknown> {
   return {
@@ -65,59 +61,101 @@ function topPage(id: string, title: string): Record<string, unknown> {
     parent: { type: 'workspace', workspace: true },
     last_edited_time: '2024-01-02T00:00:00Z',
     properties: {
-      title: { title: [{ plain_text: title }] },
+      title: { type: 'title', title: [{ plain_text: title }] },
     },
   }
 }
 
 describe('notion readdir root', () => {
-  it('lists top-level pages with workspace parents and prefixes names', async () => {
+  it('lists only the pages virtual root without any API call', async () => {
     const transport = new FakeTransport()
-    transport.enqueue('API-post-search', {
-      results: [
-        topPage(TOP1_ID_DASHED, 'Top1'),
-        topPage(TOP2_ID_DASHED, 'Top2'),
-        {
-          id: 'eeee3333-4444-5555-6666-777788889999',
-          object: 'page',
-          parent: { type: 'page_id', page_id: 'other' },
-          properties: { title: { title: [{ plain_text: 'NestedNotShown' }] } },
-        },
-      ],
-      has_more: false,
-      next_cursor: null,
-    })
     const out = await readdir(makeAccessor(transport), spec('/'), undefined)
-    expect(out).toEqual([`/Top1__${TOP1_ID}`, `/Top2__${TOP2_ID}`])
+    expect(out).toEqual(['/pages'])
+    expect(transport.invocations).toHaveLength(0)
   })
 
-  it('honors prefix when listing the root', async () => {
+  it('honors prefix for the virtual root', async () => {
     const transport = new FakeTransport()
-    transport.enqueue('API-post-search', {
-      results: [topPage(TOP1_ID_DASHED, 'Top1'), topPage(TOP2_ID_DASHED, 'Top2')],
-      has_more: false,
-      next_cursor: null,
-    })
     const out = await readdir(
       makeAccessor(transport),
       new PathSpec({ original: '/notion', directory: '/notion', prefix: '/notion' }),
       undefined,
     )
-    expect(out).toEqual([`/notion/Top1__${TOP1_ID}`, `/notion/Top2__${TOP2_ID}`])
+    expect(out).toEqual(['/notion/pages'])
+  })
+
+  it('returns an empty list for an unknown top-level dir', async () => {
+    const transport = new FakeTransport()
+    const out = await readdir(makeAccessor(transport), spec('/no-id-here/'), undefined)
+    expect(out).toEqual([])
+    expect(transport.invocations).toHaveLength(0)
+  })
+})
+
+describe('notion readdir pages', () => {
+  it('lists top-level pages with workspace parents under /pages', async () => {
+    const transport = new FakeTransport()
+    transport.enqueue('API-post-search', {
+      results: [
+        topPage(TOP1_ID, 'Top1'),
+        topPage(TOP2_ID, 'Top2'),
+        {
+          id: 'eeee3333-4444-5555-6666-777788889999',
+          object: 'page',
+          parent: { type: 'page_id', page_id: 'other' },
+          properties: { title: { type: 'title', title: [{ plain_text: 'NestedNotShown' }] } },
+        },
+      ],
+      has_more: false,
+      next_cursor: null,
+    })
+    const out = await readdir(makeAccessor(transport), spec('/pages'), undefined)
+    expect(out).toEqual([`/pages/Top1__${TOP1_ID}`, `/pages/Top2__${TOP2_ID}`])
+  })
+
+  it('honors prefix when listing pages', async () => {
+    const transport = new FakeTransport()
+    transport.enqueue('API-post-search', {
+      results: [topPage(TOP1_ID, 'Top1'), topPage(TOP2_ID, 'Top2')],
+      has_more: false,
+      next_cursor: null,
+    })
+    const out = await readdir(
+      makeAccessor(transport),
+      new PathSpec({ original: '/notion/pages', directory: '/notion/pages', prefix: '/notion' }),
+      undefined,
+    )
+    expect(out).toEqual([`/notion/pages/Top1__${TOP1_ID}`, `/notion/pages/Top2__${TOP2_ID}`])
   })
 
   it('returns prefixed entries from the index cache when present', async () => {
     const transport = new FakeTransport()
     transport.enqueue('API-post-search', {
-      results: [topPage(TOP1_ID_DASHED, 'Top1')],
+      results: [topPage(TOP1_ID, 'Top1')],
       has_more: false,
       next_cursor: null,
     })
     const idx = new RAMIndexCacheStore()
-    await readdir(makeAccessor(transport), spec('/'), idx)
+    await readdir(makeAccessor(transport), spec('/pages'), idx)
     expect(transport.invocations).toHaveLength(1)
-    const out = await readdir(makeAccessor(transport), spec('/'), idx)
-    expect([...out].sort()).toEqual([`/Top1__${TOP1_ID}`])
+    const out = await readdir(makeAccessor(transport), spec('/pages'), idx)
+    expect([...out].sort()).toEqual([`/pages/Top1__${TOP1_ID}`])
+    expect(transport.invocations).toHaveLength(1)
+  })
+
+  it('keeps the mount prefix on warm index-cache hits', async () => {
+    const transport = new FakeTransport()
+    transport.enqueue('API-post-search', {
+      results: [topPage(TOP1_ID, 'Top1')],
+      has_more: false,
+      next_cursor: null,
+    })
+    const idx = new RAMIndexCacheStore()
+    const p = spec('/notion/pages', '/notion')
+    const cold = await readdir(makeAccessor(transport), p, idx)
+    const warm = await readdir(makeAccessor(transport), p, idx)
+    expect(warm).toEqual(cold)
+    expect(warm).toEqual([`/notion/pages/Top1__${TOP1_ID}`])
     expect(transport.invocations).toHaveLength(1)
   })
 })
@@ -128,13 +166,13 @@ describe('notion readdir subtree', () => {
     transport.enqueue('API-retrieve-block-children', {
       results: [
         {
-          id: CHILD1_ID_DASHED,
+          id: CHILD1_ID,
           type: 'child_page',
           child_page: { title: 'ChildA' },
         },
         { id: 'block-x', type: 'paragraph' },
         {
-          id: CHILD2_ID_DASHED,
+          id: CHILD2_ID,
           type: 'child_page',
           child_page: { title: 'ChildB' },
         },
@@ -142,7 +180,7 @@ describe('notion readdir subtree', () => {
       has_more: false,
       next_cursor: null,
     })
-    const dirPath = `/Top1__${TOP1_ID}`
+    const dirPath = `/pages/Top1__${TOP1_ID}`
     const out = await readdir(makeAccessor(transport), spec(dirPath), undefined)
     expect(out).toEqual([
       `${dirPath}/page.json`,
@@ -159,12 +197,12 @@ describe('notion readdir subtree', () => {
   it('uses the index cache on the second call without invoking the transport', async () => {
     const transport = new FakeTransport()
     transport.enqueue('API-retrieve-block-children', {
-      results: [{ id: CHILD1_ID_DASHED, type: 'child_page', child_page: { title: 'ChildA' } }],
+      results: [{ id: CHILD1_ID, type: 'child_page', child_page: { title: 'ChildA' } }],
       has_more: false,
       next_cursor: null,
     })
     const idx = new RAMIndexCacheStore()
-    const dirPath = `/Top1__${TOP1_ID}`
+    const dirPath = `/pages/Top1__${TOP1_ID}`
     const first = await readdir(makeAccessor(transport), spec(dirPath), idx)
     expect(first).toEqual([`${dirPath}/page.json`, `${dirPath}/ChildA__${CHILD1_ID}`])
     expect(transport.invocations).toHaveLength(1)
@@ -177,7 +215,7 @@ describe('notion readdir subtree', () => {
     const transport = new FakeTransport()
     let captured: unknown = null
     try {
-      await readdir(makeAccessor(transport), spec('/no-id-here/'), undefined)
+      await readdir(makeAccessor(transport), spec('/pages/no-id-here/'), undefined)
     } catch (err) {
       captured = err
     }
@@ -190,11 +228,11 @@ describe('notion readdir subtree', () => {
   it('honors prefix when listing a subtree', async () => {
     const transport = new FakeTransport()
     transport.enqueue('API-retrieve-block-children', {
-      results: [{ id: CHILD1_ID_DASHED, type: 'child_page', child_page: { title: 'ChildA' } }],
+      results: [{ id: CHILD1_ID, type: 'child_page', child_page: { title: 'ChildA' } }],
       has_more: false,
       next_cursor: null,
     })
-    const dirPath = `/notion/Top1__${TOP1_ID}`
+    const dirPath = `/notion/pages/Top1__${TOP1_ID}`
     const out = await readdir(
       makeAccessor(transport),
       new PathSpec({ original: dirPath, directory: dirPath, prefix: '/notion' }),

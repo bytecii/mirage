@@ -142,6 +142,7 @@ export const ResourceName = Object.freeze({
   VERCEL: 'vercel',
   POSTHOG: 'posthog',
   LANCEDB: 'lancedb',
+  CHROMA: 'chroma',
 } as const)
 
 export type ResourceName = (typeof ResourceName)[keyof typeof ResourceName]

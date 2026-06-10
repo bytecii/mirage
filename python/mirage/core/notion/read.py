@@ -15,14 +15,14 @@
 from mirage.accessor.notion import NotionAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.core.notion.normalize import normalize_page, to_json_bytes
-from mirage.core.notion.pages import get_page, list_block_children
+from mirage.core.notion.pages import get_page, list_block_tree
 from mirage.core.notion.pathing import split_suffix_id
 from mirage.types import PathSpec
 
 
 async def read_page_json(config, page_id: str) -> bytes:
     page = await get_page(config, page_id)
-    blocks = await list_block_children(config, page_id)
+    blocks = await list_block_tree(config, page_id)
     normalized = normalize_page(page, blocks)
     return to_json_bytes(normalized)
 

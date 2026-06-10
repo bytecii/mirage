@@ -22,6 +22,8 @@ def normalize_page(page: dict, blocks: list[dict]) -> dict:
     parent = page.get("parent", {})
     parent_type = parent.get("type", "")
     parent_id = parent.get(parent_type, "")
+    if not isinstance(parent_id, str):
+        parent_id = ""
     content_blocks = [
         b for b in blocks
         if b.get("type") not in ("child_page", "child_database")

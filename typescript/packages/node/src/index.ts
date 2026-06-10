@@ -137,6 +137,13 @@ export {
   type LinearConfig,
   type LinearConfigRedacted,
 } from './resource/linear/config.ts'
+export { NotionResource, type NotionResourceState } from './resource/notion/notion.ts'
+export {
+  normalizeNotionConfig,
+  redactNotionConfig,
+  type NotionConfig,
+  type NotionConfigRedacted,
+} from './resource/notion/config.ts'
 export { LangfuseResource, type LangfuseResourceState } from './resource/langfuse/langfuse.ts'
 export {
   normalizeLangfuseConfig,

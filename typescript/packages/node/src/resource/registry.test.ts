@@ -48,6 +48,11 @@ describe('node resource registry', () => {
     expect(r.config.maxReadRows).toBe(50)
   })
 
+  it('builds Notion with api key', async () => {
+    const r = await buildResource('notion', { api_key: 'secret' })
+    expect(r.kind).toBe('notion')
+  })
+
   it('builds RAM with no config', async () => {
     const r = await buildResource('ram', {})
     expect(r.kind).toBe('ram')

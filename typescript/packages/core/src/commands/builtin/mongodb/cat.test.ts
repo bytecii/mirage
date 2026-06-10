@@ -68,4 +68,37 @@ describe('mongodb cat error surfacing', () => {
     const stderrBytes = await materialize(io.stderr)
     expect(DEC.decode(stderrBytes)).toContain(message)
   })
+
+  it('concatenates all files when multiple paths are given', async () => {
+    const ENC = new TextEncoder()
+    vi.mocked(readModule.read).mockImplementation((_accessor, path) => {
+      const original = typeof path === 'string' ? path : path.original
+      return Promise.resolve(ENC.encode(original.endsWith('a.jsonl') ? 'AAA\n' : 'BBB\n'))
+    })
+
+    const cmd = MONGODB_CAT[0]
+    if (cmd === undefined) throw new Error('cat not registered')
+    const accessor = makeAccessor()
+    const mk = (name: string): PathSpec =>
+      new PathSpec({
+        original: `/mongo/app/${name}`,
+        directory: '/mongo/app/',
+        resolved: true,
+        prefix: '/mongo',
+      })
+    const result = await cmd.fn(accessor, [mk('a.jsonl'), mk('b.jsonl')], [], {
+      stdin: null,
+      flags: {},
+      filetypeFns: null,
+      cwd: '/',
+      resource: { kind: 'mongodb' } as never,
+    })
+    expect(result).not.toBeNull()
+    if (result === null) return
+    const [out, io] = result
+    expect(io.exitCode).toBe(0)
+    const bytes = await materialize(out)
+    expect(DEC.decode(bytes)).toBe('AAA\nBBB\n')
+    expect(Object.keys(io.reads).sort()).toEqual(['/app/a.jsonl', '/app/b.jsonl'])
+  })
 })

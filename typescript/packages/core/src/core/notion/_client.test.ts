@@ -13,8 +13,13 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
-import { describe, expect, it } from 'vitest'
-import { MCPNotionTransport, NotionMCPError } from './_client.ts'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  HttpNotionTransport,
+  MCPNotionTransport,
+  NotionAPIError,
+  NotionMCPError,
+} from './_client.ts'
 
 interface CallToolParams {
   name: string
@@ -140,5 +145,86 @@ describe('MCPNotionTransport', () => {
     fake.responses.push({ content: [{ type: 'text', text: '{"n":2}' }] })
     await Promise.all([transport.callTool('A', {}), transport.callTool('B', {})])
     expect(fake.connectCalls).toBe(1)
+  })
+})
+
+interface RecordedRequest {
+  url: string
+  method: string
+  headers: Record<string, string>
+  body: string | null
+}
+
+function makeHttpTransport(responses: { status: number; payload: unknown }[]): {
+  transport: HttpNotionTransport
+  requests: RecordedRequest[]
+} {
+  const requests: RecordedRequest[] = []
+  const fakeFetch = (input: URL | RequestInfo, init?: RequestInit): Promise<Response> => {
+    requests.push({
+      url: input instanceof URL ? input.toString() : typeof input === 'string' ? input : input.url,
+      method: init?.method ?? 'GET',
+      headers: (init?.headers ?? {}) as Record<string, string>,
+      body: typeof init?.body === 'string' ? init.body : null,
+    })
+    const next = responses.shift() ?? { status: 200, payload: {} }
+    return Promise.resolve(
+      new Response(JSON.stringify(next.payload), {
+        status: next.status,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+  }
+  vi.stubGlobal('fetch', fakeFetch)
+  const transport = new HttpNotionTransport({ apiKey: 'k-123', baseUrl: 'http://mock/v1' })
+  vi.unstubAllGlobals()
+  return { transport, requests }
+}
+
+describe('HttpNotionTransport', () => {
+  it('maps API-retrieve-a-page to GET /pages/{id} with auth headers', async () => {
+    const { transport, requests } = makeHttpTransport([{ status: 200, payload: { id: 'p1' } }])
+    const out = await transport.callTool('API-retrieve-a-page', { page_id: 'p1' })
+    expect(out).toEqual({ id: 'p1' })
+    expect(requests[0]?.url).toBe('http://mock/v1/pages/p1')
+    expect(requests[0]?.method).toBe('GET')
+    expect(requests[0]?.headers.Authorization).toBe('Bearer k-123')
+    expect(requests[0]?.headers['Notion-Version']).toBe('2022-06-28')
+  })
+
+  it('maps API-post-search to POST /search with the args as JSON body', async () => {
+    const { transport, requests } = makeHttpTransport([{ status: 200, payload: { results: [] } }])
+    await transport.callTool('API-post-search', { page_size: 100 })
+    expect(requests[0]?.url).toBe('http://mock/v1/search')
+    expect(requests[0]?.method).toBe('POST')
+    expect(requests[0]?.body).toBe('{"page_size":100}')
+  })
+
+  it('maps API-retrieve-block-children to GET with pagination query params', async () => {
+    const { transport, requests } = makeHttpTransport([{ status: 200, payload: { results: [] } }])
+    await transport.callTool('API-retrieve-block-children', {
+      block_id: 'b1',
+      page_size: 100,
+      start_cursor: 'c2',
+    })
+    expect(requests[0]?.url).toBe('http://mock/v1/blocks/b1/children?page_size=100&start_cursor=c2')
+  })
+
+  it('throws NotionAPIError with status and code on HTTP errors', async () => {
+    const { transport } = makeHttpTransport([
+      { status: 404, payload: { message: 'not found', code: 'object_not_found' } },
+    ])
+    const err = await transport
+      .callTool('API-retrieve-a-page', { page_id: 'x' })
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(NotionAPIError)
+    expect((err as NotionAPIError).status).toBe(404)
+    expect((err as NotionAPIError).code).toBe('object_not_found')
+    expect((err as NotionAPIError).message).toBe('not found')
+  })
+
+  it('rejects unsupported tool names', async () => {
+    const { transport } = makeHttpTransport([])
+    await expect(transport.callTool('API-unknown', {})).rejects.toThrow(/unsupported Notion tool/)
   })
 })

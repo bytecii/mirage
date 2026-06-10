@@ -32,6 +32,7 @@ from mirage.commands.builtin.notion.rg import rg
 from mirage.commands.builtin.notion.stat import stat
 from mirage.commands.builtin.notion.tail import tail
 from mirage.commands.builtin.notion.tree import tree
+from mirage.commands.builtin.notion.wc import wc
 
 COMMANDS = [
     basename,
@@ -50,5 +51,6 @@ COMMANDS = [
     stat,
     tail,
     tree,
+    wc,
     grep,
 ]

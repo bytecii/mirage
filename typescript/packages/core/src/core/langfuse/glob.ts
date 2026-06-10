@@ -14,7 +14,7 @@
 
 import type { LangfuseAccessor } from '../../accessor/langfuse.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { fnmatch } from '../s3/_client.ts'
+import { fnmatch } from '../../util/fnmatch.ts'
 import { SCOPE_ERROR } from '../s3/constants.ts'
 import { PathSpec } from '../../types.ts'
 import { readdir } from './readdir.ts'

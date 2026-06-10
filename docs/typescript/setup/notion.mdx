@@ -1,22 +1,36 @@
 ---
 title: Notion
 icon: book
-description: Mount Notion pages and databases as a Mirage filesystem (Browser only).
+description: Mount Notion pages and databases as a Mirage filesystem.
 ---
 
-`NotionResource` exposes a Notion workspace through Notion's MCP server. Auth uses an OAuth client provider so secrets stay off the page.
+`NotionResource` exposes a Notion workspace as a filesystem. The Node SDK talks to the Notion REST API with an integration token; the Browser SDK talks to Notion's MCP server with an OAuth client provider so secrets stay off the page.
 
-<Note>
-  Browser only. The Mirage Node SDK does not currently ship a Notion resource.
-</Note>
+## Node
 
-## Install
+```bash
+pnpm add @struktoai/mirage-node
+```
+
+```ts
+import { MountMode, NotionResource, Workspace } from '@struktoai/mirage-node'
+
+const notion = new NotionResource({ apiKey: process.env.NOTION_API_KEY! })
+
+const ws = new Workspace({ '/notion': notion }, { mode: MountMode.READ })
+await ws.execute('ls /notion/pages/')
+```
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `apiKey` | required | Notion internal integration token. Redacted in snapshots. |
+| `baseUrl` | `https://api.notion.com/v1` | Override for testing against a mock server. |
+
+## Browser
 
 ```bash
 pnpm add @struktoai/mirage-browser @modelcontextprotocol/sdk
 ```
-
-## Config
 
 ```ts
 import { MountMode, NotionResource, Workspace } from '@struktoai/mirage-browser'
@@ -36,6 +50,6 @@ await ws.execute('ls /notion/')
 
 ## Mount mode
 
-`read`, `write` (page edits via the MCP server).
+`read`, `write` (page edits via the MCP server in the browser SDK).
 
 For the page/database layout and supported edits see the [Python Notion docs](/python/resource/notion).

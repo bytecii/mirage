@@ -13,7 +13,6 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { NotionTransport } from './_client.ts'
-import { stripDashes } from './pathing.ts'
 
 type Json = Record<string, unknown>
 
@@ -71,6 +70,25 @@ export async function getChildBlocks(transport: NotionTransport, blockId: string
   })
 }
 
+const MAX_BLOCK_DEPTH = 10
+
+export async function getBlockTree(
+  transport: NotionTransport,
+  blockId: string,
+  depth = 0,
+): Promise<Json[]> {
+  const blocks = await getChildBlocks(transport, blockId)
+  if (depth >= MAX_BLOCK_DEPTH) return blocks
+  for (const block of blocks) {
+    const btype = block.type
+    if (btype === 'child_page' || btype === 'child_database') continue
+    if (block.has_children === true && typeof block.id === 'string') {
+      block.children = await getBlockTree(transport, block.id, depth + 1)
+    }
+  }
+  return blocks
+}
+
 export interface ChildPageRef {
   id: string
   title: string
@@ -89,8 +107,8 @@ export async function getChildPages(
     const childPage = asObject(block.child_page)
     const title = childPage.title
     refs.push({
-      id: stripDashes(id).toLowerCase(),
-      title: typeof title === 'string' ? title : '',
+      id,
+      title: typeof title === 'string' ? title : 'untitled',
     })
   }
   return refs

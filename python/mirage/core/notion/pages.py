@@ -49,6 +49,44 @@ async def list_block_children(
     )
 
 
+MAX_BLOCK_DEPTH = 10
+
+
+async def list_block_tree(
+    config: NotionConfig,
+    block_id: str,
+    depth: int = 0,
+) -> list[dict]:
+    """List block children recursively, embedding nested blocks.
+
+    Blocks with ``has_children`` get their descendants attached under a
+    ``children`` key, except ``child_page``/``child_database`` whose
+    children belong to a different page. Recursion stops at
+    ``MAX_BLOCK_DEPTH``.
+
+    Args:
+        config (NotionConfig): notion API config.
+        block_id (str): page or block id whose children to list.
+        depth (int): current recursion depth.
+
+    Returns:
+        list[dict]: top-level child blocks with nested ``children``.
+    """
+    blocks = await list_block_children(config, block_id)
+    if depth >= MAX_BLOCK_DEPTH:
+        return blocks
+    for block in blocks:
+        if block.get("type") in ("child_page", "child_database"):
+            continue
+        if block.get("has_children"):
+            block["children"] = await list_block_tree(
+                config,
+                block["id"],
+                depth + 1,
+            )
+    return blocks
+
+
 async def create_page(config: NotionConfig, body: dict) -> dict:
     return await notion_post(config, "/pages", body)
 

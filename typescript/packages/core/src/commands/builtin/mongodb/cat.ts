@@ -25,6 +25,18 @@ import { fileReadProvision } from './_provision.ts'
 const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { fatal: false })
 
+function concat(chunks: Uint8Array[]): Uint8Array {
+  let total = 0
+  for (const c of chunks) total += c.byteLength
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const c of chunks) {
+    out.set(c, offset)
+    offset += c.byteLength
+  }
+  return out
+}
+
 function numberLines(data: Uint8Array): Uint8Array {
   const text = DEC.decode(data)
   const lines = text.split('\n')
@@ -46,21 +58,23 @@ async function catCommand(
   const nFlag = opts.flags.n === true
   if (paths.length > 0) {
     const resolved = await resolveGlob(accessor, paths, opts.index ?? undefined)
-    const first = resolved[0]
-    if (first === undefined) return [null, new IOResult()]
-    let data: Uint8Array
-    try {
-      data = await mongoRead(accessor, first, opts.index ?? undefined)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(msg) })]
+    if (resolved.length === 0) return [null, new IOResult()]
+    const reads: Record<string, ByteSource> = {}
+    const parts: Uint8Array[] = []
+    for (const p of resolved) {
+      let data: Uint8Array
+      try {
+        data = await mongoRead(accessor, p, opts.index ?? undefined)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(msg) })]
+      }
+      reads[p.stripPrefix] = data
+      parts.push(data)
     }
-    const out: ByteSource = nFlag ? numberLines(data) : data
-    const io = new IOResult({
-      reads: { [first.stripPrefix]: data },
-      cache: [first.stripPrefix],
-    })
-    return [out, io]
+    const merged = concat(parts)
+    const out: ByteSource = nFlag ? numberLines(merged) : merged
+    return [out, new IOResult({ reads, cache: Object.keys(reads) })]
   }
   const raw = await readStdinAsync(opts.stdin)
   if (raw === null) {

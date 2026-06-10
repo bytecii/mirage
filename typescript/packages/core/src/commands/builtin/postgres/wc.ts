@@ -67,10 +67,10 @@ async function wcCommand(
     }
     if (lFlag) {
       const count = await countRows(accessor, scope.schema, scope.entity)
-      return [ENC.encode(String(count)), new IOResult()]
+      return [ENC.encode(`${String(count)}\t${first.original}`), new IOResult()]
     }
     const count = await countRows(accessor, scope.schema, scope.entity)
-    return [ENC.encode(String(count)), new IOResult()]
+    return [ENC.encode(`${String(count)}\t${first.original}`), new IOResult()]
   }
 
   return [

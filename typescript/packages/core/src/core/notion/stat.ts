@@ -15,7 +15,6 @@
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, type PathSpec } from '../../types.ts'
 import type { NotionTransport } from './_client.ts'
-import { getPage } from './pages.ts'
 import { parseSegment } from './pathing.ts'
 import { stripSlash } from '../../util/slash.ts'
 
@@ -29,84 +28,54 @@ function enoent(path: string): Error {
   return err
 }
 
-function makeVirtualKey(prefix: string, key: string): string {
-  if (key === '') return prefix !== '' ? prefix : '/'
-  return `${prefix}/${key}`
-}
-
-function pickString(record: Record<string, unknown>, key: string): string {
-  const value = record[key]
-  return typeof value === 'string' ? value : ''
-}
-
-async function resolveModified(
-  transport: NotionTransport,
-  index: IndexCacheStore | undefined,
-  cacheKey: string,
-  pageId: string,
-): Promise<string | null> {
-  if (index !== undefined) {
-    const result = await index.get(cacheKey)
-    const cached = result.entry?.remoteTime
-    if (typeof cached === 'string' && cached !== '') return cached
-  }
-  const page = await getPage(transport, pageId)
-  const time = pickString(page, 'last_edited_time')
-  return time === '' ? null : time
-}
-
 export async function stat(
   accessor: NotionStatAccessor,
   path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<FileStat> {
+  void accessor
   const prefix = path.prefix
   let p = path.original
   if (prefix !== '' && p.startsWith(prefix)) {
     p = p.slice(prefix.length) || '/'
   }
   const key = stripSlash(p)
-  const virtualKey = makeVirtualKey(prefix, key)
 
-  if (key === '') {
-    return new FileStat({ name: '/', type: FileType.DIRECTORY })
+  if (key === '' || key === 'pages') {
+    return new FileStat({ name: key !== '' ? key : '/', type: FileType.DIRECTORY })
   }
 
   const parts = key.split('/')
   const lastSegment = parts[parts.length - 1] ?? ''
 
   if (lastSegment === 'page.json') {
-    if (parts.length < 2) throw enoent(path.original)
-    const parentSegment = parts[parts.length - 2] ?? ''
+    return new FileStat({ name: 'page.json', type: FileType.JSON })
+  }
+
+  if (parts.length >= 2 && parts[0] === 'pages') {
     let parsed: { id: string; title: string }
     try {
-      parsed = parseSegment(parentSegment)
+      parsed = parseSegment(lastSegment)
     } catch {
       throw enoent(path.original)
     }
-    const parentVirtualKey = makeVirtualKey(prefix, parts.slice(0, parts.length - 1).join('/'))
-    const modified = await resolveModified(accessor.transport, index, parentVirtualKey, parsed.id)
+    if (index !== undefined) {
+      const idxKey = `/${key}`
+      const result = await index.get(idxKey)
+      if (result.entry !== null && result.entry !== undefined) {
+        return new FileStat({
+          name: result.entry.name,
+          type: FileType.DIRECTORY,
+          extra: { page_id: parsed.id },
+        })
+      }
+    }
     return new FileStat({
-      name: 'page.json',
-      type: FileType.JSON,
-      modified,
-      size: null,
+      name: lastSegment,
+      type: FileType.DIRECTORY,
       extra: { page_id: parsed.id },
     })
   }
 
-  let parsed: { id: string; title: string }
-  try {
-    parsed = parseSegment(lastSegment)
-  } catch {
-    throw enoent(path.original)
-  }
-  const modified = await resolveModified(accessor.transport, index, virtualKey, parsed.id)
-  return new FileStat({
-    name: lastSegment,
-    type: FileType.DIRECTORY,
-    modified,
-    size: null,
-    extra: { page_id: parsed.id },
-  })
+  throw enoent(path.original)
 }

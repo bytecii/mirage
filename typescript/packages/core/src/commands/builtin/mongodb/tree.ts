@@ -20,16 +20,9 @@ import { type ByteSource, IOResult } from '../../../io/types.ts'
 import { type FileStat, FileType, PathSpec, ResourceName } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
+import { fnmatch } from '../../../util/fnmatch.ts'
 
 const ENC = new TextEncoder()
-
-function fnmatch(name: string, pattern: string): boolean {
-  const re = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\?/g, '.')
-    .replace(/\*/g, '.*')
-  return new RegExp(`^${re}$`).test(name)
-}
 
 interface TreeOpts {
   maxDepth: number | null
@@ -57,6 +50,7 @@ async function treeRecurse(
     warnings.push(`tree: '${path.original}': ${msg}`)
     return lines
   }
+  entries.sort()
   const filtered: [PathSpec, FileStat][] = []
   for (const entry of entries) {
     try {

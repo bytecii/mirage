@@ -24,23 +24,12 @@ import { command, type CommandFnResult, type CommandOpts } from '../../config.ts
 import { specOf } from '../../spec/builtins.ts'
 import { readTar, writeTar, type TarEntry } from '../tar_helper.ts'
 import { lstripSlash, rstripSlash, stripSlash } from '../../../util/slash.ts'
+import { fnmatch } from '../../../util/fnmatch.ts'
 
 const ENC = new TextEncoder()
 
 function makePathSpec(original: string, prefix: string): PathSpec {
   return new PathSpec({ original, directory: original, resolved: true, prefix })
-}
-
-function fnmatch(name: string, pattern: string): boolean {
-  let re = '^'
-  for (const ch of pattern) {
-    if (ch === '*') re += '.*'
-    else if (ch === '?') re += '.'
-    else if (/[.+^${}()|[\]\\]/.test(ch)) re += '\\' + ch
-    else re += ch
-  }
-  re += '$'
-  return new RegExp(re).test(name)
 }
 
 async function compress(data: Uint8Array, z: boolean): Promise<Uint8Array> {

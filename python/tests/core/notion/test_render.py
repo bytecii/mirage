@@ -171,3 +171,30 @@ class TestBlocksToMarkdown:
 
     def test_empty(self):
         assert blocks_to_markdown([]) == ""
+
+    def test_nested_children_indent(self):
+        blocks = [
+            {
+                "type":
+                "bulleted_list_item",
+                "bulleted_list_item": {
+                    "rich_text": [{
+                        "plain_text": "parent",
+                        "annotations": {}
+                    }]
+                },
+                "children": [
+                    {
+                        "type": "bulleted_list_item",
+                        "bulleted_list_item": {
+                            "rich_text": [{
+                                "plain_text": "child",
+                                "annotations": {}
+                            }]
+                        },
+                    },
+                ],
+            },
+        ]
+        result = blocks_to_markdown(blocks)
+        assert result == "- parent\n\n  - child\n"

@@ -104,6 +104,11 @@ const REGISTRY: Record<string, ResourceFactory> = {
     const { normalizeLinearConfig } = await import('./linear/config.ts')
     return new LinearResource(normalizeLinearConfig(config))
   },
+  notion: async (config) => {
+    const { NotionResource } = await import('./notion/notion.ts')
+    const { normalizeNotionConfig } = await import('./notion/config.ts')
+    return new NotionResource(normalizeNotionConfig(config))
+  },
   langfuse: async (config) => {
     const { LangfuseResource } = await import('./langfuse/langfuse.ts')
     const { normalizeLangfuseConfig } = await import('./langfuse/config.ts')

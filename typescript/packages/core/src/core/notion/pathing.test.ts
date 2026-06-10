@@ -13,20 +13,26 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { formatSegment, parseSegment, sanitizeTitle, stripDashes } from './pathing.ts'
+import { formatSegment, parseSegment, sanitizeName, stripDashes } from './pathing.ts'
 
-describe('sanitizeTitle', () => {
-  it('passes through normal titles', () => {
-    expect(sanitizeTitle('Hello World')).toBe('Hello World')
+describe('sanitizeName', () => {
+  it('replaces spaces with underscores', () => {
+    expect(sanitizeName('Hello World')).toBe('Hello_World')
   })
-  it('replaces slashes with hyphens', () => {
-    expect(sanitizeTitle('a/b/c')).toBe('a-b-c')
+  it('replaces unsafe characters with underscores and collapses runs', () => {
+    expect(sanitizeName("a/b's c")).toBe('a_b_s_c')
   })
-  it('trims whitespace', () => {
-    expect(sanitizeTitle('  trim  ')).toBe('trim')
+  it('keeps dashes and dots', () => {
+    expect(sanitizeName('v1.2-final')).toBe('v1.2-final')
   })
-  it('returns "untitled" for empty input', () => {
-    expect(sanitizeTitle('')).toBe('untitled')
+  it('strips leading and trailing underscores', () => {
+    expect(sanitizeName('!keep!')).toBe('keep')
+  })
+  it('returns "unknown" for blank input', () => {
+    expect(sanitizeName('   ')).toBe('unknown')
+  })
+  it('truncates to 100 characters', () => {
+    expect(sanitizeName('x'.repeat(150))).toHaveLength(100)
   })
 })
 
@@ -40,52 +46,50 @@ describe('stripDashes', () => {
 })
 
 describe('formatSegment', () => {
-  it('joins title and id with double underscore', () => {
-    expect(formatSegment({ id: 'abc123def4567890123456789012345a', title: 'My Page' })).toBe(
-      'My Page__abc123def4567890123456789012345a',
+  it('joins sanitized title and raw id with double underscore', () => {
+    expect(formatSegment({ id: 'aaaa1111-2222-3333-4444-555566667777', title: 'My Page' })).toBe(
+      'My_Page__aaaa1111-2222-3333-4444-555566667777',
+    )
+  })
+  it('uses "untitled" when the title is empty', () => {
+    expect(formatSegment({ id: 'aaaa1111-2222-3333-4444-555566667777', title: '' })).toBe(
+      'untitled__aaaa1111-2222-3333-4444-555566667777',
     )
   })
 })
 
 describe('parseSegment', () => {
   it('splits into title and id', () => {
-    expect(parseSegment('My Page__abc123def4567890123456789012345a')).toEqual({
-      title: 'My Page',
-      id: 'abc123def4567890123456789012345a',
+    expect(parseSegment('My_Page__aaaa1111-2222-3333-4444-555566667777')).toEqual({
+      title: 'My_Page',
+      id: 'aaaa1111-2222-3333-4444-555566667777',
     })
   })
-  it('splits on the LAST __ where suffix matches the 32-hex id', () => {
-    expect(parseSegment('Page__with__multiple__sep__abc123def4567890123456789012345a')).toEqual({
-      title: 'Page__with__multiple__sep',
-      id: 'abc123def4567890123456789012345a',
-    })
+  it('splits on the LAST __ separator', () => {
+    expect(parseSegment('Page__with__multiple__sep__aaaa1111-2222-3333-4444-555566667777')).toEqual(
+      {
+        title: 'Page__with__multiple__sep',
+        id: 'aaaa1111-2222-3333-4444-555566667777',
+      },
+    )
   })
-  it('throws on segment without an id', () => {
+  it('throws on segment without a separator', () => {
     expect(() => parseSegment('no-id')).toThrow(/invalid notion segment/)
   })
-  it('throws when suffix is not a 32-hex id', () => {
-    expect(() => parseSegment('Page__not-a-valid-id')).toThrow(/invalid notion segment/)
+  it('throws when the id part is empty', () => {
+    expect(() => parseSegment('Page__')).toThrow(/invalid notion segment/)
   })
 })
 
 describe('formatSegment / parseSegment round-trip', () => {
-  it('round-trips a normal title', () => {
-    const page = { id: 'abc123def4567890123456789012345a', title: 'My Page' }
+  it('round-trips a sanitized title', () => {
+    const page = { id: 'aaaa1111-2222-3333-4444-555566667777', title: 'My_Page' }
     expect(parseSegment(formatSegment(page))).toEqual(page)
   })
-  it('round-trips a title containing double underscore', () => {
-    const page = { id: 'abc123def4567890123456789012345a', title: 'a__b' }
-    expect(parseSegment(formatSegment(page))).toEqual(page)
-  })
-  it('normalizes an uppercase id to lowercase', () => {
-    expect(
-      parseSegment(formatSegment({ id: 'ABC123DEF4567890123456789012345A', title: 'X' })),
-    ).toEqual({ id: 'abc123def4567890123456789012345a', title: 'X' })
-  })
-  it('parses a segment with empty title prefix', () => {
-    expect(parseSegment('__abc123def4567890123456789012345a')).toEqual({
-      title: '',
-      id: 'abc123def4567890123456789012345a',
+  it('round-trips a title containing double underscore in the middle', () => {
+    expect(parseSegment('a__b__aaaa1111-2222-3333-4444-555566667777')).toEqual({
+      title: 'a__b',
+      id: 'aaaa1111-2222-3333-4444-555566667777',
     })
   })
 })

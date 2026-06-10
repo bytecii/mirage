@@ -244,6 +244,7 @@ export class MirageFS {
     return {
       readdir: this.readdir.bind(this),
       getattr: this.getattr.bind(this),
+      fgetattr: this.fgetattr.bind(this),
       open: this.open.bind(this),
       read: this.read.bind(this),
       write: this.write.bind(this),
@@ -298,6 +299,18 @@ export class MirageFS {
         cb(classifyError(err))
       }
     })()
+  }
+
+  private fgetattr(path: string, fd: number, cb: Cb<FuseAttr>): void {
+    // fstat(fd) after open: the open handler prefetched size-unknown files
+    // into the handle, so answer with the real byte length instead of the
+    // sentinel that path-based getattr reported before open.
+    const ctx = this.handles.get(fd)
+    if (ctx?.data !== undefined) {
+      cb(0, this.fileStat(ctx.data.byteLength))
+      return
+    }
+    this.getattr(path, cb)
   }
 
   private readdir(path: string, cb: Cb<string[]>): void {

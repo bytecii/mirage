@@ -24,6 +24,7 @@ import type { TSNodeLike } from '../expand/variable.ts'
 import type { Session } from '../session/session.ts'
 import { ExecutionNode } from '../types.ts'
 import type { ExecuteNodeFn } from './jobs.ts'
+import { fnmatchCase } from '../../util/fnmatch.ts'
 
 function installStdinBuffer(
   session: Session,
@@ -295,7 +296,7 @@ export async function handleCase(
   callStack: CallStack | null = null,
 ): Promise<Result> {
   for (const [patterns, body] of items) {
-    if (patterns.some((p) => fnmatchGlob(word, p.trim()))) {
+    if (patterns.some((p) => fnmatchCase(word, p.trim()))) {
       if (body !== null) return executeNode(body, session, stdin, callStack)
       return [null, new IOResult(), new ExecutionNode({ command: 'case', exitCode: 0 })]
     }
@@ -316,31 +317,4 @@ export function handleSelect(
     ([stdout, io]) =>
       [stdout, io, new ExecutionNode({ command: 'select', exitCode: io.exitCode })] as Result,
   )
-}
-
-function fnmatchGlob(value: string, pattern: string): boolean {
-  let re = '^'
-  let i = 0
-  while (i < pattern.length) {
-    const c = pattern[i]
-    if (c === undefined) break
-    if (c === '*') re += '.*'
-    else if (c === '?') re += '.'
-    else if (c === '[') {
-      const end = pattern.indexOf(']', i)
-      if (end === -1) {
-        re += '\\['
-      } else {
-        re += pattern.slice(i, end + 1)
-        i = end
-      }
-    } else if (/[.+^$(){}|\\]/.test(c)) {
-      re += `\\${c}`
-    } else {
-      re += c
-    }
-    i += 1
-  }
-  re += '$'
-  return new RegExp(re).test(value)
 }

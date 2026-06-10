@@ -17,7 +17,7 @@ import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { PathSpec } from '../../types.ts'
 import { readdir } from './readdir.ts'
 
-const SCOPE_ERROR = 1024
+const SCOPE_ERROR = 10000
 
 function fnmatch(name: string, pattern: string): boolean {
   let regex = '^'

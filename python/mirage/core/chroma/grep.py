@@ -1,0 +1,93 @@
+from mirage.cache.index import IndexCacheStore
+from mirage.commands.builtin.grep_helper import compile_pattern, grep_lines
+from mirage.commands.builtin.utils.lines import split_lines
+from mirage.core.chroma._client import fetch_page_chunks, query_contains
+from mirage.core.chroma.path import resolve_path
+from mirage.core.chroma.walk import walk
+from mirage.types import PathSpec
+
+
+async def grep_bytes(
+    accessor,
+    paths: list[PathSpec],
+    pattern: str,
+    index: IndexCacheStore,
+    ignore_case: bool = False,
+    invert: bool = False,
+    line_numbers: bool = True,
+    count_only: bool = False,
+    files_only: bool = False,
+    whole_word: bool = False,
+    fixed_string: bool = False,
+    only_matching: bool = False,
+    max_count: int | None = None,
+) -> tuple[bytes, dict[str, bytes]]:
+    regex = compile_pattern(pattern, ignore_case, fixed_string, whole_word)
+    targets = await target_slugs(accessor, paths, index)
+    matched_slugs = await coarse_filter_slugs(accessor,
+                                              pattern,
+                                              targets,
+                                              ignore_case=ignore_case,
+                                              invert=invert,
+                                              fixed_string=fixed_string)
+    lines: list[str] = []
+    reads: dict[str, bytes] = {}
+    slug_to_path = {slug: path for path, slug in targets.items()}
+    for slug in matched_slugs:
+        content = await fetch_page_chunks(accessor, slug)
+        path = slug_to_path.get(slug, "/" + slug)
+        data = content.encode()
+        reads[path] = data
+        hits = grep_lines(path, split_lines(content), regex, invert,
+                          line_numbers, count_only, files_only, only_matching,
+                          max_count)
+        if count_only:
+            if hits:
+                lines.append(f"{path}:{hits[0]}")
+        elif files_only:
+            lines.extend(hits)
+        else:
+            lines.extend(f"{path}:{hit}" for hit in hits)
+    return "\n".join(lines).encode(), reads
+
+
+async def coarse_filter_slugs(
+    accessor,
+    pattern: str,
+    targets: dict[str, str],
+    *,
+    ignore_case: bool,
+    invert: bool,
+    fixed_string: bool,
+) -> list[str]:
+    candidate_slugs = sorted(targets.values())
+    if ignore_case or invert:
+        return candidate_slugs
+    return await query_contains(accessor,
+                                pattern,
+                                candidate_slugs,
+                                regex=not fixed_string)
+
+
+async def target_slugs(accessor, paths: list[PathSpec],
+                       index: IndexCacheStore) -> dict[str, str]:
+    targets: dict[str, str] = {}
+    for path in paths:
+        resolved = await resolve_path(accessor, path, index)
+        if resolved.entry is not None and not resolved.is_dir:
+            targets[path.original] = str(resolved.entry.extra["slug"])
+            continue
+        if resolved.is_dir:
+            children = await walk(accessor,
+                                  path,
+                                  index,
+                                  include_root=False,
+                                  strip_prefix=False)
+            for child in children:
+                child_spec = PathSpec.from_str_path(child, path.prefix)
+                child_resolved = await resolve_path(accessor, child_spec,
+                                                    index)
+                if (child_resolved.entry is not None
+                        and not child_resolved.is_dir):
+                    targets[child] = str(child_resolved.entry.extra["slug"])
+    return targets

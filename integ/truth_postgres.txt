@@ -1,0 +1,65 @@
+# Expected substrings for the Postgres integ run (integ/postgres.py and
+# integ/postgres.ts). Matched as fixed substrings by integ/check_lines.sh, so
+# volatile output (row/size estimates, stat sizes) is tolerated. Seed data is
+# fixed (integer ids) so content is deterministic. Whole-number rating values
+# render as N.0 in Python (orjson) but N in TS (JS has no float type), so the
+# row lines below assert everything up to (not including) the rating column.
+
+# ---- directory structure (ls / tree) ----
+database.json
+public
+tables
+views
+rows.jsonl
+schema.json
+authors
+books
+recent_books
+
+# ---- schema.json (per-table synthetic schema, pretty-printed) ----
+"schema": "public"
+"name": "books"
+"kind": "table"
+"name": "id"
+"name": "title"
+"name": "author"
+"name": "year"
+"name": "rating"
+"type": "integer"
+"type": "text"
+"type": "double precision"
+"primary_key": [
+"name": "books_pkey"
+"unique": true
+
+# ---- rows (cat / head / tail / view); rating column omitted, see header ----
+{"id":1,"title":"alpha","author":"ada","year":2020
+{"id":2,"title":"beta","author":"ben","year":2021
+{"id":3,"title":"gamma","author":"cara","year":2022
+{"id":4,"title":"delta","author":"ada","year":2023
+{"id":5,"title":"epsilon","author":"ben","year":2024
+
+# ---- wc (warm via cache -> count<TAB>path; cold pushdown also labeled) ----
+5	/pg/public/tables/books/rows.jsonl
+3	/pg/public/tables/authors/rows.jsonl
+3	/pg/public/views/recent_books/rows.jsonl
+
+# ---- stat ----
+name=rows.jsonl
+
+# ---- grep / rg at table + schema scope (ILIKE push-down, path-prefixed) ----
+public/tables/books/rows.jsonl:{"id":1,"title":"alpha","author":"ada"
+public/tables/books/rows.jsonl:{"id":4,"title":"delta","author":"ada"
+
+# ---- find ----
+/pg/public/tables/books/rows.jsonl
+/pg/public/tables/books/schema.json
+/pg/public/views/recent_books/rows.jsonl
+
+# ---- safeguard demo (cat cap=2 lines) ----
+=== safeguard_cat_truncates ===
+{"id":1,"title":"alpha","author":"ada","year":2020
+{"id":2,"title":"beta","author":"ben","year":2021
+output truncated at safeguard limit (2 lines)
+=== safeguard_cat_pipe_uncapped ===
+5	/pg/public/tables/books/rows.jsonl

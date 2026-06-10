@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { fnmatch } from '../s3/_client.ts'
+import { fnmatch } from '../../util/fnmatch.ts'
 import type { TreeEntry } from './entry.ts'
 
 export function shouldUseSearch(

@@ -90,6 +90,6 @@ describe('formatGrepResults', () => {
     const lines = formatGrepResults([
       { database: 'app', collection: 'users', docs: [{ _id: '1', name: 'a' }] },
     ])
-    expect(lines).toEqual(['app/collections/users/documents.jsonl:{"_id":"1","name":"a"}'])
+    expect(lines).toEqual(['app/collections/users/documents.jsonl:{"_id": "1", "name": "a"}'])
   })
 })

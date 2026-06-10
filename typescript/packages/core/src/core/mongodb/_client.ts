@@ -23,7 +23,7 @@ export async function listDatabases(accessor: MongoDBAccessor): Promise<string[]
     const all = await accessor.driver.listDatabases()
     let dbs = all.filter((d) => !SYSTEM_DBS.has(d))
     const allow = accessor.config.databases
-    if (allow !== null) {
+    if (allow !== null && allow.length > 0) {
       const allowSet = new Set(allow)
       dbs = dbs.filter((d) => allowSet.has(d))
     }

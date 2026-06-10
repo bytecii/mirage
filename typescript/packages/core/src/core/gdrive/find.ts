@@ -15,18 +15,11 @@
 import type { GDriveAccessor } from '../../accessor/gdrive.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { FindOptions } from '../../resource/base.ts'
+import { fnmatch } from '../../util/fnmatch.ts'
 import { FileType, PathSpec, type FileStat } from '../../types.ts'
 import { rstripSlash } from '../../util/slash.ts'
 import { readdir } from './readdir.ts'
 import { stat } from './stat.ts'
-
-function fnmatch(name: string, pattern: string): boolean {
-  const re = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\?/g, '.')
-    .replace(/\*/g, '.*')
-  return new RegExp(`^${re}$`).test(name)
-}
 
 interface WalkEntry {
   path: string

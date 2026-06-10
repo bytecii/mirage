@@ -119,18 +119,18 @@ describe('getChildBlocks', () => {
 })
 
 describe('getChildPages', () => {
-  it('filters child_page blocks and returns dash-stripped lowercase ids and titles', async () => {
+  it('filters child_page blocks and returns raw ids and titles', async () => {
     const transport = new FakeTransport()
     transport.responses.push({
       results: [
         {
-          id: 'AAAA1111-2222-3333-4444-555566667777',
+          id: 'aaaa1111-2222-3333-4444-555566667777',
           type: 'child_page',
           child_page: { title: 'First' },
         },
         { id: 'block-paragraph', type: 'paragraph' },
         {
-          id: 'BBBB1111-2222-3333-4444-555566667777',
+          id: 'bbbb1111-2222-3333-4444-555566667777',
           type: 'child_page',
           child_page: { title: 'Second' },
         },
@@ -140,8 +140,8 @@ describe('getChildPages', () => {
     })
     const pages = await getChildPages(transport, 'parent-block')
     expect(pages).toEqual([
-      { id: 'aaaa1111222233334444555566667777', title: 'First' },
-      { id: 'bbbb1111222233334444555566667777', title: 'Second' },
+      { id: 'aaaa1111-2222-3333-4444-555566667777', title: 'First' },
+      { id: 'bbbb1111-2222-3333-4444-555566667777', title: 'Second' },
     ])
   })
 })

@@ -21,16 +21,9 @@ import { command, type CommandFnResult, type CommandOpts } from '../../config.ts
 import { specOf } from '../../spec/builtins.ts'
 import { metadataProvision } from './provision.ts'
 import { rstripSlash, stripSlash } from '../../../util/slash.ts'
+import { fnmatch } from '../../../util/fnmatch.ts'
 
 const ENC = new TextEncoder()
-
-function fnmatch(name: string, pattern: string): boolean {
-  const re = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\?/g, '.')
-    .replace(/\*/g, '.*')
-  return new RegExp(`^${re}$`).test(name)
-}
 
 async function walk(
   accessor: DropboxAccessor,

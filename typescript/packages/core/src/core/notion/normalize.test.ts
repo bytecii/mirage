@@ -76,17 +76,22 @@ describe('extractIdNoDashes', () => {
 })
 
 describe('pageSegmentName', () => {
-  it('returns title__id with dashes stripped from id', () => {
+  it('returns sanitized title__id with the raw dashed id', () => {
     const page = {
       id: '2c4e9c3a-1234-5678-90ab-cdef01234567',
-      properties: { title: { title: [{ plain_text: 'Hi' }] } },
+      properties: { title: { type: 'title', title: [{ plain_text: 'Hi There' }] } },
     }
-    expect(pageSegmentName(page)).toBe('Hi__2c4e9c3a1234567890abcdef01234567')
+    expect(pageSegmentName(page)).toBe('Hi_There__2c4e9c3a-1234-5678-90ab-cdef01234567')
+  })
+
+  it('falls back to "untitled" when the page has no title property', () => {
+    const page = { id: '2c4e9c3a-1234-5678-90ab-cdef01234567', properties: {} }
+    expect(pageSegmentName(page)).toBe('untitled__2c4e9c3a-1234-5678-90ab-cdef01234567')
   })
 })
 
 describe('normalizePage', () => {
-  it('builds the JSON-shaped record from a representative page', () => {
+  it('builds the Python-shaped record from a representative page', () => {
     const page = {
       id: '2c4e9c3a-1234-5678-90ab-cdef01234567',
       url: 'https://notion.so/Hello-2c4e9c3a1234567890abcdef01234567',
@@ -94,46 +99,71 @@ describe('normalizePage', () => {
       last_edited_time: '2025-02-01T00:00:00.000Z',
       archived: false,
       parent: { type: 'workspace', workspace: true },
+      created_by: { object: 'user', id: 'user-1' },
+      last_edited_by: { object: 'user', id: 'user-2' },
       properties: {
-        title: { title: [{ plain_text: 'Hello' }] },
+        Name: { id: 'title', type: 'title', title: [{ plain_text: 'Hello' }] },
       },
     }
     const blocks = [
-      { object: 'block', id: 'b1', type: 'paragraph' },
-      { object: 'block', id: 'b2', type: 'heading_1' },
+      {
+        object: 'block',
+        id: 'b1',
+        type: 'paragraph',
+        paragraph: { rich_text: [{ plain_text: 'Hi' }] },
+      },
+      {
+        object: 'block',
+        id: 'b2',
+        type: 'heading_1',
+        heading_1: { rich_text: [{ plain_text: 'Title' }] },
+      },
     ]
     expect(normalizePage(page, blocks)).toEqual({
-      id: '2c4e9c3a1234567890abcdef01234567',
+      page_id: '2c4e9c3a-1234-5678-90ab-cdef01234567',
       title: 'Hello',
       url: 'https://notion.so/Hello-2c4e9c3a1234567890abcdef01234567',
       created_time: '2025-01-01T00:00:00.000Z',
       last_edited_time: '2025-02-01T00:00:00.000Z',
+      parent_type: 'workspace',
+      parent_id: '',
       archived: false,
-      parent: { type: 'workspace', workspace: true },
-      properties: { title: { title: [{ plain_text: 'Hello' }] } },
+      created_by: 'user-1',
+      last_edited_by: 'user-2',
+      markdown: 'Hi\n\n# Title\n',
       blocks,
     })
   })
 
-  it('fills nullable fields with null when missing', () => {
+  it('fills fields with empty defaults when missing', () => {
     const page = {
       id: '2c4e9c3a-1234-5678-90ab-cdef01234567',
     }
-    const result = normalizePage(page, [])
-    expect(result.url).toBeNull()
-    expect(result.created_time).toBeNull()
-    expect(result.last_edited_time).toBeNull()
-    expect(result.archived).toBeNull()
-    expect(result.parent).toEqual({})
-    expect(result.properties).toEqual({})
-    expect(result.title).toBe('untitled')
-    expect(result.blocks).toEqual([])
+    expect(normalizePage(page, [])).toEqual({
+      page_id: '2c4e9c3a-1234-5678-90ab-cdef01234567',
+      title: '',
+      url: '',
+      created_time: '',
+      last_edited_time: '',
+      parent_type: '',
+      parent_id: '',
+      archived: false,
+      created_by: '',
+      last_edited_by: '',
+      markdown: '',
+      blocks: [],
+    })
   })
 
-  it('passes blocks through unchanged', () => {
+  it('drops child_page and child_database blocks from the body', () => {
     const page = { id: '2c4e9c3a-1234-5678-90ab-cdef01234567' }
-    const blocks = [{ object: 'block', id: 'b1' }]
-    expect(normalizePage(page, blocks).blocks).toBe(blocks as unknown as typeof blocks)
+    const keep = { object: 'block', id: 'b1', type: 'paragraph', paragraph: { rich_text: [] } }
+    const blocks = [
+      keep,
+      { object: 'block', id: 'b2', type: 'child_page' },
+      { object: 'block', id: 'b3', type: 'child_database' },
+    ]
+    expect(normalizePage(page, blocks).blocks).toEqual([keep])
   })
 })
 

@@ -37,18 +37,6 @@ export function rawPathOf(path: PathSpec): string {
     : path.original
 }
 
-export function fnmatch(name: string, pattern: string): boolean {
-  let re = '^'
-  for (const ch of pattern) {
-    if (ch === '*') re += '.*'
-    else if (ch === '?') re += '.'
-    else if (/[.+^${}()|[\]\\]/.test(ch)) re += '\\' + ch
-    else re += ch
-  }
-  re += '$'
-  return new RegExp(re).test(name)
-}
-
 export interface S3SendClient {
   send: (cmd: unknown) => Promise<Record<string, unknown>>
   destroy?: () => void

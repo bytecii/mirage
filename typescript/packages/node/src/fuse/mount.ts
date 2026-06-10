@@ -84,9 +84,14 @@ export async function mount(ws: Workspace, options: MountOptions = {}): Promise<
   const agentId = options.agentId
   const mfs = new MirageFS(ws, agentId !== undefined ? { agentId } : {})
   const autoUnmount = options.autoUnmount ?? process.platform === 'linux'
+  // attr_timeout=0 (string: the option serializer drops falsy values) keeps
+  // the kernel from caching the UNKNOWN_SIZE_SENTINEL that getattr reports
+  // for size-unknown API files; the post-open fstat then reaches fgetattr,
+  // which answers with the prefetched real size.
   const fuseOpts: Record<string, unknown> = {
     force: true,
     mkdir: true,
+    attrTimeout: '0',
     ...(autoUnmount ? { autoUnmount: true } : {}),
     ...(options.fuseOptions ?? {}),
   }

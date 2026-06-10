@@ -49,9 +49,7 @@ function spec(original: string, prefix = ''): PathSpec {
 }
 
 const PAGE_ID_DASHED = 'aaaa1111-2222-3333-4444-555566667777'
-const PAGE_ID = 'aaaa1111222233334444555566667777'
 const CHILD_ID_DASHED = 'cccc1111-2222-3333-4444-555566667777'
-const CHILD_ID = 'cccc1111222233334444555566667777'
 
 function pageBody(id: string, title: string): Record<string, unknown> {
   return {
@@ -63,7 +61,7 @@ function pageBody(id: string, title: string): Record<string, unknown> {
     archived: false,
     parent: { type: 'workspace', workspace: true },
     properties: {
-      title: { title: [{ plain_text: title }] },
+      title: { type: 'title', title: [{ plain_text: title }] },
     },
   }
 }
@@ -88,26 +86,28 @@ describe('notion read', () => {
       has_more: false,
       next_cursor: null,
     })
-    const path = `/My Page__${PAGE_ID}/page.json`
+    const path = `/pages/My_Page__${PAGE_ID_DASHED}/page.json`
     const bytes = await read(makeAccessor(transport), spec(path), undefined)
     expect(bytes).toBeInstanceOf(Uint8Array)
     const decoded = decodeJson(bytes) as Record<string, unknown>
-    expect(decoded.id).toBe(PAGE_ID)
+    expect(decoded.page_id).toBe(PAGE_ID_DASHED)
     expect(decoded.title).toBe('My Page')
     expect(decoded.last_edited_time).toBe('2024-01-02T00:00:00Z')
     expect(decoded.created_time).toBe('2024-01-01T00:00:00Z')
     expect(decoded.archived).toBe(false)
+    expect(decoded.parent_type).toBe('workspace')
+    expect(decoded.parent_id).toBe('')
+    expect(typeof decoded.markdown).toBe('string')
     expect(Array.isArray(decoded.blocks)).toBe(true)
     const blocks = decoded.blocks as { id: string }[]
-    expect(blocks).toHaveLength(2)
+    expect(blocks).toHaveLength(1)
     expect(blocks[0]?.id).toBe('block-1')
-    expect(blocks[1]?.id).toBe(CHILD_ID_DASHED)
     const calls = transport.invocations
     expect(calls).toHaveLength(2)
     const pageCall = calls.find((c) => c.name === 'API-retrieve-a-page')
-    expect(pageCall?.args).toEqual({ page_id: PAGE_ID })
+    expect(pageCall?.args).toEqual({ page_id: PAGE_ID_DASHED })
     const blockCall = calls.find((c) => c.name === 'API-retrieve-block-children')
-    expect(blockCall?.args).toEqual({ block_id: PAGE_ID, page_size: 100 })
+    expect(blockCall?.args).toEqual({ block_id: PAGE_ID_DASHED, page_size: 100 })
   })
 
   it('honors a path prefix', async () => {
@@ -118,14 +118,14 @@ describe('notion read', () => {
       has_more: false,
       next_cursor: null,
     })
-    const original = `/notion/Prefixed__${PAGE_ID}/page.json`
+    const original = `/notion/pages/Prefixed__${PAGE_ID_DASHED}/page.json`
     const bytes = await read(
       makeAccessor(transport),
       new PathSpec({ original, directory: original, prefix: '/notion' }),
       undefined,
     )
     const decoded = decodeJson(bytes) as Record<string, unknown>
-    expect(decoded.id).toBe(PAGE_ID)
+    expect(decoded.page_id).toBe(PAGE_ID_DASHED)
     expect(decoded.title).toBe('Prefixed')
     expect(decoded.blocks).toEqual([])
   })
@@ -133,9 +133,9 @@ describe('notion read', () => {
   it('throws ENOENT when the path does not end in page.json', async () => {
     const transport = new FakeTransport()
     const cases = [
-      `/My Page__${PAGE_ID}/`,
-      `/My Page__${PAGE_ID}/foo.txt`,
-      `/My Page__${PAGE_ID}/SubPage__${CHILD_ID}/`,
+      `/pages/My_Page__${PAGE_ID_DASHED}/`,
+      `/pages/My_Page__${PAGE_ID_DASHED}/foo.txt`,
+      `/pages/My_Page__${PAGE_ID_DASHED}/SubPage__${CHILD_ID_DASHED}/`,
     ]
     for (const original of cases) {
       let captured: unknown = null
@@ -167,7 +167,7 @@ describe('notion read', () => {
     const transport = new FakeTransport()
     let captured: unknown = null
     try {
-      await read(makeAccessor(transport), spec('/no-id/page.json'), undefined)
+      await read(makeAccessor(transport), spec('/pages/no-id/page.json'), undefined)
     } catch (err) {
       captured = err
     }

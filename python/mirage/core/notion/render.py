@@ -84,10 +84,16 @@ def _block_to_md(block: dict, indent: int = 0) -> str:
     return f"{prefix}{text}" if text else ""
 
 
+def _walk_block(block: dict, indent: int, lines: list[str]) -> None:
+    line = _block_to_md(block, indent)
+    if line or block.get("type") == "paragraph":
+        lines.append(line)
+    for child in block.get("children", []):
+        _walk_block(child, indent + 1, lines)
+
+
 def blocks_to_markdown(blocks: list[dict]) -> str:
     lines: list[str] = []
     for block in blocks:
-        line = _block_to_md(block)
-        if line or block.get("type") == "paragraph":
-            lines.append(line)
+        _walk_block(block, 0, lines)
     return "\n\n".join(lines) + "\n" if lines else ""

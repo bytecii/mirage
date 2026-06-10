@@ -15,6 +15,7 @@
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
+import { fnmatch } from '../../../util/fnmatch.ts'
 
 const ENC = new TextEncoder()
 
@@ -24,18 +25,6 @@ interface TreeOpts {
   ignorePattern: string | null
   dirsOnly: boolean
   matchPattern: string | null
-}
-
-function fnmatch(name: string, pattern: string): boolean {
-  let re = '^'
-  for (const ch of pattern) {
-    if (ch === '*') re += '.*'
-    else if (ch === '?') re += '.'
-    else if (/[.+^${}()|[\]\\]/.test(ch)) re += '\\' + ch
-    else re += ch
-  }
-  re += '$'
-  return new RegExp(re).test(name)
 }
 
 async function walkTree(

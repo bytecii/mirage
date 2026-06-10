@@ -46,7 +46,7 @@ async def readdir(
         if index is not None:
             listing = await index.list_dir(idx_key)
             if listing.entries is not None:
-                return listing.entries
+                return [f"{prefix}{entry}" for entry in listing.entries]
         pages = await search_pages(accessor.config)
         top_level = [
             p for p in pages if p.get("parent", {}).get("type") == "workspace"
@@ -74,7 +74,7 @@ async def readdir(
         if index is not None:
             listing = await index.list_dir(page_idx_key)
             if listing.entries is not None:
-                return listing.entries
+                return [f"{prefix}{entry}" for entry in listing.entries]
 
         blocks = await list_block_children(accessor.config, page_id)
         child_pages = [b for b in blocks if b.get("type") == "child_page"]

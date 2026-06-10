@@ -19,6 +19,12 @@ import { iterDocuments, iterInserts } from './_client.ts'
 import { detectScope } from './scope.ts'
 import { PRIMARY_KEY, ScopeLevel } from './types.ts'
 
+function notFound(p: string): Error {
+  const err = new Error(p) as Error & { code?: string }
+  err.code = 'ENOENT'
+  return err
+}
+
 export function applyElision(
   value: Record<string, unknown>,
   paths: Set<string>,
@@ -64,8 +70,24 @@ export function elisionPaths(
   return new Set(fields)
 }
 
+function pyJsonDumps(value: unknown): string {
+  if (value === null || value === undefined) return 'null'
+  if (typeof value === 'string') return JSON.stringify(value)
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'null'
+  if (typeof value === 'boolean') return value ? 'true' : 'false'
+  if (Array.isArray(value)) return `[${value.map(pyJsonDumps).join(', ')}]`
+  if (typeof value === 'object') {
+    const parts: string[] = []
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      parts.push(`${JSON.stringify(k)}: ${pyJsonDumps(v)}`)
+    }
+    return `{${parts.join(', ')}}`
+  }
+  return 'null'
+}
+
 export function stringifyDoc(doc: Record<string, unknown>): string {
-  return EJSON.stringify(doc, undefined, 0, { relaxed: true })
+  return pyJsonDumps(EJSON.serialize(doc, { relaxed: true }))
 }
 
 function encodeLine(doc: Record<string, unknown>): Uint8Array {
@@ -80,7 +102,7 @@ export async function* readStream(
   const ps = typeof path === 'string' ? new PathSpec({ original: path, directory: path }) : path
   const scope = detectScope(ps)
   if (scope.level !== ScopeLevel.DOCUMENTS || scope.database === null || scope.name === null) {
-    throw new Error(`mongodb readStream: not a documents path: ${ps.original}`)
+    throw notFound(ps.original)
   }
   const elide = elisionPaths(accessor, scope.database, scope.name)
   const batchSize = options.batchSize ?? 100
@@ -100,7 +122,7 @@ export async function* watchStream(
   const ps = typeof path === 'string' ? new PathSpec({ original: path, directory: path }) : path
   const scope = detectScope(ps)
   if (scope.level !== ScopeLevel.DOCUMENTS || scope.database === null || scope.name === null) {
-    throw new Error(`mongodb watchStream: not a documents path: ${ps.original}`)
+    throw notFound(ps.original)
   }
   const elide = elisionPaths(accessor, scope.database, scope.name)
   for await (const doc of iterInserts(accessor, scope.database, scope.name)) {

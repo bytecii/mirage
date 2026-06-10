@@ -18,7 +18,7 @@ import { PathSpec } from '../../types.ts'
 import { databaseExists, entityExists } from './_client.ts'
 import { buildCollectionSchemaJson, buildDatabaseJson } from './_schema_json.ts'
 import { detectScope } from './scope.ts'
-import { readStream } from './stream.ts'
+import { readStream, stringifyDoc } from './stream.ts'
 import { ScopeLevel } from './types.ts'
 
 function notFound(p: string): Error {
@@ -59,13 +59,17 @@ export async function read(
       throw notFound(spec.original)
     }
     const payload = await buildCollectionSchemaJson(accessor, scope.database, scope.name)
-    return new TextEncoder().encode(JSON.stringify(payload) + '\n')
+    return new TextEncoder().encode(
+      stringifyDoc(payload as unknown as Record<string, unknown>) + '\n',
+    )
   }
 
   if (scope.level === ScopeLevel.DATABASE_JSON && scope.database !== null) {
     if (!(await databaseExists(accessor, scope.database))) throw notFound(spec.original)
     const payload = await buildDatabaseJson(accessor, scope.database)
-    return new TextEncoder().encode(JSON.stringify(payload) + '\n')
+    return new TextEncoder().encode(
+      stringifyDoc(payload as unknown as Record<string, unknown>) + '\n',
+    )
   }
 
   throw notFound(spec.original)

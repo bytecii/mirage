@@ -14,7 +14,7 @@
 
 import type { GitHubCIAccessor } from '../../accessor/github_ci.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { fnmatch } from '../s3/_client.ts'
+import { fnmatch } from '../../util/fnmatch.ts'
 import { PathSpec } from '../../types.ts'
 import { SCOPE_ERROR } from '../github/constants.ts'
 import { readdir } from './readdir.ts'

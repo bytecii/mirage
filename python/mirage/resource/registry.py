@@ -131,6 +131,9 @@ REGISTRY: dict[str, ResourceEntry] = {
     "dify":
     ResourceEntry("mirage.resource.dify:DifyResource",
                   "mirage.resource.dify:DifyConfig"),
+    "chroma":
+    ResourceEntry("mirage.resource.chroma:ChromaResource",
+                  "mirage.resource.chroma:ChromaConfig"),
     "databricks_volume":
     ResourceEntry("mirage.resource.databricks_volume:DatabricksVolumeResource",
                   "mirage.resource.databricks_volume:DatabricksVolumeConfig"),

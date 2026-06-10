@@ -15,6 +15,7 @@
 import type { CallStack } from '../../shell/call_stack.ts'
 import { NodeType as NT } from '../../shell/types.ts'
 import type { Session } from '../session/session.ts'
+import { fnmatchCase } from '../../util/fnmatch.ts'
 
 export interface TSNodeLike {
   type: string
@@ -83,33 +84,6 @@ export function lookupVar(name: string, session: Session, callStack: CallStack |
     if (localVal !== null) return localVal
   }
   return env[name] ?? ''
-}
-
-function fnmatchCase(value: string, pattern: string): boolean {
-  let re = '^'
-  let i = 0
-  while (i < pattern.length) {
-    const c = pattern[i]
-    if (c === undefined) break
-    if (c === '*') re += '.*'
-    else if (c === '?') re += '.'
-    else if (c === '[') {
-      const end = pattern.indexOf(']', i)
-      if (end === -1) {
-        re += '\\['
-      } else {
-        re += pattern.slice(i, end + 1)
-        i = end
-      }
-    } else if (/[.+^$(){}|\\]/.test(c)) {
-      re += `\\${c}`
-    } else {
-      re += c
-    }
-    i += 1
-  }
-  re += '$'
-  return new RegExp(re).test(value)
 }
 
 function globStrip(value: string, pattern: string, greedy: boolean, prefix: boolean): string {

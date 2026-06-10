@@ -269,7 +269,7 @@ export async function fetchIndexes(
   }>(
     'SELECT i.relname AS name, ' +
       '       ix.indisunique AS unique, ' +
-      '       array_agg(a.attname ORDER BY x.ord) AS columns ' +
+      '       array_agg(a.attname::text ORDER BY x.ord) AS columns ' +
       'FROM pg_class t ' +
       'JOIN pg_namespace n ON t.relnamespace = n.oid ' +
       'JOIN pg_index ix ON ix.indrelid = t.oid ' +

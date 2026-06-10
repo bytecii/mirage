@@ -16,18 +16,7 @@ import type { LanceDBAccessor } from '../../accessor/lancedb.ts'
 import type { FindOptions } from '../../resource/base.ts'
 import { PathSpec } from '../../types.ts'
 import { readdir } from './readdir.ts'
-
-function fnmatch(name: string, pattern: string): boolean {
-  let regex = '^'
-  for (const c of pattern) {
-    if (c === '*') regex += '.*'
-    else if (c === '?') regex += '.'
-    else if ('.+()|[]{}\\^$'.includes(c)) regex += '\\' + c
-    else regex += c
-  }
-  regex += '$'
-  return new RegExp(regex).test(name)
-}
+import { fnmatch } from '../../util/fnmatch.ts'
 
 function isRowFile(name: string, config: LanceDBAccessor['config']): boolean {
   if (name.endsWith('.md')) return true
