@@ -14,69 +14,15 @@
 
 import type { DropboxAccessor } from '../../../accessor/dropbox.ts'
 import { stat as dropboxStat } from '../../../core/dropbox/stat.ts'
-import { IOResult, type ByteSource } from '../../../io/types.ts'
-import { PathSpec, ResourceName } from '../../../types.ts'
-import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
+import { ResourceName } from '../../../types.ts'
+import { command } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-
-const ENC = new TextEncoder()
-
-function normalize(p: string): string {
-  const isAbs = p.startsWith('/')
-  const segments = p.split('/').filter((s) => s !== '' && s !== '.')
-  const out: string[] = []
-  for (const s of segments) {
-    if (s === '..') {
-      if (out.length > 0) out.pop()
-      else if (!isAbs) out.push('..')
-    } else {
-      out.push(s)
-    }
-  }
-  const joined = out.join('/')
-  return isAbs ? '/' + joined : joined === '' ? '.' : joined
-}
-
-async function exists(
-  accessor: DropboxAccessor,
-  path: string,
-  index: CommandOpts['index'],
-  prefix: string,
-): Promise<boolean> {
-  try {
-    const spec = new PathSpec({ original: path, directory: path, prefix })
-    await dropboxStat(accessor, spec, index ?? undefined)
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function realpathCommand(
-  accessor: DropboxAccessor,
-  paths: PathSpec[],
-  _texts: string[],
-  opts: CommandOpts,
-): Promise<CommandFnResult> {
-  const prefix = opts.mountPrefix ?? ''
-  const e = opts.flags.e === true
-  const lines: string[] = []
-  for (const p of paths) {
-    const full = prefix !== '' ? prefix + p.original : p.original
-    const resolved = normalize(full)
-    if (e && !(await exists(accessor, resolved, opts.index, prefix))) {
-      const msg = `realpath: '${p.original}': No such file or directory\n`
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(msg) })]
-    }
-    lines.push(resolved)
-  }
-  const out: ByteSource = ENC.encode(lines.join('\n') + '\n')
-  return [out, new IOResult()]
-}
+import { realpathGeneric } from '../generic/realpath.ts'
 
 export const DROPBOX_REALPATH = command({
   name: 'realpath',
   resource: ResourceName.DROPBOX,
   spec: specOf('realpath'),
-  fn: realpathCommand,
+  fn: (accessor: DropboxAccessor, paths, texts, opts) =>
+    realpathGeneric(paths, texts, opts, (p) => dropboxStat(accessor, p, opts.index ?? undefined)),
 })

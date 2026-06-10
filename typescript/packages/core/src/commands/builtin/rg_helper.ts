@@ -14,6 +14,7 @@
 
 import type { FileStat } from '../../types.ts'
 import { FileType } from '../../types.ts'
+import { rstripSlash } from '../../util/slash.ts'
 import { getExtension } from '../resolve.ts'
 import { BINARY_EXTENSIONS, compilePattern, grepLines } from './grep_helper.ts'
 import { fnmatch } from '../../util/fnmatch.ts'
@@ -192,9 +193,12 @@ export async function rgFull(
     }
 
     if (s.type === FileType.DIRECTORY) {
-      const base = basename(entry)
+      // box/dropbox readdir marks folders with a trailing slash; strip it so
+      // basename sees the real directory name (hidden-dir skip).
+      const child = rstripSlash(entry)
+      const base = basename(child)
       if (!opts.hidden && base.startsWith('.')) continue
-      const sub = await rgFull(readdirFn, statFn, readBytesFn, entry, pattern, opts, warnings)
+      const sub = await rgFull(readdirFn, statFn, readBytesFn, child, pattern, opts, warnings)
       results.push(...sub)
       continue
     }

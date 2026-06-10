@@ -27,67 +27,82 @@ function buildConfig(): BoxConfig {
   }
   const clientId = process.env.BOX_CLIENT_ID ?? ''
   const clientSecret = process.env.BOX_CLIENT_SECRET ?? ''
+  const enterpriseId = process.env.BOX_ENTERPRISE_ID ?? ''
+  if (clientId !== '' && clientSecret !== '' && enterpriseId !== '') {
+    return { clientId, clientSecret, enterpriseId }
+  }
   const refreshToken = process.env.BOX_REFRESH_TOKEN ?? ''
   if (clientId === '' || clientSecret === '' || refreshToken === '') {
     throw new Error(
-      'Provide BOX_DEVELOPER_TOKEN, or BOX_CLIENT_ID + BOX_CLIENT_SECRET + BOX_REFRESH_TOKEN',
+      'Provide BOX_DEVELOPER_TOKEN, or BOX_CLIENT_ID + BOX_CLIENT_SECRET + BOX_ENTERPRISE_ID (service account), or BOX_CLIENT_ID + BOX_CLIENT_SECRET + BOX_REFRESH_TOKEN',
     )
   }
   return { clientId, clientSecret, refreshToken }
 }
 
-async function run(
-  ws: Workspace,
-  cmd: string,
-): Promise<{ out: string; err: string; code: number }> {
+async function show(ws: Workspace, cmd: string, max = 600): Promise<string> {
+  console.log(`=== ${cmd} ===`)
   try {
     const r = await ws.execute(cmd)
-    return { out: r.stdoutText, err: r.stderrText, code: r.exitCode }
+    const out = r.stdoutText
+    if (out !== '') console.log(out.length > max ? out.slice(0, max) + '...' : out)
+    if (r.stderrText !== '') process.stderr.write(`  STDERR: ${r.stderrText.trim().slice(0, 200)}\n`)
+    return out
   } catch (err) {
-    return { out: '', err: err instanceof Error ? err.message : String(err), code: 1 }
+    process.stderr.write(`  ERROR: ${err instanceof Error ? err.message : String(err)}\n`)
+    return ''
   }
 }
 
-function printOut(label: string, out: string, err: string, max = 500): void {
-  console.log(`=== ${label} ===`)
-  if (out !== '') console.log(out.length > max ? out.slice(0, max) + '...' : out)
-  if (err !== '') process.stderr.write(`  STDERR: ${err.trim().slice(0, 200)}\n`)
+function quote(p: string): string {
+  return `"${p}"`
 }
 
 async function main(): Promise<void> {
   const resource = new BoxResource(buildConfig())
   const ws = new Workspace({ '/box': resource }, { mode: MountMode.READ })
   try {
-    const root = await run(ws, 'ls /box/')
-    printOut('ls /box/', root.out, root.err)
+    await show(ws, 'ls /box/')
+    await show(ws, 'tree -L 2 /box/', 1200)
+    await show(ws, 'du -h /box/')
 
-    const entries = root.out.trim().split('\n').filter((s) => s !== '')
-    if (entries.length === 0) {
-      console.log('No items in /box/')
+    const found = await show(ws, 'find /box -type f -maxdepth 3', 1200)
+    const files = found
+      .trim()
+      .split('\n')
+      .filter((s) => s !== '')
+    if (files.length === 0) {
+      console.log('No files found under /box/, upload something to exercise read commands.')
       return
     }
-    const first = entries[0]!
+    const f1 = files[0]!
+    const f2 = files[1] ?? f1
 
-    const stat = await run(ws, `stat "/box/${first}"`)
-    console.log(`=== stat /box/${first} ===`)
-    console.log(`  ${stat.out.trim()}`)
+    await show(ws, `stat ${quote(f1)}`)
+    await show(ws, `file ${quote(f1)}`)
+    await show(ws, `head -n 5 ${quote(f1)}`)
+    await show(ws, `tail -n 3 ${quote(f1)}`)
+    await show(ws, `nl ${quote(f1)} | head -n 5`)
+    await show(ws, `wc ${quote(f1)} ${quote(f2)}`)
+    await show(ws, `cat ${quote(f1)} ${quote(f2)} | wc -c`)
+    await show(ws, `sort ${quote(f1)} | head -n 3`)
+    await show(ws, `uniq ${quote(f1)} | wc -l`)
+    await show(ws, `cut -c 1-40 ${quote(f1)} | head -n 3`)
+    await show(ws, `sed -n 1,2p ${quote(f1)}`)
+    await show(ws, `grep -c "." ${quote(f1)}`)
+    await show(ws, 'grep -rl "a" /box/ | head -n 5', 400)
+    await show(ws, 'rg -l "a" /box/ | head -n 5', 400)
+    await show(ws, `find /box -type f -name "*.json" -maxdepth 3 | head -n 5`)
+    await show(ws, 'du -a /box/ | head -n 8')
 
-    if (first.endsWith('/')) {
-      const subLs = await run(ws, `ls "/box/${first}"`)
-      printOut(`ls /box/${first}`, subLs.out, subLs.err)
-      const subEntries = subLs.out.trim().split('\n').filter((s) => s !== '')
-      const sub = subEntries[0]
-      if (sub !== undefined && !sub.endsWith('/')) {
-        const cat = await run(ws, `head -c 200 "/box/${first}${sub}"`)
-        printOut(`head -c 200 /box/${first}${sub}`, cat.out, cat.err)
-      }
-    } else {
-      const cat = await run(ws, `head -c 200 "/box/${first}"`)
-      printOut(`head -c 200 /box/${first}`, cat.out, cat.err)
+    const json = files.find((p) => p.endsWith('.json'))
+    if (json !== undefined) {
+      await show(ws, `jq -r "keys | .[]" ${quote(json)} | head -n 5`)
     }
-
-    const tree = await run(ws, 'tree -L 2 /box/')
-    printOut('tree -L 2 /box/', tree.out, tree.err, 1200)
+    const note = files.find((p) => p.endsWith('.boxnote.json') || p.endsWith('.gdoc.json'))
+    if (note !== undefined) {
+      await show(ws, `jq -r .body_text ${quote(note)} | head -n 5`)
+    }
   } finally {
     await ws.close()
   }

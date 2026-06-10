@@ -32,6 +32,29 @@ await ws.execute('ls /box/')
 When the token expires (Box 401s with `invalid_token`), regenerate it in the console and
 re-run. See [Box Credentials -> Quick Start](/home/setup/box#quick-start-developer-token-60-minutes-no-oauth).
 
+## Service account (client credentials, no refresh token)
+
+For headless server auth, skip OAuth and refresh tokens entirely. Create a Box app with the
+**Server Authentication (Client Credentials Grant)** method, authorize it once in the Box
+admin console (**Apps -> Custom Apps Manager**), and pass the enterprise ID:
+
+```ts
+const box = new BoxResource({
+  clientId: process.env.BOX_CLIENT_ID!,
+  clientSecret: process.env.BOX_CLIENT_SECRET!,
+  enterpriseId: process.env.BOX_ENTERPRISE_ID!,
+})
+```
+
+Tokens are minted for the app's **service account** and re-fetched automatically on expiry;
+there is no refresh token to rotate or persist.
+
+<Warning>
+The service account is a separate Box user with its own (initially empty) root folder. To see
+your content, share folders with the service account's email address, shown under the app's
+**General Settings** in the developer console.
+</Warning>
+
 ## Node (server-side, long-running)
 
 ```bash

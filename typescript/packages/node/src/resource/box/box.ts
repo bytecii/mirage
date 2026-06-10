@@ -52,6 +52,7 @@ export class BoxResource extends BaseResource implements Resource {
       ...(config.clientId !== undefined ? { clientId: config.clientId } : {}),
       ...(config.clientSecret !== undefined ? { clientSecret: config.clientSecret } : {}),
       ...(config.refreshToken !== undefined ? { refreshToken: config.refreshToken } : {}),
+      ...(config.enterpriseId !== undefined ? { enterpriseId: config.enterpriseId } : {}),
       ...(config.accessToken !== undefined ? { accessToken: config.accessToken } : {}),
       ...(config.refreshFn !== undefined ? { refreshFn: config.refreshFn } : {}),
       ...(config.onRefreshTokenRotated !== undefined

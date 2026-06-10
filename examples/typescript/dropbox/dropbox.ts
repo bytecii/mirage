@@ -25,69 +25,70 @@ function buildConfig(): DropboxConfig {
   const clientSecret = process.env.DROPBOX_APP_SECRET ?? ''
   const refreshToken = process.env.DROPBOX_REFRESH_TOKEN ?? ''
   if (clientId === '' || clientSecret === '' || refreshToken === '') {
-    throw new Error(
-      'DROPBOX_APP_KEY / DROPBOX_APP_SECRET / DROPBOX_REFRESH_TOKEN are required',
-    )
+    throw new Error('DROPBOX_APP_KEY / DROPBOX_APP_SECRET / DROPBOX_REFRESH_TOKEN are required')
   }
   return { clientId, clientSecret, refreshToken }
 }
 
-async function run(
-  ws: Workspace,
-  cmd: string,
-): Promise<{ out: string; err: string; code: number }> {
+async function show(ws: Workspace, cmd: string, max = 600): Promise<string> {
+  console.log(`=== ${cmd} ===`)
   try {
     const r = await ws.execute(cmd)
-    return { out: r.stdoutText, err: r.stderrText, code: r.exitCode }
+    const out = r.stdoutText
+    if (out !== '') console.log(out.length > max ? out.slice(0, max) + '...' : out)
+    if (r.stderrText !== '') process.stderr.write(`  STDERR: ${r.stderrText.trim().slice(0, 200)}\n`)
+    return out
   } catch (err) {
-    return { out: '', err: err instanceof Error ? err.message : String(err), code: 1 }
+    process.stderr.write(`  ERROR: ${err instanceof Error ? err.message : String(err)}\n`)
+    return ''
   }
 }
 
-function printOut(label: string, out: string, err: string, max = 500): void {
-  console.log(`=== ${label} ===`)
-  if (out !== '') console.log(out.length > max ? out.slice(0, max) + '...' : out)
-  if (err !== '') process.stderr.write(`  STDERR: ${err.trim().slice(0, 200)}\n`)
+function quote(p: string): string {
+  return `"${p}"`
 }
 
 async function main(): Promise<void> {
   const resource = new DropboxResource(buildConfig())
   const ws = new Workspace({ '/dropbox': resource }, { mode: MountMode.READ })
   try {
-    const root = await run(ws, 'ls /dropbox/')
-    printOut('ls /dropbox/', root.out, root.err)
+    await show(ws, 'ls /dropbox/')
+    await show(ws, 'tree -L 2 /dropbox/', 1200)
+    await show(ws, 'du -h /dropbox/')
 
-    const entries = root.out.trim().split('\n').filter((s) => s !== '')
-    if (entries.length === 0) {
-      console.log('No files in /dropbox/')
+    const found = await show(ws, 'find /dropbox -type f -maxdepth 3', 1200)
+    const files = found
+      .trim()
+      .split('\n')
+      .filter((s) => s !== '')
+    if (files.length === 0) {
+      console.log('No files found under /dropbox/, upload something to exercise read commands.')
       return
     }
-    const first = entries[0]!
+    const f1 = files[0]!
+    const f2 = files[1] ?? f1
 
-    const stat = await run(ws, `stat "/dropbox/${first}"`)
-    console.log(`=== stat /dropbox/${first} ===`)
-    console.log(`  ${stat.out.trim()}`)
+    await show(ws, `stat ${quote(f1)}`)
+    await show(ws, `file ${quote(f1)}`)
+    await show(ws, `head -n 5 ${quote(f1)}`)
+    await show(ws, `tail -n 3 ${quote(f1)}`)
+    await show(ws, `nl ${quote(f1)} | head -n 5`)
+    await show(ws, `wc ${quote(f1)} ${quote(f2)}`)
+    await show(ws, `cat ${quote(f1)} ${quote(f2)} | wc -c`)
+    await show(ws, `sort ${quote(f1)} | head -n 3`)
+    await show(ws, `uniq ${quote(f1)} | wc -l`)
+    await show(ws, `cut -c 1-40 ${quote(f1)} | head -n 3`)
+    await show(ws, `sed -n 1,2p ${quote(f1)}`)
+    await show(ws, `grep -c "." ${quote(f1)}`)
+    await show(ws, 'grep -rl "a" /dropbox/ | head -n 5', 400)
+    await show(ws, 'rg -l "a" /dropbox/ | head -n 5', 400)
+    await show(ws, `find /dropbox -type f -name "*.json" -maxdepth 3 | head -n 5`)
+    await show(ws, 'du -a /dropbox/ | head -n 8')
 
-    if (first.endsWith('/')) {
-      const subLs = await run(ws, `ls "/dropbox/${first}"`)
-      printOut(`ls /dropbox/${first}`, subLs.out, subLs.err)
-      const subEntries = subLs.out.trim().split('\n').filter((s) => s !== '')
-      const sub = subEntries[0]
-      if (sub !== undefined && !sub.endsWith('/')) {
-        const cat = await run(ws, `cat "/dropbox/${first}${sub}"`)
-        printOut(`cat /dropbox/${first}${sub}`, cat.out, cat.err)
-      }
-    } else {
-      const cat = await run(ws, `head -c 200 "/dropbox/${first}"`)
-      printOut(`head -c 200 /dropbox/${first}`, cat.out, cat.err)
+    const json = files.find((p) => p.endsWith('.json'))
+    if (json !== undefined) {
+      await show(ws, `jq -r "keys | .[]" ${quote(json)} | head -n 5`)
     }
-
-    const tree = await run(ws, 'tree -L 2 /dropbox/')
-    printOut('tree -L 2 /dropbox/', tree.out, tree.err, 1200)
-
-    const records = ws.records
-    const total = records.reduce((s, r) => s + (r.bytes ?? 0), 0)
-    console.log(`\nStats: ${String(records.length)} ops, ${String(total)} bytes transferred`)
   } finally {
     await ws.close()
   }

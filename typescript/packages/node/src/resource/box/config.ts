@@ -18,6 +18,10 @@ export interface BoxConfig {
   clientId?: string
   clientSecret?: string
   refreshToken?: string
+  // Box enterprise ID for the client-credentials grant. With clientId +
+  // clientSecret + enterpriseId set, the resource authenticates as the app's
+  // service account; no refresh token needed.
+  enterpriseId?: string
   // Box developer token from https://app.box.com/developers/console (60-min
   // lifetime). When set, the resource skips the OAuth refresh flow and uses
   // this token directly. Useful for first-run / quick exploration.
@@ -32,6 +36,7 @@ export interface BoxConfigRedacted {
   clientId?: string
   clientSecret?: '<REDACTED>'
   refreshToken?: '<REDACTED>'
+  enterpriseId?: string
   accessToken?: '<REDACTED>'
 }
 
@@ -39,6 +44,7 @@ export const BoxConfigSchema = z.object({
   clientId: z.string().optional(),
   clientSecret: secretStr().optional(),
   refreshToken: secretStr().optional(),
+  enterpriseId: z.string().optional(),
   accessToken: secretStr().optional(),
 })
 
@@ -52,6 +58,7 @@ export function normalizeBoxConfig(input: Record<string, unknown>): BoxConfig {
       client_id: 'clientId',
       client_secret: 'clientSecret',
       refresh_token: 'refreshToken',
+      enterprise_id: 'enterpriseId',
       access_token: 'accessToken',
       developer_token: 'accessToken',
     },

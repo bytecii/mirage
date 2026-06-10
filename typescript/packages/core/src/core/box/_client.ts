@@ -20,6 +20,11 @@ export interface BoxConfig {
   clientId?: string
   clientSecret?: string
   refreshToken?: string
+  // Box enterprise ID for the client-credentials grant (server auth apps).
+  // With clientId + clientSecret + enterpriseId set, tokens are minted for the
+  // app's service account directly; no refresh token is involved and expired
+  // tokens are simply re-fetched.
+  enterpriseId?: string
   // Pre-fetched access token (e.g. Box developer token from the app console).
   // Lasts ~60 minutes, can't be refreshed programmatically. When set, the
   // TokenManager skips the refresh flow entirely and uses this token directly.
@@ -79,9 +84,39 @@ export async function refreshAccessToken(
   }
 }
 
+export async function fetchCcgToken(
+  config: BoxConfig,
+): Promise<{ accessToken: string; expiresIn: number }> {
+  if (config.clientId === undefined || config.clientId === '') {
+    throw new BoxApiError('fetchCcgToken: clientId is required', 400)
+  }
+  if (config.clientSecret === undefined || config.clientSecret === '') {
+    throw new BoxApiError('fetchCcgToken: clientSecret is required', 400)
+  }
+  const body = new URLSearchParams({
+    grant_type: 'client_credentials',
+    client_id: config.clientId,
+    client_secret: config.clientSecret,
+    box_subject_type: 'enterprise',
+    box_subject_id: config.enterpriseId ?? '',
+  })
+  const r = await fetch(BOX_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  })
+  if (!r.ok) {
+    const text = await r.text().catch(() => '')
+    throw new BoxApiError(`Box CCG token → ${String(r.status)} ${text}`, r.status)
+  }
+  const data = (await r.json()) as { access_token: string; expires_in: number }
+  return { accessToken: data.access_token, expiresIn: data.expires_in }
+}
+
 export class BoxTokenManager {
   private readonly config: BoxConfig
   private readonly devTokenMode: boolean
+  private readonly ccgMode: boolean
   private currentRefreshToken: string
   private accessToken: string | null = null
   private expiresAt = 0
@@ -90,10 +125,19 @@ export class BoxTokenManager {
   constructor(config: BoxConfig) {
     this.config = config
     this.devTokenMode = config.accessToken !== undefined && config.accessToken !== ''
-    if (!this.devTokenMode) {
+    this.ccgMode =
+      !this.devTokenMode && config.enterpriseId !== undefined && config.enterpriseId !== ''
+    if (this.ccgMode) {
+      if (config.clientId === undefined || config.clientId === '') {
+        throw new Error('BoxTokenManager: clientId is required when using enterpriseId')
+      }
+      if (config.clientSecret === undefined || config.clientSecret === '') {
+        throw new Error('BoxTokenManager: clientSecret is required when using enterpriseId')
+      }
+    } else if (!this.devTokenMode) {
       if (config.refreshToken === undefined || config.refreshToken === '') {
         throw new Error(
-          'BoxTokenManager: provide either accessToken (developer token) or refreshToken',
+          'BoxTokenManager: provide accessToken (developer token), clientId + clientSecret + enterpriseId (client credentials), or clientId + refreshToken (OAuth)',
         )
       }
       if (config.clientId === undefined || config.clientId === '') {
@@ -113,7 +157,8 @@ export class BoxTokenManager {
    * Returns the latest refresh token. Box rotates the refresh token on each
    * refresh, so the token passed to the constructor may be stale after the
    * first refresh. Persist this value if you want to survive restarts without
-   * re-authenticating. Returns empty string in developer-token mode.
+   * re-authenticating. Returns empty string in developer-token and
+   * client-credentials modes.
    */
   getRefreshToken(): string {
     return this.currentRefreshToken
@@ -142,6 +187,12 @@ export class BoxTokenManager {
   }
 
   private async refresh(): Promise<string> {
+    if (this.ccgMode) {
+      const ccg = await fetchCcgToken(this.config)
+      this.accessToken = ccg.accessToken
+      this.expiresAt = Date.now() / 1000 + ccg.expiresIn - TOKEN_BUFFER_SECONDS
+      return ccg.accessToken
+    }
     let result: { accessToken: string; refreshToken: string; expiresIn: number }
     if (this.config.refreshFn !== undefined) {
       result = await this.config.refreshFn(this.currentRefreshToken)

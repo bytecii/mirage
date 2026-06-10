@@ -23,6 +23,14 @@ dotenv.config({ path: resolve(__HERE, '../../../.env.development'), override: tr
 function buildConfig(): BoxConfig {
   const devToken = process.env.BOX_DEVELOPER_TOKEN ?? process.env.BOX_ACCESS_TOKEN ?? ''
   if (devToken !== '') return { accessToken: devToken }
+  const enterpriseId = process.env.BOX_ENTERPRISE_ID ?? ''
+  if (enterpriseId !== '') {
+    return {
+      clientId: process.env.BOX_CLIENT_ID!,
+      clientSecret: process.env.BOX_CLIENT_SECRET!,
+      enterpriseId,
+    }
+  }
   return {
     clientId: process.env.BOX_CLIENT_ID!,
     clientSecret: process.env.BOX_CLIENT_SECRET!,

@@ -408,8 +408,8 @@
                 "group": "Cloud Files",
                 "icon": "folder-open",
                 "pages": [
-                  "typescript/setup/dropbox",
-                  "typescript/setup/box"
+                  "typescript/dropbox",
+                  "typescript/box"
                 ]
               },
               {

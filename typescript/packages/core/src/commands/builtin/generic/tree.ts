@@ -14,6 +14,7 @@
 
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
+import { rstripSlash } from '../../../util/slash.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { fnmatch } from '../../../util/fnmatch.ts'
 
@@ -44,7 +45,8 @@ async function walkTree(
   }
   entries.sort()
   const filtered: { spec: PathSpec; name: string; isDir: boolean }[] = []
-  for (const childPath of entries) {
+  for (const entry of entries) {
+    const childPath = rstripSlash(entry)
     const name = childPath.slice(childPath.lastIndexOf('/') + 1)
     if (!treeOpts.showHidden && name.startsWith('.')) continue
     if (treeOpts.ignorePattern !== null && fnmatch(name, treeOpts.ignorePattern)) continue

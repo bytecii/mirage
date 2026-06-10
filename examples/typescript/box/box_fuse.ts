@@ -29,10 +29,14 @@ function buildConfig(): BoxConfig {
   }
   const clientId = process.env.BOX_CLIENT_ID ?? ''
   const clientSecret = process.env.BOX_CLIENT_SECRET ?? ''
+  const enterpriseId = process.env.BOX_ENTERPRISE_ID ?? ''
+  if (clientId !== '' && clientSecret !== '' && enterpriseId !== '') {
+    return { clientId, clientSecret, enterpriseId }
+  }
   const refreshToken = process.env.BOX_REFRESH_TOKEN ?? ''
   if (clientId === '' || clientSecret === '' || refreshToken === '') {
     throw new Error(
-      'Provide BOX_DEVELOPER_TOKEN, or BOX_CLIENT_ID + BOX_CLIENT_SECRET + BOX_REFRESH_TOKEN',
+      'Provide BOX_DEVELOPER_TOKEN, or BOX_CLIENT_ID + BOX_CLIENT_SECRET + BOX_ENTERPRISE_ID (service account), or BOX_CLIENT_ID + BOX_CLIENT_SECRET + BOX_REFRESH_TOKEN',
     )
   }
   return { clientId, clientSecret, refreshToken }
