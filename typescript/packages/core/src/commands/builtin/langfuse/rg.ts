@@ -12,7 +12,6 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-
 import type { LangfuseAccessor } from '../../../accessor/langfuse.ts'
 import type { IndexCacheStore } from '../../../cache/index/index.ts'
 import { resolveLangfuseGlob } from '../../../core/langfuse/glob.ts'
@@ -40,7 +39,8 @@ async function rgCommand(
 ): Promise<CommandFnResult> {
   const resolved =
     paths.length > 0 ? await resolveLangfuseGlob(accessor, paths, opts.index ?? undefined) : []
-  const stat = (p: PathSpec): Promise<FileStat> => langfuseStat(accessor, p, opts.index ?? undefined)
+  const stat = (p: PathSpec): Promise<FileStat> =>
+    langfuseStat(accessor, p, opts.index ?? undefined)
   const readdir = (p: PathSpec): Promise<string[]> =>
     langfuseReaddir(accessor, p, opts.index ?? undefined)
   const stream = (p: PathSpec): AsyncIterable<Uint8Array> =>
