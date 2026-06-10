@@ -12,20 +12,25 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { ResourceName, command, lsGeneric, specOf } from '@struktoai/mirage-core'
-import { stat as sshStat } from '../../../../core/ssh/stat.ts'
-import { readdir as sshReaddir } from '../../../../core/ssh/readdir.ts'
-import type { SSHAccessor } from '../../../../accessor/ssh.ts'
+import type { RegisteredOp } from '../../ops/registry.ts'
+import { createOp } from './create.ts'
+import { mkdirOp } from './mkdir.ts'
+import { readOp } from './read.ts'
+import { readdirOp } from './readdir.ts'
+import { renameOp } from './rename.ts'
+import { rmdirOp } from './rmdir.ts'
+import { statOp } from './stat.ts'
+import { unlinkOp } from './unlink.ts'
+import { writeOp } from './write.ts'
 
-export const SSH_LS = command({
-  name: 'ls',
-  resource: ResourceName.SSH,
-  spec: specOf('ls'),
-  fn: (accessor: SSHAccessor, paths, _texts, opts) =>
-    lsGeneric(
-      paths,
-      opts,
-      (p) => sshReaddir(accessor, p),
-      (p) => sshStat(accessor, p),
-    ),
-})
+export const DATABRICKS_VOLUME_OPS: readonly RegisteredOp[] = [
+  createOp,
+  mkdirOp,
+  readOp,
+  readdirOp,
+  renameOp,
+  rmdirOp,
+  statOp,
+  unlinkOp,
+  writeOp,
+]

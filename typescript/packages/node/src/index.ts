@@ -56,6 +56,15 @@ export {
 export { isMacosMetadata } from './fuse/platform/macos.ts'
 export { S3Resource, type S3ResourceState } from './resource/s3/s3.ts'
 export {
+  DatabricksVolumeResource,
+  type DatabricksVolumeResourceState,
+} from './resource/databricks_volume/databricks_volume.ts'
+export {
+  loadDatabricksProfile,
+  parseDatabricksCfg,
+  type DatabricksProfile,
+} from './resource/databricks_volume/profile.ts'
+export {
   redactConfig as redactS3Config,
   type S3Config,
   type S3ConfigRedacted,

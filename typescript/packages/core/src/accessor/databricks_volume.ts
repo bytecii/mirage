@@ -12,20 +12,25 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { ResourceName, command, lsGeneric, specOf } from '@struktoai/mirage-core'
-import { stat as sshStat } from '../../../../core/ssh/stat.ts'
-import { readdir as sshReaddir } from '../../../../core/ssh/readdir.ts'
-import type { SSHAccessor } from '../../../../accessor/ssh.ts'
+import { Accessor } from './base.ts'
+import type { Resource } from '../resource/base.ts'
+import type { DatabricksVolumeConfig } from '../resource/databricks_volume/config.ts'
 
-export const SSH_LS = command({
-  name: 'ls',
-  resource: ResourceName.SSH,
-  spec: specOf('ls'),
-  fn: (accessor: SSHAccessor, paths, _texts, opts) =>
-    lsGeneric(
-      paths,
-      opts,
-      (p) => sshReaddir(accessor, p),
-      (p) => sshStat(accessor, p),
-    ),
-})
+export class DatabricksVolumeAccessor extends Accessor {
+  readonly config: DatabricksVolumeConfig
+  readonly host: string
+  readonly token: string
+
+  constructor(config: DatabricksVolumeConfig, host: string, token: string) {
+    super()
+    this.config = config
+    let h = host
+    while (h.endsWith('/')) h = h.slice(0, -1)
+    this.host = h
+    this.token = token
+  }
+}
+
+export interface DatabricksVolumeResourceLike extends Resource {
+  readonly accessor: DatabricksVolumeAccessor
+}

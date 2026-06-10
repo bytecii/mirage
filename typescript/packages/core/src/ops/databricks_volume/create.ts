@@ -12,20 +12,22 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { ResourceName, command, lsGeneric, specOf } from '@struktoai/mirage-core'
-import { stat as sshStat } from '../../../../core/ssh/stat.ts'
-import { readdir as sshReaddir } from '../../../../core/ssh/readdir.ts'
-import type { SSHAccessor } from '../../../../accessor/ssh.ts'
+import type { OpKwargs, RegisteredOp } from '../../ops/registry.ts'
+import { type PathSpec, ResourceName } from '../../types.ts'
+import { create as coreCreate } from '../../core/databricks_volume/create.ts'
+import type { DatabricksVolumeAccessor } from '../../accessor/databricks_volume.ts'
 
-export const SSH_LS = command({
-  name: 'ls',
-  resource: ResourceName.SSH,
-  spec: specOf('ls'),
-  fn: (accessor: SSHAccessor, paths, _texts, opts) =>
-    lsGeneric(
-      paths,
-      opts,
-      (p) => sshReaddir(accessor, p),
-      (p) => sshStat(accessor, p),
-    ),
-})
+export const createOp: RegisteredOp = {
+  name: 'create',
+  resource: ResourceName.DATABRICKS_VOLUME,
+  filetype: null,
+  write: true,
+  fn: (
+    accessor: DatabricksVolumeAccessor,
+    path: PathSpec,
+    _args: readonly unknown[],
+    kwargs: OpKwargs,
+  ) => {
+    return coreCreate(accessor, path, kwargs.index)
+  },
+}

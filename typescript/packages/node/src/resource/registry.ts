@@ -69,6 +69,11 @@ const REGISTRY: Record<string, ResourceFactory> = {
     const { normalizeSupabaseConfig } = await import('./supabase/config.ts')
     return new SupabaseResource(normalizeSupabaseConfig(config))
   },
+  databricks_volume: async (config) => {
+    const { DatabricksVolumeResource } = await import('./databricks_volume/databricks_volume.ts')
+    const { normalizeDatabricksVolumeConfig } = await import('@struktoai/mirage-core')
+    return DatabricksVolumeResource.create(normalizeDatabricksVolumeConfig(config))
+  },
   postgres: async (config) => {
     const { PostgresResource } = await import('./postgres/postgres.ts')
     const { normalizePostgresConfig } = await import('@struktoai/mirage-core')

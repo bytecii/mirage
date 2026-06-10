@@ -408,7 +408,8 @@
                 "icon": "folder-open",
                 "pages": [
                   "typescript/dropbox",
-                  "typescript/box"
+                  "typescript/box",
+                  "typescript/setup/databricks_volume"
                 ]
               },
               {
