@@ -12,20 +12,16 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { ResourceName, command, lsGeneric, specOf } from '@struktoai/mirage-core'
-import { stat as sshStat } from '../../../../core/ssh/stat.ts'
-import { readdir as sshReaddir } from '../../../../core/ssh/readdir.ts'
-import type { SSHAccessor } from '../../../../accessor/ssh.ts'
+import type { DatabricksVolumeAccessor } from '../../accessor/databricks_volume.ts'
+import type { PathSpec } from '../../types.ts'
+import { stat } from './stat.ts'
 
-export const SSH_LS = command({
-  name: 'ls',
-  resource: ResourceName.SSH,
-  spec: specOf('ls'),
-  fn: (accessor: SSHAccessor, paths, _texts, opts) =>
-    lsGeneric(
-      paths,
-      opts,
-      (p) => sshReaddir(accessor, p),
-      (p) => sshStat(accessor, p),
-    ),
-})
+export async function exists(accessor: DatabricksVolumeAccessor, path: PathSpec): Promise<boolean> {
+  try {
+    await stat(accessor, path)
+    return true
+  } catch (exc) {
+    if ((exc as { code?: string }).code === 'ENOENT') return false
+    throw exc
+  }
+}
