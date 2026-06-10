@@ -14,14 +14,11 @@
 
 import type { GitHubAccessor } from '../../../accessor/github.ts'
 import { resolveGlob } from '../../../core/github/glob.ts'
-import { read as githubRead } from '../../../core/github/read.ts'
-import { IOResult, type ByteSource } from '../../../io/types.ts'
+import { stream as githubStream } from '../../../core/github/read.ts'
 import { ResourceName, type PathSpec } from '../../../types.ts'
-import { md5Hex } from '../../../utils/hash.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-
-const ENC = new TextEncoder()
+import { md5Generic } from '../generic/md5.ts'
 
 async function md5Command(
   accessor: GitHubAccessor,
@@ -29,16 +26,9 @@ async function md5Command(
   _texts: string[],
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
-  if (paths.length === 0) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('md5: missing operand\n') })]
-  }
-  const resolved = await resolveGlob(accessor, paths, opts.index ?? undefined)
-  const first = resolved[0]
-  if (first === undefined) return [null, new IOResult()]
-  const data = await githubRead(accessor, first, opts.index ?? undefined)
-  const result = md5Hex(data)
-  const out: ByteSource = ENC.encode(result)
-  return [out, new IOResult()]
+  const resolved =
+    paths.length > 0 ? await resolveGlob(accessor, paths, opts.index ?? undefined) : []
+  return md5Generic(resolved, opts, (p) => githubStream(accessor, p, opts.index ?? undefined))
 }
 
 export const GITHUB_MD5 = command({

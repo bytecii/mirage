@@ -15,14 +15,10 @@
 import type { GitHubAccessor } from '../../../accessor/github.ts'
 import { resolveGlob } from '../../../core/github/glob.ts'
 import { stream as githubStream } from '../../../core/github/read.ts'
-import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { ResourceName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { cutStream, parseCutRanges } from '../cut_helper.ts'
-import { resolveSource } from '../utils/stream.ts'
-
-const ENC = new TextEncoder()
+import { cutGeneric } from '../generic/cut.ts'
 
 async function cutCommand(
   accessor: GitHubAccessor,
@@ -30,31 +26,9 @@ async function cutCommand(
   _texts: string[],
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
-  const f = typeof opts.flags.f === 'string' ? opts.flags.f : null
-  const d = typeof opts.flags.d === 'string' ? opts.flags.d : null
-  const c = typeof opts.flags.c === 'string' ? opts.flags.c : null
-  const complement = opts.flags.complement === true
-  const z = opts.flags.z === true
-  const fields = f !== null ? parseCutRanges(f) : null
-  const chars = c !== null ? parseCutRanges(c) : null
-  const delim = d ?? '\t'
-
-  let source: AsyncIterable<Uint8Array>
-  if (paths.length > 0) {
-    const resolved = await resolveGlob(accessor, paths, opts.index ?? undefined)
-    const first = resolved[0]
-    if (first === undefined) return [null, new IOResult()]
-    source = githubStream(accessor, first, opts.index ?? undefined)
-  } else {
-    try {
-      source = resolveSource(opts.stdin, 'cut: missing operand')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
-  }
-  const out: ByteSource = cutStream(source, delim, fields, chars, complement, z)
-  return [out, new IOResult()]
+  const resolved =
+    paths.length > 0 ? await resolveGlob(accessor, paths, opts.index ?? undefined) : []
+  return cutGeneric(resolved, opts, (p) => githubStream(accessor, p, opts.index ?? undefined))
 }
 
 export const GITHUB_CUT = command({

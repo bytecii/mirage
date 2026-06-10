@@ -13,40 +13,27 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { GitHubAccessor } from '../../../accessor/github.ts'
-import { read as githubRead } from '../../../core/github/read.ts'
 import { resolveGlob } from '../../../core/github/glob.ts'
 import { stat as githubStat } from '../../../core/github/stat.ts'
 import { stream as githubStream } from '../../../core/github/read.ts'
-import {
-  concatBytes,
-  evalJsonlStream,
-  formatJqOutput,
-  isJsonlPath,
-  isStreamableJsonlExpr,
-  jqEval,
-  parseJsonAuto,
-  parseJsonPath,
-} from '../../../core/jq/index.ts'
+import { isJsonlPath, isStreamableJsonlExpr } from '../../../core/jq/index.ts'
 import { Precision, ProvisionResult } from '../../../provision/types.ts'
-import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { ResourceName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { readStdinAsync } from '../utils/stream.ts'
-
-const ENC = new TextEncoder()
+import { jqGeneric } from '../generic/jq.ts'
 
 export async function jqProvision(
   accessor: GitHubAccessor,
   paths: PathSpec[],
   texts: string[],
-  opts: CommandOpts,
+  _opts: CommandOpts,
 ): Promise<ProvisionResult> {
   const [first] = paths
   const [expr] = texts
   if (first === undefined || expr === undefined) return new ProvisionResult({ command: 'jq' })
   try {
-    const s = await githubStat(accessor, first, opts.index ?? undefined)
+    const s = await githubStat(accessor, first)
     const fileSize = s.size ?? 0
     if (isJsonlPath(first.original) && isStreamableJsonlExpr(expr)) {
       return new ProvisionResult({
@@ -75,47 +62,9 @@ async function jqCommand(
   texts: string[],
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
-  const expression = texts[0]
-  if (expression === undefined) {
-    return [
-      null,
-      new IOResult({ exitCode: 1, stderr: ENC.encode('jq: usage: jq EXPRESSION [path]\n') }),
-    ]
-  }
-  const raw = opts.flags.r === true
-  const compact = opts.flags.c === true
-  const slurp = opts.flags.s === true
-
-  if (paths.length > 0) {
-    const resolved = await resolveGlob(accessor, paths, opts.index ?? undefined)
-    const first = resolved[0]
-    if (first === undefined) return [null, new IOResult()]
-    if (isJsonlPath(first.original) && isStreamableJsonlExpr(expression)) {
-      return [
-        evalJsonlStream(githubStream(accessor, first, opts.index ?? undefined), expression),
-        new IOResult(),
-      ]
-    }
-    const outputs: Uint8Array[] = []
-    for (const p of resolved) {
-      const bytes = await githubRead(accessor, p, opts.index ?? undefined)
-      let data = parseJsonPath(bytes, p.original)
-      if (slurp) data = Array.isArray(data) ? data : [data]
-      const result = await jqEval(data, expression.trim())
-      const spread = expression.includes('[]')
-      outputs.push(formatJqOutput(result, raw, compact, spread))
-    }
-    const out: ByteSource = concatBytes(outputs)
-    return [out, new IOResult()]
-  }
-
-  const bytes = await readStdinAsync(opts.stdin)
-  if (bytes === null) return [null, new IOResult()]
-  let data = parseJsonAuto(bytes)
-  if (slurp && !Array.isArray(data)) data = [data]
-  const result = await jqEval(data, expression.trim())
-  const spread = expression.includes('[]')
-  return [formatJqOutput(result, raw, compact, spread), new IOResult()]
+  const resolved =
+    paths.length > 0 ? await resolveGlob(accessor, paths, opts.index ?? undefined) : []
+  return jqGeneric(resolved, texts, opts, (p) => githubStream(accessor, p, opts.index ?? undefined))
 }
 
 export const GITHUB_JQ = command({
