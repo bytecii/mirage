@@ -21,7 +21,7 @@ import { type ByteSource, IOResult } from '../../../io/types.ts'
 import { type PathSpec, ResourceName } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { wcGeneric } from '../generic/wc.ts'
+import { formatWcLines, wcGeneric, type WcRow } from '../generic/wc.ts'
 import { fileReadProvision } from './_provision.ts'
 
 const ENC = new TextEncoder()
@@ -49,17 +49,17 @@ async function wcCommand(
   const countOnly =
     f.args_l === true && f.w !== true && f.c !== true && f.m !== true && f.L !== true
   if (countOnly && resolved.length > 0 && resolved.every((p) => rowsScope(p) !== null)) {
-    const outputs: string[] = []
+    const rows: WcRow[] = []
     let total = 0
     for (const p of resolved) {
       const scope = rowsScope(p)
       if (scope === null) continue
       const count = await countRows(accessor, scope.schema, scope.entity)
-      outputs.push(`${String(count)}\t${p.original}`)
+      rows.push({ values: [count], label: p.original })
       total += count
     }
-    if (resolved.length > 1) outputs.push(`${String(total)}\ttotal`)
-    const out: ByteSource = ENC.encode(outputs.join('\n'))
+    if (resolved.length > 1) rows.push({ values: [total], label: 'total' })
+    const out: ByteSource = ENC.encode(formatWcLines(rows).join('\n'))
     return [out, new IOResult()]
   }
   return wcGeneric(resolved, texts, opts, (p) => readStream(accessor, p, opts.index ?? undefined))

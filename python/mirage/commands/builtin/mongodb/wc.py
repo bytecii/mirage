@@ -16,7 +16,8 @@ from collections.abc import AsyncIterator
 
 from mirage.accessor.mongodb import MongoDBAccessor
 from mirage.cache.index import IndexCacheStore
-from mirage.commands.builtin.generic.wc import WCCounts, format_wc
+from mirage.commands.builtin.generic.wc import (WCCounts, format_wc,
+                                                format_wc_lines)
 from mirage.commands.builtin.generic.wc import wc as generic_wc
 from mirage.commands.builtin.mongodb._provision import file_read_provision
 from mirage.commands.builtin.utils.output import format_records
@@ -66,43 +67,31 @@ async def wc(
         # and bytes too, which needs the content).
         count_only = args_l and not (w or c or m or L)
         scopes = [detect_scope(p) for p in paths]
+        rows: list[tuple[WCCounts, str | None]] = []
         if count_only and all(
                 s.level == ScopeLevel.DOCUMENTS and s.database and s.name
                 for s in scopes):
-            outputs: list[str] = []
             total = 0
             for p, scope in zip(paths, scopes):
                 count = await count_documents(accessor.client, scope.database,
                                               scope.name)
-                outputs.append(f"{count}\t{p.original}")
+                rows.append((WCCounts(lines=count), p.original))
                 total += count
             if len(paths) > 1:
-                outputs.append(f"{total}\ttotal")
-            return format_records(outputs), IOResult()
-        outputs = []
+                rows.append((WCCounts(lines=total), "total"))
+            return format_records(format_wc_lines(rows,
+                                                  args_l=True)), IOResult()
         totals = WCCounts()
         for p in paths:
             data = await mongodb_read(accessor, p, index)
             counts = await generic_wc(data)
-            outputs.append(
-                format_wc(counts,
-                          args_l=args_l,
-                          w=w,
-                          c=c,
-                          m=m,
-                          L=L,
-                          label=p.original))
+            rows.append((counts, p.original))
             totals.merge(counts)
         if len(paths) > 1:
-            outputs.append(
-                format_wc(totals,
-                          args_l=args_l,
-                          w=w,
-                          c=c,
-                          m=m,
-                          L=L,
-                          label="total"))
-        return format_records(outputs), IOResult()
+            rows.append((totals, "total"))
+        return format_records(
+            format_wc_lines(rows, args_l=args_l, w=w, c=c, m=m,
+                            L=L)), IOResult()
     data = await _read_stdin_async(stdin)
     if data is None:
         raise ValueError("wc: missing operand")
