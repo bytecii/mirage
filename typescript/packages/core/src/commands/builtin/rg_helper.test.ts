@@ -66,7 +66,15 @@ function opts(overrides: Partial<RgFullOptions> = {}): RgFullOptions {
 
 describe('rgFull countOnly', () => {
   it('prints path:count per matching file and omits zero-count files', async () => {
-    const out = await rgFull(readdirFn, statFn, readBytesFn, '/db', 'Graph', opts({ countOnly: true }), null)
+    const out = await rgFull(
+      readdirFn,
+      statFn,
+      readBytesFn,
+      '/db',
+      'Graph',
+      opts({ countOnly: true }),
+      null,
+    )
     expect(out).toEqual(['/db/a.txt:2'])
   })
 
