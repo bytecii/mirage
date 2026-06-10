@@ -34,10 +34,10 @@ function spec(p: string): PathSpec {
   return new PathSpec({ original: p, directory: p, resolved: false })
 }
 
-async function fakeFind(root: PathSpec, _options: FindOptions): Promise<string[]> {
-  if (root.original === '/missing') throw enoent(root.original)
-  if (root.original === '/limited') throw new Error('rate limited')
-  return ['/found.txt']
+function fakeFind(root: PathSpec, _options: FindOptions): Promise<string[]> {
+  if (root.original === '/missing') return Promise.reject(enoent(root.original))
+  if (root.original === '/limited') return Promise.reject(new Error('rate limited'))
+  return Promise.resolve(['/found.txt'])
 }
 
 describe('generic command find', () => {
