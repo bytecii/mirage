@@ -92,8 +92,8 @@ async def find(
         if mindepth is not None and depth < mindepth:
             continue
         entry_name = p.rsplit("/", 1)[-1]
-        if _matches(full_path, entry_name, is_dir, entry.size or 0, name,
-                    type, min_size, max_size, name_exclude, or_names, iname,
+        if _matches(full_path, entry_name, is_dir, entry.size or 0, name, type,
+                    min_size, max_size, name_exclude, or_names, iname,
                     path_pattern):
             results.append(full_path)
     return results
