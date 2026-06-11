@@ -88,6 +88,10 @@ async function main(): Promise<void> {
       'rg mirage /github/python/mirage/core/s3/ (rg recursive scope)',
       'rg mirage /github/python/mirage/core/s3/',
     ],
+    [
+      'grep -r GitHubAccessor /github/ (repo-root search narrowing)',
+      'grep -r GitHubAccessor /github/ | sort',
+    ],
   ] as const) {
     console.log(`\n=== ${label} ===`)
     let r
@@ -140,6 +144,28 @@ async function main(): Promise<void> {
   await header(ws, 'file', 'file /github/python/mirage/types.py')
   await header(ws, 'basename', 'basename /github/python/mirage/core/s3/read.py')
   await header(ws, 'dirname', 'dirname /github/python/mirage/core/s3/read.py')
+  await header(ws, 'realpath', 'realpath /github/python/mirage/../mirage/types.py')
+  await header(ws, 'sed -n (line range)', "sed -n '1,3p' /github/python/mirage/types.py")
+  await header(ws, 'sed s/// (file)', "sed 's/import/IMPORT/' /github/python/mirage/core/s3/read.py")
+  await header(ws, 'awk (file)', "awk '{print $1}' /github/python/mirage/core/s3/read.py")
+  await header(ws, 'cut -c (file)', 'cut -c1-10 /github/python/mirage/types.py')
+
+  console.log('=== grep dir operands (POSIX warn) ===')
+  {
+    const r = await ws.execute("grep 'import' /github/python/mirage/*")
+    const out = r.stdoutText.trim()
+    const err = r.stderrText.trim()
+    const matches = out === '' ? 0 : out.split('\n').length
+    console.log(`  exit=${String(r.exitCode)} matches: ${String(matches)}`)
+    for (const line of err.split('\n').slice(0, 3)) console.log(`  ${line}`)
+    console.log()
+  }
+
+  await header(
+    ws,
+    'diff -u',
+    'diff -u /github/python/mirage/core/s3/stat.py /github/python/mirage/core/s3/read.py',
+  )
   await header(ws, 'tree -L', 'tree -L 2 /github/python/mirage/')
   await header(ws, 'rg', "rg 'BaseResource' /github/python/mirage/resource/")
 

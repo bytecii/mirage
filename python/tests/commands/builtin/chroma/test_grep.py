@@ -2,7 +2,7 @@ import pytest
 
 from mirage.commands.builtin.chroma.grep import grep
 from mirage.io.types import materialize
-from mirage.types import PathSpec
+from mirage.types import FileStat, FileType, PathSpec
 
 DOCS = {
     "/knowledge/a.md": b"alpha match\nbeta\n",
@@ -36,11 +36,15 @@ def _patch_pushdown(monkeypatch, targets: dict[str, str],
     async def fake_read_bytes(accessor, p, index=None):
         return DOCS[p.original]
 
+    async def fake_stat_light(accessor, p, index=None):
+        return FileStat(name=p.original, type=FileType.TEXT)
+
     monkeypatch.setitem(g, "resolve_glob", fake_resolve_glob)
     monkeypatch.setitem(g, "target_slugs", fake_target_slugs)
     monkeypatch.setitem(g, "coarse_filter_slugs", fake_coarse)
     monkeypatch.setitem(g, "read_stream", fake_read_stream)
     monkeypatch.setitem(g, "read_bytes", fake_read_bytes)
+    monkeypatch.setitem(g, "stat_light", fake_stat_light)
     return calls
 
 
