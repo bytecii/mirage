@@ -131,3 +131,26 @@ async def test_mv_multiple_sources_require_directory(write_ws, dbx_files):
     assert dbx_files.downloads[f"{ROOT}/target.txt"] == b"target"
     assert f"{ROOT}/a.txt" not in dbx_files.delete_calls
     assert f"{ROOT}/b.txt" not in dbx_files.delete_calls
+
+
+@pytest.mark.asyncio
+async def test_mv_missing_source_reports_cannot_stat(write_ws, dbx_files):
+    io = await write_ws.execute("mv /dbx/missing /dbx/missing")
+
+    assert io.exit_code != 0
+    assert b"cannot stat" in io.stderr
+    assert b"are the same file" not in io.stderr
+
+
+@pytest.mark.asyncio
+async def test_mv_into_itself_errors_and_preserves_source(write_ws, dbx_files):
+    seed_directory(dbx_files, f"{ROOT}/d")
+    seed_file(dbx_files, f"{ROOT}/d/a.txt", b"aaa")
+
+    io = await write_ws.execute("mv /dbx/d /dbx/d")
+
+    assert io.exit_code != 0
+    assert b"subdirectory of itself" in io.stderr
+    assert dbx_files.downloads[f"{ROOT}/d/a.txt"] == b"aaa"
+    assert f"{ROOT}/d" in dbx_files.directory_metadata
+    assert f"{ROOT}/d/a.txt" not in dbx_files.delete_calls

@@ -13,6 +13,11 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { RegisteredCommand } from '../../config.ts'
+import type { BoxAccessor } from '../../../accessor/box.ts'
+import { read as boxRead } from '../../../core/box/read.ts'
+import { stat as boxStat } from '../../../core/box/stat.ts'
+import { ResourceName } from '../../../types.ts'
+import { makeFiletypeCommands } from '../filetype_factory/factory.ts'
 import { BOX_AWK } from './awk.ts'
 import { BOX_BASE64 } from './base64_cmd.ts'
 import { BOX_BASENAME } from './basename.ts'
@@ -38,85 +43,36 @@ import { BOX_TAIL } from './tail.ts'
 import { BOX_TREE } from './tree.ts'
 import { BOX_UNIQ } from './uniq.ts'
 import { BOX_WC } from './wc.ts'
-import { BOX_CAT_FEATHER } from './cat_feather.ts'
-import { BOX_CAT_HDF5 } from './cat_hdf5.ts'
-import { BOX_CAT_PARQUET } from './cat_parquet.ts'
-import { BOX_CUT_FEATHER } from './cut_feather.ts'
-import { BOX_CUT_HDF5 } from './cut_hdf5.ts'
-import { BOX_CUT_PARQUET } from './cut_parquet.ts'
-import { BOX_FILE_FEATHER } from './file_feather.ts'
-import { BOX_FILE_HDF5 } from './file_hdf5.ts'
-import { BOX_FILE_PARQUET } from './file_parquet.ts'
-import { BOX_GREP_FEATHER } from './grep_feather.ts'
-import { BOX_GREP_HDF5 } from './grep_hdf5.ts'
-import { BOX_GREP_PARQUET } from './grep_parquet.ts'
-import { BOX_HEAD_FEATHER } from './head_feather.ts'
-import { BOX_HEAD_HDF5 } from './head_hdf5.ts'
-import { BOX_HEAD_PARQUET } from './head_parquet.ts'
-import { BOX_LS_FEATHER } from './ls_feather.ts'
-import { BOX_LS_HDF5 } from './ls_hdf5.ts'
-import { BOX_LS_PARQUET } from './ls_parquet.ts'
-import { BOX_STAT_FEATHER } from './stat_feather.ts'
-import { BOX_STAT_HDF5 } from './stat_hdf5.ts'
-import { BOX_STAT_PARQUET } from './stat_parquet.ts'
-import { BOX_TAIL_FEATHER } from './tail_feather.ts'
-import { BOX_TAIL_HDF5 } from './tail_hdf5.ts'
-import { BOX_TAIL_PARQUET } from './tail_parquet.ts'
-import { BOX_WC_FEATHER } from './wc_feather.ts'
-import { BOX_WC_HDF5 } from './wc_hdf5.ts'
-import { BOX_WC_PARQUET } from './wc_parquet.ts'
 
 export const BOX_COMMANDS: readonly RegisteredCommand[] = [
+  ...makeFiletypeCommands<BoxAccessor>({
+    resource: ResourceName.BOX,
+    readBytes: boxRead,
+    statEntry: boxStat,
+  }),
   ...BOX_AWK,
   ...BOX_BASE64,
   ...BOX_BASENAME,
   ...BOX_CAT,
-  ...BOX_CAT_FEATHER,
-  ...BOX_CAT_HDF5,
-  ...BOX_CAT_PARQUET,
   ...BOX_CMP,
   ...BOX_CUT,
-  ...BOX_CUT_FEATHER,
-  ...BOX_CUT_HDF5,
-  ...BOX_CUT_PARQUET,
   ...BOX_DIFF,
   ...BOX_DIRNAME,
   ...BOX_DU,
   ...BOX_FILE,
-  ...BOX_FILE_FEATHER,
-  ...BOX_FILE_HDF5,
-  ...BOX_FILE_PARQUET,
   ...BOX_FIND,
   ...BOX_GREP,
-  ...BOX_GREP_FEATHER,
-  ...BOX_GREP_HDF5,
-  ...BOX_GREP_PARQUET,
   ...BOX_HEAD,
-  ...BOX_HEAD_FEATHER,
-  ...BOX_HEAD_HDF5,
-  ...BOX_HEAD_PARQUET,
   ...BOX_JQ,
   ...BOX_LS,
-  ...BOX_LS_FEATHER,
-  ...BOX_LS_HDF5,
-  ...BOX_LS_PARQUET,
   ...BOX_NL,
   ...BOX_REALPATH,
   ...BOX_RG,
   ...BOX_SED,
   ...BOX_SORT,
   ...BOX_STAT,
-  ...BOX_STAT_FEATHER,
-  ...BOX_STAT_HDF5,
-  ...BOX_STAT_PARQUET,
   ...BOX_TAIL,
-  ...BOX_TAIL_FEATHER,
-  ...BOX_TAIL_HDF5,
-  ...BOX_TAIL_PARQUET,
   ...BOX_TREE,
   ...BOX_UNIQ,
   ...BOX_WC,
-  ...BOX_WC_FEATHER,
-  ...BOX_WC_HDF5,
-  ...BOX_WC_PARQUET,
 ]

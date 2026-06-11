@@ -34,13 +34,21 @@ async def rename(
     src = ensure_path_spec(src)
     dst = ensure_path_spec(dst)
     src_stat = await stat(accessor, src, index)
-    if backend_path(accessor.config,
-                    src) == backend_path(accessor.config, dst):
+    remote_src = backend_path(accessor.config, src)
+    remote_dst = backend_path(accessor.config, dst)
+    if remote_src == remote_dst:
         # rename(2) onto the same path is a no-op; copy + unlink here would
         # upload the file onto itself then delete it, destroying the data.
         # Guard runs after stat so a missing source still raises.
         return
     if src_stat.type == FileType.DIRECTORY:
+        if remote_dst.startswith(remote_src + "/"):
+            # Moving a directory into its own subtree would run away in the
+            # recursive copy and then rm_recursive would delete the original.
+            # Refuse before either side effect.
+            raise ValueError(
+                f"cannot move '{src.strip_prefix}' to a subdirectory of "
+                f"itself, '{dst.strip_prefix}'")
         await copy(accessor, src, dst, index, recursive=True)
         await rm_recursive(accessor, src, index)
     else:

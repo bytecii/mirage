@@ -12,14 +12,12 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from pathlib import Path
-
 import pytest
 
-from mirage.commands.local_audio.disk import COMMANDS as DISK_AUDIO_COMMANDS
-from mirage.commands.local_audio.ram import COMMANDS as RAM_AUDIO_COMMANDS
 from mirage.commands.registry import command
-from mirage.commands.spec import CommandSpec, Operand, OperandKind
+from mirage.commands.spec import SPECS, CommandSpec, Operand, OperandKind
+from mirage.core.disk.glob import resolve_glob
+from mirage.core.disk.read import read_bytes
 from mirage.io.types import IOResult
 from mirage.ops.registry import op
 from mirage.resource.disk import DiskResource
@@ -28,10 +26,33 @@ from mirage.types import MountMode, PathSpec
 from mirage.workspace import Workspace
 from mirage.workspace.mount import Mount
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-DATA_DIR = REPO_ROOT / "data"
-
 ECHO_SPEC = CommandSpec(positional=(Operand(kind=OperandKind.PATH), ))
+
+
+@command("stat", resource="disk", spec=SPECS["stat"], filetype=".zzz")
+async def stat_zzz_disk(
+    accessor,
+    paths: list[PathSpec],
+    *texts: str,
+    stdin=None,
+    index=None,
+    **_extra: object,
+) -> tuple[bytes | None, IOResult]:
+    paths = await resolve_glob(accessor, paths, index)
+    raw = await read_bytes(accessor, paths[0])
+    return b"CUSTOM DISK STAT %d\n" % len(raw), IOResult(
+        reads={paths[0].strip_prefix: raw}, cache=[paths[0].strip_prefix])
+
+
+@command("stat", resource="ram", spec=SPECS["stat"], filetype=".zzz")
+async def stat_zzz_ram(
+    accessor,
+    paths: list[PathSpec],
+    *texts: str,
+    stdin=None,
+    **_extra: object,
+) -> tuple[bytes | None, IOResult]:
+    return b"CUSTOM RAM STAT\n", IOResult()
 
 
 @command("echopath", resource="ram", spec=ECHO_SPEC)
@@ -91,47 +112,46 @@ def test_cache_mount_rejects_wrong_resource_kind():
 
 
 @pytest.mark.asyncio
-async def test_audio_stat_after_cache_promotion():
+async def test_custom_stat_after_cache_promotion(tmp_path):
     """After the first stat caches the bytes, the dispatcher reroutes the
-    second stat to cache_mount. Without RAM_AUDIO_COMMANDS registered there,
-    the second stat would fall through to built-in stat and lose the audio
-    metadata output."""
-    if not (DATA_DIR / "example.wav").exists():
-        pytest.skip("example.wav fixture not present")
-    disk = DiskResource(root=str(DATA_DIR))
+    second stat to cache_mount. Without the ram variant registered there,
+    the second stat would fall through to built-in stat and lose the custom
+    output."""
+    (tmp_path / "example.zzz").write_bytes(b"payload")
+    disk = DiskResource(root=str(tmp_path))
     disk.is_remote = True
     ws = Workspace({"/": disk}, mode=MountMode.READ)
-    ws.mount("/").register_fns(DISK_AUDIO_COMMANDS)
-    ws.cache_mount.register_fns(RAM_AUDIO_COMMANDS)
+    ws.mount("/").register_fns([stat_zzz_disk])
+    ws.cache_mount.register_fns([stat_zzz_ram])
 
-    first = await ws.execute("stat /example.wav")
-    second = await ws.execute("stat /example.wav")
+    first = await ws.execute("stat /example.zzz")
+    second = await ws.execute("stat /example.zzz")
     first_text = (await first.stdout_str())
     second_text = (await second.stdout_str())
-    assert "Sample rate:" in first_text
-    assert "Sample rate:" in second_text, (
-        "second stat after cache promotion lost audio handler "
-        "(cache_mount missing RAM_AUDIO_COMMANDS?)")
+    assert "CUSTOM DISK STAT" in first_text
+    assert "CUSTOM" in second_text, (
+        "second stat after cache promotion lost custom handler "
+        "(cache_mount missing the ram variant?)")
 
 
 @pytest.mark.asyncio
-async def test_audio_stat_after_cache_promotion_without_fix_falls_through():
+async def test_custom_stat_after_cache_promotion_without_fix_falls_through(
+        tmp_path):
     """Sanity check: without registering on cache_mount, the second stat
-    routes to built-in RAM stat (not the audio variant). This guards the
+    routes to built-in RAM stat (not the custom variant). This guards the
     regression — if dispatch ever stops promoting to cache, this test
     flips and the test above becomes redundant."""
-    if not (DATA_DIR / "example.wav").exists():
-        pytest.skip("example.wav fixture not present")
-    disk = DiskResource(root=str(DATA_DIR))
+    (tmp_path / "example.zzz").write_bytes(b"payload")
+    disk = DiskResource(root=str(tmp_path))
     disk.is_remote = True
     ws = Workspace({"/": disk}, mode=MountMode.READ)
-    ws.mount("/").register_fns(DISK_AUDIO_COMMANDS)
+    ws.mount("/").register_fns([stat_zzz_disk])
     # Intentionally NOT calling ws.cache_mount.register_fns(...)
 
-    await ws.execute("stat /example.wav")
-    second = await ws.execute("stat /example.wav")
+    await ws.execute("stat /example.zzz")
+    second = await ws.execute("stat /example.zzz")
     second_text = (await second.stdout_str())
-    assert "Sample rate:" not in second_text
+    assert "CUSTOM" not in second_text
 
 
 def test_set_default_mount_auto_registers_resource_ops():

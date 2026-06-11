@@ -98,6 +98,23 @@ describe('copy', () => {
     )
     expect(puts.some((c) => c.url.includes('dir2/a.txt'))).toBe(true)
   })
+
+  it('refuses copying a directory into its own subtree before any write', async () => {
+    const { fetch, calls } = routedFetch((call) => {
+      if (call.method === 'HEAD' && call.url.includes('/fs/files/')) return notFoundResponse()
+      return new Response(null, { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetch)
+    const err = (await copy(
+      makeAccessor(),
+      spec('/volume/dir'),
+      spec('/volume/dir/sub'),
+      undefined,
+      true,
+    ).catch((e: unknown) => e)) as Error
+    expect(err.message).toContain('into itself')
+    expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(0)
+  })
 })
 
 describe('rename', () => {
@@ -130,6 +147,20 @@ describe('rename', () => {
       spec('/volume/gone.txt'),
     ).catch((e: unknown) => e)) as Error & { code?: string }
     expect(err.code).toBe('ENOENT')
+  })
+
+  it('refuses moving a directory into its own subtree and never deletes', async () => {
+    const { fetch, calls } = routedFetch((call) => {
+      if (call.method === 'HEAD' && call.url.includes('/fs/files/')) return notFoundResponse()
+      return new Response(null, { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetch)
+    const err = (await rename(makeAccessor(), spec('/volume/dir'), spec('/volume/dir/sub')).catch(
+      (e: unknown) => e,
+    )) as Error
+    expect(err.message).toContain('subdirectory of itself')
+    expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(0)
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(0)
   })
 })
 

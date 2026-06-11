@@ -33,13 +33,23 @@ export async function rename(
   const s = ensurePathSpec(src)
   const d = ensurePathSpec(dst)
   const srcStat = await stat(accessor, s, index)
-  if (backendPath(accessor.config, s) === backendPath(accessor.config, d)) {
+  const remoteSrc = backendPath(accessor.config, s)
+  const remoteDst = backendPath(accessor.config, d)
+  if (remoteSrc === remoteDst) {
     // rename(2) onto the same path is a no-op; copy + unlink here would
     // upload the file onto itself then delete it, destroying the data.
     // Guard runs after stat so a missing source still raises.
     return
   }
   if (srcStat.type === FileType.DIRECTORY) {
+    if (remoteDst.startsWith(remoteSrc + '/')) {
+      // Moving a directory into its own subtree would run away in the
+      // recursive copy and then rmRecursive would delete the original.
+      // Refuse before either side effect.
+      throw new Error(
+        `cannot move '${s.stripPrefix}' to a subdirectory of itself, '${d.stripPrefix}'`,
+      )
+    }
     await copy(accessor, s, d, index, true)
     await rmRecursive(accessor, s, index)
   } else {

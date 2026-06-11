@@ -39,6 +39,13 @@ def same_backend_file(accessor: DatabricksVolumeAccessor, a: PathSpec,
     return backend_path(accessor.config, a) == backend_path(accessor.config, b)
 
 
+def target_within_source(accessor: DatabricksVolumeAccessor, src: PathSpec,
+                         dst: PathSpec) -> bool:
+    src_key = backend_path(accessor.config, src)
+    dst_key = backend_path(accessor.config, dst)
+    return dst_key.startswith(src_key + "/")
+
+
 def read_bytes_with_index(index: IndexCacheStore | None,
                           prefix: str = "") -> Callable:
     return partial(call_read_bytes, _read_bytes, index=index, prefix=prefix)

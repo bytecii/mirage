@@ -126,3 +126,22 @@ async def test_copy_recursive_tree(accessor, files, remote_root, index):
 
     assert f"{remote_root}/d2" in files.directory_metadata
     assert files.downloads[f"{remote_root}/d2/a.txt"] == b"aaa"
+
+
+@pytest.mark.asyncio
+async def test_copy_recursive_into_own_subtree_fails(accessor, files,
+                                                     remote_root, index):
+    _seed_directory(files, remote_root)
+    _seed_directory(files, f"{remote_root}/d")
+    _seed_file(files, f"{remote_root}/d/a.txt", b"aaa")
+
+    with pytest.raises(ValueError):
+        await copy(accessor,
+                   _path("/dbx/d"),
+                   _path("/dbx/d/d"),
+                   index,
+                   recursive=True)
+
+    assert files.create_directory_calls == []
+    assert files.upload_calls == []
+    assert files.downloads[f"{remote_root}/d/a.txt"] == b"aaa"

@@ -95,3 +95,21 @@ async def test_rename_directory_moves_tree(accessor, files, remote_root,
 
     assert files.downloads[f"{remote_root}/d2/a.txt"] == b"aaa"
     assert f"{remote_root}/d" not in files.directory_metadata
+
+
+@pytest.mark.asyncio
+async def test_rename_into_own_subtree_fails(accessor, files, remote_root,
+                                             index):
+    _seed_directory(files, remote_root)
+    _seed_directory(files, f"{remote_root}/d")
+    _seed_file(files, f"{remote_root}/d/a.txt", b"aaa")
+
+    with pytest.raises(ValueError):
+        await rename(accessor, _path("/dbx/d"), _path("/dbx/d/d"), index)
+
+    assert files.downloads[f"{remote_root}/d/a.txt"] == b"aaa"
+    assert f"{remote_root}/d" in files.directory_metadata
+    assert files.create_directory_calls == []
+    assert files.upload_calls == []
+    assert files.delete_calls == []
+    assert files.delete_directory_calls == []

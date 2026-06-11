@@ -209,30 +209,6 @@ Commands with format-specific variants for structured data files:
 These variants auto-detect the format by extension and convert to
 tabular text (CSV) for processing.
 
-### Audio Support (Optional)
-
-Audio commands are opt-in and require `sherpa-onnx` with a Whisper model.
-They transcribe audio to text, enabling `cat`, `head`, `tail`, `grep`,
-and `stat` on audio files.
-
-| Format | Extension | Commands                    |
-| ------ | --------- | --------------------------- |
-| WAV    | `.wav`    | cat, head, tail, grep, stat |
-| MP3    | `.mp3`    | cat, head, tail, grep, stat |
-| OGG    | `.ogg`    | cat, head, tail, grep, stat |
-
-To enable, register audio commands manually:
-
-```python
-from mirage.commands.audio import AUDIO_COMMANDS
-from mirage.commands.audio.utils import configure
-
-configure(model_dir="path/to/sherpa-onnx-whisper-base")
-
-for cmd in AUDIO_COMMANDS:
-    ws.register(cmd)
-```
-
 ## Use Cases
 
 - **Local directory access**: Mount local directories for AI agents to read and process

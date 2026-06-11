@@ -80,7 +80,17 @@ export async function copy(
   if (srcStat.type === FileType.DIRECTORY) {
     if (!recursive) throw isADirectoryError(s.stripPrefix)
     if (samePath) return
-    await copyTree(accessor, backendPath(accessor.config, s), backendPath(accessor.config, d))
+    const remoteSrc = backendPath(accessor.config, s)
+    const remoteDst = backendPath(accessor.config, d)
+    if (remoteDst.startsWith(remoteSrc + '/')) {
+      // Copying a directory into its own subtree creates the destination
+      // inside the source, so the walk would descend into the fresh copy
+      // forever. Refuse before any create_directory/upload.
+      throw new Error(
+        `cannot copy a directory, '${s.stripPrefix}', into itself, '${d.stripPrefix}'`,
+      )
+    }
+    await copyTree(accessor, remoteSrc, remoteDst)
     return
   }
   if (samePath) {

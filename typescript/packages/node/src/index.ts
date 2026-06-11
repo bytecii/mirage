@@ -347,18 +347,3 @@ export {
 } from './resource/registry.ts'
 export { DISK_COMMANDS } from './commands/builtin/disk/index.ts'
 export { REDIS_COMMANDS } from './commands/builtin/redis/index.ts'
-export {
-  LOCAL_AUDIO_COMMANDS,
-  DISK_LOCAL_AUDIO_COMMANDS,
-  RAM_LOCAL_AUDIO_COMMANDS,
-  configure as configureLocalAudio,
-  getConfig as getLocalAudioConfig,
-  transcribe as localAudioTranscribe,
-  metadata as localAudioMetadata,
-  estimateByteRange as localAudioEstimateByteRange,
-  formatDuration as localAudioFormatDuration,
-  formatMetadata as localAudioFormatMetadata,
-  type LocalAudioMetadata,
-  type LocalAudioConfig,
-  type LocalAudioTranscriber,
-} from './commands/local_audio/index.ts'

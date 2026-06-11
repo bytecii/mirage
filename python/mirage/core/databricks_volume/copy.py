@@ -95,6 +95,12 @@ async def copy(
             return
         remote_src = backend_path(accessor.config, src)
         remote_dst = backend_path(accessor.config, dst)
+        if remote_dst.startswith(remote_src + "/"):
+            # Copying a directory into its own subtree creates the destination
+            # inside the source, so the walk would descend into the fresh copy
+            # forever. Refuse before any create_directory/upload.
+            raise ValueError(f"cannot copy a directory, '{src.strip_prefix}', "
+                             f"into itself, '{dst.strip_prefix}'")
         await asyncio.to_thread(_copy_tree_sync, accessor, remote_src,
                                 remote_dst)
         return

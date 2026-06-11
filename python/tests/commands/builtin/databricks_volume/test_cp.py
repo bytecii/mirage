@@ -98,3 +98,26 @@ async def test_cp_multiple_sources_require_directory(write_ws, dbx_files):
     assert dbx_files.downloads[f"{ROOT}/a.txt"] == b"AAA"
     assert dbx_files.downloads[f"{ROOT}/b.txt"] == b"BBB"
     assert dbx_files.downloads[f"{ROOT}/target.txt"] == b"target"
+
+
+@pytest.mark.asyncio
+async def test_cp_missing_source_reports_cannot_stat(write_ws, dbx_files):
+    io = await write_ws.execute("cp /dbx/missing /dbx/missing")
+
+    assert io.exit_code != 0
+    assert b"cannot stat" in io.stderr
+    assert b"are the same file" not in io.stderr
+
+
+@pytest.mark.asyncio
+async def test_cp_recursive_into_itself_errors_and_preserves_tree(
+        write_ws, dbx_files):
+    seed_directory(dbx_files, f"{ROOT}/d")
+    seed_file(dbx_files, f"{ROOT}/d/a.txt", b"aaa")
+
+    io = await write_ws.execute("cp -r /dbx/d /dbx/d")
+
+    assert io.exit_code != 0
+    assert b"into itself" in io.stderr
+    assert dbx_files.downloads[f"{ROOT}/d/a.txt"] == b"aaa"
+    assert f"{ROOT}/d/d" not in dbx_files.directory_metadata

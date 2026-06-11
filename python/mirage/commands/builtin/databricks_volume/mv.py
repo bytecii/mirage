@@ -16,8 +16,8 @@ from functools import partial
 
 from mirage.accessor.databricks_volume import DatabricksVolumeAccessor
 from mirage.cache.index import IndexCacheStore
-from mirage.commands.builtin.databricks_volume._helpers import \
-    same_backend_file
+from mirage.commands.builtin.databricks_volume._helpers import (
+    same_backend_file, target_within_source)
 from mirage.commands.builtin.utils.copy import (copy_targets, is_directory,
                                                 path_exists)
 from mirage.commands.registry import command
@@ -51,9 +51,17 @@ async def mv(
     lines: list[str] = []
     errors: list[str] = []
     for src, target in copy_targets(sources, dst, dst_is_dir):
+        if not await path_exists(stat, src):
+            errors.append(f"mv: cannot stat '{src.original}': "
+                          "No such file or directory")
+            continue
         if same_backend_file(accessor, src, target):
             errors.append(f"mv: '{src.original}' and '{target.original}' "
                           "are the same file")
+            continue
+        if target_within_source(accessor, src, target):
+            errors.append(f"mv: cannot move '{src.original}' to a "
+                          f"subdirectory of itself, '{target.original}'")
             continue
         if n and await path_exists(stat, target):
             continue

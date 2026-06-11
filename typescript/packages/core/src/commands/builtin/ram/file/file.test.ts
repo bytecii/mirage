@@ -18,9 +18,11 @@ import { featherWriteBuffer } from '../../../../core/filetype/feather_writer.ts'
 import { materialize } from '../../../../io/types.ts'
 import { RAMResource } from '../../../../resource/ram/ram.ts'
 import { PathSpec } from '../../../../types.ts'
+import { RAM_COMMANDS } from '../index.ts'
 import { RAM_FILE } from './file.ts'
-import { RAM_FILE_FEATHER } from './file_feather.ts'
-import { RAM_FILE_PARQUET } from './file_parquet.ts'
+
+const RAM_FILE_FEATHER = RAM_COMMANDS.filter((c) => c.name === 'file' && c.filetype === '.feather')
+const RAM_FILE_PARQUET = RAM_COMMANDS.filter((c) => c.name === 'file' && c.filetype === '.parquet')
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
