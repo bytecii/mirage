@@ -15,10 +15,12 @@
 import type { RAMAccessor } from '../../accessor/ram.ts'
 import type { PathSpec } from '../../types.ts'
 import { norm } from './utils.ts'
+import { invalidateAfterUnlink } from '../../cache/context.ts'
 
-export function unlink(accessor: RAMAccessor, path: PathSpec): Promise<void> {
+export async function unlink(accessor: RAMAccessor, path: PathSpec): Promise<void> {
   const p = norm(path.stripPrefix)
   accessor.store.files.delete(p)
   accessor.store.modified.delete(p)
+  await invalidateAfterUnlink(path)
   return Promise.resolve()
 }

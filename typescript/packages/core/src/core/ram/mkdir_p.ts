@@ -16,8 +16,9 @@ import type { RAMAccessor } from '../../accessor/ram.ts'
 import type { PathSpec } from '../../types.ts'
 import { norm, nowIso } from './utils.ts'
 import { stripSlash } from '../../utils/slash.ts'
+import { invalidateAfterWrite } from '../../cache/context.ts'
 
-export function mkdirP(accessor: RAMAccessor, path: PathSpec): Promise<void> {
+export async function mkdirP(accessor: RAMAccessor, path: PathSpec): Promise<void> {
   const p = norm(path.stripPrefix)
   const parts = stripSlash(p)
     .split('/')
@@ -29,5 +30,6 @@ export function mkdirP(accessor: RAMAccessor, path: PathSpec): Promise<void> {
     accessor.store.dirs.add(current)
     if (!accessor.store.modified.has(current)) accessor.store.modified.set(current, now)
   }
+  await invalidateAfterWrite(path)
   return Promise.resolve()
 }

@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.ram import RAMAccessor
+from mirage.cache.context import invalidate_after_write
 from mirage.core.timeutil import now_iso
 from mirage.types import PathSpec
 from mirage.utils.path import norm
@@ -27,3 +28,4 @@ async def truncate(accessor: RAMAccessor, path: PathSpec, length: int) -> None:
         data = b""
     store.files[p] = data[:length].ljust(length, b"\0")
     store.modified[p] = now_iso()
+    await invalidate_after_write(path)

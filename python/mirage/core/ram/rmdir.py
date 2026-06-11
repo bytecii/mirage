@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.ram import RAMAccessor
+from mirage.cache.context import invalidate_after_unlink
 from mirage.types import PathSpec
 from mirage.utils.path import norm
 
@@ -34,3 +35,4 @@ async def rmdir(accessor: RAMAccessor, path: PathSpec) -> None:
     if children:
         raise OSError(f"directory not empty: {p}")
     store.dirs.discard(p)
+    await invalidate_after_unlink(path)

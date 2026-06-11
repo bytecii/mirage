@@ -16,8 +16,13 @@ import { record } from '../../observe/context.ts'
 import type { RAMAccessor } from '../../accessor/ram.ts'
 import { ResourceName, type PathSpec } from '../../types.ts'
 import { norm, nowIso, parent } from './utils.ts'
+import { invalidateAfterWrite } from '../../cache/context.ts'
 
-export function writeBytes(accessor: RAMAccessor, path: PathSpec, data: Uint8Array): Promise<void> {
+export async function writeBytes(
+  accessor: RAMAccessor,
+  path: PathSpec,
+  data: Uint8Array,
+): Promise<void> {
   const start = performance.now()
   const p = norm(path.stripPrefix)
   const par = parent(p)
@@ -27,5 +32,6 @@ export function writeBytes(accessor: RAMAccessor, path: PathSpec, data: Uint8Arr
   accessor.store.files.set(p, data)
   accessor.store.modified.set(p, nowIso())
   record('write', p, ResourceName.RAM, data.byteLength, start)
+  await invalidateAfterWrite(path)
   return Promise.resolve()
 }

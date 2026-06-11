@@ -3,6 +3,7 @@ import time
 from opendal.exceptions import NotFound
 
 from mirage.accessor.nextcloud import NextcloudAccessor
+from mirage.cache.context import invalidate_after_unlink
 from mirage.observe.context import record
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
@@ -20,3 +21,4 @@ async def unlink(accessor: NextcloudAccessor, path: PathSpec) -> None:
     except NotFound as exc:
         raise enoent(path) from exc
     record("unlink", path.original, "nextcloud", 0, start_ms)
+    await invalidate_after_unlink(path)

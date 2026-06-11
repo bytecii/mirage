@@ -15,6 +15,7 @@
 import time
 
 from mirage.accessor.redis import RedisAccessor
+from mirage.cache.context import invalidate_after_write
 from mirage.core.timeutil import now_iso
 from mirage.observe.context import record
 from mirage.types import PathSpec
@@ -40,3 +41,4 @@ async def append_bytes(
         await store.set_file(p, data)
     await store.set_modified(p, now_iso())
     record("append", path, "redis", len(data), start_ms)
+    await invalidate_after_write(path)

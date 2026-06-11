@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.ram import RAMAccessor
+from mirage.cache.context import invalidate_after_write
 from mirage.core.timeutil import now_iso
 from mirage.types import PathSpec
 from mirage.utils.path import norm
@@ -23,3 +24,4 @@ async def create(accessor: RAMAccessor, path: PathSpec) -> None:
     p = norm(path)
     store.files[p] = b""
     store.modified[p] = now_iso()
+    await invalidate_after_write(path)

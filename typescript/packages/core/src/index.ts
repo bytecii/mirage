@@ -413,6 +413,14 @@ export {
 } from './cache/index/config.ts'
 export { IndexCacheStore } from './cache/index/store.ts'
 export { RAMIndexCacheStore } from './cache/index/ram.ts'
+export { CacheManager } from './cache/manager.ts'
+export {
+  activeCacheManager,
+  invalidateAfterUnlink,
+  invalidateAfterWrite,
+  runWithCacheManager,
+  type CacheInvalidator,
+} from './cache/context.ts'
 export {
   RedisIndexCacheStore,
   type RedisClientLike,

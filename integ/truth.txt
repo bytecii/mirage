@@ -1420,6 +1420,10 @@ find /.bash_history -type d
 find /.bash_history -type d
 #TS
 grep -v '^#' /.bash_history | tail -n 1
+=== arch_gzip_interleaved_ls ===
+h.txt.gz
+two
+h.txt
 === jq_no_filter_no_input ===
 exit=0
 === jq_dot_no_input ===

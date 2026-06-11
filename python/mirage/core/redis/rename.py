@@ -13,6 +13,8 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.redis import RedisAccessor
+from mirage.cache.context import (invalidate_after_unlink,
+                                  invalidate_after_write)
 from mirage.core.timeutil import now_iso
 from mirage.types import PathSpec
 from mirage.utils.path import norm
@@ -57,3 +59,5 @@ async def rename(
                 await store.set_file(new_key, data)
     else:
         raise FileNotFoundError(s)
+    await invalidate_after_write(d)
+    await invalidate_after_unlink(s)

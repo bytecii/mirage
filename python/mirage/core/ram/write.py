@@ -15,6 +15,7 @@
 import time
 
 from mirage.accessor.ram import RAMAccessor
+from mirage.cache.context import invalidate_after_write
 from mirage.core.timeutil import now_iso
 from mirage.observe.context import record
 from mirage.types import PathSpec
@@ -37,3 +38,4 @@ async def write_bytes(accessor: RAMAccessor, path: PathSpec,
     store.files[p] = data
     store.modified[p] = now_iso()
     record("write", path, "ram", len(data), start_ms)
+    await invalidate_after_write(path)

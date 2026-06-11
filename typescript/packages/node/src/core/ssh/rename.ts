@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { invalidateAfterUnlink, invalidateAfterWrite } from '@struktoai/mirage-core'
 import type { PathSpec } from '@struktoai/mirage-core'
 import { enoent } from '@struktoai/mirage-core'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
@@ -34,4 +35,6 @@ export async function rename(accessor: SSHAccessor, src: PathSpec, dst: PathSpec
       else rejectFn(err)
     })
   })
+  await invalidateAfterWrite(dst)
+  await invalidateAfterUnlink(src)
 }

@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { PathSpec } from '@struktoai/mirage-core'
+import { type PathSpec, invalidateAfterWrite } from '@struktoai/mirage-core'
 import type { RedisAccessor } from '../../accessor/redis.ts'
 import { norm, nowIso } from './utils.ts'
 
@@ -30,4 +30,5 @@ export async function truncate(
   out.set(data.subarray(0, copyLen), 0)
   await store.setFile(p, out)
   await store.setModified(p, nowIso())
+  await invalidateAfterWrite(p)
 }

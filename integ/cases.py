@@ -540,6 +540,13 @@ CASES: list[tuple[str, str]] = [
     # `s/^#[0-9]*$/#TS/` once that is fixed.
     ("bash_history_format",
      "cat /.bash_history | sed 's/#[0-9][0-9]*/#TS/' | tail -n 4"),
+    # gzip removes h.txt, the ls caches the listing, gunzip recreates h.txt:
+    # cat and the final ls must see the recreated file, not stale cache.
+    ("arch_gzip_interleaved_ls",
+     "mkdir -p /data/arch2 && echo two | tee /data/arch2/h.txt > /dev/null"
+     " && gzip /data/arch2/h.txt && ls /data/arch2"
+     " && gunzip /data/arch2/h.txt.gz && cat /data/arch2/h.txt"
+     " && ls /data/arch2"),
 ]
 
 EXIT_CODE_CASES: list[tuple[str, str]] = [

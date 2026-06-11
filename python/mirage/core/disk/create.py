@@ -18,6 +18,7 @@ import aiofiles
 import aiofiles.os
 
 from mirage.accessor.disk import DiskAccessor
+from mirage.cache.context import invalidate_after_write
 from mirage.types import PathSpec
 
 
@@ -37,3 +38,4 @@ async def create(accessor: DiskAccessor, path: PathSpec) -> None:
     await aiofiles.os.makedirs(p.parent, exist_ok=True)
     async with aiofiles.open(p, "wb") as f:
         await f.write(b"")
+    await invalidate_after_write(path)

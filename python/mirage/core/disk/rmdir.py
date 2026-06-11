@@ -17,6 +17,7 @@ from pathlib import Path
 import aiofiles.os
 
 from mirage.accessor.disk import DiskAccessor
+from mirage.cache.context import invalidate_after_unlink
 from mirage.types import PathSpec
 
 
@@ -34,3 +35,4 @@ async def rmdir(accessor: DiskAccessor, path: PathSpec) -> None:
         path = path.strip_prefix
     p = _resolve(accessor.root, path)
     await aiofiles.os.rmdir(p)
+    await invalidate_after_unlink(path)
