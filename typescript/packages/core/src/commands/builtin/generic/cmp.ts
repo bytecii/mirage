@@ -20,7 +20,7 @@ import { formatRecords } from '../utils/output.ts'
 const ENC = new TextEncoder()
 
 function octal(n: number): string {
-  return '0o' + n.toString(8)
+  return n.toString(8)
 }
 
 function arraysEqual(a: Uint8Array, b: Uint8Array): boolean {

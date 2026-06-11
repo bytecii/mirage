@@ -1330,3 +1330,8 @@ exit=0
 === nl_pin_cmp ===
 exit=0
 47
+=== grep_dir_operand ===
+exit=1
+=== grep_dir_among_files ===
+exit=0
+/data/a.txt:hello

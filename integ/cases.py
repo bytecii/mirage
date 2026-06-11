@@ -504,6 +504,10 @@ EXIT_CODE_CASES: list[tuple[str, str]] = [
     ("nl_pin_wc", "wc -l /data/b.txt | wc -c"),
     ("nl_pin_md5", "md5 /data/b.txt | wc -c"),
     ("nl_pin_cmp", "cmp /data/a.txt /data/b.txt | wc -c"),
+
+    # ----- grep directory operands (GNU: warn, files still match) -----
+    ("grep_dir_operand", "grep hello /data/sub"),
+    ("grep_dir_among_files", "grep hello /data/a.txt /data/sub"),
 ]
 
 

@@ -436,6 +436,10 @@ export const EXIT_CODE_CASES: ReadonlyArray<readonly [string, string]> = [
   ["nl_pin_wc", "wc -l /data/b.txt | wc -c"],
   ["nl_pin_md5", "md5 /data/b.txt | wc -c"],
   ["nl_pin_cmp", "cmp /data/a.txt /data/b.txt | wc -c"],
+
+  // ----- grep directory operands (GNU: warn on stderr, files still match) -----
+  ["grep_dir_operand", "grep hello /data/sub"],
+  ["grep_dir_among_files", "grep hello /data/a.txt /data/sub"],
 ];
 
 const ENC = new TextEncoder();
