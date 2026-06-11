@@ -106,6 +106,8 @@ async def main() -> None:
         (f"grep -r FileType {s3_dir} (recursive scope)",
          f"grep -r FileType {s3_dir}"),
         (f"rg mirage {s3_dir} (rg recursive scope)", f"rg mirage {s3_dir}"),
+        ("grep -r GitHubAccessor /github/ (repo-root search narrowing)",
+         "grep -r GitHubAccessor /github/ | sort"),
     ]:
         print(f"\n=== {label} ===")
         r = await ws.execute(cmd)
@@ -223,6 +225,20 @@ async def main() -> None:
 
     print("=== cut -c (file) ===")
     r = await ws.execute("cut -c1-10 /github/python/mirage/types.py")
+    print(await r.stdout_str())
+
+    print("=== grep dir operands (POSIX warn) ===")
+    r = await ws.execute("grep 'import' /github/python/mirage/*")
+    out = (await r.stdout_str()).strip()
+    err = (await r.stderr_str()).strip()
+    print(f"  exit={r.exit_code} matches: {len(out.splitlines()) if out else 0}")
+    for line in err.splitlines()[:3]:
+        print(f"  {line}")
+    print()
+
+    print("=== diff -u ===")
+    r = await ws.execute("diff -u /github/python/mirage/core/s3/stat.py"
+                         " /github/python/mirage/core/s3/read.py")
     print(await r.stdout_str())
 
     print("=== tree -L ===")
