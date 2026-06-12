@@ -12,11 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { IndexEntry, ResourceType } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { PathSpec } from '../../types.ts'
 import type { S3Accessor } from '../../accessor/s3.ts'
 import { createS3Client, loadS3Module, s3Prefix } from './_client.ts'
-import { S3IndexEntry } from './entry.ts'
 import { rstripSlash } from '../../util/slash.ts'
 
 export async function readdir(
@@ -112,18 +112,35 @@ export async function readdir(
   // Populate the index as a side-effect so future stat()/readdir() calls
   // can hit the fast path. Mirrors Python's mirage/core/s3/readdir.py.
   if (index !== undefined) {
-    const indexEntries: [string, S3IndexEntry][] = sortedNames.map((name) => {
+    const indexEntries: [string, IndexEntry][] = sortedNames.map((name) => {
       if (dirKeys.has(name)) {
-        return [name, S3IndexEntry.fromPrefix(`${mountPrefix}${virtualDir}${name}/`)]
+        return [
+          name,
+          new IndexEntry({
+            id: `${mountPrefix}${virtualDir}${name}/`,
+            name,
+            resourceType: ResourceType.FOLDER,
+            vfsName: name,
+          }),
+        ]
       }
       const obj = objects.get(name)
+      const modified = obj?.lastModified
+      const remoteTime =
+        modified instanceof Date
+          ? modified.toISOString()
+          : typeof modified === 'string'
+            ? modified
+            : ''
       return [
         name,
-        S3IndexEntry.fromObject({
-          Key: `${mountPrefix}${virtualDir}${name}`,
-          Size: obj?.size ?? null,
-          ETag: obj?.etag ?? '',
-          LastModified: obj?.lastModified,
+        new IndexEntry({
+          id: `${mountPrefix}${virtualDir}${name}`,
+          name,
+          resourceType: ResourceType.FILE,
+          vfsName: name,
+          size: obj?.size ?? null,
+          remoteTime,
         }),
       ]
     })

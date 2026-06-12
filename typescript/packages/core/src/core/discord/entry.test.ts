@@ -19,41 +19,7 @@ import {
   DiscordResourceType,
   guildDirname,
   memberFilename,
-  sanitizeName,
 } from './entry.ts'
-
-describe('sanitizeName', () => {
-  it('returns "unknown" for empty/whitespace input', () => {
-    expect(sanitizeName('')).toBe('unknown')
-    expect(sanitizeName('   ')).toBe('unknown')
-  })
-
-  it('replaces unsafe chars with underscore', () => {
-    expect(sanitizeName("alice's-channel")).toBe('alice_s-channel')
-    expect(sanitizeName('hello#world')).toBe('hello_world')
-  })
-
-  it('replaces spaces with underscore', () => {
-    expect(sanitizeName('hello world')).toBe('hello_world')
-  })
-
-  it('collapses multiple underscores', () => {
-    expect(sanitizeName("a''b")).toBe('a_b')
-  })
-
-  it('strips leading/trailing underscores', () => {
-    expect(sanitizeName('__hello__')).toBe('hello')
-  })
-
-  it('truncates to 100 chars', () => {
-    const long = 'x'.repeat(150)
-    expect(sanitizeName(long)).toBe('x'.repeat(100))
-  })
-
-  it('preserves dots and hyphens', () => {
-    expect(sanitizeName('foo.bar-baz')).toBe('foo.bar-baz')
-  })
-})
 
 describe('guildDirname', () => {
   it('returns name__id with original spelling preserved', () => {

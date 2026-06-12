@@ -13,11 +13,11 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { SlackAccessor } from '../../accessor/slack.ts'
-import type { IndexEntry } from '../../cache/index/config.ts'
+import { IndexEntry } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { PathSpec } from '../../types.ts'
 import { listChannels, listDms, type SlackChannel } from './channels.ts'
-import { SlackIndexEntry } from './entry.ts'
+import { channelDirname, dmDirname, fileBlobName, userFilename } from './formatters.ts'
 import { fetchMessagesForDay, type SlackMessage } from './history.ts'
 import { detectScope } from './scope.ts'
 import { listUsers } from './users.ts'
@@ -131,9 +131,16 @@ async function readdirChannels(
   const entries: [string, IndexEntry][] = []
   const names: string[] = []
   for (const ch of channels) {
-    const entry = SlackIndexEntry.channel(ch)
-    entries.push([entry.vfsName, entry])
-    names.push(`${prefix}/channels/${entry.vfsName}`)
+    const dirname = channelDirname(ch)
+    const entry = new IndexEntry({
+      id: ch.id,
+      name: ch.name ?? '',
+      resourceType: 'slack/channel',
+      vfsName: dirname,
+      remoteTime: String(ch.created ?? 0),
+    })
+    entries.push([dirname, entry])
+    names.push(`${prefix}/channels/${dirname}`)
   }
   if (index !== undefined) {
     await index.setDir(virtualKey, entries)
@@ -160,9 +167,17 @@ async function readdirDms(
   const entries: [string, IndexEntry][] = []
   const names: string[] = []
   for (const dm of dms) {
-    const entry = SlackIndexEntry.dm(dm, userMap)
-    entries.push([entry.vfsName, entry])
-    names.push(`${prefix}/dms/${entry.vfsName}`)
+    const dirname = dmDirname(dm, userMap)
+    const uid = dm.user ?? ''
+    const entry = new IndexEntry({
+      id: dm.id,
+      name: userMap[uid] ?? uid,
+      resourceType: 'slack/dm',
+      vfsName: dirname,
+      remoteTime: String(dm.created ?? 0),
+    })
+    entries.push([dirname, entry])
+    names.push(`${prefix}/dms/${dirname}`)
   }
   if (index !== undefined) {
     await index.setDir(virtualKey, entries)
@@ -186,9 +201,15 @@ async function readdirUsers(
   const entries: [string, IndexEntry][] = []
   const names: string[] = []
   for (const u of users) {
-    const entry = SlackIndexEntry.user(u)
-    entries.push([entry.vfsName, entry])
-    names.push(`${prefix}/users/${entry.vfsName}`)
+    const filename = userFilename(u)
+    const entry = new IndexEntry({
+      id: u.id,
+      name: u.name ?? '',
+      resourceType: 'slack/user',
+      vfsName: filename,
+    })
+    entries.push([filename, entry])
+    names.push(`${prefix}/users/${filename}`)
   }
   if (index !== undefined) {
     await index.setDir(virtualKey, entries)
@@ -236,9 +257,14 @@ async function readdirChannelDates(
   const entries: [string, IndexEntry][] = []
   const names: string[] = []
   for (const d of dates) {
-    const entry = SlackIndexEntry.dateDir(lookup.entry.id, d)
-    entries.push([entry.vfsName, entry])
-    names.push(`${parts.prefix}/${parts.key}/${entry.vfsName}`)
+    const entry = new IndexEntry({
+      id: `${lookup.entry.id}:${d}`,
+      name: d,
+      resourceType: 'slack/date_dir',
+      vfsName: d,
+    })
+    entries.push([d, entry])
+    names.push(`${parts.prefix}/${parts.key}/${d}`)
   }
   await index.setDir(parts.virtualKey, entries)
   return names
@@ -261,8 +287,18 @@ async function fetchDay(
     }
     throw err
   }
-  const chatEntry = SlackIndexEntry.chatJsonl(channelId, dateStr)
-  const filesEntry = SlackIndexEntry.filesDir(channelId, dateStr)
+  const chatEntry = new IndexEntry({
+    id: `${channelId}:${dateStr}:chat`,
+    name: 'chat.jsonl',
+    resourceType: 'slack/chat_jsonl',
+    vfsName: 'chat.jsonl',
+  })
+  const filesEntry = new IndexEntry({
+    id: `${channelId}:${dateStr}:files`,
+    name: 'files',
+    resourceType: 'slack/files_dir',
+    vfsName: 'files',
+  })
   await index.setDir(dateVirtualKey, [
     ['chat.jsonl', chatEntry],
     ['files', filesEntry],
@@ -272,13 +308,34 @@ async function fetchDay(
     const files = (msg.files as { id?: string }[] | undefined) ?? []
     for (const fmeta of files) {
       if (fmeta.id === undefined || fmeta.id === '') continue
-      const entry = SlackIndexEntry.file(
-        fmeta as Parameters<typeof SlackIndexEntry.file>[0],
-        channelId,
-        dateStr,
-        typeof msg.ts === 'string' ? msg.ts : '',
-      )
-      fileEntries.push([entry.vfsName, entry])
+      const meta = fmeta as {
+        id: string
+        name?: string
+        title?: string
+        size?: number
+        mimetype?: string
+        filetype?: string
+        url_private_download?: string
+        timestamp?: number | string
+      }
+      const blob = fileBlobName(meta)
+      const entry = new IndexEntry({
+        id: meta.id,
+        name: meta.title ?? meta.name ?? '',
+        resourceType: 'slack/file',
+        vfsName: blob,
+        size: meta.size ?? null,
+        remoteTime: String(meta.timestamp ?? ''),
+        extra: {
+          mimetype: meta.mimetype ?? '',
+          url_private_download: meta.url_private_download ?? '',
+          filetype: meta.filetype ?? '',
+          ts: typeof msg.ts === 'string' ? msg.ts : '',
+          channel_id: channelId,
+          date: dateStr,
+        },
+      })
+      fileEntries.push([blob, entry])
     }
   }
   await index.setDir(`${dateVirtualKey}/files`, fileEntries)

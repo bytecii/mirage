@@ -12,37 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-const UNSAFE_CHARS = /[^\w\s\-.]/g
-const MULTI_UNDERSCORE = /_+/g
-const MAX_LEN = 100
+import { sanitizeName } from '../../util/sanitize.ts'
 
-export function sanitizeName(name: string): string {
-  if (name.trim() === '') return 'unknown'
-  let cleaned = name.replace(UNSAFE_CHARS, '_')
-  cleaned = cleaned.replace(/ /g, '_')
-  cleaned = cleaned.replace(MULTI_UNDERSCORE, '_')
-  cleaned = cleaned.replace(/^_+|_+$/g, '')
-  if (cleaned.length > MAX_LEN) cleaned = cleaned.slice(0, MAX_LEN)
-  if (cleaned === '') return 'unknown'
-  return cleaned
-}
-
-export function splitSuffixId(name: string, suffix = ''): [string, string] {
-  if (suffix !== '' && !name.endsWith(suffix)) {
-    throw new Error(`ENOENT: ${name}`)
-  }
-  const raw = suffix !== '' ? name.slice(0, -suffix.length) : name
-  const idx = raw.lastIndexOf('__')
-  if (idx === -1) {
-    throw new Error(`ENOENT: ${name}`)
-  }
-  const label = raw.slice(0, idx)
-  const id = raw.slice(idx + 2)
-  if (id === '') {
-    throw new Error(`ENOENT: ${name}`)
-  }
-  return [label, id]
-}
+export { sanitizeName } from '../../util/sanitize.ts'
+export { parseIdName as splitSuffixId } from '../../util/naming.ts'
 
 function pickString(record: Record<string, unknown>, ...keys: readonly string[]): string {
   for (const key of keys) {

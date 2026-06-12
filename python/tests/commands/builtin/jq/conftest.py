@@ -15,7 +15,7 @@
 import asyncio
 from pathlib import Path
 
-from mirage.commands.builtin.jq_helper import jq as _jq_impl
+from mirage.core.jq import jq_eval, parse_json_path
 from mirage.resource.ram import RAMResource
 from mirage.types import MountMode
 from mirage.workspace import Workspace
@@ -32,7 +32,8 @@ def write_to_backend(backend, path, data):
 
 def jq(backend, path, expression):
     store = backend.accessor.store
-    return _jq_impl(lambda p: store.files[_norm(p)], path, expression)
+    data = parse_json_path(store.files[_norm(path)], path)
+    return jq_eval(data, expression.strip())
 
 
 def mem_ws(files: dict[str, bytes] | None = None) -> Workspace:

@@ -15,7 +15,7 @@
 import { describe, expect, it } from 'vitest'
 import { GitHubAccessor } from '../../accessor/github.ts'
 import type { GitHubTransport } from './_client.ts'
-import type { TreeEntry } from './entry.ts'
+import type { TreeEntry } from './tree_entry.ts'
 import { PathSpec } from '../../types.ts'
 import { du, duAll } from './du.ts'
 

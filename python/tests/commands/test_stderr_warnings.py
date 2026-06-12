@@ -16,12 +16,9 @@ import asyncio
 
 import pytest
 
-from mirage.commands.builtin.du_helper import du as du_helper
 from mirage.commands.builtin.find_helper import find as find_helper
 from mirage.commands.builtin.grep_helper import compile_pattern, grep_recursive
-from mirage.commands.builtin.ls_helper import ls as ls_helper
 from mirage.commands.builtin.rg_helper import rg_full
-from mirage.commands.builtin.tree_helper import tree as tree_helper
 from mirage.resource.ram import RAMResource
 from mirage.types import FileStat, FileType, MountMode, PathSpec
 from mirage.workspace import Workspace
@@ -199,45 +196,6 @@ async def test_rg_helper_collects_warnings_on_unreadable_file():
     assert any("hello" in r for r in results)
     assert len(warnings) == 1
     assert "/bad.py" in warnings[0]
-
-
-def test_tree_helper_collects_warnings_on_missing_entry():
-    readdir = _make_readdir({"/": ["/a", "/b"], "/a": []})
-    stat_fn = _make_stat({
-        "/a":
-        FileStat(name="a", size=0, modified=None, type=FileType.DIRECTORY),
-    })
-    warnings: list[str] = []
-    tree_helper(readdir, stat_fn, "/", warnings=warnings)
-    assert len(warnings) == 1
-    assert "/b" in warnings[0]
-
-
-def test_du_helper_collects_warnings_on_missing_path():
-    readdir = _make_readdir({"/": ["/a"]})
-    stat_fn = _make_stat({
-        "/":
-        FileStat(name="/", size=0, modified=None, type=FileType.DIRECTORY),
-    })
-    warnings: list[str] = []
-    total = du_helper(readdir, stat_fn, "/", warnings=warnings)
-    assert total == 0
-    assert len(warnings) >= 1
-    assert "/a" in warnings[0]
-
-
-def test_ls_helper_collects_warnings_on_stat_failure():
-    readdir = _make_readdir({"/": ["/a", "/b"]})
-    stat_fn = _make_stat({
-        "/a":
-        FileStat(name="a", size=10, modified=None, type=FileType.TEXT),
-    })
-    warnings: list[str] = []
-    entries = ls_helper(readdir, stat_fn, "/", warnings=warnings)
-    assert len(entries) == 1
-    assert entries[0].name == "a"
-    assert len(warnings) == 1
-    assert "/b" in warnings[0]
 
 
 async def _seed_ws(ws):

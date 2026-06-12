@@ -15,7 +15,7 @@
 import { fnmatch } from '../../util/fnmatch.ts'
 import { stripSlash } from '../../util/slash.ts'
 import type { PathSpec } from '../../types.ts'
-import type { TreeEntry } from './entry.ts'
+import type { TreeEntry } from './tree_entry.ts'
 
 export function scopeRelativeKey(path: PathSpec): string {
   const prefix = path.prefix

@@ -12,10 +12,48 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { channelDirname, dmDirname, fileBlobName, sanitizeName, userFilename } from './entry.ts'
+import { pathSafeName, sanitizeName } from '../../util/sanitize.ts'
+import { makeIdName } from '../../util/naming.ts'
 import type { SlackScope } from './scope.ts'
 
 const DEC = new TextDecoder('utf-8', { fatal: false })
+
+/** Compute the VFS dirname for a channel, of the form `name__C123`. */
+export function channelDirname(ch: { id: string; name?: string }): string {
+  return makeIdName(ch.name ?? '', ch.id, true)
+}
+
+/** Compute the VFS dirname for a DM, of the form `username__D123`. */
+export function dmDirname(
+  dm: { id: string; user?: string },
+  userMap: Record<string, string>,
+): string {
+  const uid = dm.user ?? ''
+  const display = userMap[uid] ?? (uid === '' ? '' : uid)
+  return makeIdName(display, dm.id, true)
+}
+
+/** Compute the VFS filename for a user, of the form `name__U123.json`. */
+export function userFilename(u: { id: string; name?: string }): string {
+  return `${makeIdName(u.name ?? '', u.id, true)}.json`
+}
+
+/**
+ * Construct a stable VFS filename for a Slack file, of shape
+ * `<stem>__<F-id>.<ext>`. The stem keeps the original spelling, only `/` is
+ * replaced.
+ */
+export function fileBlobName(file: { id?: string; name?: string; title?: string }): string {
+  const raw = file.name ?? file.title ?? 'file'
+  const fid = file.id ?? ''
+  const dot = raw.lastIndexOf('.')
+  if (dot >= 0) {
+    const stem = raw.slice(0, dot)
+    const ext = raw.slice(dot + 1)
+    return `${pathSafeName(stem)}__${fid}.${ext}`
+  }
+  return `${pathSafeName(raw)}__${fid}`
+}
 
 interface SearchMessageMatch {
   channel?: { name?: string; id?: string }
@@ -110,5 +148,3 @@ export function formatFileGrepResults(
   }
   return lines
 }
-
-export { channelDirname, dmDirname, fileBlobName, userFilename }

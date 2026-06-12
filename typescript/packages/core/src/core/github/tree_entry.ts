@@ -13,33 +13,32 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { IndexEntry } from '../../cache/index/config.ts'
+import type { GitHubTreeItem } from './_client.ts'
 
-export const RAMResourceType = Object.freeze({
-  FILE: 'file',
-  FOLDER: 'folder',
-} as const)
+export interface TreeEntry {
+  path: string
+  type: string
+  sha: string
+  size: number | null
+}
 
-export type RAMResourceType = (typeof RAMResourceType)[keyof typeof RAMResourceType]
-
-export class RAMIndexEntry extends IndexEntry {
-  static file(path: string, size = 0): RAMIndexEntry {
-    const name = path.slice(path.lastIndexOf('/') + 1)
-    return new RAMIndexEntry({
-      id: path,
-      name,
-      resourceType: RAMResourceType.FILE,
-      vfsName: name,
-      size,
-    })
+export function makeTreeEntry(item: GitHubTreeItem): TreeEntry {
+  return {
+    path: item.path,
+    type: item.type,
+    sha: item.sha,
+    size: item.size ?? null,
   }
+}
 
-  static folder(path: string): RAMIndexEntry {
-    const name = path.slice(path.lastIndexOf('/') + 1)
-    return new RAMIndexEntry({
-      id: path,
-      name,
-      resourceType: RAMResourceType.FOLDER,
-      vfsName: name,
-    })
-  }
+export function indexEntryFromTree(item: GitHubTreeItem): IndexEntry {
+  const parts = item.path.split('/')
+  const name = parts[parts.length - 1] ?? item.path
+  return new IndexEntry({
+    id: item.sha,
+    name,
+    vfsName: name,
+    resourceType: item.type === 'tree' ? 'folder' : 'file',
+    size: item.size ?? null,
+  })
 }

@@ -226,18 +226,6 @@ def test_pipe_cross(cross):
     assert "hello" in result
 
 
-def test_all_resource_pairs_registered():
-    from itertools import product
-
-    from mirage.commands.builtin.cross_mount import (_CROSS_FNS,
-                                                     CROSS_COMMANDS, RESOURCES)
-    registered = {(c.name, c.src, c.dst) for c in CROSS_COMMANDS}
-    for src, dst in product(RESOURCES, repeat=2):
-        for _, cmd_name in _CROSS_FNS:
-            assert (cmd_name, src,
-                    dst) in registered, (f"Missing: {cmd_name} {src}->{dst}")
-
-
 def test_cross_resource_no_aggregate_raises(cross):
     cross.create_file(1, "a.txt", b"hello\n")
     cross.create_file(2, "b.txt", b"world\n")

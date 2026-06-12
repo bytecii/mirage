@@ -211,7 +211,7 @@ export {
   type ReadBytesFn,
   type StatEntryFn,
 } from './commands/builtin/filetype_factory/extensions.ts'
-export { numberLines } from './commands/builtin/cat_helper.ts'
+export { numberLines } from './commands/builtin/generic/cat.ts'
 export { CUT_OPEN_END, cutBytes, cutStream, parseCutRanges } from './commands/builtin/cut_helper.ts'
 export { cutGeneric } from './commands/builtin/generic/cut.ts'
 export { tacGeneric } from './commands/builtin/generic/tac.ts'
@@ -270,7 +270,7 @@ export { tailGeneric } from './commands/builtin/generic/tail.ts'
 export { wcGeneric } from './commands/builtin/generic/wc.ts'
 export { readlinkGeneric } from './commands/builtin/generic/readlink.ts'
 export { fmtGeneric } from './commands/builtin/generic/fmt.ts'
-export { headStream } from './commands/builtin/head_helper.ts'
+export { headStream } from './commands/builtin/generic/head.ts'
 export { basenameFn } from './commands/builtin/generic/basename.ts'
 export { dirnameFn } from './commands/builtin/generic/dirname.ts'
 export { gnuBasename, gnuDirname } from './utils/path.ts'
@@ -547,7 +547,6 @@ export {
 export { remapCommandsResource, remapOpsResource } from './resource/s3/remap.ts'
 export { S3_PROMPT } from './resource/s3/prompt.ts'
 export { SCOPE_ERROR as S3_SCOPE_ERROR } from './core/s3/constants.ts'
-export { S3IndexEntry, type S3IndexEntryInit, type S3Object } from './core/s3/entry.ts'
 export { copy } from './core/s3/copy.ts'
 export { create } from './core/s3/create.ts'
 export { du, duAll } from './core/s3/du.ts'
@@ -693,13 +692,17 @@ export { GITHUB_COMMANDS } from './commands/builtin/github/index.ts'
 export { GITHUB_VFS_OPS } from './ops/github/index.ts'
 export { read as githubRead, stream as githubStream } from './core/github/read.ts'
 export { readdir as githubReaddir } from './core/github/readdir.ts'
+export {
+  buildTreeMap as githubBuildTreeMap,
+  populateIndex as githubPopulateIndex,
+} from './core/github/tree.ts'
 export { stat as githubStat } from './core/github/stat.ts'
 export { resolveGlob as githubResolveGlob } from './core/github/glob.ts'
 export {
   type TreeEntry as GitHubTreeEntry,
   makeTreeEntry as githubMakeTreeEntry,
   indexEntryFromTree as githubIndexEntryFromTree,
-} from './core/github/entry.ts'
+} from './core/github/tree_entry.ts'
 export {
   search as githubSearchCode,
   narrowPaths as githubNarrowPaths,

@@ -17,7 +17,7 @@ import { LookupStatus } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { PathSpec } from '../../types.ts'
 import { fetchDirTree } from './_client.ts'
-import { indexEntryForChild } from './entry.ts'
+import { IndexEntry } from '../../cache/index/config.ts'
 import { stripSlash } from '../../util/slash.ts'
 
 function enoent(path: string): Error {
@@ -77,11 +77,20 @@ async function fallbackReaddir(
   if (parentSha === null) throw enoent(key)
   const entries = await fetchDirTree(accessor.transport, accessor.owner, accessor.repo, parentSha)
   const childKeys: string[] = []
-  const childEntries: [string, ReturnType<typeof indexEntryForChild>][] = []
+  const childEntries: [string, IndexEntry][] = []
   for (const e of entries) {
     const childKey = `${key === '/' ? '' : key}/${e.path}`
     childKeys.push(childKey)
-    childEntries.push([childKey, indexEntryForChild(e.path, e.sha, e.type, e.size ?? null)])
+    childEntries.push([
+      childKey,
+      new IndexEntry({
+        id: e.sha,
+        name: e.path,
+        vfsName: e.path,
+        resourceType: e.type === 'tree' ? 'folder' : 'file',
+        size: e.size ?? null,
+      }),
+    ])
   }
   childKeys.sort()
   await index.setDir(key, childEntries)
@@ -115,7 +124,13 @@ async function resolveDirSha(
     currentPath += `/${part}`
     await index.put(
       currentPath,
-      indexEntryForChild(part, found.sha, found.type, found.size ?? null),
+      new IndexEntry({
+        id: found.sha,
+        name: part,
+        vfsName: part,
+        resourceType: found.type === 'tree' ? 'folder' : 'file',
+        size: found.size ?? null,
+      }),
     )
   }
   return currentSha

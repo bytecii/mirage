@@ -12,20 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-const UNSAFE_CHARS = /[^\p{L}\p{N}_\s\-.]/gu
-const MULTI_UNDERSCORE = /_+/g
-const MAX_LEN = 100
+import { parseIdName } from '../../util/naming.ts'
+import { sanitizeName } from '../../util/sanitize.ts'
 
-export function sanitizeName(name: string): string {
-  if (name.trim() === '') return 'unknown'
-  let cleaned = name.replace(UNSAFE_CHARS, '_')
-  cleaned = cleaned.replaceAll(' ', '_')
-  cleaned = cleaned.replace(MULTI_UNDERSCORE, '_')
-  if (cleaned.startsWith('_')) cleaned = cleaned.slice(1)
-  if (cleaned.endsWith('_')) cleaned = cleaned.slice(0, -1)
-  if (cleaned.length > MAX_LEN) cleaned = cleaned.slice(0, MAX_LEN)
-  return cleaned
-}
+export { sanitizeName } from '../../util/sanitize.ts'
+export { parseIdName as splitSuffixId } from '../../util/naming.ts'
 
 export function stripDashes(id: string): string {
   return id.replace(/-/g, '')
@@ -37,13 +28,6 @@ export function formatSegment(page: { id: string; title: string }): string {
 }
 
 export function parseSegment(segment: string): { title: string; id: string } {
-  const sep = segment.lastIndexOf('__')
-  if (sep === -1) {
-    throw new Error(`invalid notion segment: ${segment}`)
-  }
-  const id = segment.slice(sep + 2)
-  if (id === '') {
-    throw new Error(`invalid notion segment: ${segment}`)
-  }
-  return { title: segment.slice(0, sep), id }
+  const [title, id] = parseIdName(segment)
+  return { title, id }
 }

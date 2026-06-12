@@ -70,8 +70,11 @@ def parse_id_name(
         suffix (str): file extension to strip before parsing.
 
     Raises:
-        FileNotFoundError: if name doesn't contain "__".
+        FileNotFoundError: if name doesn't contain "__" or doesn't end
+            with ``suffix``.
     """
+    if suffix and not name.endswith(suffix):
+        raise FileNotFoundError(name)
     raw = name[:-len(suffix)] if suffix else name
     label, sep, resource_id = raw.rpartition("__")
     if not sep or not resource_id:
