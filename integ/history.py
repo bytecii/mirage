@@ -13,16 +13,9 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
-import os
-import sys
-import uuid
 
 from mirage import MountMode, Workspace
-from mirage.observe.redis_store import RedisObserverStore
-from mirage.observe.store import ObserverStore
 from mirage.resource.ram import RAMResource
-
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
 CASES: list[tuple[str, str, str]] = [
     # ----- seed commands (their outputs are part of the record) -----
@@ -59,19 +52,8 @@ EXIT_CODE_CASES: list[tuple[str, str, str]] = [
 ]
 
 
-def _make_observe_store(kind: str) -> ObserverStore | None:
-    if kind != "redis":
-        return None
-    return RedisObserverStore(
-        url=REDIS_URL,
-        key_prefix=f"mirage-integ-history-{uuid.uuid4().hex[:8]}:")
-
-
-async def main(observe_kind: str) -> None:
-    observe = _make_observe_store(observe_kind)
-    ws = Workspace({"/data": RAMResource()},
-                   mode=MountMode.WRITE,
-                   observe=observe)
+async def main() -> None:
+    ws = Workspace({"/data": RAMResource()}, mode=MountMode.WRITE)
     ws.create_session("s2")
 
     for name, session, cmd in CASES:
@@ -119,9 +101,7 @@ async def main(observe_kind: str) -> None:
     print(
         f"recorder_mounted="
         f"{ws.observer.store in [m.resource for m in ws._registry.mounts()]}")
-    if observe is not None:
-        await observe.clear()
 
 
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1] if len(sys.argv) > 1 else "ram"))
+    asyncio.run(main())

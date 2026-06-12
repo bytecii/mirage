@@ -516,6 +516,9 @@ CASES: list[tuple[str, str]] = [
      " && cat /data/arch/cs_00"),
     ("arch_iconv_file", "iconv -f utf-8 -t utf-8 /data/arch/g.txt"),
     ("arch_mktemp", "mktemp -p /data/arch | wc -l"),
+    # ----- history: recorder views over whatever observer store -----
+    ("history_last_two", "history 2"),
+    ("bash_history_tail", "grep -v '^#' /.bash_history | tail -n 3"),
 ]
 
 EXIT_CODE_CASES: list[tuple[str, str]] = [

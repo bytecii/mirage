@@ -150,11 +150,6 @@ jobs:
           ./python/.venv/bin/python integ/history.py > /tmp/history.out
           diff integ/truth_history.txt /tmp/history.out
 
-      - name: Run History scenarios with Redis observer and diff against truth
-        run: |
-          ./python/.venv/bin/python integ/history.py redis > /tmp/history_redis.out
-          diff integ/truth_history.txt /tmp/history_redis.out
-
       - name: Run s3 + gcs + minio integ (moto) and diff against truth
         run: |
           ./python/.venv/bin/python integ/s3.py > /tmp/s3.out

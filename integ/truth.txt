@@ -1409,6 +1409,13 @@ world
 gz-data
 === arch_mktemp ===
 1
+=== history_last_two ===
+368  iconv -f utf-8 -t utf-8 /data/arch/g.txt
+369  mktemp -p /data/arch | wc -l
+=== bash_history_tail ===
+iconv -f utf-8 -t utf-8 /data/arch/g.txt
+mktemp -p /data/arch | wc -l
+history 2
 === jq_no_filter_no_input ===
 exit=0
 === jq_dot_no_input ===
