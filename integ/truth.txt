@@ -227,8 +227,25 @@ aGVsbG8Kd29ybGQKZm9vCmJhcgpiYXoK
 68656c6c6f0a776f
 === basename ===
 a.txt
+=== basename_suffix ===
+a
+=== basename_trailing_slash ===
+sub
+=== basename_root ===
+/
+=== basename_relative ===
+a.txt
 === dirname ===
 /data
+=== dirname_trailing_slash ===
+/data
+=== dirname_multi ===
+/data
+/data/sub
+=== dirname_relative ===
+.
+=== dirname_root ===
+/
 === realpath ===
 /data/a.txt
 === find_name ===
@@ -1575,3 +1592,17 @@ exit=0
 /data/guard/g.txt
 /data/guard/sub/g.txt
 /data/guard/sub/s.txt
+=== sleep_invalid ===
+exit=1
+=== sleep_no_operand ===
+exit=1
+=== sleep_negative ===
+exit=1
+=== sleep_infinity ===
+exit=1
+=== sleep_zero ===
+sleep_zero ok
+=== sleep_fraction ===
+sleep_fraction ok
+=== sleep_one ===
+sleep_one ok

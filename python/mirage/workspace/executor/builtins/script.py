@@ -13,6 +13,8 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import math
+import re
 from collections.abc import Callable
 
 from mirage.io import IOResult
@@ -130,14 +132,29 @@ async def handle_bash(
                                         exit_code=io.exit_code)
 
 
+# Finite non-negative decimals only ("0", "0.2", ".5", "1.", "+1", "1e-3").
+# GNU sleep additionally accepts "inf" and sleeps forever; an agent shell
+# must never hang, so non-finite intervals are rejected (deliberate
+# divergence). The regex also keeps Python/TypeScript parsing identical:
+# float() alone would accept "inf", "nan", "1_0", and surrounding whitespace
+# that Number() rejects, and Number() accepts hex that float() rejects.
+SLEEP_INTERVAL = re.compile(r"\+?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?")
+
+
 async def handle_sleep(
     args: list[str],
     cancel: asyncio.Event | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
-    try:
-        seconds = float(args[0]) if args else 0
-    except ValueError:
-        err = f"sleep: invalid argument: {args[0]}\n".encode()
+    if not args:
+        err = b"sleep: missing operand\n"
+        return None, IOResult(exit_code=1,
+                              stderr=err), ExecutionNode(command="sleep",
+                                                         exit_code=1)
+    raw = args[0]
+    # "1e309" passes the regex but overflows to inf, so check both.
+    seconds = float(raw) if SLEEP_INTERVAL.fullmatch(raw) else math.inf
+    if not math.isfinite(seconds):
+        err = f"sleep: invalid time interval '{raw}'\n".encode()
         return None, IOResult(exit_code=1,
                               stderr=err), ExecutionNode(command="sleep",
                                                          exit_code=1)

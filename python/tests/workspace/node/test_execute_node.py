@@ -2637,7 +2637,8 @@ def test_sleep_invalid():
 
 def test_sleep_no_args():
     _, io, _, _, _, _ = _exec("sleep")
-    assert io.exit_code == 0
+    assert io.exit_code == 1
+    assert io.stderr == b"sleep: missing operand\n"
 
 
 # ── nested / combined builtins ─────────────────

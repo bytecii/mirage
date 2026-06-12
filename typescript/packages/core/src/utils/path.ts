@@ -12,11 +12,6 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { IOResult } from '../../io/types.ts'
-import type { CommandFn } from '../config.ts'
-
-const ENC = new TextEncoder()
-
 export function gnuBasename(path: string, suffix?: string): string {
   let i = path.length
   while (i > 0 && path[i - 1] === '/') i--
@@ -39,15 +34,4 @@ export function gnuDirname(path: string): string {
   while (j > 0 && path[j - 1] === '/') j--
   if (j === 0) return '/'
   return path.slice(0, j)
-}
-
-export const basenameFn: CommandFn = (_accessor, _paths, texts) => {
-  const lines =
-    texts.length === 2 ? [gnuBasename(texts[0] ?? '', texts[1])] : texts.map((t) => gnuBasename(t))
-  return [ENC.encode(lines.join('\n') + '\n'), new IOResult()]
-}
-
-export const dirnameFn: CommandFn = (_accessor, _paths, texts) => {
-  const lines = texts.map((t) => gnuDirname(t))
-  return [ENC.encode(lines.join('\n') + '\n'), new IOResult()]
 }

@@ -119,7 +119,15 @@ export const CASES: ReadonlyArray<readonly [string, string]> = [
   ["xxd_p", "head -c 8 /data/a.txt | xxd -p"],
 
   ["basename", "basename /data/a.txt"],
+  ["basename_suffix", "basename /data/a.txt .txt"],
+  ["basename_trailing_slash", "basename /data/sub/"],
+  ["basename_root", "basename /"],
+  ["basename_relative", "basename data/a.txt"],
   ["dirname", "dirname /data/a.txt"],
+  ["dirname_trailing_slash", "dirname /data/sub/"],
+  ["dirname_multi", "dirname /data/a.txt /data/sub/nested.txt"],
+  ["dirname_relative", "dirname a.txt"],
+  ["dirname_root", "dirname /"],
   ["realpath", "realpath /data/a.txt"],
 
   ["find_name", 'find /data -name "*.txt"'],
@@ -509,6 +517,16 @@ export const EXIT_CODE_CASES: ReadonlyArray<readonly [string, string]> = [
   ["guard_mv_dir_into_own_subtree", "mv /data/guard /data/guard/sub"],
   ["guard_cp_missing_source_continues", "cp /data/missing.txt /data/guard/g.txt /data/guard/sub"],
   ["guard_state_after", "find /data/guard -type f"],
+  ["sleep_invalid", "sleep abc"],
+  ["sleep_no_operand", "sleep"],
+  ["sleep_negative", "sleep -1"],
+  ["sleep_infinity", "sleep Infinity"],
+];
+
+export const SLEEP_CASES: ReadonlyArray<readonly [string, string, number]> = [
+  ["sleep_zero", "sleep 0", 0],
+  ["sleep_fraction", "sleep 0.2", 0.2],
+  ["sleep_one", "sleep 1", 1],
 ];
 
 const ENC = new TextEncoder();
@@ -539,5 +557,17 @@ export async function runCases(ws: Workspace): Promise<void> {
     process.stdout.write(`=== ${name} ===\n`);
     process.stdout.write(`exit=${result.exitCode}\n`);
     if (out) process.stdout.write(out.endsWith("\n") ? out : out + "\n");
+  }
+
+  for (const [name, cmd, expected] of SLEEP_CASES) {
+    const start = performance.now();
+    const result = await ws.execute(cmd);
+    const elapsed = (performance.now() - start) / 1000;
+    process.stdout.write(`=== ${name} ===\n`);
+    if (result.exitCode === 0 && elapsed >= expected - 0.05 && elapsed < expected + 2) {
+      process.stdout.write(`${name} ok\n`);
+    } else {
+      process.stdout.write(`${name} FAIL exit=${result.exitCode} elapsed=${elapsed.toFixed(3)}\n`);
+    }
   }
 }

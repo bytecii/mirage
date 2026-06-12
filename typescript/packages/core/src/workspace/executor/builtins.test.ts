@@ -197,6 +197,28 @@ describe('handleSleep', () => {
   it('rejects invalid seconds', async () => {
     const [, io] = await handleSleep(['abc'])
     expect(io.exitCode).toBe(1)
+    expect(decode(io.stderr as Uint8Array)).toBe("sleep: invalid time interval 'abc'\n")
+  })
+
+  it('rejects missing operand', async () => {
+    const [, io] = await handleSleep([])
+    expect(io.exitCode).toBe(1)
+    expect(decode(io.stderr as Uint8Array)).toBe('sleep: missing operand\n')
+  })
+
+  it.each(['-1', 'inf', 'Infinity', 'nan', 'NaN', '0x10', '1_0', '1e309', ''])(
+    'rejects %j as invalid time interval',
+    async (raw) => {
+      const [, io] = await handleSleep([raw])
+      expect(io.exitCode).toBe(1)
+      expect(decode(io.stderr as Uint8Array)).toBe(`sleep: invalid time interval '${raw}'\n`)
+    },
+  )
+
+  it.each(['0', '0.', '.01', '+0.01', '1e-3'])('accepts %j and exits 0', async (raw) => {
+    const [, io] = await handleSleep([raw])
+    expect(io.exitCode).toBe(0)
+    expect(io.stderr).toBeNull()
   })
 
   it('sleeps for 0 seconds', async () => {
