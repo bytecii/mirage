@@ -19,7 +19,7 @@ async def strings(
     else:
         raw = await _read_stdin_async(stdin)
         if raw is None:
-            raise ValueError("strings: missing input")
+            raw = b""
     pattern = rb"[\x20-\x7e]{" + str(min_len).encode() + rb",}"
     matches = re.findall(pattern, raw)
     output = b"\n".join(matches) + b"\n" if matches else b""

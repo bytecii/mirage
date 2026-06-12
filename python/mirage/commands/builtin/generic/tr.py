@@ -86,7 +86,7 @@ async def tr(
         source: AsyncIterator[bytes] = read_stream(accessor, paths[0])
         cache = [paths[0].strip_prefix]
     else:
-        source = _resolve_source(stdin, "tr: missing input")
+        source = _resolve_source(stdin)
 
     return _tr_stream(source,
                       set1,

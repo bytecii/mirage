@@ -159,12 +159,7 @@ export async function xxdGeneric(
     source = stream(first)
     cache.push(first.original)
   } else {
-    try {
-      source = resolveSource(opts.stdin, 'xxd: missing input')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
+    source = resolveSource(opts.stdin)
   }
   const toInt = (v: string | boolean | undefined): number =>
     typeof v === 'string' ? Number.parseInt(v, 10) : 0

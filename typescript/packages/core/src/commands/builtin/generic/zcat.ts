@@ -31,7 +31,13 @@ export async function zcatGeneric(
   } else {
     const stdinBytes = await readStdinAsync(opts.stdin)
     if (stdinBytes === null) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('zcat: missing input\n') })]
+      return [
+        null,
+        new IOResult({
+          exitCode: 1,
+          stderr: ENC.encode('zcat: (stdin): unexpected end of file\n'),
+        }),
+      ]
     }
     raw = stdinBytes
   }

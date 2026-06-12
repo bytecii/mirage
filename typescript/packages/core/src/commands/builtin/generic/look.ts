@@ -43,10 +43,7 @@ export async function lookGeneric(
     raw = await materialize(stream(first))
   } else {
     const stdinData = await readStdinAsync(opts.stdin)
-    if (stdinData === null) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('look: missing input\n') })]
-    }
-    raw = stdinData
+    raw = stdinData ?? new Uint8Array(0)
   }
   const lines = splitLinesNoTrailing(DEC.decode(raw))
   const cmpPrefix = caseInsensitive ? prefix.toLowerCase() : prefix

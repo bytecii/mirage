@@ -18,8 +18,6 @@ import type { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { resolveSource } from '../utils/stream.ts'
 
-const ENC = new TextEncoder()
-
 async function collectLines(source: AsyncIterable<Uint8Array>): Promise<Uint8Array[]> {
   const lines: Uint8Array[] = []
   const iter = new AsyncLineIterator(source)
@@ -40,12 +38,7 @@ export async function tacGeneric(
     source = stream(first)
     cache.push(first.original)
   } else {
-    try {
-      source = resolveSource(opts.stdin, 'tac: missing input')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
+    source = resolveSource(opts.stdin)
   }
   const lines = await collectLines(source)
   lines.reverse()

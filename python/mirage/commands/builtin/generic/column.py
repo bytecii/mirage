@@ -51,7 +51,7 @@ async def column(
     else:
         raw = await _read_stdin_async(stdin)
         if raw is None:
-            raise ValueError("column: missing input")
+            raw = b""
     text = raw.decode(errors="replace")
     if table:
         out = _table_format(

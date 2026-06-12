@@ -36,13 +36,16 @@ async def _wrap_bytes(data: bytes) -> AsyncIterator[bytes]:
 
 def _resolve_source(
     stdin: AsyncIterator[bytes] | bytes | None,
-    error_msg: str,
+    error_msg: str | None = None,
 ) -> AsyncIterator[bytes]:
     if stdin is not None:
         if isinstance(stdin, bytes):
             return _wrap_bytes(stdin)
         return stdin
-    raise ValueError(error_msg)
+    if error_msg is not None:
+        raise ValueError(error_msg)
+    # GNU semantics: no stdin behaves like empty input (/dev/null)
+    return _wrap_bytes(b"")
 
 
 async def _open_read_stream(

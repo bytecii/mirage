@@ -174,7 +174,7 @@ export async function patchGeneric(
     patchData = await readStdinAsync(opts.stdin)
   }
   if (patchData === null || patchData.byteLength === 0) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('patch: missing input\n') })]
+    return [null, new IOResult()]
   }
 
   const patchText = DEC.decode(patchData)

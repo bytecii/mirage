@@ -1272,6 +1272,48 @@ gz-data
 exit=0
 === jq_dot_no_input ===
 exit=0
+=== tac_no_input ===
+exit=0
+=== xxd_no_input ===
+exit=0
+=== column_no_input ===
+exit=0
+=== strings_no_input ===
+exit=0
+=== tsort_no_input ===
+exit=0
+=== base64_no_input ===
+exit=0
+=== split_no_input ===
+exit=0
+=== iconv_no_input ===
+exit=0
+=== bc_no_input ===
+exit=0
+=== tr_no_input ===
+exit=0
+=== awk_no_input ===
+exit=0
+=== sha256sum_no_input ===
+exit=0
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  -
+=== patch_no_input ===
+exit=0
+=== look_no_input ===
+exit=1
+=== zgrep_no_input ===
+exit=1
+=== gunzip_no_input ===
+exit=1
+=== zcat_no_input ===
+exit=1
+=== gzip_d_no_input ===
+exit=1
+=== csplit_no_input ===
+exit=0
+=== gzip_no_input_sha ===
+exit=0
+abfbb86f9f5ddfbd9fc1a72c43ab384702ce8bae86b60f3324748485e235e61e  -
 === lazy_exit_grep_match ===
 exit=0
 hello

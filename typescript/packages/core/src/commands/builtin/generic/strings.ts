@@ -52,10 +52,7 @@ export async function stringsGeneric(
     raw = await materialize(stream(first))
   } else {
     const stdinData = await readStdinAsync(opts.stdin)
-    if (stdinData === null) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('strings: missing input\n') })]
-    }
-    raw = stdinData
+    raw = stdinData ?? new Uint8Array(0)
   }
   const matches = extractStrings(raw, minLen)
   const output = matches.length > 0 ? matches.join('\n') + '\n' : ''

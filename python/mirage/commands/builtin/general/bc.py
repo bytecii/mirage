@@ -59,11 +59,13 @@ async def bc(
 ) -> tuple[ByteSource | None, IOResult]:
     raw = await _read_stdin_async(stdin)
     if raw is None:
-        raise ValueError("bc: missing input")
+        raw = b""
     lines = raw.decode(errors="replace").strip().splitlines()
     results: list[str] = []
     for line in lines:
         line = line.strip()
         if line:
             results.append(_eval_bc(line, args_l))
+    if not results:
+        return b"", IOResult()
     return ("\n".join(results) + "\n").encode(), IOResult()

@@ -18,8 +18,6 @@ import { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { resolveSource } from '../utils/stream.ts'
 
-const ENC = new TextEncoder()
-
 function alphaSuffix(index: number, length: number): string {
   const chars: string[] = []
   let n = index
@@ -81,12 +79,7 @@ export async function splitGeneric(
   if (first !== undefined) {
     source = stream(first)
   } else {
-    try {
-      source = resolveSource(opts.stdin, 'split: missing input')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
+    source = resolveSource(opts.stdin)
   }
 
   const writes: Record<string, Uint8Array> = {}

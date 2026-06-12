@@ -39,7 +39,7 @@ async def split(
     if paths:
         source: AsyncIterator[bytes] = read_stream(accessor, paths[0])
     else:
-        source = _resolve_source(stdin, "split: missing input")
+        source = _resolve_source(stdin)
 
     writes: dict[str, bytes] = {}
     file_idx = 0

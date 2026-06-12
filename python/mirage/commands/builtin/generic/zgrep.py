@@ -121,9 +121,7 @@ async def zgrep(
                 all_results.extend(result)
     else:
         raw = await _read_stdin_async(stdin)
-        if raw is None:
-            raise ValueError("zgrep: missing input")
-        data = gziplib.decompress(raw)
+        data = gziplib.decompress(raw) if raw else b""
         if files_only:
             if _files_only_match(data, compiled, ignore_case, invert):
                 all_results.append("(standard input)")

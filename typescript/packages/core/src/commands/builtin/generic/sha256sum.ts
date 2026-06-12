@@ -87,12 +87,6 @@ export async function sha256sumGeneric(
   if (paths.length > 0) {
     return [sha256Multi(stream, paths), new IOResult({ cache: paths.map((p) => p.stripPrefix) })]
   }
-  let source: AsyncIterable<Uint8Array>
-  try {
-    source = resolveSource(opts.stdin, 'sha256sum: missing input')
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-  }
+  const source: AsyncIterable<Uint8Array> = resolveSource(opts.stdin)
   return [sha256SingleStream(source, '-'), new IOResult()]
 }

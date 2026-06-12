@@ -18,7 +18,7 @@ async def zcat(
     else:
         raw = await _read_stdin_async(stdin)
         if raw is None:
-            raise ValueError("zcat: missing input")
+            raise ValueError("zcat: (stdin): unexpected end of file")
     return gziplib.decompress(raw), IOResult()
 
 

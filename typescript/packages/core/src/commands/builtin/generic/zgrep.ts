@@ -152,10 +152,8 @@ export async function zgrepGeneric(
     }
   } else {
     const stdinData = await readStdinAsync(opts.stdin)
-    if (stdinData === null) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('zgrep: missing input\n') })]
-    }
-    const data = await gunzip(stdinData)
+    const data =
+      stdinData === null || stdinData.byteLength === 0 ? new Uint8Array(0) : await gunzip(stdinData)
     if (filesOnly) {
       const text = DEC.decode(data)
       const lines = splitLinesNoTrailing(text)

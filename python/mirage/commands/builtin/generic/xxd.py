@@ -122,7 +122,7 @@ async def xxd(
         source: AsyncIterator[bytes] = read_stream(accessor, paths[0])
         cache = [paths[0].strip_prefix]
     else:
-        source = _resolve_source(stdin, "xxd: missing input")
+        source = _resolve_source(stdin)
 
     if skip or limit:
         if not limit:

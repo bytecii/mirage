@@ -95,10 +95,7 @@ export async function csplitGeneric(
     raw = await materialize(stream(first))
   } else {
     const stdinData = await readStdinAsync(opts.stdin)
-    if (stdinData === null) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('csplit: missing input\n') })]
-    }
-    raw = stdinData
+    raw = stdinData ?? new Uint8Array(0)
   }
   const text = DEC.decode(raw)
   const lines = splitLinesNoTrailing(text)
@@ -119,7 +116,7 @@ export async function csplitGeneric(
       return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`csplit: ${msg}\n`) })]
     }
   }
-  const output = quiet ? '' : sizes.join('\n') + '\n'
+  const output = quiet || sizes.length === 0 ? '' : sizes.join('\n') + '\n'
   const result: ByteSource = ENC.encode(output)
   return [result, new IOResult({ writes })]
 }

@@ -32,7 +32,8 @@ async def gunzip(
     test_only: bool = False,
 ) -> tuple[ByteSource | None, IOResult]:
     if not paths:
-        source = _resolve_source(stdin, "gunzip: missing input")
+        source = _resolve_source(stdin,
+                                 "gunzip: (stdin): unexpected end of file")
         return _gzip_decompress_stream(source), IOResult()
 
     if test_only:
