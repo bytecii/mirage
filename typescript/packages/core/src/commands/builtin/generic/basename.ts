@@ -12,14 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { ResourceName } from '../../../types.ts'
-import { command } from '../../config.ts'
-import { specOf } from '../../spec/builtins.ts'
-import { basenameFn } from '../generic/basename.ts'
+import { IOResult } from '../../../io/types.ts'
+import type { CommandFn } from '../../config.ts'
+import { gnuBasename } from '../../../utils/path.ts'
 
-export const GSHEETS_BASENAME = command({
-  name: 'basename',
-  resource: ResourceName.GSHEETS,
-  spec: specOf('basename'),
-  fn: basenameFn,
-})
+const ENC = new TextEncoder()
+
+export const basenameFn: CommandFn = (_accessor, _paths, texts) => {
+  const lines =
+    texts.length === 2 ? [gnuBasename(texts[0] ?? '', texts[1])] : texts.map((t) => gnuBasename(t))
+  return [ENC.encode(lines.join('\n') + '\n'), new IOResult()]
+}

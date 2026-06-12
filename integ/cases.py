@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import time
+
 SEED_FILES = {
     "/data/a.txt":
     "hello\nworld\nfoo\nbar\nbaz\n",
@@ -158,7 +160,15 @@ CASES: list[tuple[str, str]] = [
 
     # ----- path manipulation -----
     ("basename", "basename /data/a.txt"),
+    ("basename_suffix", "basename /data/a.txt .txt"),
+    ("basename_trailing_slash", "basename /data/sub/"),
+    ("basename_root", "basename /"),
+    ("basename_relative", "basename data/a.txt"),
     ("dirname", "dirname /data/a.txt"),
+    ("dirname_trailing_slash", "dirname /data/sub/"),
+    ("dirname_multi", "dirname /data/a.txt /data/sub/nested.txt"),
+    ("dirname_relative", "dirname a.txt"),
+    ("dirname_root", "dirname /"),
     ("realpath", "realpath /data/a.txt"),
 
     # ----- find / file listing -----
@@ -585,6 +595,16 @@ EXIT_CODE_CASES: list[tuple[str, str]] = [
     ("guard_cp_missing_source_continues",
      "cp /data/missing.txt /data/guard/g.txt /data/guard/sub"),
     ("guard_state_after", "find /data/guard -type f"),
+    ("sleep_invalid", "sleep abc"),
+    ("sleep_no_operand", "sleep"),
+    ("sleep_negative", "sleep -1"),
+    ("sleep_infinity", "sleep Infinity"),
+]
+
+SLEEP_CASES: list[tuple[str, str, float]] = [
+    ("sleep_zero", "sleep 0", 0.0),
+    ("sleep_fraction", "sleep 0.2", 0.2),
+    ("sleep_one", "sleep 1", 1.0),
 ]
 
 
@@ -607,3 +627,14 @@ async def run_cases(ws) -> None:
         print(f"exit={result.exit_code}")
         if out:
             print(out, end="" if out.endswith("\n") else "\n")
+
+    for name, cmd, expected in SLEEP_CASES:
+        start = time.monotonic()
+        result = await ws.execute(cmd)
+        elapsed = time.monotonic() - start
+        print(f"=== {name} ===")
+        if result.exit_code == 0 and expected - 0.05 <= elapsed < expected + 2:
+            print(f"{name} ok")
+        else:
+            print(f"{name} FAIL exit={result.exit_code} "
+                  f"elapsed={elapsed:.3f}")

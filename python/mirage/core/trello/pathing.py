@@ -12,17 +12,10 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from mirage.utils.naming import parse_id_name
 from mirage.utils.sanitize import sanitize_name
 
-
-def split_suffix_id(name: str, *, suffix: str = "") -> tuple[str, str]:
-    if suffix and not name.endswith(suffix):
-        raise FileNotFoundError(name)
-    raw = name[:-len(suffix)] if suffix else name
-    label, sep, object_id = raw.rpartition("__")
-    if not sep or not object_id:
-        raise FileNotFoundError(name)
-    return label, object_id
+split_suffix_id = parse_id_name
 
 
 def workspace_dirname(workspace: dict) -> str:

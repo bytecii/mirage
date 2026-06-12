@@ -183,16 +183,36 @@ describe('formatFileGrepResults', () => {
   })
 })
 
-describe('dirname helpers re-exported', () => {
+describe('dirname helpers', () => {
   it('channelDirname', () => {
     expect(channelDirname({ id: 'C1', name: 'general' })).toBe('general__C1')
+  })
+
+  it('channelDirname falls back to unknown when name missing', () => {
+    expect(channelDirname({ id: 'C456' })).toBe('unknown__C456')
+  })
+
+  it('channelDirname preserves spaces and punctuation', () => {
+    expect(channelDirname({ id: 'C789', name: 'eng team!' })).toBe('eng team!__C789')
   })
 
   it('dmDirname uses user_map', () => {
     expect(dmDirname({ id: 'D1', user: 'U1' }, { U1: 'alice' })).toBe('alice__D1')
   })
 
+  it('dmDirname falls back to user id when not in map', () => {
+    expect(dmDirname({ id: 'D2', user: 'U2' }, {})).toBe('U2__D2')
+  })
+
+  it('dmDirname handles empty user', () => {
+    expect(dmDirname({ id: 'D3' }, {})).toBe('unknown__D3')
+  })
+
   it('userFilename ends in .json', () => {
     expect(userFilename({ id: 'U1', name: 'alice' })).toBe('alice__U1.json')
+  })
+
+  it('userFilename falls back to unknown when name missing', () => {
+    expect(userFilename({ id: 'U2' })).toBe('unknown__U2.json')
   })
 })

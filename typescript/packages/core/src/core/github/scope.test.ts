@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { PathSpec } from '../../types.ts'
-import type { TreeEntry } from './entry.ts'
+import type { TreeEntry } from './tree_entry.ts'
 import { countScopeFiles, isRepoRoot, scopeRelativeKey, shouldUseSearch } from './scope.ts'
 
 const TREE: Record<string, TreeEntry> = {

@@ -74,10 +74,10 @@ describe('parseSegment', () => {
     )
   })
   it('throws on segment without a separator', () => {
-    expect(() => parseSegment('no-id')).toThrow(/invalid notion segment/)
+    expect(() => parseSegment('no-id')).toThrow(/ENOENT/)
   })
   it('throws when the id part is empty', () => {
-    expect(() => parseSegment('Page__')).toThrow(/invalid notion segment/)
+    expect(() => parseSegment('Page__')).toThrow(/ENOENT/)
   })
 })
 
