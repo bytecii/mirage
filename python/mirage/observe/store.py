@@ -52,6 +52,20 @@ class ObserverStore(Protocol):
         """
         ...
 
+    async def read_matching(self, suffix: str) -> dict[str, bytes]:
+        """Read only the files whose key ends with suffix.
+
+        Lets per-session queries skip fetching other sessions' logs
+        on remote stores.
+
+        Args:
+            suffix (str): File-key suffix, e.g. ``/<session>.jsonl``.
+
+        Returns:
+            dict[str, bytes]: Mapping of matching key to content.
+        """
+        ...
+
 
 class RAMObserverStore:
     """In-memory ObserverStore backed by a plain dict (the default)."""
@@ -84,3 +98,14 @@ class RAMObserverStore:
             dict[str, bytes]: Mapping of file key to content.
         """
         return dict(self.files)
+
+    async def read_matching(self, suffix: str) -> dict[str, bytes]:
+        """Read only the files whose key ends with suffix.
+
+        Args:
+            suffix (str): File-key suffix.
+
+        Returns:
+            dict[str, bytes]: Mapping of matching key to content.
+        """
+        return {k: v for k, v in self.files.items() if k.endswith(suffix)}

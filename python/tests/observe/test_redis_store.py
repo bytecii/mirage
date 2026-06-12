@@ -70,3 +70,12 @@ def test_redis_store_satisfies_protocol():
     assert isinstance(
         RedisObserverStore(url=REDIS_URL, key_prefix="test:observer:"),
         ObserverStore)
+
+
+@pytest.mark.asyncio
+async def test_read_matching_filters_by_suffix(store):
+    await store.append("/d1/s1.jsonl", b"a\n")
+    await store.append("/d1/s2.jsonl", b"b\n")
+    await store.append("/d2/s1.jsonl", b"c\n")
+    files = await store.read_matching("/s1.jsonl")
+    assert files == {"/d1/s1.jsonl": b"a\n", "/d2/s1.jsonl": b"c\n"}

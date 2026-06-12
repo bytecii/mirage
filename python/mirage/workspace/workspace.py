@@ -16,7 +16,6 @@ import asyncio
 import builtins
 import logging
 import sys
-import time
 from collections.abc import AsyncIterator
 from functools import partial
 from typing import Any
@@ -34,9 +33,8 @@ try:
 except ImportError:
     RedisFileCacheStore = None  # type: ignore[misc, assignment]
 from mirage.io import IOResult
-from mirage.observe.context import start_recording, stop_recording
+from mirage.observe.context import RecordingScope
 from mirage.observe.observer import Observer
-from mirage.observe.record import OpRecord
 from mirage.observe.store import ObserverStore
 from mirage.ops import Ops
 from mirage.ops.open import make_open
@@ -65,7 +63,7 @@ from mirage.workspace.snapshot import (ContentDriftError, apply_state_dict,
                                        read_tar, requires_resource_override)
 from mirage.workspace.snapshot import snapshot as _write_snapshot
 from mirage.workspace.snapshot import to_state_dict
-from mirage.workspace.types import ExecutionNode, ExecutionRecord
+from mirage.workspace.types import ExecutionNode
 
 logger = logging.getLogger(__name__)
 
@@ -538,42 +536,19 @@ class Workspace:
     async def _invalidate_after_write_by_path(self, path: str) -> None:
         await self._dispatcher.invalidate_after_write_by_path(path)
 
-    async def _record_execution(
-        self,
-        command: str,
-        io: IOResult,
-        exec_node: ExecutionNode,
-        agent_id: str,
-        session_id: str,
-        stdin: AsyncIterator[bytes] | bytes | None,
-        provision: bool,
-    ) -> None:
+    def _session_cwd(self, session_id: str) -> str | None:
         try:
-            session_cwd = self._session_mgr.get(session_id).cwd
+            return self._session_mgr.get(session_id).cwd
         except KeyError:
-            session_cwd = None
-        if provision:
-            return
-        if exec_node.records:
-            for rec in exec_node.records:
-                await self.observer.log_op(rec, agent_id, session_id,
-                                           session_cwd)
-        stdin_bytes = stdin if isinstance(stdin, bytes) else None
-        exec_record = ExecutionRecord(
-            agent=agent_id,
-            command=command,
-            stdout=await io.materialize_stdout(),
-            stdin=stdin_bytes,
-            exit_code=io.exit_code,
-            tree=exec_node,
-            timestamp=time.time(),
-            session_id=session_id,
-        )
-        await self.observer.log_command(exec_record, session_cwd)
+            return None
 
     async def _exec_recursion(self, cancel: asyncio.Event | None, cmd: str,
                               **opts: Any) -> Any:
-        return await self.execute(cmd, cancel=cancel, **opts)
+        # The executor's internal eval ($(), source, eval, xargs, ...):
+        # never a typed line, so it must not record a history entry or
+        # open its own recording context (GNU: history is appended by
+        # the line reader, the evaluator can't touch it).
+        return await self.execute(cmd, cancel=cancel, record=False, **opts)
 
     async def execute(
         self,
@@ -586,6 +561,7 @@ class Workspace:
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         cancel: asyncio.Event | None = None,
+        record: bool = True,
     ) -> IOResult | ProvisionResult:
         """Execute a shell command in the workspace.
 
@@ -608,6 +584,11 @@ class Workspace:
                 mid-flight. When set, the executor raises MirageAbortError
                 at the next gate (entry to each node) and races inside
                 blocking sleeps so cancellation is observed promptly.
+            record: When False, run without logging a history entry or
+                opening a recording context; ops emitted by the command
+                flow into the caller's recorder. Used by the executor's
+                internal evaluations and available to SDK callers that
+                need an unrecorded run.
         """
         if cancel is not None and cancel.is_set():
             raise MirageAbortError()
@@ -649,7 +630,11 @@ class Workspace:
         self._current_agent_id = agent_id
         io = IOResult()
         exec_node = ExecutionNode(command=command, exit_code=0)
-        records: list[OpRecord] = []
+        # The line-reader decision (GNU: history is appended where the
+        # typed line is read, never inside the evaluator). Internal
+        # evaluations and provision runs get an inert scope.
+        is_line = record and not provision
+        scope = RecordingScope(active=is_line)
 
         exec_recursion = partial(self._exec_recursion, cancel)
 
@@ -677,7 +662,6 @@ class Workspace:
                     provision_node(self._registry, self.dispatch,
                                    exec_recursion, ast, effective_session),
                     prov_timeout, prov_name)
-            records = start_recording()
             io, exec_node = await run_command_tree(
                 self.dispatch,
                 self._registry,
@@ -690,24 +674,20 @@ class Workspace:
                 cancel,
             )
             session.last_exit_code = io.exit_code
-            stop_recording()
-            self._ops.records.extend(records)
-            exec_node.records = records
+            exec_node.records = scope.records
             await self.apply_io(io)
             return io
         except CommandTimeoutError as exc:
-            stop_recording()
             logger.debug("command %r timed out after %ss", exc.command,
                          exc.seconds)
             if cancel is not None:
                 cancel.set()
             msg = (str(exc) + "\n").encode()
             io = IOResult(exit_code=124, stderr=msg)
-            self._ops.records.extend(records)
             exec_node = ExecutionNode(command=command,
                                       stderr=msg,
                                       exit_code=124,
-                                      records=records)
+                                      records=scope.records)
             session.last_exit_code = 124
             return io
         except (MirageAbortError, ContentDriftError):
@@ -724,6 +704,10 @@ class Workspace:
                                       exit_code=1)
             return io
         finally:
+            scope.close()
             reset_current_session(session_token)
-            await self._record_execution(command, io, exec_node, agent_id,
-                                         session_id, stdin, provision)
+            self._ops.records.extend(scope.records)
+            if is_line:
+                await self.observer.log_execution(
+                    command, io, exec_node.records, agent_id, session_id,
+                    self._session_cwd(session_id))

@@ -48,14 +48,41 @@ dev
 12  ls -a /
 === bash_history_survives_clear ===
 2
+=== history_s_appends ===
+
+=== history_after_s ===
+2  history
+3  synthetic entry one
+4  history -s synthetic entry one
+=== history_d_first ===
+
+=== history_after_d ===
+3  history -s synthetic entry one
+4  history 3
+5  history -d 1
+=== history_p_prints ===
+alpha
+beta
+=== history_noop_w ===
+
+=== bash_history_has_synthetic ===
+2
+=== find_view_by_name ===
+/.bash_history
 === append_rejected ===
 nonzero_exit=True
 === sessions_path_gone ===
 nonzero_exit=True
 === history_non_numeric ===
 nonzero_exit=True
+=== history_invalid_option ===
+nonzero_exit=True
+=== history_d_out_of_range ===
+nonzero_exit=True
+=== history_too_many_args ===
+nonzero_exit=True
 === observer_event_types ===
-clear,command,op
+clear,command,delete,op
 === observer_command_events ===
 first=echo marker-one
 sessions=['default', 's2']
@@ -66,7 +93,7 @@ all_have_cwd=True
 read_h_txt=True
 ops_have_source=True
 === observer_session_projection ===
-s2_after_clear=['history -c', 'history']
+s2_after_clear=['history', 'synthetic entry one', 'history -s synthetic entry one', 'history 3', 'history -d 1', 'history 3']
 default_first=echo marker-one
 === observer_not_mounted ===
 mounts=['/.bash_history/', '/data/', '/dev/']

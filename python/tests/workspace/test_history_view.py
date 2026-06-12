@@ -167,3 +167,158 @@ def test_workspace_history_method():
     events = asyncio.run(ws.history())
     assert [e["command"] for e in events] == ["ls /data", "pwd"]
     assert all(e["type"] == "command" for e in events)
+
+
+def test_history_s_appends_without_executing():
+    ws = _ws()
+    _exec(ws, "pwd")
+    io = _exec(ws, "history -s rm -rf /data")
+    assert io.exit_code == 0
+    out = _stdout(_exec(ws, "history"))
+    assert "rm -rf /data" in out
+    assert _exec(ws, "ls /data/x").exit_code != 0
+
+
+def test_history_d_deletes_and_renumbers():
+    ws = _ws()
+    _exec(ws, "pwd")
+    _exec(ws, "echo keep")
+    io = _exec(ws, "history -d 1")
+    assert io.exit_code == 0
+    out = _stdout(_exec(ws, "history"))
+    assert "pwd" not in out.split("history -d 1")[0]
+    assert out.startswith("1  echo keep")
+
+
+def test_history_d_out_of_range():
+    ws = _ws()
+    _exec(ws, "pwd")
+    io = _exec(ws, "history -d 99")
+    assert io.exit_code == 1
+    assert b"99: history position out of range" in io.stderr
+
+
+def test_history_d_non_numeric():
+    ws = _ws()
+    io = _exec(ws, "history -d abc")
+    assert io.exit_code == 1
+    assert b"abc: history position out of range" in io.stderr
+
+
+def test_history_d_negative_offset_deletes_last():
+    ws = _ws()
+    _exec(ws, "echo first")
+    _exec(ws, "echo last")
+    io = _exec(ws, "history -d -1")
+    assert io.exit_code == 0
+    out = _stdout(_exec(ws, "history"))
+    assert "echo first" in out
+    lines = [ln for ln in out.splitlines() if "echo last" in ln]
+    assert lines == []
+
+
+def test_history_d_requires_argument():
+    ws = _ws()
+    io = _exec(ws, "history -d")
+    assert io.exit_code == 2
+    assert b"-d: option requires an argument" in io.stderr
+    assert b"history: usage:" in io.stderr
+
+
+def test_history_invalid_option_usage_exit_2():
+    ws = _ws()
+    io = _exec(ws, "history -z")
+    assert io.exit_code == 2
+    assert b"-z: invalid option" in io.stderr
+    assert b"history: usage:" in io.stderr
+
+
+def test_history_p_prints_without_storing_args():
+    ws = _ws()
+    io = _exec(ws, "history -p hello world")
+    assert io.exit_code == 0
+    assert _stdout(io) == "hello\nworld\n"
+    out = _stdout(_exec(ws, "history"))
+    assert "1  history -p hello world" in out
+
+
+def test_history_sync_flags_are_noops():
+    ws = _ws()
+    _exec(ws, "pwd")
+    for flag in ("-a", "-r", "-w", "-n"):
+        io = _exec(ws, f"history {flag}")
+        assert io.exit_code == 0
+        assert _stdout(io) == ""
+
+
+def test_history_cluster_cw():
+    ws = _ws()
+    _exec(ws, "pwd")
+    io = _exec(ws, "history -cw")
+    assert io.exit_code == 0
+    out = _stdout(_exec(ws, "history 1"))
+    assert "pwd" not in out
+
+
+def test_find_view_via_generic():
+    ws = _ws()
+    out = _stdout(_exec(ws, "find /.bash_history"))
+    assert out == "/.bash_history\n"
+    out = _stdout(_exec(ws, "find /.bash_history -name '*.bash*'"))
+    assert out == "/.bash_history\n"
+    out = _stdout(_exec(ws, "find /.bash_history -type d"))
+    assert out == ""
+
+
+def test_substitution_records_only_outer_line():
+    ws = _ws()
+    _exec(ws, "echo hi > /data/f.txt")
+    _exec(ws, "wc -l $(find /data -name '*.txt')")
+    commands = [e["command"] for e in asyncio.run(ws.history())]
+    assert commands == [
+        "echo hi > /data/f.txt",
+        "wc -l $(find /data -name '*.txt')",
+    ]
+
+
+def test_substitution_keeps_inner_ops_in_audit():
+    ws = _ws()
+    _exec(ws, "echo hi > /data/f.txt")
+    _exec(ws, "echo $(cat /data/f.txt)")
+    events = asyncio.run(ws.observer.events())
+    reads = [e for e in events if e["type"] == "op" and e["op"] == "read"]
+    assert any(e["path"] == "/data/f.txt" for e in reads)
+
+
+def test_outer_ops_after_substitution_not_lost():
+    ws = _ws()
+    _exec(ws, "echo hi > /data/f.txt")
+    _exec(ws, "wc -l $(find /data -name '*.txt')")
+    events = asyncio.run(ws.observer.events())
+    reads = [(e["op"], e["path"]) for e in events if e["type"] == "op"]
+    assert ("read", "/data/f.txt") in reads
+
+
+def test_eval_xargs_source_record_single_entry():
+    ws = _ws()
+    _exec(ws, "echo hi > /data/f.txt")
+    _exec(ws, "eval cat /data/f.txt")
+    _exec(ws, "echo /data/f.txt | xargs cat")
+    _exec(ws, "echo 'cat /data/f.txt' > /data/s.sh")
+    _exec(ws, "source /data/s.sh")
+    commands = [e["command"] for e in asyncio.run(ws.history())]
+    assert commands == [
+        "echo hi > /data/f.txt",
+        "eval cat /data/f.txt",
+        "echo /data/f.txt | xargs cat",
+        "echo 'cat /data/f.txt' > /data/s.sh",
+        "source /data/s.sh",
+    ]
+
+
+def test_unrecorded_execute_skips_history_keeps_caller_ops():
+    ws = _ws()
+    _exec(ws, "echo hi > /data/f.txt")
+    _exec(ws, "cat /data/f.txt", record=False)
+    commands = [e["command"] for e in asyncio.run(ws.history())]
+    assert commands == ["echo hi > /data/f.txt"]

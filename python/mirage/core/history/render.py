@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from mirage.observe.log_entry import EVENT_COMMAND
+
 HISTSIZE = 500
 
 
@@ -31,7 +33,7 @@ def render_bash_history(events: list[dict]) -> str:
     """
     lines: list[str] = []
     for e in events:
-        if e.get("type") != "command":
+        if e.get("type") != EVENT_COMMAND:
             continue
         lines.append(f"#{int(e.get('timestamp', 0) / 1000)}")
         lines.append(e.get("command", ""))
@@ -53,7 +55,7 @@ def render_history_listing(
     Returns:
         str: Numbered listing, right-justified, two-space separated.
     """
-    scoped = [e for e in events if e.get("type") == "command"][-histsize:]
+    scoped = [e for e in events if e.get("type") == EVENT_COMMAND][-histsize:]
     entries = scoped[-n:] if n is not None and n >= 0 else scoped
     total = len(scoped)
     width = len(str(total))

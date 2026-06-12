@@ -17,13 +17,19 @@ from dataclasses import asdict, dataclass
 
 from mirage.observe.record import OpRecord
 
+EVENT_OP = "op"
+EVENT_COMMAND = "command"
+EVENT_CLEAR = "clear"
+EVENT_DELETE = "delete"
+
 
 @dataclass
 class LogEntry:
-    """Unified log entry for both I/O ops and command executions.
+    """Unified log entry for ops, commands, and history control events.
 
     Args:
-        type (str): "op" or "command".
+        type (str): One of EVENT_OP, EVENT_COMMAND, EVENT_CLEAR,
+            EVENT_DELETE.
         agent (str): Agent ID.
         session (str): Session ID.
         timestamp (int): UTC epoch milliseconds.
@@ -35,6 +41,8 @@ class LogEntry:
         command (str | None): Shell command (for type="command").
         exit_code (int | None): Exit code (for type="command").
         stdout (str | None): Truncated stdout (for type="command").
+        offset (int | None): 1-based listing position (for
+            type="delete"); negative counts back from the end.
     """
 
     type: str
@@ -51,6 +59,7 @@ class LogEntry:
     command: str | None = None
     exit_code: int | None = None
     stdout: str | None = None
+    offset: int | None = None
 
     @staticmethod
     def from_op_record(
@@ -71,7 +80,7 @@ class LogEntry:
             LogEntry: Unified log entry.
         """
         return LogEntry(
-            type="op",
+            type=EVENT_OP,
             agent=agent,
             session=session,
             timestamp=rec.timestamp,
@@ -95,7 +104,7 @@ class LogEntry:
             LogEntry: Unified log entry.
         """
         return LogEntry(
-            type="command",
+            type=EVENT_COMMAND,
             agent=rec.agent,
             session=rec.session_id,
             timestamp=int(rec.timestamp * 1000),

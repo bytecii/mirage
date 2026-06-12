@@ -16,6 +16,7 @@ import importlib
 import importlib.metadata
 import tempfile
 
+from mirage.observe.log_entry import EVENT_CLEAR, EVENT_COMMAND, EVENT_DELETE
 from mirage.resource.history import HISTORY_PREFIX
 from mirage.resource.secrets import has_redacted_secret
 from mirage.shell.job_table import Job, JobStatus
@@ -63,7 +64,7 @@ async def to_state_dict(ws) -> dict:
 
     history_events = [
         e for e in await ws.observer.events()
-        if e.get("type") in ("command", "clear")
+        if e.get("type") in (EVENT_COMMAND, EVENT_CLEAR, EVENT_DELETE)
     ]
 
     finished_jobs = [

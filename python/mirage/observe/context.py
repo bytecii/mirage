@@ -44,20 +44,34 @@ class Recorder:
 _recorder: ContextVar[Recorder | None] = ContextVar("_recorder", default=None)
 
 
-def start_recording() -> list[OpRecord]:
-    """Activate byte recording for the current async context.
+class RecordingScope:
+    """Op-collection scope for one typed line.
 
-    Returns:
-        list[OpRecord]: The list that will collect records.
+    Opening puts a fresh Recorder on the contextvar; ``close()``
+    restores whatever was active before (token-based, so scopes nest
+    correctly and errors can't leave a dangling recorder). An inactive
+    scope is inert: the executor's internal evaluations ($(), source,
+    eval, xargs, ...) construct one so their ops flow into the
+    enclosing typed line's scope instead of opening their own.
+
+    Args:
+        active (bool): False joins the enclosing scope instead of
+            opening a new one.
     """
-    rec = Recorder()
-    _recorder.set(rec)
-    return rec.sink
 
+    def __init__(self, active: bool = True) -> None:
+        self.records: list[OpRecord] = []
+        self._token = None
+        if active:
+            rec = Recorder()
+            self.records = rec.sink
+            self._token = _recorder.set(rec)
 
-def stop_recording() -> None:
-    """Deactivate byte recording for the current async context."""
-    _recorder.set(None)
+    def close(self) -> None:
+        """Restore the previous recorder. Idempotent."""
+        if self._token is not None:
+            _recorder.reset(self._token)
+            self._token = None
 
 
 def active_recorder() -> Recorder | None:

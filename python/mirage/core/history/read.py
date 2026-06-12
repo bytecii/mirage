@@ -17,7 +17,8 @@ from mirage.cache.index import IndexCacheStore
 from mirage.core.history.render import render_bash_history
 from mirage.types import PathSpec
 
-_VIEW_KEYS = ("", ".bash_history")
+VIEW_NAME = ".bash_history"
+VIEW_KEYS = ("", VIEW_NAME)
 
 
 async def read(accessor: HistoryAccessor,
@@ -34,7 +35,7 @@ async def read(accessor: HistoryAccessor,
         bytes: Rendered histfile content, fresh on every call.
     """
     key = path.strip_prefix if isinstance(path, PathSpec) else path
-    if key.strip("/") not in _VIEW_KEYS:
+    if key.strip("/") not in VIEW_KEYS:
         raise FileNotFoundError(key)
     events = await accessor.observer.command_events()
     return render_bash_history(events).encode()

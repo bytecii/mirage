@@ -65,9 +65,28 @@ class RedisObserverStore:
         Returns:
             dict[str, bytes]: Mapping of file key to content.
         """
+        return await self._read_paths(await self._indexed_paths())
+
+    async def read_matching(self, suffix: str) -> dict[str, bytes]:
+        """Read only the files whose key ends with suffix.
+
+        Filters on the index set, so only matching values transfer.
+
+        Args:
+            suffix (str): File-key suffix.
+
+        Returns:
+            dict[str, bytes]: Mapping of matching key to content.
+        """
+        paths = [p for p in await self._indexed_paths() if p.endswith(suffix)]
+        return await self._read_paths(paths)
+
+    async def _indexed_paths(self) -> list[str]:
         members = await self._client.smembers(self._index_key)
-        paths = sorted(m.decode() if isinstance(m, bytes) else m
-                       for m in members)
+        return sorted(m.decode() if isinstance(m, bytes) else m
+                      for m in members)
+
+    async def _read_paths(self, paths: list[str]) -> dict[str, bytes]:
         if not paths:
             return {}
         values = await self._client.mget([f"{self._prefix}{p}" for p in paths])
@@ -75,7 +94,6 @@ class RedisObserverStore:
 
     async def clear(self) -> None:
         """Delete every stored file and the index (test/integ helper)."""
-        members = await self._client.smembers(self._index_key)
-        paths = [m.decode() if isinstance(m, bytes) else m for m in members]
+        paths = await self._indexed_paths()
         keys = [f"{self._prefix}{p}" for p in paths] + [self._index_key]
         await self._client.delete(*keys)

@@ -50,3 +50,12 @@ def test_observer_over_disk_round_trip(tmp_path):
 
 def test_disk_store_satisfies_protocol(tmp_path):
     assert isinstance(DiskObserverStore(str(tmp_path)), ObserverStore)
+
+
+def test_read_matching_filters_by_suffix(tmp_path):
+    store = DiskObserverStore(str(tmp_path / "obs"))
+    asyncio.run(store.append("/d1/s1.jsonl", b"a\n"))
+    asyncio.run(store.append("/d1/s2.jsonl", b"b\n"))
+    asyncio.run(store.append("/d2/s1.jsonl", b"c\n"))
+    files = asyncio.run(store.read_matching("/s1.jsonl"))
+    assert files == {"/d1/s1.jsonl": b"a\n", "/d2/s1.jsonl": b"c\n"}

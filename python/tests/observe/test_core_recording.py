@@ -14,7 +14,7 @@
 
 import asyncio
 
-from mirage.observe.context import start_recording, stop_recording
+from mirage.observe.context import RecordingScope
 from mirage.resource.ram import RAMResource
 
 
@@ -25,9 +25,10 @@ def _run(coro):
 def test_memory_read_records_bytes():
     mem = RAMResource()
     mem._store.files["/hello.txt"] = b"hello world"
-    records = start_recording()
+    scope = RecordingScope()
+    records = scope.records
     data = _run(mem.read_bytes("/hello.txt"))
-    stop_recording()
+    scope.close()
     assert data == b"hello world"
     assert len(records) == 1
     assert records[0].op == "read"
@@ -38,9 +39,10 @@ def test_memory_read_records_bytes():
 def test_memory_write_records_bytes():
     mem = RAMResource()
     mem._store.dirs.add("/")
-    records = start_recording()
+    scope = RecordingScope()
+    records = scope.records
     _run(mem.write("/hello.txt", b"hello"))
-    stop_recording()
+    scope.close()
     assert len(records) == 1
     assert records[0].op == "write"
     assert records[0].bytes == 5

@@ -52,8 +52,22 @@ SPECS: dict[str, CommandSpec] = {
     'history':
     CommandSpec(
         description="Show command history for the session.",
-        options=(Option(short="-c",
-                        description="Clear the command history."), ),
+        options=(
+            Option(short="-c", description="Clear the command history."),
+            Option(short="-d",
+                   value_kind=OperandKind.TEXT,
+                   description=("Delete the entry at the given position; "
+                                "negative counts back from the end.")),
+            Option(short="-s",
+                   description=("Append the args to the history as a "
+                                "single entry without executing them.")),
+            Option(short="-p",
+                   description="Print the args without storing them."),
+            Option(short="-a", description="Accepted no-op (always synced)."),
+            Option(short="-r", description="Accepted no-op (always synced)."),
+            Option(short="-w", description="Accepted no-op (always synced)."),
+            Option(short="-n", description="Accepted no-op (always synced)."),
+        ),
         rest=Operand(kind=OperandKind.TEXT),
     ),
     'date':

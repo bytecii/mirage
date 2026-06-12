@@ -43,12 +43,25 @@ CASES: list[tuple[str, str, str]] = [
     ("history_default_after_s2_clear", "default", "history 1"),
     ("bash_history_survives_clear", "default",
      "grep -c marker-s2 /.bash_history"),
+    # ----- GNU flags: -s append, -d delete, -p print, sync no-ops -----
+    ("history_s_appends", "s2", "history -s synthetic entry one"),
+    ("history_after_s", "s2", "history 3"),
+    ("history_d_first", "s2", "history -d 1"),
+    ("history_after_d", "s2", "history 3"),
+    ("history_p_prints", "default", "history -p alpha beta"),
+    ("history_noop_w", "default", "history -w"),
+    ("bash_history_has_synthetic", "default",
+     "grep -c 'synthetic entry one' /.bash_history"),
+    ("find_view_by_name", "default", "find /.bash_history -name '*bash*'"),
 ]
 
 EXIT_CODE_CASES: list[tuple[str, str, str]] = [
     ("append_rejected", "default", "echo hacked >> /.bash_history"),
     ("sessions_path_gone", "default", "ls /.sessions"),
     ("history_non_numeric", "default", "history abc"),
+    ("history_invalid_option", "default", "history -z"),
+    ("history_d_out_of_range", "default", "history -d 999"),
+    ("history_too_many_args", "default", "history 1 2"),
 ]
 
 

@@ -19,7 +19,7 @@ import pytest
 
 from mirage.core.jq import is_streamable_jsonl_expr
 from mirage.core.ram.read import read_bytes
-from mirage.observe.context import start_recording, stop_recording
+from mirage.observe.context import RecordingScope
 from mirage.resource.disk.disk import DiskResource
 from mirage.resource.ram import RAMResource
 from mirage.types import MountMode
@@ -162,10 +162,11 @@ class TestJqStreamingVerification:
         data = self._make_large_jsonl(100)
         mem = RAMResource()
         mem.accessor.store.files["/data.jsonl"] = data
-        records = start_recording()
+        scope = RecordingScope()
+        records = scope.records
         accessor = mem.accessor
         asyncio.run(read_bytes(accessor, "/data.jsonl"))
-        stop_recording()
+        scope.close()
         assert len(records) == 1
         assert records[0].bytes == len(data)
 
@@ -173,10 +174,11 @@ class TestJqStreamingVerification:
         data = json.dumps({"a": 1}).encode()
         mem = RAMResource()
         mem.accessor.store.files["/f.json"] = data
-        records = start_recording()
+        scope = RecordingScope()
+        records = scope.records
         accessor = mem.accessor
         asyncio.run(read_bytes(accessor, "/f.json"))
-        stop_recording()
+        scope.close()
         assert len(records) == 1
         assert records[0].bytes == len(data)
 

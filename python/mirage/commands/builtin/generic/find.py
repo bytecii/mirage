@@ -105,7 +105,13 @@ async def apply_mtime_filter(
 def apply_mount_prefix(results: list[str], mount_prefix: str) -> list[str]:
     if not mount_prefix:
         return results
-    return [mount_prefix + "/" + r.lstrip("/") for r in results]
+    out: list[str] = []
+    for r in results:
+        rel = r.lstrip("/")
+        # An empty relative path is the mount root itself (e.g. a
+        # single-file view mount); joining would add a bogus slash.
+        out.append(mount_prefix if not rel else mount_prefix + "/" + rel)
+    return out
 
 
 async def find(

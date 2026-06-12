@@ -108,7 +108,7 @@ def test_log_clear_appends_tombstone():
     assert events[-1]["session"] == "s1"
 
 
-def test_command_events_all_sessions_ordered():
+def test_command_events_all_sessions_append_order():
     obs = Observer()
     asyncio.run(obs.log_command(_command_record("ls /a", "s2", 2.0)))
     asyncio.run(obs.log_command(_command_record("ls /b", "s1", 1.0)))
@@ -122,7 +122,7 @@ def test_command_events_all_sessions_ordered():
     )
     asyncio.run(obs.log_op(op, agent="a", session="s1"))
     events = asyncio.run(obs.command_events())
-    assert [e["command"] for e in events] == ["ls /b", "ls /a"]
+    assert [e["command"] for e in events] == ["ls /a", "ls /b"]
     assert all(e["type"] == "command" for e in events)
 
 
@@ -159,16 +159,47 @@ def test_load_events_restores_and_resumes_seq():
     assert out[1]["seq"] > out[0]["seq"]
 
 
-def test_observer_sessions_tracked():
+def test_log_command_text_appends_single_entry():
     obs = Observer()
-    rec = OpRecord(
-        op="stat",
-        path="/f",
-        source="ram",
-        bytes=0,
-        timestamp=1000,
-        duration_ms=1,
-    )
-    asyncio.run(obs.log_op(rec, agent="a", session="sess-1"))
-    asyncio.run(obs.log_op(rec, agent="a", session="sess-2"))
-    assert obs.sessions == {"sess-1", "sess-2"}
+    asyncio.run(obs.log_command_text("a b c", session="s1"))
+    events = asyncio.run(obs.session_command_events("s1"))
+    assert [e["command"] for e in events] == ["a b c"]
+    assert events[0]["exit_code"] == 0
+
+
+def test_delete_event_removes_entry_and_renumbers():
+    obs = Observer()
+    asyncio.run(obs.log_command(_command_record("one", "s1", 1.0)))
+    asyncio.run(obs.log_command(_command_record("two", "s1", 2.0)))
+    asyncio.run(obs.log_command(_command_record("three", "s1", 3.0)))
+    asyncio.run(obs.log_delete(session="s1", offset=2))
+    events = asyncio.run(obs.session_command_events("s1"))
+    assert [e["command"] for e in events] == ["one", "three"]
+
+
+def test_delete_negative_offset_counts_from_end():
+    obs = Observer()
+    asyncio.run(obs.log_command(_command_record("one", "s1", 1.0)))
+    asyncio.run(obs.log_command(_command_record("two", "s1", 2.0)))
+    asyncio.run(obs.log_delete(session="s1", offset=-1))
+    events = asyncio.run(obs.session_command_events("s1"))
+    assert [e["command"] for e in events] == ["one"]
+
+
+def test_delete_applies_at_issue_time_position():
+    obs = Observer()
+    asyncio.run(obs.log_command(_command_record("one", "s1", 1.0)))
+    asyncio.run(obs.log_delete(session="s1", offset=1))
+    asyncio.run(obs.log_command(_command_record("two", "s1", 2.0)))
+    events = asyncio.run(obs.session_command_events("s1"))
+    assert [e["command"] for e in events] == ["two"]
+
+
+def test_clear_discards_earlier_deletes():
+    obs = Observer()
+    asyncio.run(obs.log_command(_command_record("one", "s1", 1.0)))
+    asyncio.run(obs.log_delete(session="s1", offset=1))
+    asyncio.run(obs.log_clear(session="s1"))
+    asyncio.run(obs.log_command(_command_record("two", "s1", 2.0)))
+    events = asyncio.run(obs.session_command_events("s1"))
+    assert [e["command"] for e in events] == ["two"]

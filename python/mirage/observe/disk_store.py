@@ -62,6 +62,20 @@ class DiskObserverStore:
         Returns:
             dict[str, bytes]: Mapping of file key to content.
         """
+        return await self._read_files(None)
+
+    async def read_matching(self, suffix: str) -> dict[str, bytes]:
+        """Read only the files whose key ends with suffix.
+
+        Args:
+            suffix (str): File-key suffix.
+
+        Returns:
+            dict[str, bytes]: Mapping of matching key to content.
+        """
+        return await self._read_files(suffix)
+
+    async def _read_files(self, suffix: str | None) -> dict[str, bytes]:
         out: dict[str, bytes] = {}
         if not os.path.isdir(self._root):
             return out
@@ -69,6 +83,8 @@ class DiskObserverStore:
             for name in files:
                 abs_path = os.path.join(dirpath, name)
                 rel = "/" + os.path.relpath(abs_path, self._root)
+                if suffix is not None and not rel.endswith(suffix):
+                    continue
                 async with aiofiles.open(abs_path, "rb") as f:
                     out[rel] = await f.read()
         return out
