@@ -1,5 +1,6 @@
 from collections.abc import (AsyncIterator, Awaitable, Callable, Mapping,
                              Sequence)
+from dataclasses import dataclass
 from functools import partial
 
 from mirage.cache.index import IndexCacheStore
@@ -14,10 +15,57 @@ from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.builtin.utils.wrap import (call_read_bytes, call_readdir,
                                                 call_stat)
 from mirage.commands.errors import UsageError
+from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
 from mirage.io.stream import exit_on_empty, quiet_match
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileStat, FileType, PathSpec
+
+
+@dataclass(frozen=True, slots=True)
+class GrepFlags:
+    """Parsed grep flags (TS FlagSet parity); the complete set grep honors."""
+    ignore_case: bool
+    invert: bool
+    line_numbers: bool
+    count_only: bool
+    files_only: bool
+    whole_word: bool
+    fixed_string: bool
+    only_matching: bool
+    quiet: bool
+    recursive: bool
+    max_count: int | None
+    after_context: int
+    before_context: int
+
+
+def parse_flags(fl: FlagView, never_match: bool) -> GrepFlags:
+    """Convert the raw flag bag into GrepFlags, the only string-keyed reads.
+
+    Args:
+        fl (FlagView): spec-validated view over the raw flag kwargs.
+        never_match (bool): zero-pattern sentinel from resolve_pattern; it is
+            a regex, so it suppresses -F.
+    """
+    a_ctx = fl.int("A")
+    b_ctx = fl.int("B")
+    c_ctx = fl.int("C")
+    return GrepFlags(
+        ignore_case=fl.bool("i"),
+        invert=fl.bool("v"),
+        line_numbers=fl.bool("n"),
+        count_only=fl.bool("c"),
+        files_only=fl.bool("args_l"),
+        whole_word=fl.bool("w"),
+        fixed_string=fl.bool("F") and not never_match,
+        only_matching=fl.bool("o"),
+        quiet=fl.bool("q"),
+        recursive=fl.bool("r") or fl.bool("R"),
+        max_count=fl.int("m"),
+        after_context=a_ctx if a_ctx is not None else (c_ctx or 0),
+        before_context=b_ctx if b_ctx is not None else (c_ctx or 0),
+    )
 
 
 async def grep(
@@ -66,26 +114,11 @@ async def grep(
     Returns:
         tuple[ByteSource | None, IOResult]: Output stream and exit metadata.
     """
-    fl = FlagView(flags)
+    fl = FlagView(flags, spec=SPECS["grep"])
     pattern, never_match = await resolve_pattern(
         texts, fl, read_bytes, accessor, index,
         "grep: usage: grep [flags] pattern [path]")
-    ignore_case = fl.bool("i")
-    invert = fl.bool("v")
-    line_numbers = fl.bool("n")
-    count_only = fl.bool("c")
-    files_only = fl.bool("args_l")
-    whole_word = fl.bool("w")
-    fixed_string = fl.bool("F") and not never_match
-    only_matching = fl.bool("o")
-    quiet = fl.bool("q")
-    recursive = fl.bool("r") or fl.bool("R")
-    max_count = fl.int("m")
-    a_ctx = fl.int("A")
-    b_ctx = fl.int("B")
-    c_ctx = fl.int("C")
-    after_context = a_ctx if a_ctx is not None else (c_ctx or 0)
-    before_context = b_ctx if b_ctx is not None else (c_ctx or 0)
+    f = parse_flags(fl, never_match)
 
     if paths:
         mount_prefix = paths[0].prefix
@@ -107,9 +140,10 @@ async def grep(
 
         scope_warning_str: str | None = None
         if scope_check is not None and not paths[0].resolved:
-            scope_warning_str = await scope_check(rd, st, paths[0], recursive)
+            scope_warning_str = await scope_check(rd, st, paths[0],
+                                                  f.recursive)
 
-        if files_only:
+        if f.files_only:
             warnings: list[str] = []
             if scope_warning_str:
                 warnings.append(scope_warning_str)
@@ -121,15 +155,15 @@ async def grep(
                     rb,
                     p.original,
                     pattern,
-                    recursive=recursive,
-                    ignore_case=ignore_case,
-                    invert=invert,
-                    line_numbers=line_numbers,
-                    count_only=count_only,
-                    fixed_string=fixed_string,
-                    only_matching=only_matching,
-                    max_count=max_count,
-                    whole_word=whole_word,
+                    recursive=f.recursive,
+                    ignore_case=f.ignore_case,
+                    invert=f.invert,
+                    line_numbers=f.line_numbers,
+                    count_only=f.count_only,
+                    fixed_string=f.fixed_string,
+                    only_matching=f.only_matching,
+                    max_count=f.max_count,
+                    whole_word=f.whole_word,
                     warnings=warnings,
                     read_stream_fn=None,
                 )
@@ -139,9 +173,9 @@ async def grep(
                 return b"", IOResult(exit_code=1, stderr=stderr)
             return format_records(results), IOResult(stderr=stderr)
 
-        if recursive:
-            pat = compile_pattern(pattern, ignore_case, fixed_string,
-                                  whole_word)
+        if f.recursive:
+            pat = compile_pattern(pattern, f.ignore_case, f.fixed_string,
+                                  f.whole_word)
             # OPTIMIZATION (see #207): this buffers every match into
             # all_results and returns it materialized, so
             # `grep -r PATTERN dir | head -n 3`
@@ -163,12 +197,12 @@ async def grep(
                         rb,
                         p.original,
                         pat,
-                        invert=invert,
-                        line_numbers=line_numbers,
-                        count_only=count_only,
+                        invert=f.invert,
+                        line_numbers=f.line_numbers,
+                        count_only=f.count_only,
                         files_only=False,
-                        only_matching=only_matching,
-                        max_count=max_count,
+                        only_matching=f.only_matching,
+                        max_count=f.max_count,
                         warnings=warnings,
                         read_stream_fn=None,
                     )
@@ -176,10 +210,11 @@ async def grep(
                 else:
                     data = split_lines(
                         (await rb(p.original)).decode(errors="replace"))
-                    hits = grep_lines(p.original, data, pat, invert,
-                                      line_numbers, count_only, files_only,
-                                      only_matching, max_count)
-                    if count_only and hits:
+                    hits = grep_lines(p.original, data, pat, f.invert,
+                                      f.line_numbers, f.count_only,
+                                      f.files_only, f.only_matching,
+                                      f.max_count)
+                    if f.count_only and hits:
                         all_results.append(f"{p.original}:{hits[0]}")
                     else:
                         all_results.extend(f"{p.original}:{rl}" for rl in hits)
@@ -188,7 +223,8 @@ async def grep(
                 return b"", IOResult(exit_code=1, stderr=stderr)
             return format_records(all_results), IOResult(stderr=stderr)
 
-        pat = compile_pattern(pattern, ignore_case, fixed_string, whole_word)
+        pat = compile_pattern(pattern, f.ignore_case, f.fixed_string,
+                              f.whole_word)
 
         if len(paths) > 1 or show_filename:
             all_results = []
@@ -206,13 +242,13 @@ async def grep(
                     continue
                 data = split_lines((await
                                     rb(p.original)).decode(errors="replace"))
-                hits = grep_lines(p.original, data, pat, invert, line_numbers,
-                                  count_only, files_only, only_matching,
-                                  max_count)
-                if count_only:
+                hits = grep_lines(p.original, data, pat, f.invert,
+                                  f.line_numbers, f.count_only, f.files_only,
+                                  f.only_matching, f.max_count)
+                if f.count_only:
                     if hits:
                         all_results.append(f"{p.original}:{hits[0]}")
-                elif files_only:
+                elif f.files_only:
                     all_results.extend(hits)
                 else:
                     all_results.extend(f"{p.original}:{r}" for r in hits)
@@ -234,15 +270,15 @@ async def grep(
         stream = grep_stream(
             source,
             pat,
-            invert=invert,
-            line_numbers=line_numbers,
-            only_matching=only_matching,
-            max_count=max_count,
-            count_only=count_only,
-            after_context=after_context,
-            before_context=before_context,
+            invert=f.invert,
+            line_numbers=f.line_numbers,
+            only_matching=f.only_matching,
+            max_count=f.max_count,
+            count_only=f.count_only,
+            after_context=f.after_context,
+            before_context=f.before_context,
         )
-        if quiet:
+        if f.quiet:
             io = IOResult(exit_code=1)
             return quiet_match(stream, io), io
         io = IOResult()
@@ -251,19 +287,19 @@ async def grep(
     source = _resolve_source(stdin,
                              "grep: usage: grep [flags] pattern [path]",
                              error_cls=UsageError)
-    pat = compile_pattern(pattern, ignore_case, fixed_string, whole_word)
+    pat = compile_pattern(pattern, f.ignore_case, f.fixed_string, f.whole_word)
     stream = grep_stream(
         source,
         pat,
-        invert=invert,
-        line_numbers=line_numbers,
-        only_matching=only_matching,
-        max_count=max_count,
-        count_only=count_only,
-        after_context=after_context,
-        before_context=before_context,
+        invert=f.invert,
+        line_numbers=f.line_numbers,
+        only_matching=f.only_matching,
+        max_count=f.max_count,
+        count_only=f.count_only,
+        after_context=f.after_context,
+        before_context=f.before_context,
     )
-    if quiet:
+    if f.quiet:
         io = IOResult(exit_code=1)
         return quiet_match(stream, io), io
     io = IOResult()

@@ -15,7 +15,7 @@
 import posixpath
 import re
 
-from mirage.commands.spec.constants import AMBIGUOUS_NAMES
+from mirage.commands.spec.constants import flag_kwarg_name
 from mirage.commands.spec.types import CommandSpec, OperandKind, ParsedArgs
 
 _NUMERIC_SHORT = re.compile(r"^-\d+$")
@@ -284,11 +284,6 @@ def parse_command(
         text_flag_values=text_flag_values,
         warnings=warnings,
     )
-
-
-def flag_kwarg_name(flag: str) -> str:
-    clean = flag.lstrip("-").replace("-", "_")
-    return AMBIGUOUS_NAMES.get(clean, clean)
 
 
 def parse_to_kwargs(parsed: ParsedArgs) -> dict[str, str | bool | list[str]]:

@@ -99,7 +99,7 @@ async def grep(
     index: IndexCacheStore = None,
     **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(flags)
+    fl = FlagView(flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
     recursive = fl.bool("r") or fl.bool("R")
 

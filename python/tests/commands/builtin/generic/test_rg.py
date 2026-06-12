@@ -1,6 +1,7 @@
 import pytest
 
-from mirage.commands.builtin.generic.rg import rg
+from mirage.commands.builtin.generic.rg import parse_flags, rg
+from mirage.commands.spec.types import FlagView
 from mirage.types import FileStat, FileType, PathSpec
 
 
@@ -467,3 +468,24 @@ async def test_rg_files_only_multiple_files():
     decoded = (await _drain_async(output)).decode()
     assert "/t1.txt" in decoded
     assert "/t2.txt" in decoded
+
+
+def test_parse_flags_c_overrides_a_and_b():
+    f = parse_flags(FlagView({
+        "A": "2",
+        "B": "1",
+        "C": "4"
+    }),
+                    never_match=False)
+    assert f.context_after == 4
+    assert f.context_before == 4
+    f = parse_flags(FlagView({"A": "2"}), never_match=False)
+    assert f.context_after == 2
+    assert f.context_before == 0
+
+
+def test_parse_flags_struct_rejects_typos():
+    f = parse_flags(FlagView({"hidden": True}), never_match=False)
+    assert f.hidden is True
+    with pytest.raises(AttributeError):
+        _ = f.hiden

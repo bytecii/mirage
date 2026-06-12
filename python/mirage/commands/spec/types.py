@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from mirage.commands.spec.constants import flag_kwarg_name
+
 
 class OperandKind(str, Enum):
     NONE = "none"
@@ -83,24 +85,37 @@ class FlagView:
 
     Args:
         flags (Mapping[str, object] | None): raw flag kwargs.
+        spec (CommandSpec | None): when given, reads of names the spec does
+            not declare raise KeyError. A missing key is otherwise
+            indistinguishable from "flag not passed", so a typo in the name
+            would silently read as False/None.
     """
 
-    def __init__(self, flags: Mapping[str, object] | None) -> None:
+    def __init__(self,
+                 flags: Mapping[str, object] | None,
+                 spec: CommandSpec | None = None) -> None:
         self._flags = flags or {}
+        self._allowed = spec_flag_names(spec) if spec is not None else None
+
+    def _key(self, name: str) -> str:
+        if self._allowed is not None and name not in self._allowed:
+            raise KeyError(f"flag {name!r} is not declared by the command "
+                           f"spec (known: {sorted(self._allowed)})")
+        return name
 
     def bool(self, name: str) -> bool:
-        return self._flags.get(name) is True
+        return self._flags.get(self._key(name)) is True
 
     def int(self, name: str) -> int | None:
-        value = self._flags.get(name)
+        value = self._flags.get(self._key(name))
         return int(value) if isinstance(value, str) else None
 
     def str(self, name: str) -> str | None:
-        value = self._flags.get(name)
+        value = self._flags.get(self._key(name))
         return value if isinstance(value, str) else None
 
     def list(self, name: str) -> list[str]:
-        value = self._flags.get(name)
+        value = self._flags.get(self._key(name))
         if isinstance(value, list):
             return [item for item in value if isinstance(item, str)]
         if isinstance(value, str):
@@ -108,7 +123,22 @@ class FlagView:
         return []
 
     def raw(self, name: str) -> object:
-        return self._flags.get(name)
+        return self._flags.get(self._key(name))
+
+
+def spec_flag_names(spec: CommandSpec) -> frozenset[str]:
+    """Collect the kwarg names a spec's options can produce.
+
+    Args:
+        spec (CommandSpec): command spec whose options to enumerate.
+    """
+    names: set[str] = set()
+    for option in spec.options:
+        if option.short is not None:
+            names.add(flag_kwarg_name(option.short))
+        if option.long is not None:
+            names.add(flag_kwarg_name(option.long))
+    return frozenset(names)
 
 
 @dataclass
