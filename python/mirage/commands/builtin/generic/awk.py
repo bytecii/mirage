@@ -301,7 +301,7 @@ async def awk(
         source: AsyncIterator[bytes] = read_stream(accessor, data_paths[0])
         cache = [data_paths[0]]
     else:
-        source = _resolve_source(stdin, "awk: missing input")
+        source = _resolve_source(stdin)
 
     return _awk_stream(source, program, fs, variables), IOResult(cache=cache)
 

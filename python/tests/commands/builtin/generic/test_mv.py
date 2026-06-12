@@ -101,3 +101,39 @@ async def test_records_writes_for_source_and_target():
     files = {"/a.txt": b"AAA", "/d/keep": b"K"}
     _, io = await _run(files, {"/d"}, ["/a.txt", "/d"])
     assert set(io.writes) == {"/a.txt", "/d/a.txt"}
+
+
+@pytest.mark.asyncio
+async def test_missing_source_reports_cannot_stat_and_continues():
+    files = {"/b.txt": b"BBB", "/d/keep": b"K"}
+    _, io = await _run(files, {"/d"}, ["/missing.txt", "/b.txt", "/d"])
+    assert io.exit_code == 1
+    assert b"mv: cannot stat '/missing.txt'" in io.stderr
+    assert files["/d/b.txt"] == b"BBB"
+
+
+@pytest.mark.asyncio
+async def test_same_file_errors_and_preserves_content():
+    files = {"/a.txt": b"AAA"}
+    _, io = await _run(files, set(), ["/a.txt", "/a.txt"])
+    assert io.exit_code == 1
+    assert b"'/a.txt' and '/a.txt' are the same file" in io.stderr
+    assert files["/a.txt"] == b"AAA"
+
+
+@pytest.mark.asyncio
+async def test_same_file_via_directory_target_errors():
+    files = {"/d/a.txt": b"AAA", "/d/keep": b"K"}
+    _, io = await _run(files, {"/d"}, ["/d/a.txt", "/d"])
+    assert io.exit_code == 1
+    assert b"are the same file" in io.stderr
+    assert files["/d/a.txt"] == b"AAA"
+
+
+@pytest.mark.asyncio
+async def test_into_own_subtree_refused():
+    files = {"/d/a.txt": b"AAA"}
+    _, io = await _run(files, {"/d", "/d/sub"}, ["/d", "/d/sub"])
+    assert io.exit_code == 1
+    assert b"mv: cannot move '/d' to a subdirectory of itself" in io.stderr
+    assert files["/d/a.txt"] == b"AAA"

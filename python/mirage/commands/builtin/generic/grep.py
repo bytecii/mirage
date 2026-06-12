@@ -1,16 +1,20 @@
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import (AsyncIterator, Awaitable, Callable, Mapping,
+                             Sequence)
 from functools import partial
 
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.grep_helper import (compile_pattern,
                                                  grep_files_only, grep_lines,
-                                                 grep_recursive, grep_stream)
+                                                 grep_recursive, grep_stream,
+                                                 resolve_pattern)
 from mirage.commands.builtin.utils.lines import split_lines
 from mirage.commands.builtin.utils.output import (format_optional_records,
                                                   format_records)
 from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.builtin.utils.wrap import (call_read_bytes, call_readdir,
                                                 call_stat)
+from mirage.commands.errors import UsageError
+from mirage.commands.spec.types import FlagView
 from mirage.io.stream import exit_on_empty, quiet_match
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileStat, FileType, PathSpec
@@ -18,38 +22,32 @@ from mirage.types import FileStat, FileType, PathSpec
 
 async def grep(
     paths: list[PathSpec],
+    texts: Sequence[str] = (),
+    flags: Mapping[str, object] | None = None,
     *,
-    pattern: str,
     readdir: Callable[..., Awaitable[list[str]]],
     stat: Callable[[PathSpec], Awaitable[FileStat]],
     read_bytes: Callable[..., Awaitable[bytes]],
     read_stream: Callable[..., AsyncIterator[bytes]] | None,
     accessor: object = None,
     stdin: AsyncIterator[bytes] | bytes | None = None,
-    pattern_via_e: bool = False,
-    ignore_case: bool = False,
-    invert: bool = False,
-    line_numbers: bool = False,
-    count_only: bool = False,
-    files_only: bool = False,
-    whole_word: bool = False,
-    fixed_string: bool = False,
-    only_matching: bool = False,
-    quiet: bool = False,
-    recursive: bool = False,
-    max_count: int | None = None,
-    after_context: int = 0,
-    before_context: int = 0,
     scope_check: Callable[..., Awaitable[str | None]] | None = None,
     show_filename: bool = False,
     index: IndexCacheStore | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     """Run grep-style fallback search over backend paths or stdin.
 
+    Interprets the raw flag kwargs itself (TS grepGeneric parity), so
+    backend wrappers only wire paths, texts, flags, and backend I/O.
+
     Args:
         paths (list[PathSpec]): Backend paths to search. Empty paths consume
             stdin.
-        pattern (str): Pattern text from CLI arguments.
+        texts (Sequence[str]): positional TEXT operands (the pattern unless
+            -e/-f supplied it).
+        flags (Mapping[str, object] | None): raw flag kwargs from the
+            dispatcher (e, f, i, v, n, c, args_l, w, F, o, q, r, R, m,
+            A, B, C).
         readdir (Callable[..., Awaitable[list[str]]]): Directory reader.
         stat (Callable[[PathSpec], Awaitable[FileStat]]): Backend stat reader.
         read_bytes (Callable[..., Awaitable[bytes]]): Whole-file reader.
@@ -58,20 +56,6 @@ async def grep(
         accessor (object): Backend accessor passed through wrapper helpers.
         stdin (AsyncIterator[bytes] | bytes | None): Input used when paths is
             empty.
-        pattern_via_e (bool): True when the pattern came from `-e`.
-        ignore_case (bool): `-i`, case-insensitive matching.
-        invert (bool): `-v`, select non-matching lines.
-        line_numbers (bool): `-n`, prefix line numbers.
-        count_only (bool): `-c`, output match counts.
-        files_only (bool): `-l`, output only matching file paths.
-        whole_word (bool): `-w`, match whole words.
-        fixed_string (bool): `-F`, treat pattern as a literal string.
-        only_matching (bool): `-o`, output only matched text.
-        quiet (bool): `-q`, suppress stdout and use exit status only.
-        recursive (bool): `-r`, descend into directories.
-        max_count (int | None): `-m`, stop after this many matching lines.
-        after_context (int): `-A`, trailing context lines.
-        before_context (int): `-B`, leading context lines.
         scope_check (Callable[..., Awaitable[str | None]] | None): Optional
             backend warning hook.
         show_filename (bool): Force filename prefixes on a single path,
@@ -82,6 +66,27 @@ async def grep(
     Returns:
         tuple[ByteSource | None, IOResult]: Output stream and exit metadata.
     """
+    fl = FlagView(flags)
+    pattern, never_match = await resolve_pattern(
+        texts, fl, read_bytes, accessor, index,
+        "grep: usage: grep [flags] pattern [path]")
+    ignore_case = fl.bool("i")
+    invert = fl.bool("v")
+    line_numbers = fl.bool("n")
+    count_only = fl.bool("c")
+    files_only = fl.bool("args_l")
+    whole_word = fl.bool("w")
+    fixed_string = fl.bool("F") and not never_match
+    only_matching = fl.bool("o")
+    quiet = fl.bool("q")
+    recursive = fl.bool("r") or fl.bool("R")
+    max_count = fl.int("m")
+    a_ctx = fl.int("A")
+    b_ctx = fl.int("B")
+    c_ctx = fl.int("C")
+    after_context = a_ctx if a_ctx is not None else (c_ctx or 0)
+    before_context = b_ctx if b_ctx is not None else (c_ctx or 0)
+
     if paths:
         mount_prefix = paths[0].prefix
         rd = partial(call_readdir,
@@ -243,7 +248,9 @@ async def grep(
         io = IOResult()
         return exit_on_empty(stream, io), io
 
-    source = _resolve_source(stdin, "grep: usage: grep [flags] pattern [path]")
+    source = _resolve_source(stdin,
+                             "grep: usage: grep [flags] pattern [path]",
+                             error_cls=UsageError)
     pat = compile_pattern(pattern, ignore_case, fixed_string, whole_word)
     stream = grep_stream(
         source,

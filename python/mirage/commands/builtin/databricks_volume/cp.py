@@ -16,14 +16,13 @@ from functools import partial
 
 from mirage.accessor.databricks_volume import DatabricksVolumeAccessor
 from mirage.cache.index import IndexCacheStore
-from mirage.commands.builtin.databricks_volume._helpers import (
-    same_backend_file, target_within_source)
-from mirage.commands.builtin.utils.copy import (copy_targets, is_directory,
-                                                path_exists)
+from mirage.commands.builtin.databricks_volume._helpers import find_files
+from mirage.commands.builtin.generic.cp import cp as generic_cp
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.databricks_volume.copy import copy as copy_core
 from mirage.core.databricks_volume.glob import resolve_glob
+from mirage.core.databricks_volume.path import backend_path
 from mirage.core.databricks_volume.stat import stat as stat_core
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
@@ -47,34 +46,13 @@ async def cp(
     if len(paths) < 2:
         raise ValueError("cp: requires src and dst")
     paths = await resolve_glob(accessor, paths, index)
-    recursive = r or R or a
-    stat = partial(stat_core, accessor)
-    *sources, dst = paths
-    dst_is_dir = await is_directory(stat, dst, index)
-    writes: dict[str, bytes] = {}
-    lines: list[str] = []
-    errors: list[str] = []
-    for src, target in copy_targets(sources, dst, dst_is_dir):
-        if not await path_exists(stat, src):
-            errors.append(f"cp: cannot stat '{src.original}': "
-                          "No such file or directory")
-            continue
-        if same_backend_file(accessor, src, target):
-            errors.append(f"cp: '{src.original}' and '{target.original}' "
-                          "are the same file")
-            continue
-        if recursive and target_within_source(accessor, src, target):
-            errors.append(f"cp: cannot copy a directory, '{src.original}', "
-                          f"into itself, '{target.original}'")
-            continue
-        if n and await path_exists(stat, target):
-            continue
-        await copy_core(accessor, src, target, index, recursive=recursive)
-        writes[target.strip_prefix] = b""
-        if v:
-            lines.append(f"'{src.original}' -> '{target.original}'")
-    output = ("\n".join(lines) + "\n").encode() if lines else None
-    stderr = ("\n".join(errors) + "\n").encode() if errors else None
-    return output, IOResult(writes=writes,
-                            stderr=stderr,
-                            exit_code=1 if errors else 0)
+    return await generic_cp(paths,
+                            copy=partial(copy_core, accessor, index=index),
+                            find=partial(find_files, accessor, index),
+                            find_type="f",
+                            stat=partial(stat_core, accessor),
+                            recursive=r or R or a,
+                            n=n,
+                            v=v,
+                            index=index,
+                            backend_key=partial(backend_path, accessor.config))

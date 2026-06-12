@@ -50,7 +50,7 @@ export async function gunzipGeneric(
   if (paths.length === 0) {
     let source: AsyncIterable<Uint8Array>
     try {
-      source = resolveSource(opts.stdin, 'gunzip: missing input')
+      source = resolveSource(opts.stdin, 'gunzip: (stdin): unexpected end of file')
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]

@@ -50,7 +50,9 @@ export async function gzipGeneric(
   if (paths.length === 0) {
     let source: AsyncIterable<Uint8Array>
     try {
-      source = resolveSource(opts.stdin, 'gzip: missing input')
+      source = decompress
+        ? resolveSource(opts.stdin, 'gzip: (stdin): unexpected end of file')
+        : resolveSource(opts.stdin)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]

@@ -136,10 +136,7 @@ export async function iconvGeneric(
     raw = await materialize(stream(first))
   } else {
     const stdinData = await readStdinAsync(opts.stdin)
-    if (stdinData === null) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('iconv: missing input\n') })]
-    }
-    raw = stdinData
+    raw = stdinData ?? new Uint8Array(0)
   }
   const decoded = decodeBytes(raw, fromEnc)
   const encoded = encodeText(decoded, toEnc)

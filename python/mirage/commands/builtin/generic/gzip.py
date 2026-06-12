@@ -54,9 +54,11 @@ async def gzip(
     level: int = zlib.Z_DEFAULT_COMPRESSION,
 ) -> tuple[ByteSource | None, IOResult]:
     if not paths:
-        source = _resolve_source(stdin, "gzip: missing input")
         if decompress:
+            source = _resolve_source(stdin,
+                                     "gzip: (stdin): unexpected end of file")
             return _gzip_decompress_stream(source), IOResult()
+        source = _resolve_source(stdin)
         return _gzip_compress_stream(source, level=level), IOResult()
 
     if to_stdout:

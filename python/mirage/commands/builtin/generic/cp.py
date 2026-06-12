@@ -15,7 +15,8 @@
 from typing import Awaitable, Callable
 
 from mirage.cache.index import IndexCacheStore
-from mirage.commands.builtin.utils.copy import (copy_targets, is_directory,
+from mirage.commands.builtin.utils.copy import (backend_key_default,
+                                                copy_targets, is_directory,
                                                 path_exists)
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
@@ -32,6 +33,7 @@ async def cp(
     n: bool,
     v: bool,
     index: IndexCacheStore | None = None,
+    backend_key: Callable[[PathSpec], str] | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     """Copy sources to a destination, fanning out into a directory.
 
@@ -45,15 +47,34 @@ async def cp(
         n (bool): No-clobber; skip targets that already exist.
         v (bool): Verbose; emit one ``src -> target`` line per write.
         index (IndexCacheStore | None): Cache for the destination dir probe.
+        backend_key (Callable | None): Maps a path to its backend storage key
+            for the same-file and into-own-subtree guards; defaults to the
+            normalized mount-relative path.
 
     Returns:
-        tuple[ByteSource | None, IOResult]: Verbose output and recorded writes.
+        tuple[ByteSource | None, IOResult]: Verbose output and recorded
+        writes, with per-source coreutils errors on stderr and exit code 1
+        when any source failed.
     """
+    key_of = backend_key if backend_key is not None else backend_key_default
     *sources, dst = paths
     dst_is_dir = await is_directory(stat, dst, index)
     writes: dict[str, bytes] = {}
     lines: list[str] = []
+    errors: list[str] = []
     for src, target in copy_targets(sources, dst, dst_is_dir):
+        if not await path_exists(stat, src):
+            errors.append(f"cp: cannot stat '{src.original}': "
+                          "No such file or directory")
+            continue
+        if key_of(src) == key_of(target):
+            errors.append(f"cp: '{src.original}' and '{target.original}' "
+                          "are the same file")
+            continue
+        if recursive and key_of(target).startswith(key_of(src) + "/"):
+            errors.append(f"cp: cannot copy a directory, '{src.original}', "
+                          f"into itself, '{target.original}'")
+            continue
         if recursive:
             src_base = src.strip_prefix.rstrip("/")
             dst_base = target.strip_prefix.rstrip("/")
@@ -64,13 +85,18 @@ async def cp(
                 await copy(entry, entry_dst)
                 writes[entry_dst] = b""
                 if v:
-                    lines.append(f"{entry} -> {entry_dst}")
+                    lines.append(f"'{entry}' -> '{entry_dst}'")
             continue
         if n and await path_exists(stat, target):
             continue
         await copy(src, target)
         writes[target.strip_prefix] = b""
         if v:
-            lines.append(f"{src.original} -> {target.original}")
+            lines.append(f"'{src.original}' -> '{target.original}'")
     output = "\n".join(lines) + "\n" if lines else None
-    return output.encode() if output else None, IOResult(writes=writes)
+    stderr = ("\n".join(errors) + "\n").encode() if errors else None
+    return output.encode() if output else None, IOResult(
+        writes=writes,
+        stderr=stderr,
+        exit_code=1 if errors else 0,
+    )

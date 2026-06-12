@@ -12,52 +12,15 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import re
-from functools import partial
-
 from mirage.accessor.databricks_volume import DatabricksVolumeAccessor
 from mirage.cache.index import IndexCacheStore
-from mirage.commands.builtin.utils.output import format_records
+from mirage.commands.builtin.generic.stat import stat as generic_stat
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.databricks_volume.glob import resolve_glob
-from mirage.core.databricks_volume.stat import stat as stat_impl
+from mirage.core.databricks_volume.stat import stat as stat_core
 from mirage.io.types import ByteSource, IOResult
-from mirage.types import FileStat, FileType, PathSpec
-
-_FORMAT_RE = re.compile(r"%([nsFy]|.)")
-
-_TYPE_LABELS = {
-    FileType.DIRECTORY: "directory",
-    FileType.TEXT: "regular file",
-    FileType.BINARY: "regular file",
-    FileType.JSON: "regular file",
-    FileType.CSV: "regular file",
-}
-
-
-def _stat_type_label(file_stat: FileStat) -> str:
-    if file_stat.type is None:
-        return "regular file"
-    return _TYPE_LABELS.get(file_stat.type, "regular file")
-
-
-def _replace_stat_format(file_stat: FileStat, name: str,
-                         match: re.Match) -> str:
-    spec = match.group(1)
-    if spec == "n":
-        return name
-    if spec == "s":
-        return str(file_stat.size if file_stat.size is not None else 0)
-    if spec == "F":
-        return _stat_type_label(file_stat)
-    if spec == "y":
-        return file_stat.modified or ""
-    return "?"
-
-
-def _format_stat(fmt: str, file_stat: FileStat, name: str) -> str:
-    return _FORMAT_RE.sub(partial(_replace_stat_format, file_stat, name), fmt)
+from mirage.types import PathSpec
 
 
 @command("stat", resource="databricks_volume", spec=SPECS["stat"])
@@ -74,14 +37,9 @@ async def stat(
     if not paths:
         raise ValueError("stat: missing operand")
     paths = await resolve_glob(accessor, paths, index)
-    fmt = c if c is not None else f
-    lines: list[str] = []
-    for path in paths:
-        file_stat = await stat_impl(accessor, path, index)
-        if fmt is not None:
-            lines.append(_format_stat(fmt, file_stat, path.original))
-        else:
-            type_value = file_stat.type.value if file_stat.type else None
-            lines.append(f"name={file_stat.name} size={file_stat.size}"
-                         f" modified={file_stat.modified} type={type_value}")
-    return format_records(lines), IOResult()
+    return await generic_stat(paths,
+                              stat_fn=stat_core,
+                              accessor=accessor,
+                              c=c,
+                              f=f,
+                              index=index)

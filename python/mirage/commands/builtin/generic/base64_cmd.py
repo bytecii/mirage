@@ -12,6 +12,8 @@ async def _base64_encode_stream(source: AsyncIterator[bytes],
     async for chunk in source:
         buf += chunk
     encoded = b64lib.b64encode(buf).decode()
+    if not encoded:
+        return
     if wrap is not None and wrap == 0:
         yield encoded.encode() + b"\n"
         return
@@ -45,7 +47,7 @@ async def base64_cmd(
         source: AsyncIterator[bytes] = read_stream(accessor, paths[0])
         cache = [paths[0].strip_prefix]
     else:
-        source = _resolve_source(stdin, "base64: missing input")
+        source = _resolve_source(stdin)
 
     if decode:
         return _base64_decode_stream(source), IOResult(cache=cache)

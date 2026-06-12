@@ -27,6 +27,7 @@ async function* base64EncodeStream(
 ): AsyncIterable<Uint8Array> {
   const buf = await materialize(source)
   const encoded = encodeBase64(buf)
+  if (encoded === '') return
   if (wrap !== null && wrap === 0) {
     yield ENC.encode(encoded + '\n')
     return
@@ -61,12 +62,7 @@ export async function base64Generic(
     source = stream(first)
     cache.push(first.original)
   } else {
-    try {
-      source = resolveSource(opts.stdin, 'base64: missing input')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
+    source = resolveSource(opts.stdin)
   }
   const out = decode ? base64DecodeStream(source) : base64EncodeStream(source, wrap)
   return [out, new IOResult({ cache })]

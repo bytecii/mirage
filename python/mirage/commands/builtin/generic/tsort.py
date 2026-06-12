@@ -47,7 +47,7 @@ async def tsort(
     else:
         raw = await _read_stdin_async(stdin)
         if raw is None:
-            raise ValueError("tsort: missing input")
+            raw = b""
     text = raw.decode(errors="replace")
     tokens = text.split()
     if len(tokens) % 2 != 0:
@@ -58,7 +58,7 @@ async def tsort(
     result, has_cycle = _topological_sort(pairs)
     if has_cycle:
         return b"tsort: cycle detected\n", IOResult(exit_code=1)
-    output = "\n".join(result) + "\n"
+    output = "\n".join(result) + "\n" if result else ""
     return output.encode(), IOResult()
 
 

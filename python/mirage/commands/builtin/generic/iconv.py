@@ -23,7 +23,7 @@ async def iconv(
     else:
         raw = await _read_stdin_async(stdin)
         if raw is None:
-            raise ValueError("iconv: missing input")
+            raw = b""
     decoded = raw.decode(from_enc, errors=err_mode)
     encoded = decoded.encode(to_enc, errors=err_mode)
     if output_path is not None:

@@ -211,10 +211,7 @@ async function bcCommand(
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
   const useMath = opts.flags.args_l === true || opts.flags.l === true
-  const raw = await readStdinAsync(opts.stdin)
-  if (raw === null) {
-    return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('bc: missing input\n') })]
-  }
+  const raw = (await readStdinAsync(opts.stdin)) ?? new Uint8Array(0)
   const lines = new TextDecoder().decode(raw).trim().split('\n')
   const results: string[] = []
   for (const line of lines) {
@@ -227,6 +224,7 @@ async function bcCommand(
       return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
     }
   }
+  if (results.length === 0) return [null, new IOResult()]
   return [ENC.encode(results.join('\n') + '\n'), new IOResult()]
 }
 

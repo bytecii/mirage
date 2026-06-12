@@ -16,7 +16,14 @@ import type { IndexCacheStore } from '../../../cache/index/store.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import type { CommandFnResult } from '../../config.ts'
-import { copyTargets, isDirectory, pathExists, type StatFn } from '../utils/copy.ts'
+import {
+  backendKeyDefault,
+  copyTargets,
+  isDirectory,
+  pathExists,
+  type BackendKeyFn,
+  type StatFn,
+} from '../utils/copy.ts'
 
 const ENC = new TextEncoder()
 
@@ -29,14 +36,31 @@ export async function mvGeneric(
   noClobber: boolean,
   verbose: boolean,
   index?: IndexCacheStore,
+  backendKey?: BackendKeyFn,
 ): Promise<CommandFnResult> {
+  const keyOf = backendKey ?? backendKeyDefault
   const sources = paths.slice(0, -1)
   const dst = paths[paths.length - 1]
   if (dst === undefined) return [null, new IOResult()]
   const dstIsDir = await isDirectory(stat, dst, index)
   const writes: Record<string, ByteSource> = {}
   const lines: string[] = []
+  const errors: string[] = []
   for (const [src, target] of copyTargets(sources, dst, dstIsDir)) {
+    if (!(await pathExists(stat, src))) {
+      errors.push(`mv: cannot stat '${src.original}': No such file or directory`)
+      continue
+    }
+    if (keyOf(src) === keyOf(target)) {
+      errors.push(`mv: '${src.original}' and '${target.original}' are the same file`)
+      continue
+    }
+    if (keyOf(target).startsWith(keyOf(src) + '/')) {
+      errors.push(
+        `mv: cannot move '${src.original}' to a subdirectory of itself, '${target.original}'`,
+      )
+      continue
+    }
     if (noClobber && (await pathExists(stat, target))) continue
     await rename(src, target)
     writes[src.stripPrefix] = new Uint8Array()
@@ -44,5 +68,6 @@ export async function mvGeneric(
     if (verbose) lines.push(`'${src.original}' -> '${target.original}'`)
   }
   const output: ByteSource | null = lines.length > 0 ? ENC.encode(lines.join('\n') + '\n') : null
-  return [output, new IOResult({ writes })]
+  const stderr = errors.length > 0 ? ENC.encode(errors.join('\n') + '\n') : null
+  return [output, new IOResult({ writes, stderr, exitCode: errors.length > 0 ? 1 : 0 })]
 }

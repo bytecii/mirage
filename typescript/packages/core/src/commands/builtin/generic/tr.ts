@@ -89,7 +89,7 @@ async function* trStream(
 
 function buildOptions(
   texts: readonly string[],
-  flags: Record<string, string | boolean>,
+  flags: Record<string, string | boolean | string[]>,
 ): TrOptions {
   if (texts.length === 0) throw new Error('tr: usage: tr [-d] [-s] [-c] set1 [set2] [path]')
   let set1 = expandRanges(interpretEscapes(texts[0] ?? ''))
@@ -144,12 +144,7 @@ export async function trGeneric(
     source = stream(first)
     cache.push(first.original)
   } else {
-    try {
-      source = resolveSource(opts.stdin, 'tr: missing input')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
+    source = resolveSource(opts.stdin)
   }
   return [trStream(source, trOpts), new IOResult({ cache })]
 }

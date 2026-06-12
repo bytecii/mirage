@@ -159,14 +159,9 @@ export async function xxdGeneric(
     source = stream(first)
     cache.push(first.original)
   } else {
-    try {
-      source = resolveSource(opts.stdin, 'xxd: missing input')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
+    source = resolveSource(opts.stdin)
   }
-  const toInt = (v: string | boolean | undefined): number =>
+  const toInt = (v: string | boolean | string[] | undefined): number =>
     typeof v === 'string' ? Number.parseInt(v, 10) : 0
   const skip = toInt(opts.flags.s)
   const limitFlag = toInt(opts.flags.args_l)

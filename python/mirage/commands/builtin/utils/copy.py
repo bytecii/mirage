@@ -27,6 +27,10 @@ def child_path(parent: PathSpec, name: str) -> PathSpec:
     return PathSpec.from_str_path(f"{base}/{name}", parent.prefix)
 
 
+def backend_key_default(path: PathSpec) -> str:
+    return path.strip_prefix.rstrip("/")
+
+
 def copy_targets(sources: list[PathSpec], dst: PathSpec,
                  dst_is_dir: bool) -> list[tuple[PathSpec, PathSpec]]:
     """Map copy or move sources to their destination paths.

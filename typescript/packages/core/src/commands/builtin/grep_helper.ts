@@ -13,7 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
-import { type FileStat, FileType } from '../../types.ts'
+import { materialize } from '../../io/types.ts'
+import { type FileStat, FileType, PathSpec } from '../../types.ts'
 import { getExtension } from '../resolve.ts'
 import { grepContextLines } from './grep_context.ts'
 
@@ -27,8 +28,96 @@ export const BINARY_EXTENSIONS: ReadonlySet<string> = new Set([
   '.h5',
 ])
 
+export const NEVER_MATCH = '(?!)'
+
+const DEC = new TextDecoder()
+
 export function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// Resolve the pattern-list argument from -e values (list[str] when
+// repeatable) or the positional. Returns the POSIX newline-joined pattern
+// list, or null when neither was supplied.
+export function patternArg(
+  texts: readonly string[],
+  flags: Record<string, string | boolean | string[]>,
+): string | null {
+  const e = flags.e
+  if (Array.isArray(e) && e.length > 0) return e.join('\n')
+  if (typeof e === 'string') return e
+  if (texts.length > 0 && texts[0] !== undefined) return texts[0]
+  return null
+}
+
+export interface PatternResolution {
+  pattern: string | null
+  neverMatch: boolean
+  error: string | null
+}
+
+// Resolve the full pattern list from -e values, the positional, and -f
+// pattern files (read via the backend stream). Shared by the grep, rg, and
+// zgrep generics. When -f supplies zero patterns the NEVER_MATCH sentinel is
+// returned with neverMatch=true (callers must skip -F escaping for it).
+export async function resolvePatternFromFlags(
+  name: string,
+  texts: readonly string[],
+  flags: Record<string, string | boolean | string[]>,
+  paths: readonly PathSpec[],
+  mountPrefix: string | null | undefined,
+  stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
+): Promise<PatternResolution> {
+  let pattern = patternArg(texts, flags)
+  let neverMatch = false
+  if (Array.isArray(flags.f)) {
+    for (const filePath of flags.f) {
+      const patternSpec = PathSpec.fromStrPath(filePath, paths[0]?.prefix ?? mountPrefix ?? '')
+      let fileData: Uint8Array
+      try {
+        fileData = await materialize(stream(patternSpec))
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { pattern: null, neverMatch: false, error: `${name}: ${filePath}: ${msg}\n` }
+      }
+      pattern = mergePatternList(pattern, fileData)
+    }
+    if (pattern === null) {
+      pattern = NEVER_MATCH
+      neverMatch = true
+    }
+  }
+  return { pattern, neverMatch, error: null }
+}
+
+export function mergePatternList(
+  pattern: string | null,
+  fileData: Uint8Array | null,
+): string | null {
+  const parts: string[] = pattern === null ? [] : pattern.split('\n')
+  if (fileData !== null && fileData.length > 0) {
+    let text = DEC.decode(fileData)
+    if (text.endsWith('\n')) text = text.slice(0, -1)
+    parts.push(...text.split('\n'))
+  }
+  if (parts.length === 0) return null
+  return parts.join('\n')
+}
+
+export function buildPatternStr(pattern: string, fixedString = false, wholeWord = false): string {
+  const parts = pattern.split('\n')
+  if (parts.length === 1) {
+    let patStr = fixedString ? escapeRegex(pattern) : pattern
+    if (wholeWord) patStr = `\\b${patStr}\\b`
+    return patStr
+  }
+  const subs: string[] = []
+  for (const part of parts) {
+    let sub = fixedString ? escapeRegex(part) : `(?:${part})`
+    if (wholeWord) sub = `\\b${sub}\\b`
+    subs.push(sub)
+  }
+  return subs.join('|')
 }
 
 export function compilePattern(
@@ -37,12 +126,11 @@ export function compilePattern(
   fixedString = false,
   wholeWord = false,
 ): RegExp {
-  let patStr = fixedString ? escapeRegex(pattern) : pattern
-  if (wholeWord) patStr = `\\b${patStr}\\b`
-  return new RegExp(patStr, ignoreCase ? 'i' : '')
+  return new RegExp(buildPatternStr(pattern, fixedString, wholeWord), ignoreCase ? 'i' : '')
 }
 
 export function isRegexPattern(pattern: string, fixedString: boolean): boolean {
+  if (pattern.includes('\n')) return true
   if (fixedString) return false
   return !/^[\w\s\-.]+$/.test(pattern)
 }

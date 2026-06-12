@@ -16,7 +16,7 @@ import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import { gunzip } from '../../../utils/compress.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { compilePattern } from '../grep_helper.ts'
+import { compilePattern, resolvePatternFromFlags } from '../grep_helper.ts'
 import { readStdinAsync } from '../utils/stream.ts'
 
 const ENC = new TextEncoder()
@@ -88,14 +88,30 @@ export async function zgrepGeneric(
   opts: CommandOpts,
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
 ): Promise<CommandFnResult> {
-  const rawPattern =
-    typeof opts.flags.e === 'string'
-      ? opts.flags.e
-      : texts.length > 0 && texts[0] !== undefined
-        ? texts[0]
-        : ''
+  const resolution = await resolvePatternFromFlags(
+    'zgrep',
+    texts,
+    opts.flags,
+    paths,
+    opts.mountPrefix,
+    stream,
+  )
+  if (resolution.error !== null) {
+    return [null, new IOResult({ exitCode: 2, stderr: new TextEncoder().encode(resolution.error) })]
+  }
+  const neverMatch = resolution.neverMatch
+  if (resolution.pattern === null) {
+    return [
+      null,
+      new IOResult({
+        exitCode: 2,
+        stderr: ENC.encode('zgrep: usage: zgrep [flags] pattern [path]\n'),
+      }),
+    ]
+  }
+  const rawPattern = resolution.pattern
   const extendedRegex = opts.flags.E === true
-  const fixedString = opts.flags.F === true
+  const fixedString = opts.flags.F === true && !neverMatch
   const wholeWord = opts.flags.w === true
   const ignoreCase = opts.flags.i === true
   const invert = opts.flags.v === true
@@ -152,10 +168,8 @@ export async function zgrepGeneric(
     }
   } else {
     const stdinData = await readStdinAsync(opts.stdin)
-    if (stdinData === null) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('zgrep: missing input\n') })]
-    }
-    const data = await gunzip(stdinData)
+    const data =
+      stdinData === null || stdinData.byteLength === 0 ? new Uint8Array(0) : await gunzip(stdinData)
     if (filesOnly) {
       const text = DEC.decode(data)
       const lines = splitLinesNoTrailing(text)

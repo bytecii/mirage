@@ -68,6 +68,14 @@ SEED_FILES = {
     "apple\ncherry\nelder\nfig\n",
     "/data/prefix_dup.txt":
     "1 apple\n2 apple\n3 banana\n",
+    "/data/patterns.txt":
+    "world\nbar\n",
+    "/data/patterns2.txt":
+    "baz\n",
+    "/data/guard/g.txt":
+    "guard\n",
+    "/data/guard/sub/s.txt":
+    "inner\n",
 }
 
 CASES: list[tuple[str, str]] = [
@@ -341,6 +349,28 @@ CASES: list[tuple[str, str]] = [
     ("grep_only_match_multi", "grep -o o /data/a.txt"),
     ("grep_recursive_dir", 'grep -r hello /data/sub'),
     ("grep_empty_pattern", "grep '' /data/b.txt"),
+    ("grep_e_flag", "grep -e world /data/a.txt"),
+    ("grep_e_n", "grep -n -e bar /data/a.txt"),
+    ("grep_e_multi_file", "grep -e hello /data/mixed.txt /data/a.txt"),
+    ("grep_e_multi_pattern", "grep -e world -e bar /data/a.txt"),
+    ("grep_e_multi_pattern_n", "grep -n -e hello -e baz /data/a.txt"),
+    ("grep_e_multi_pattern_F", "grep -F -e a.b -e foo /data/a.txt"),
+    ("grep_f_file", "grep -f /data/patterns.txt /data/a.txt"),
+    ("grep_e_f_union", "grep -e hello -f /data/patterns.txt /data/a.txt"),
+    ("grep_f_multi",
+     "grep -f /data/patterns.txt -f /data/patterns2.txt /data/a.txt"),
+    ("grep_cluster_ne", "grep -ne world /data/a.txt"),
+    ("du_max_depth_eq", "du --max-depth=1 /data/sub"),
+    ("grep_unknown_flag_ignored", "grep --color=auto world /data/a.txt"),
+    ("grep_cluster_attached", "grep -neworld /data/a.txt"),
+    ("grep_cluster_count", "grep -im1 l /data/mixed.txt"),
+    ("rg_f_multi",
+     "rg -f /data/patterns.txt -f /data/patterns2.txt /data/a.txt"),
+    ("zgrep_e_multi_pipe", "cat /data/a.txt | gzip | zgrep -e world -e baz"),
+    ("rg_e_flag", "rg -e world /data/a.txt"),
+    ("rg_e_multi", "rg -e world -e bar /data/a.txt"),
+    ("rg_f_file", "rg -f /data/patterns.txt /data/a.txt"),
+    ("zgrep_f_pipe", "cat /data/a.txt | gzip | zgrep -f /data/patterns.txt"),
 
     # ----- paste advanced -----
     ("paste_s", "paste -s /data/b.txt"),
@@ -411,6 +441,7 @@ CASES: list[tuple[str, str]] = [
 
     # ----- gzip / zcat / zgrep -----
     ("zgrep_pipe", "cat /data/a.txt | gzip | zgrep world"),
+    ("zgrep_e_pipe", "cat /data/a.txt | gzip | zgrep -e world"),
     ("gzip_c_pipe", "cat /data/b.txt | gzip -c | zcat"),
 
     # ----- jq more -----
@@ -480,8 +511,35 @@ CASES: list[tuple[str, str]] = [
 EXIT_CODE_CASES: list[tuple[str, str]] = [
     ("jq_no_filter_no_input", "jq"),
     ("jq_dot_no_input", 'jq "."'),
+    ("tac_no_input", "tac"),
+    ("xxd_no_input", "xxd"),
+    ("column_no_input", "column"),
+    ("strings_no_input", "strings"),
+    ("tsort_no_input", "tsort"),
+    ("base64_no_input", "base64"),
+    ("split_no_input", "split"),
+    ("iconv_no_input", "iconv"),
+    ("bc_no_input", "bc"),
+    ("tr_no_input", "tr a-z A-Z"),
+    ("awk_no_input", "awk '{print}'"),
+    ("sha256sum_no_input", "sha256sum"),
+    ("patch_no_input", "patch"),
+    ("look_no_input", "look foo"),
+    ("zgrep_no_input", "zgrep foo"),
+    ("gunzip_no_input", "gunzip"),
+    ("zcat_no_input", "zcat"),
+    ("gzip_d_no_input", "gzip -d"),
+    ("csplit_no_input", "csplit"),
+    ("gzip_no_input_roundtrip", "gzip | gunzip | sha256sum"),
     ("lazy_exit_grep_match", "grep hello /data/a.txt"),
     ("lazy_exit_grep_no_match", "grep zzz /data/a.txt"),
+    ("grep_f_empty_no_match", "grep -f /data/empty.txt /data/a.txt"),
+    ("grep_usage_exit", "grep"),
+    ("rg_usage_exit", "rg"),
+    ("zgrep_usage_exit", "zgrep"),
+    ("grep_usage_no_input", "grep foo"),
+    ("rg_usage_no_input", "rg foo"),
+    ("grep_usage_stdin_only", "echo hi | grep"),
     ("cp_reject_multi_nondir", "cp /data/a.txt /data/b.txt /data/c.txt"),
     ("inv_ls_warm", "ls -1 /data/sub"),
     ("inv_touch", "touch /data/sub/inv_late.txt"),
@@ -515,6 +573,18 @@ EXIT_CODE_CASES: list[tuple[str, str]] = [
     # ----- grep directory operands (GNU: warn, files still match) -----
     ("grep_dir_operand", "grep hello /data/sub"),
     ("grep_dir_among_files", "grep hello /data/a.txt /data/sub"),
+
+    # ----- cp/mv coreutils guards (same-file, subtree, missing source) -----
+    ("guard_cp_same_file", "cp /data/guard/g.txt /data/guard/g.txt"),
+    ("guard_mv_same_file", "mv /data/guard/g.txt /data/guard/g.txt"),
+    ("guard_mv_same_file_intact", "cat /data/guard/g.txt"),
+    ("guard_mv_into_dir_where_file_lives",
+     "mv /data/guard/sub/s.txt /data/guard/sub"),
+    ("guard_cp_dir_into_itself", "cp -r /data/guard/sub /data/guard/sub"),
+    ("guard_mv_dir_into_own_subtree", "mv /data/guard /data/guard/sub"),
+    ("guard_cp_missing_source_continues",
+     "cp /data/missing.txt /data/guard/g.txt /data/guard/sub"),
+    ("guard_state_after", "find /data/guard -type f"),
 ]
 
 

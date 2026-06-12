@@ -18,12 +18,14 @@ async def tac(
         source: AsyncIterator[bytes] = read_stream(accessor, paths[0])
         cache = [paths[0].strip_prefix]
     else:
-        source = _resolve_source(stdin, "tac: missing input")
+        source = _resolve_source(stdin)
 
     lines: list[bytes] = []
     async for line in AsyncLineIterator(source):
         lines.append(line)
     lines.reverse()
+    if not lines:
+        return b"", IOResult(cache=cache)
     return b"\n".join(lines) + b"\n", IOResult(cache=cache)
 
 

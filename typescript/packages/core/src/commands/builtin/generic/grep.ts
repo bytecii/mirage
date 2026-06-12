@@ -23,6 +23,7 @@ import {
   grepLines,
   grepRecursive,
   grepStream,
+  resolvePatternFromFlags,
 } from '../grep_helper.ts'
 import { resolveSource } from '../utils/stream.ts'
 
@@ -54,14 +55,8 @@ interface FlagSet {
   beforeContext: number
 }
 
-function getPattern(texts: readonly string[], flags: Record<string, string | boolean>): string {
-  if (typeof flags.e === 'string') return flags.e
-  if (texts.length > 0 && texts[0] !== undefined) return texts[0]
-  throw new Error('grep: usage: grep [flags] pattern [path]')
-}
-
-function parseFlags(flags: Record<string, string | boolean>): FlagSet {
-  const toInt = (v: string | boolean | undefined): number | null =>
+function parseFlags(flags: Record<string, string | boolean | string[]>): FlagSet {
+  const toInt = (v: string | boolean | string[] | undefined): number | null =>
     typeof v === 'string' ? Number.parseInt(v, 10) : null
   const aCtx = toInt(flags.A)
   const bCtx = toInt(flags.B)
@@ -116,14 +111,29 @@ export async function grepGeneric(
   scopeCheck?: ScopeCheck,
   showFilename = false,
 ): Promise<CommandFnResult> {
-  let pattern: string
-  try {
-    pattern = getPattern(texts, opts.flags)
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(`${msg}\n`) })]
+  const resolution = await resolvePatternFromFlags(
+    name,
+    texts,
+    opts.flags,
+    paths,
+    opts.mountPrefix,
+    stream,
+  )
+  if (resolution.error !== null) {
+    return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(resolution.error) })]
+  }
+  const pattern = resolution.pattern
+  if (pattern === null) {
+    return [
+      null,
+      new IOResult({
+        exitCode: 2,
+        stderr: ENC.encode(`${name}: usage: ${name} [flags] pattern [path]\n`),
+      }),
+    ]
   }
   const f = parseFlags(opts.flags)
+  if (resolution.neverMatch) f.fixedString = false
   const recursive = opts.flags.r === true || opts.flags.R === true
 
   if (paths.length > 0) {

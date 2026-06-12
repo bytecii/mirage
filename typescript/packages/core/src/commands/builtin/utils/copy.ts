@@ -18,6 +18,12 @@ import { rstripSlash } from '../../../util/slash.ts'
 
 export type StatFn = (path: PathSpec, index?: IndexCacheStore) => Promise<FileStat>
 
+export type BackendKeyFn = (path: PathSpec) => string
+
+export function backendKeyDefault(path: PathSpec): string {
+  return rstripSlash(path.stripPrefix)
+}
+
 export function childPath(parent: PathSpec, name: string): PathSpec {
   const base = rstripSlash(parent.original)
   return PathSpec.fromStrPath(`${base}/${name}`, parent.prefix)

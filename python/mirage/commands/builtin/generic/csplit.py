@@ -56,7 +56,7 @@ async def csplit(
     else:
         raw = await _read_stdin_async(stdin)
         if raw is None:
-            raise ValueError("csplit: missing input")
+            raw = b""
     text = raw.decode(errors="replace")
     lines = split_lines(text)
     parts = _split_by_patterns(lines, list(patterns))
@@ -72,7 +72,7 @@ async def csplit(
     except Exception:
         if not keep_on_error:
             raise
-    output = "" if silent else "\n".join(sizes) + "\n"
+    output = "" if silent or not sizes else "\n".join(sizes) + "\n"
     return output.encode(), IOResult(writes=writes)
 
 

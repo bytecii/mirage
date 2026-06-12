@@ -81,7 +81,7 @@ async def sha256sum(
         return _sha256_multi(
             accessor, paths,
             read_stream), IOResult(cache=[p.strip_prefix for p in paths])
-    source = _resolve_source(stdin, "sha256sum: missing input")
+    source = _resolve_source(stdin)
     return _sha256_stream(source, "-"), IOResult()
 
 

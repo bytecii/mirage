@@ -17,6 +17,7 @@ import type { IndexCacheStore } from '../../../cache/index/store.ts'
 import { copy as dbxCopy } from '../../../core/databricks_volume/copy.ts'
 import { find as dbxFind } from '../../../core/databricks_volume/find.ts'
 import { resolveGlob } from '../../../core/databricks_volume/glob.ts'
+import { backendPath } from '../../../core/databricks_volume/path.ts'
 import { stat as dbxStat } from '../../../core/databricks_volume/stat.ts'
 import { IOResult } from '../../../io/types.ts'
 import type { FindOptions } from '../../../resource/base.ts'
@@ -47,6 +48,7 @@ async function cpCommand(
     opts.flags.n === true,
     opts.flags.v === true,
     opts.index ?? undefined,
+    (p: PathSpec) => backendPath(accessor.config, p),
   )
 }
 

@@ -81,10 +81,7 @@ export async function columnGeneric(
     raw = await materialize(stream(first))
   } else {
     const stdinData = await readStdinAsync(opts.stdin)
-    if (stdinData === null) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('column: missing input\n') })]
-    }
-    raw = stdinData
+    raw = stdinData ?? new Uint8Array(0)
   }
   const text = DEC.decode(raw)
   const output = tMode ? tableFormat(text, sFlag, oFlag) : text

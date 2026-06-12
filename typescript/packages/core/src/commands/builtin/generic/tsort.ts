@@ -77,10 +77,7 @@ export async function tsortGeneric(
     raw = await materialize(stream(first))
   } else {
     const stdinData = await readStdinAsync(opts.stdin)
-    if (stdinData === null) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('tsort: missing input\n') })]
-    }
-    raw = stdinData
+    raw = stdinData ?? new Uint8Array(0)
   }
   const text = DEC.decode(raw)
   const tokens = text.split(/\s+/).filter((s) => s !== '')
@@ -97,6 +94,6 @@ export async function tsortGeneric(
     const out: ByteSource = ENC.encode('tsort: cycle detected\n')
     return [out, new IOResult({ exitCode: 1 })]
   }
-  const result: ByteSource = ENC.encode(sorted.join('\n') + '\n')
+  const result: ByteSource = ENC.encode(sorted.length > 0 ? sorted.join('\n') + '\n' : '')
   return [result, new IOResult()]
 }

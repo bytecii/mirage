@@ -95,12 +95,7 @@ async function awkCommand(
     source = boxStream(accessor, spec, opts.index ?? undefined)
     cache.push(firstPath)
   } else {
-    try {
-      source = resolveSource(opts.stdin, 'awk: missing input')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
+    source = resolveSource(opts.stdin)
   }
   return [awkStream(source, program, fs, variables), new IOResult({ cache })]
 }

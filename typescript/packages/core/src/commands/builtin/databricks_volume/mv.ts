@@ -15,6 +15,7 @@
 import type { DatabricksVolumeAccessor } from '../../../accessor/databricks_volume.ts'
 import type { IndexCacheStore } from '../../../cache/index/store.ts'
 import { resolveGlob } from '../../../core/databricks_volume/glob.ts'
+import { backendPath } from '../../../core/databricks_volume/path.ts'
 import { rename as dbxRename } from '../../../core/databricks_volume/rename.ts'
 import { stat as dbxStat } from '../../../core/databricks_volume/stat.ts'
 import { IOResult } from '../../../io/types.ts'
@@ -42,6 +43,7 @@ async function mvCommand(
     opts.flags.n === true,
     opts.flags.v === true,
     opts.index ?? undefined,
+    (p: PathSpec) => backendPath(accessor.config, p),
   )
 }
 

@@ -118,8 +118,8 @@ async def _load_patch_data(
     if paths and has_resource:
         return await read_bytes(accessor, paths[0])
     data = await _read_stdin_async(stdin)
-    if not data:
-        raise ValueError("patch: missing input")
+    if data is None:
+        return b""
     return data
 
 

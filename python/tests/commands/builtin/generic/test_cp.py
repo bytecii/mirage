@@ -122,7 +122,7 @@ async def test_recursive_into_directory():
 async def test_verbose_emits_arrow_lines():
     files = {"/a.txt": b"AAA"}
     out, _ = await _run(files, set(), ["/a.txt", "/copy.txt"], v=True)
-    assert out == b"/a.txt -> /copy.txt\n"
+    assert out == b"'/a.txt' -> '/copy.txt'\n"
 
 
 @pytest.mark.asyncio
@@ -130,3 +130,49 @@ async def test_records_writes_by_strip_prefix():
     files = {"/a.txt": b"AAA", "/b.txt": b"BBB", "/d/keep": b"K"}
     _, io = await _run(files, {"/d"}, ["/a.txt", "/b.txt", "/d"])
     assert set(io.writes) == {"/d/a.txt", "/d/b.txt"}
+
+
+@pytest.mark.asyncio
+async def test_missing_source_reports_cannot_stat_and_continues():
+    files = {"/b.txt": b"BBB", "/d/keep": b"K"}
+    _, io = await _run(files, {"/d"}, ["/missing.txt", "/b.txt", "/d"])
+    assert io.exit_code == 1
+    assert b"cp: cannot stat '/missing.txt'" in io.stderr
+    assert files["/d/b.txt"] == b"BBB"
+
+
+@pytest.mark.asyncio
+async def test_same_file_errors_and_preserves_content():
+    files = {"/a.txt": b"AAA"}
+    _, io = await _run(files, set(), ["/a.txt", "/a.txt"])
+    assert io.exit_code == 1
+    assert b"'/a.txt' and '/a.txt' are the same file" in io.stderr
+    assert files["/a.txt"] == b"AAA"
+
+
+@pytest.mark.asyncio
+async def test_same_file_via_directory_target_errors():
+    files = {"/d/a.txt": b"AAA", "/d/keep": b"K"}
+    _, io = await _run(files, {"/d"}, ["/d/a.txt", "/d"])
+    assert io.exit_code == 1
+    assert b"are the same file" in io.stderr
+    assert files["/d/a.txt"] == b"AAA"
+
+
+@pytest.mark.asyncio
+async def test_recursive_into_own_subtree_refused():
+    files = {"/d/a.txt": b"AAA"}
+    _, io = await _run(files, {"/d"}, ["/d", "/d"], recursive=True)
+    assert io.exit_code == 1
+    assert b"cp: cannot copy a directory, '/d', into itself" in io.stderr
+    assert set(files) == {"/d/a.txt"}
+
+
+@pytest.mark.asyncio
+async def test_recursive_into_nested_subtree_refused():
+    files = {"/d/a.txt": b"AAA"}
+    _, io = await _run(files, {"/d", "/d/sub"}, ["/d", "/d/sub"],
+                       recursive=True)
+    assert io.exit_code == 1
+    assert b"into itself" in io.stderr
+    assert set(files) == {"/d/a.txt"}

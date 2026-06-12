@@ -26,6 +26,7 @@ from mirage.commands.builtin.utils.output import (format_optional_records,
 from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.builtin.utils.wrap import (call_read_bytes, call_readdir,
                                                 call_stat)
+from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.postgres.glob import resolve_glob
@@ -90,7 +91,7 @@ async def grep(
     elif texts:
         pattern = texts[0]
     else:
-        raise ValueError("grep: usage: grep [flags] pattern [path]")
+        raise UsageError("grep: usage: grep [flags] pattern [path]")
     max_count = int(m) if m is not None else None
     after_ctx = int(A) if A is not None else (int(C) if C is not None else 0)
     before_ctx = int(B) if B is not None else (int(C) if C is not None else 0)
@@ -214,7 +215,9 @@ async def grep(
         io = IOResult()
         return exit_on_empty(stream, io), io
 
-    source = _resolve_source(stdin, "grep: usage: grep [flags] pattern [path]")
+    source = _resolve_source(stdin,
+                             "grep: usage: grep [flags] pattern [path]",
+                             error_cls=UsageError)
     pat = compile_pattern(pattern, i, F, w)
     stream = grep_stream(
         source,

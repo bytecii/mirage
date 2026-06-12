@@ -238,10 +238,14 @@ a.txt
 /data/dup.txt
 /data/empty.txt
 /data/fields.txt
+/data/guard/g.txt
+/data/guard/sub/s.txt
 /data/mixed.txt
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/patterns.txt
+/data/patterns2.txt
 /data/prefix_dup.txt
 /data/repeats.txt
 /data/sections.txt
@@ -264,10 +268,14 @@ a.txt
 /data/dup.txt
 /data/empty.txt
 /data/fields.txt
+/data/guard/g.txt
+/data/guard/sub/s.txt
 /data/mixed.txt
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/patterns.txt
+/data/patterns2.txt
 /data/prefix_dup.txt
 /data/repeats.txt
 /data/sections.txt
@@ -292,10 +300,13 @@ data.jsonl
 dup.txt
 empty.txt
 fields.txt
+guard
 mixed.txt
 no_nl.txt
 numbers.txt
 one_byte.txt
+patterns.txt
+patterns2.txt
 prefix_dup.txt
 repeats.txt
 sections.txt
@@ -319,10 +330,13 @@ data.jsonl
 dup.txt
 empty.txt
 fields.txt
+guard
 mixed.txt
 no_nl.txt
 numbers.txt
 one_byte.txt
+patterns.txt
+patterns2.txt
 prefix_dup.txt
 repeats.txt
 sections.txt
@@ -426,10 +440,14 @@ baz
 /data/dup.txt
 /data/empty.txt
 /data/fields.txt
+/data/guard/g.txt
+/data/guard/sub/s.txt
 /data/mixed.txt
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/patterns.txt
+/data/patterns2.txt
 /data/prefix_dup.txt
 /data/repeats.txt
 /data/sections.txt
@@ -458,6 +476,8 @@ baz
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/patterns.txt
+/data/patterns2.txt
 /data/prefix_dup.txt
 /data/repeats.txt
 /data/sections.txt
@@ -517,7 +537,7 @@ world
       2 b
       1 c
 === find_pipe_wc ===
-20
+24
 === jq_pipe_wc ===
 3
 === cat_tr_sort ===
@@ -591,6 +611,8 @@ world
 === rg_c ===
 1
 === find_d ===
+/data/guard
+/data/guard/sub
 /data/sub
 /data/sub/deep
 === find_iname ===
@@ -600,10 +622,14 @@ world
 /data/dup.txt
 /data/empty.txt
 /data/fields.txt
+/data/guard/g.txt
+/data/guard/sub/s.txt
 /data/mixed.txt
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/patterns.txt
+/data/patterns2.txt
 /data/prefix_dup.txt
 /data/repeats.txt
 /data/sections.txt
@@ -624,9 +650,12 @@ world
 /data/data.jsonl
 /data/dup.txt
 /data/fields.txt
+/data/guard
+/data/guard/sub
 /data/mixed.txt
 /data/no_nl.txt
 /data/numbers.txt
+/data/patterns.txt
 /data/prefix_dup.txt
 /data/repeats.txt
 /data/sections.txt
@@ -647,10 +676,14 @@ world
 /data/dup.txt
 /data/empty.txt
 /data/fields.txt
+/data/guard/g.txt
+/data/guard/sub/s.txt
 /data/mixed.txt
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/patterns.txt
+/data/patterns2.txt
 /data/prefix_dup.txt
 /data/repeats.txt
 /data/sections.txt
@@ -662,6 +695,8 @@ world
 /data/sub/nested.txt
 /data/tabbed.txt
 === find_path_pattern ===
+/data/guard/sub
+/data/guard/sub/s.txt
 /data/sub
 /data/sub/deep
 /data/sub/deep/deeper.txt
@@ -834,7 +869,9 @@ Jan
 Feb
 Mar
 === sort_b ===
-
+  both  
+  leading
+trailing  
 === uniq_u ===
 c
 === uniq_repeats ===
@@ -876,6 +913,60 @@ o
 
 === grep_empty_pattern ===
 
+=== grep_e_flag ===
+world
+=== grep_e_n ===
+4:bar
+=== grep_e_multi_file ===
+/data/mixed.txt:hello WORLD
+/data/a.txt:hello
+=== grep_e_multi_pattern ===
+world
+bar
+=== grep_e_multi_pattern_n ===
+1:hello
+5:baz
+=== grep_e_multi_pattern_F ===
+foo
+=== grep_f_file ===
+world
+bar
+=== grep_e_f_union ===
+hello
+world
+bar
+=== grep_f_multi ===
+world
+bar
+baz
+=== grep_cluster_ne ===
+2:world
+=== du_max_depth_eq ===
+20	/data/sub
+=== grep_unknown_flag_ignored ===
+world
+=== grep_cluster_attached ===
+2:world
+=== grep_cluster_count ===
+Hello World
+=== rg_f_multi ===
+world
+bar
+baz
+=== zgrep_e_multi_pipe ===
+world
+baz
+=== rg_e_flag ===
+world
+=== rg_e_multi ===
+world
+bar
+=== rg_f_file ===
+world
+bar
+=== zgrep_f_pipe ===
+world
+bar
 === paste_s ===
 1	2	3
 === paste_d_comma ===
@@ -900,10 +991,16 @@ baz,
 /data/dup.txt
 /data/empty.txt
 /data/fields.txt
+/data/guard
+/data/guard/g.txt
+/data/guard/sub
+/data/guard/sub/s.txt
 /data/mixed.txt
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/patterns.txt
+/data/patterns2.txt
 /data/prefix_dup.txt
 /data/repeats.txt
 /data/sections.txt
@@ -925,10 +1022,14 @@ baz,
 /data/dup.txt
 /data/empty.txt
 /data/fields.txt
+/data/guard/g.txt
+/data/guard/sub/s.txt
 /data/mixed.txt
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/patterns.txt
+/data/patterns2.txt
 /data/prefix_dup.txt
 /data/repeats.txt
 /data/sections.txt
@@ -941,7 +1042,10 @@ baz,
 /data/tabbed.txt
 === find_size_lt ===
 /data/empty.txt
+/data/guard
+/data/guard/sub
 /data/one_byte.txt
+/data/patterns2.txt
 /data/sub
 /data/sub/deep
 /data/sub/deep/deeper.txt
@@ -957,10 +1061,14 @@ baz,
 /data/dup.txt
 /data/empty.txt
 /data/fields.txt
+/data/guard/g.txt
+/data/guard/sub/s.txt
 /data/mixed.txt
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/patterns.txt
+/data/patterns2.txt
 /data/prefix_dup.txt
 /data/repeats.txt
 /data/sections.txt
@@ -985,10 +1093,16 @@ baz,
 /data/dup.txt
 /data/empty.txt
 /data/fields.txt
+/data/guard
+/data/guard/g.txt
+/data/guard/sub
+/data/guard/sub/s.txt
 /data/mixed.txt
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/patterns.txt
+/data/patterns2.txt
 /data/prefix_dup.txt
 /data/repeats.txt
 /data/sections.txt
@@ -1040,7 +1154,7 @@ baz,
 === du_file ===
 24	/data/a.txt
 === du_dir ===
-602	/data
+628	/data
 === du_h ===
 24B	/data/a.txt
 === tree ===
@@ -1054,11 +1168,19 @@ foo
 bar
 baz
 === cat_E ===
-
+hello
+world
+foo
+bar
+baz
 === cat_T ===
-
+a	1
+b	2
+c	3
 === cat_A ===
-
+a	1
+b	2
+c	3
 === nl_d_pipe ===
 
 === nl_w3 ===
@@ -1147,6 +1269,8 @@ deeper.txt
 === ls_sub_deep ===
 deeper.txt
 === zgrep_pipe ===
+world
+=== zgrep_e_pipe ===
 world
 === gzip_c_pipe ===
 1
@@ -1272,11 +1396,67 @@ gz-data
 exit=0
 === jq_dot_no_input ===
 exit=0
+=== tac_no_input ===
+exit=0
+=== xxd_no_input ===
+exit=0
+=== column_no_input ===
+exit=0
+=== strings_no_input ===
+exit=0
+=== tsort_no_input ===
+exit=0
+=== base64_no_input ===
+exit=0
+=== split_no_input ===
+exit=0
+=== iconv_no_input ===
+exit=0
+=== bc_no_input ===
+exit=0
+=== tr_no_input ===
+exit=0
+=== awk_no_input ===
+exit=0
+=== sha256sum_no_input ===
+exit=0
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  -
+=== patch_no_input ===
+exit=0
+=== look_no_input ===
+exit=1
+=== zgrep_no_input ===
+exit=1
+=== gunzip_no_input ===
+exit=1
+=== zcat_no_input ===
+exit=1
+=== gzip_d_no_input ===
+exit=1
+=== csplit_no_input ===
+exit=0
+=== gzip_no_input_roundtrip ===
+exit=0
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  -
 === lazy_exit_grep_match ===
 exit=0
 hello
 === lazy_exit_grep_no_match ===
 exit=1
+=== grep_f_empty_no_match ===
+exit=1
+=== grep_usage_exit ===
+exit=2
+=== rg_usage_exit ===
+exit=2
+=== zgrep_usage_exit ===
+exit=2
+=== grep_usage_no_input ===
+exit=2
+=== rg_usage_no_input ===
+exit=2
+=== grep_usage_stdin_only ===
+exit=2
 === cp_reject_multi_nondir ===
 exit=1
 === inv_ls_warm ===
@@ -1375,3 +1555,23 @@ exit=1
 === grep_dir_among_files ===
 exit=0
 /data/a.txt:hello
+=== guard_cp_same_file ===
+exit=1
+=== guard_mv_same_file ===
+exit=1
+=== guard_mv_same_file_intact ===
+exit=0
+guard
+=== guard_mv_into_dir_where_file_lives ===
+exit=1
+=== guard_cp_dir_into_itself ===
+exit=1
+=== guard_mv_dir_into_own_subtree ===
+exit=1
+=== guard_cp_missing_source_continues ===
+exit=1
+=== guard_state_after ===
+exit=0
+/data/guard/g.txt
+/data/guard/sub/g.txt
+/data/guard/sub/s.txt

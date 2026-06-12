@@ -20,7 +20,7 @@ async def look(
     else:
         raw = await _read_stdin_async(stdin)
         if raw is None:
-            raise ValueError("look: missing input")
+            raw = b""
     text = raw.decode(errors="replace")
     cmp_prefix = prefix.lower() if fold_case else prefix
     matched: list[str] = []

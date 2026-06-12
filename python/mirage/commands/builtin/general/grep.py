@@ -16,25 +16,17 @@ import re
 from collections.abc import AsyncIterator
 
 from mirage.commands.builtin.grep_context import grep_context_lines
+from mirage.commands.builtin.grep_helper import (NEVER_MATCH, compile_pattern,
+                                                 merge_pattern_list,
+                                                 pattern_arg)
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.builtin.utils.stream import _resolve_source
+from mirage.commands.errors import UsageError
+from mirage.commands.spec.types import FlagView
 from mirage.io.async_line_iterator import AsyncLineIterator
 from mirage.io.stream import exit_on_empty, quiet_match
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-
-
-def _compile_pattern(
-    pattern: str,
-    ignore_case: bool = False,
-    fixed_string: bool = False,
-    whole_word: bool = False,
-) -> re.Pattern[str]:
-    flags = re.IGNORECASE if ignore_case else 0
-    pat_str = re.escape(pattern) if fixed_string else pattern
-    if whole_word:
-        pat_str = r"\b" + pat_str + r"\b"
-    return re.compile(pat_str, flags)
 
 
 async def _grep_stream(
@@ -105,43 +97,50 @@ async def grep(
     paths: list[PathSpec],
     *texts: str,
     stdin: AsyncIterator[bytes] | bytes | None = None,
-    r: bool = False,
-    R: bool = False,
-    i: bool = False,
-    v: bool = False,
-    n: bool = False,
-    c: bool = False,
-    args_l: bool = False,
-    w: bool = False,
-    F: bool = False,
-    E: bool = False,
-    o: bool = False,
-    m: str | None = None,
-    q: bool = False,
-    A: str | None = None,
-    B: str | None = None,
-    C: str | None = None,
-    e: str | None = None,
     prefix: str = "",
-    **_extra: object,
+    **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
-    if e is not None:
-        pattern = e
-    elif texts:
-        pattern = texts[0]
-    else:
-        raise ValueError("grep: usage: grep [flags] pattern [path]")
+    fl = FlagView(flags)
+    pattern = pattern_arg(texts, fl)
+    pattern_file = fl.raw("f")
+    if pattern is None and pattern_file is None:
+        raise UsageError("grep: usage: grep [flags] pattern [path]")
+    i = fl.bool("i")
+    v = fl.bool("v")
+    n = fl.bool("n")
+    c = fl.bool("c")
+    args_l = fl.bool("args_l")
+    w = fl.bool("w")
+    F = fl.bool("F")
+    o = fl.bool("o")
+    q = fl.bool("q")
+    recursive = fl.bool("r") or fl.bool("R")
+    max_count = fl.int("m")
+    a_ctx = fl.int("A")
+    b_ctx = fl.int("B")
+    c_ctx = fl.int("C")
+    after_ctx = a_ctx if a_ctx is not None else (c_ctx or 0)
+    before_ctx = b_ctx if b_ctx is not None else (c_ctx or 0)
 
-    max_count = int(m) if m is not None else None
-    after_ctx = int(A) if A is not None else (int(C) if C is not None else 0)
-    before_ctx = int(B) if B is not None else (int(C) if C is not None else 0)
+    if pattern_file is not None:
+        if ops is None or "read_stream" not in ops:
+            raise ValueError(
+                "grep: -f: pattern file requires filesystem context")
+        files = (pattern_file
+                 if isinstance(pattern_file, list) else [pattern_file])
+        for pf in files:
+            chunks = [chunk async for chunk in ops["read_stream"](pf)]
+            pattern = merge_pattern_list(pattern, b"".join(chunks))
+        if pattern is None:
+            pattern = NEVER_MATCH
+            F = False
 
     if paths and ops is not None:
         if args_l and "grep" in ops:
             results = ops["grep"](
                 paths[0],
                 pattern=pattern,
-                recursive=r or R,
+                recursive=recursive,
                 ignore_case=i,
                 invert=v,
                 line_numbers=n,
@@ -158,7 +157,7 @@ async def grep(
                 results = [prefix + "/" + r.lstrip("/") for r in results]
             return format_records(results), IOResult()
 
-        pat = _compile_pattern(pattern, i, F, w)
+        pat = compile_pattern(pattern, i, F, w)
         source = ops["read_stream"](paths[0])
         stream = _grep_stream(
             source,
@@ -177,8 +176,10 @@ async def grep(
         io = IOResult()
         return exit_on_empty(stream, io), io
 
-    source = _resolve_source(stdin, "grep: usage: grep [flags] pattern [path]")
-    pat = _compile_pattern(pattern, i, F, w)
+    source = _resolve_source(stdin,
+                             "grep: usage: grep [flags] pattern [path]",
+                             error_cls=UsageError)
+    pat = compile_pattern(pattern, i, F, w)
     stream = _grep_stream(
         source,
         pat,

@@ -16,7 +16,7 @@ import { exitOnEmpty } from '../../../io/stream.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { compilePattern, grepStream } from '../grep_helper.ts'
+import { compilePattern, grepStream, resolvePatternFromFlags } from '../grep_helper.ts'
 import { rgFolderFiletype, rgFull } from '../rg_helper.ts'
 import { resolveSource } from '../utils/stream.ts'
 import { grepGeneric } from './grep.ts'
@@ -50,8 +50,8 @@ interface RgFlags {
   hidden: boolean
 }
 
-function parseRgFlags(flags: Record<string, string | boolean>): RgFlags {
-  const toInt = (v: string | boolean | undefined): number | null =>
+function parseRgFlags(flags: Record<string, string | boolean | string[]>): RgFlags {
+  const toInt = (v: string | boolean | string[] | undefined): number | null =>
     typeof v === 'string' ? Number.parseInt(v, 10) : null
   const a = toInt(flags.A)
   const b = toInt(flags.B)
@@ -87,18 +87,36 @@ export async function rgGeneric(
   stream: Stream,
   scopeCheck?: ScopeCheck,
 ): Promise<CommandFnResult> {
-  const [exprText] = texts
-  if (exprText === undefined) {
+  const resolution = await resolvePatternFromFlags(
+    'rg',
+    texts,
+    opts.flags,
+    paths,
+    opts.mountPrefix,
+    stream,
+  )
+  if (resolution.error !== null) {
+    return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(resolution.error) })]
+  }
+  const exprText = resolution.pattern
+  if (exprText === null) {
     return [
       null,
       new IOResult({ exitCode: 2, stderr: ENC.encode('rg: usage: rg [flags] pattern [path]\n') }),
     ]
   }
   const flags = parseRgFlags(opts.flags)
+  if (resolution.neverMatch) flags.fixedString = false
   const [first] = paths
 
   if (first === undefined) {
-    const source = resolveSource(opts.stdin, 'rg: usage: rg [flags] pattern [path]')
+    let source: AsyncIterable<Uint8Array>
+    try {
+      source = resolveSource(opts.stdin, 'rg: usage: rg [flags] pattern [path]')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(`${msg}\n`) })]
+    }
     const pat = compilePattern(exprText, flags.ignoreCase, flags.fixedString, flags.wholeWord)
     const matched = grepStream(source, pat, {
       invert: flags.invert,

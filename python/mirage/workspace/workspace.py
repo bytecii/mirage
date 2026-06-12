@@ -26,6 +26,7 @@ from mirage.cache.file.ram import RAMFileCacheStore
 from mirage.cache.index import IndexConfig
 from mirage.commands.builtin.utils.safeguard import (CommandTimeoutError,
                                                      run_with_timeout)
+from mirage.commands.errors import UsageError
 from mirage.commands.safeguard import resolve_safeguard
 
 try:
@@ -712,6 +713,11 @@ class Workspace:
             return io
         except (MirageAbortError, ContentDriftError):
             raise
+        except UsageError as exc:
+            msg = f"{exc}\n".encode()
+            io = IOResult(exit_code=2, stderr=msg)
+            exec_node = ExecutionNode(command=command, stderr=msg, exit_code=2)
+            return io
         except Exception as exc:
             io = IOResult(exit_code=1, stderr=str(exc).encode())
             exec_node = ExecutionNode(command=command,

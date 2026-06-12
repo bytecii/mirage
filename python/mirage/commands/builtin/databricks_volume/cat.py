@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator
 
 from mirage.accessor.databricks_volume import DatabricksVolumeAccessor
 from mirage.cache.index import IndexCacheStore
+from mirage.commands.builtin.generic.cat import cat as generic_cat
 from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
@@ -23,19 +24,10 @@ from mirage.core.databricks_volume.glob import resolve_glob
 from mirage.core.databricks_volume.read import read_bytes
 from mirage.core.databricks_volume.stat import stat
 from mirage.core.databricks_volume.stream import read_stream
-from mirage.io.async_line_iterator import AsyncLineIterator
 from mirage.io.cachable_iterator import CachableAsyncIterator
 from mirage.io.stream import async_chain
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-
-
-async def _number_lines_stream(
-        source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
-    line_number = 1
-    async for line in AsyncLineIterator(source):
-        yield f"     {line_number}\t".encode() + line + b"\n"
-        line_number += 1
 
 
 @command("cat", resource="databricks_volume", spec=SPECS["cat"])
@@ -73,9 +65,9 @@ async def cat(
             io = IOResult(reads=reads, cache=list(reads))
             source = async_chain(*parts)
         if n:
-            return _number_lines_stream(source), io
+            return generic_cat(source, number_lines=True), io
         return source, io
     source = _resolve_source(stdin, "cat: missing operand")
     if n:
-        return _number_lines_stream(source), IOResult()
+        return generic_cat(source, number_lines=True), IOResult()
     return source, IOResult()

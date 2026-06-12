@@ -372,6 +372,11 @@ async def test_patch_reverse():
 
 @pytest.mark.asyncio
 async def test_patch_missing_input():
-    rb, wb, _, _, _ = _make_backend({})
-    with pytest.raises(ValueError, match="missing input"):
-        await patch([], read_bytes=rb, write_bytes=wb, has_resource=False)
+    rb, wb, _, _, store = _make_backend({})
+    out, io = await patch([],
+                          read_bytes=rb,
+                          write_bytes=wb,
+                          has_resource=False)
+    assert out is None
+    assert io.exit_code == 0
+    assert not store
