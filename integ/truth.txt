@@ -1413,6 +1413,18 @@ hello
 exit=1
 === grep_f_empty_no_match ===
 exit=1
+=== grep_usage_exit ===
+exit=2
+=== rg_usage_exit ===
+exit=2
+=== zgrep_usage_exit ===
+exit=2
+=== grep_usage_no_input ===
+exit=2
+=== rg_usage_no_input ===
+exit=2
+=== grep_usage_stdin_only ===
+exit=2
 === cp_reject_multi_nondir ===
 exit=1
 === inv_ls_warm ===

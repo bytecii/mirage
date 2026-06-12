@@ -25,6 +25,7 @@ from mirage.commands.builtin.utils.output import (format_optional_records,
 from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.builtin.utils.wrap import (call_read_bytes, call_readdir,
                                                 call_stat)
+from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.databricks_volume.glob import resolve_glob
@@ -68,7 +69,7 @@ async def rg(
     elif texts:
         pattern = texts[0]
     else:
-        raise ValueError("rg: usage: rg [flags] pattern [path]")
+        raise UsageError("rg: usage: rg [flags] pattern [path]")
     max_count = int(m) if m is not None else None
     context_after = int(A) if A is not None else 0
     context_before = int(B) if B is not None else 0
@@ -177,7 +178,9 @@ async def rg(
         )
         io = IOResult()
         return exit_on_empty(stream, io), io
-    source = _resolve_source(stdin, "rg: usage: rg [flags] pattern path")
+    source = _resolve_source(stdin,
+                             "rg: usage: rg [flags] pattern [path]",
+                             error_cls=UsageError)
     compiled = compile_pattern(pattern, i, F, w)
     stream = grep_stream(
         source,

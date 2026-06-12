@@ -22,6 +22,7 @@ from mirage.commands.builtin.grep_helper import (compile_pattern,
                                                  grep_count_has_matches,
                                                  grep_lines, pattern_arg)
 from mirage.commands.builtin.utils.output import format_records
+from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
@@ -48,7 +49,7 @@ async def rg(
     fl = FlagView(flags)
     pattern_str = pattern_arg(texts, fl)
     if pattern_str is None:
-        raise ValueError("rg: usage: rg [flags] pattern [path]")
+        raise UsageError("rg: usage: rg [flags] pattern [path]")
     i = fl.bool("i")
     v = fl.bool("v")
     n = fl.bool("n")

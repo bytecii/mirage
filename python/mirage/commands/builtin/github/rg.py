@@ -19,6 +19,7 @@ from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.constants import PatternType
 from mirage.commands.builtin.generic.rg import rg as generic_rg
 from mirage.commands.builtin.grep_helper import classify_pattern, pattern_arg
+from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
@@ -46,7 +47,7 @@ async def rg(
     fl = FlagView(flags)
     pattern_str = pattern_arg(texts, fl)
     if pattern_str is None:
-        raise ValueError("rg: usage: rg [flags] pattern [path]")
+        raise UsageError("rg: usage: rg [flags] pattern [path]")
 
     if paths and index is None:
         return b"", IOResult(exit_code=1)

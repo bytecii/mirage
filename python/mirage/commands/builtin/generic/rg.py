@@ -15,6 +15,7 @@ from mirage.commands.builtin.utils.output import (format_optional_records,
 from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.builtin.utils.wrap import (call_read_bytes, call_readdir,
                                                 call_stat)
+from mirage.commands.errors import UsageError
 from mirage.commands.spec.types import FlagView
 from mirage.io.stream import exit_on_empty
 from mirage.io.types import ByteSource, IOResult
@@ -197,7 +198,9 @@ async def rg(
         io = IOResult()
         return exit_on_empty(stream, io), io
 
-    source = _resolve_source(stdin, "rg: usage: rg [flags] pattern path")
+    source = _resolve_source(stdin,
+                             "rg: usage: rg [flags] pattern [path]",
+                             error_cls=UsageError)
     pat = compile_pattern(pattern, ignore_case, fixed_string, whole_word)
     stream = grep_stream(
         source,

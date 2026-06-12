@@ -110,7 +110,13 @@ export async function rgGeneric(
   const [first] = paths
 
   if (first === undefined) {
-    const source = resolveSource(opts.stdin, 'rg: usage: rg [flags] pattern [path]')
+    let source: AsyncIterable<Uint8Array>
+    try {
+      source = resolveSource(opts.stdin, 'rg: usage: rg [flags] pattern [path]')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(`${msg}\n`) })]
+    }
     const pat = compilePattern(exprText, flags.ignoreCase, flags.fixedString, flags.wholeWord)
     const matched = grepStream(source, pat, {
       invert: flags.invert,

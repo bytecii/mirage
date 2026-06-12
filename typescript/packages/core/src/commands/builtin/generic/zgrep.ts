@@ -100,7 +100,16 @@ export async function zgrepGeneric(
     return [null, new IOResult({ exitCode: 2, stderr: new TextEncoder().encode(resolution.error) })]
   }
   const neverMatch = resolution.neverMatch
-  const rawPattern = resolution.pattern ?? ''
+  if (resolution.pattern === null) {
+    return [
+      null,
+      new IOResult({
+        exitCode: 2,
+        stderr: ENC.encode('zgrep: usage: zgrep [flags] pattern [path]\n'),
+      }),
+    ]
+  }
+  const rawPattern = resolution.pattern
   const extendedRegex = opts.flags.E === true
   const fixedString = opts.flags.F === true && !neverMatch
   const wholeWord = opts.flags.w === true

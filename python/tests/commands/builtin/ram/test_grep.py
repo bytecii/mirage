@@ -150,3 +150,16 @@ async def test_grep_v_dash_f_empty_file_matches_all(workspace):
                                  session_id="default")
     assert io.exit_code == 0
     assert (io.stdout or b"").decode() == "orange line\nplain line\n"
+
+
+@pytest.mark.asyncio
+async def test_usage_error_is_exit_2_with_newline(workspace):
+    # GNU parity: grep/rg/zgrep without a pattern report usage on stderr
+    # and exit 2 (grep and rg do; zgrep prints usage with exit 2 here for
+    # consistency across the family).
+    for cmd in ("grep", "rg", "zgrep"):
+        io = await workspace.execute(cmd, session_id="default")
+        assert io.exit_code == 2
+        stderr = io.stderr if isinstance(io.stderr, bytes) else b""
+        usage = f"{cmd}: usage: {cmd} [flags] pattern [path]\n"
+        assert stderr == usage.encode()

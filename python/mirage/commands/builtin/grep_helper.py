@@ -21,6 +21,7 @@ from mirage.commands.builtin.grep_context import grep_context_lines
 from mirage.commands.builtin.utils.types import (_AsyncReadBytes,
                                                  _AsyncReaddir, _AsyncStat)
 from mirage.commands.builtin.utils.wrap import call_read_bytes
+from mirage.commands.errors import UsageError
 from mirage.commands.resolve import COMPOUND_EXTENSIONS
 from mirage.commands.spec.types import FlagView
 from mirage.io.async_line_iterator import AsyncLineIterator
@@ -121,7 +122,7 @@ async def resolve_pattern(
         if pattern is None:
             return NEVER_MATCH, True
     if pattern is None:
-        raise ValueError(usage)
+        raise UsageError(usage)
     return pattern, False
 
 

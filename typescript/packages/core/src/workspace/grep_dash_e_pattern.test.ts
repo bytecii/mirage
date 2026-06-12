@@ -143,6 +143,17 @@ describe('grep -e pattern flag', () => {
     await ws.close()
   })
 
+  it('usage errors are exit 2 with a usage message (GNU parity)', async () => {
+    const ws = await makeWs()
+    for (const cmd of ['grep', 'rg', 'zgrep']) {
+      const io = await ws.execute(cmd)
+      expect(io.exitCode).toBe(2)
+      const stderr = io.stderr instanceof Uint8Array ? new TextDecoder().decode(io.stderr) : ''
+      expect(stderr).toBe(`${cmd}: usage: ${cmd} [flags] pattern [path]\n`)
+    }
+    await ws.close()
+  })
+
   it('rg -e and repeated rg -e work like grep', async () => {
     const ws = await makeWs()
     const single = await ws.execute('rg -e orange /data/a.txt')
