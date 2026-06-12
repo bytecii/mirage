@@ -16,13 +16,7 @@ import { exitOnEmpty } from '../../../io/stream.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import {
-  NEVER_MATCH,
-  compilePattern,
-  grepStream,
-  mergePatternList,
-  patternArg,
-} from '../grep_helper.ts'
+import { compilePattern, grepStream, resolvePatternFromFlags } from '../grep_helper.ts'
 import { rgFolderFiletype, rgFull } from '../rg_helper.ts'
 import { resolveSource } from '../utils/stream.ts'
 import { grepGeneric } from './grep.ts'
@@ -93,37 +87,26 @@ export async function rgGeneric(
   stream: Stream,
   scopeCheck?: ScopeCheck,
 ): Promise<CommandFnResult> {
-  let exprText: string | undefined = patternArg(texts, opts.flags) ?? undefined
-  let neverMatch = false
-  if (Array.isArray(opts.flags.f)) {
-    // Repeatable -f arrives as a list of resolved paths; read each file.
-    for (const filePath of opts.flags.f) {
-      const patternSpec = PathSpec.fromStrPath(filePath, paths[0]?.prefix ?? opts.mountPrefix ?? '')
-      let fileData: Uint8Array
-      try {
-        fileData = await materialize(stream(patternSpec))
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        return [
-          null,
-          new IOResult({ exitCode: 2, stderr: ENC.encode(`rg: ${filePath}: ${msg}\n`) }),
-        ]
-      }
-      exprText = mergePatternList(exprText ?? null, fileData) ?? undefined
-    }
-    if (exprText === undefined) {
-      exprText = NEVER_MATCH
-      neverMatch = true
-    }
+  const resolution = await resolvePatternFromFlags(
+    'rg',
+    texts,
+    opts.flags,
+    paths,
+    opts.mountPrefix,
+    stream,
+  )
+  if (resolution.error !== null) {
+    return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(resolution.error) })]
   }
-  if (exprText === undefined) {
+  const exprText = resolution.pattern
+  if (exprText === null) {
     return [
       null,
       new IOResult({ exitCode: 2, stderr: ENC.encode('rg: usage: rg [flags] pattern [path]\n') }),
     ]
   }
   const flags = parseRgFlags(opts.flags)
-  if (neverMatch) flags.fixedString = false
+  if (resolution.neverMatch) flags.fixedString = false
   const [first] = paths
 
   if (first === undefined) {

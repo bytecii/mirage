@@ -17,9 +17,11 @@ from collections.abc import AsyncIterator
 
 from mirage.commands.builtin.grep_context import grep_context_lines
 from mirage.commands.builtin.grep_helper import (NEVER_MATCH, compile_pattern,
-                                                 merge_pattern_list)
+                                                 merge_pattern_list,
+                                                 pattern_arg)
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.builtin.utils.stream import _resolve_source
+from mirage.commands.spec.types import FlagView
 from mirage.io.async_line_iterator import AsyncLineIterator
 from mirage.io.stream import exit_on_empty, quiet_match
 from mirage.io.types import ByteSource, IOResult
@@ -94,42 +96,37 @@ async def grep(
     paths: list[PathSpec],
     *texts: str,
     stdin: AsyncIterator[bytes] | bytes | None = None,
-    r: bool = False,
-    R: bool = False,
-    i: bool = False,
-    v: bool = False,
-    n: bool = False,
-    c: bool = False,
-    args_l: bool = False,
-    w: bool = False,
-    F: bool = False,
-    E: bool = False,
-    o: bool = False,
-    m: str | None = None,
-    q: bool = False,
-    A: str | None = None,
-    B: str | None = None,
-    C: str | None = None,
-    e: str | None = None,
-    f: PathSpec | list[PathSpec] | None = None,
     prefix: str = "",
-    **_extra: object,
+    **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
-    pattern: str | None
-    if e is not None:
-        pattern = e
-    elif texts:
-        pattern = texts[0]
-    elif f is not None:
-        pattern = None
-    else:
+    fl = FlagView(flags)
+    pattern = pattern_arg(texts, fl)
+    pattern_file = fl.raw("f")
+    if pattern is None and pattern_file is None:
         raise ValueError("grep: usage: grep [flags] pattern [path]")
+    i = fl.bool("i")
+    v = fl.bool("v")
+    n = fl.bool("n")
+    c = fl.bool("c")
+    args_l = fl.bool("args_l")
+    w = fl.bool("w")
+    F = fl.bool("F")
+    o = fl.bool("o")
+    q = fl.bool("q")
+    recursive = fl.bool("r") or fl.bool("R")
+    max_count = fl.int("m")
+    a_ctx = fl.int("A")
+    b_ctx = fl.int("B")
+    c_ctx = fl.int("C")
+    after_ctx = a_ctx if a_ctx is not None else (c_ctx or 0)
+    before_ctx = b_ctx if b_ctx is not None else (c_ctx or 0)
 
-    if f is not None:
+    if pattern_file is not None:
         if ops is None or "read_stream" not in ops:
             raise ValueError(
                 "grep: -f: pattern file requires filesystem context")
-        files = f if isinstance(f, list) else [f]
+        files = (pattern_file
+                 if isinstance(pattern_file, list) else [pattern_file])
         for pf in files:
             chunks = [chunk async for chunk in ops["read_stream"](pf)]
             pattern = merge_pattern_list(pattern, b"".join(chunks))
@@ -137,16 +134,12 @@ async def grep(
             pattern = NEVER_MATCH
             F = False
 
-    max_count = int(m) if m is not None else None
-    after_ctx = int(A) if A is not None else (int(C) if C is not None else 0)
-    before_ctx = int(B) if B is not None else (int(C) if C is not None else 0)
-
     if paths and ops is not None:
         if args_l and "grep" in ops:
             results = ops["grep"](
                 paths[0],
                 pattern=pattern,
-                recursive=r or R,
+                recursive=recursive,
                 ignore_case=i,
                 invert=v,
                 line_numbers=n,

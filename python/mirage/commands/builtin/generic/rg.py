@@ -3,11 +3,11 @@ from collections.abc import (AsyncIterator, Awaitable, Callable, Mapping,
 from functools import partial
 
 from mirage.cache.index import IndexCacheStore
-from mirage.commands.builtin.generic.grep import resolve_pattern
 from mirage.commands.builtin.grep_helper import (compile_pattern,
                                                  grep_count_has_matches,
                                                  grep_lines, grep_stream,
-                                                 nonzero_count_stream)
+                                                 nonzero_count_stream,
+                                                 resolve_pattern)
 from mirage.commands.builtin.rg_helper import rg_full
 from mirage.commands.builtin.utils.lines import split_lines
 from mirage.commands.builtin.utils.output import (format_optional_records,

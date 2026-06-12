@@ -4,8 +4,8 @@ from collections.abc import (AsyncIterator, Awaitable, Callable, Mapping,
                              Sequence)
 from functools import partial
 
-from mirage.commands.builtin.generic.grep import resolve_pattern
-from mirage.commands.builtin.grep_helper import build_pattern_str
+from mirage.commands.builtin.grep_helper import (build_pattern_str,
+                                                 resolve_pattern)
 from mirage.commands.builtin.utils.lines import split_lines
 from mirage.commands.builtin.utils.stream import _read_stdin_async
 from mirage.commands.spec.types import FlagView

@@ -3,11 +3,10 @@ from collections.abc import (AsyncIterator, Awaitable, Callable, Mapping,
 from functools import partial
 
 from mirage.cache.index import IndexCacheStore
-from mirage.commands.builtin.grep_helper import (NEVER_MATCH, compile_pattern,
+from mirage.commands.builtin.grep_helper import (compile_pattern,
                                                  grep_files_only, grep_lines,
                                                  grep_recursive, grep_stream,
-                                                 merge_pattern_list,
-                                                 pattern_arg)
+                                                 resolve_pattern)
 from mirage.commands.builtin.utils.lines import split_lines
 from mirage.commands.builtin.utils.output import (format_optional_records,
                                                   format_records)
@@ -18,50 +17,6 @@ from mirage.commands.spec.types import FlagView
 from mirage.io.stream import exit_on_empty, quiet_match
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileStat, FileType, PathSpec
-
-
-async def resolve_pattern(
-    texts: Sequence[str],
-    flags: FlagView,
-    read_bytes: Callable[..., Awaitable[bytes]],
-    accessor: object,
-    index: IndexCacheStore | None,
-    usage: str,
-) -> tuple[str, bool]:
-    """Resolve the search pattern from -e/positional/-f flag arguments.
-
-    Args:
-        texts (Sequence[str]): positional TEXT operands.
-        flags (FlagView): typed view over raw flag kwargs.
-        read_bytes (Callable[..., Awaitable[bytes]]): whole-file reader used
-            for -f pattern files.
-        accessor (object): backend accessor for read_bytes.
-        index (IndexCacheStore | None): optional cache index.
-        usage (str): usage error message when no pattern was supplied.
-
-    Returns:
-        tuple[str, bool]: (newline-separated pattern list, never_match) where
-            never_match is True when -f supplied zero patterns (GNU: match
-            nothing; -F escaping must be skipped for the sentinel).
-    """
-    pattern = pattern_arg(texts, flags)
-
-    pattern_file = flags.raw("f")
-    if isinstance(pattern_file, (PathSpec, list)):
-        files = (pattern_file
-                 if isinstance(pattern_file, list) else [pattern_file])
-        for pf in files:
-            file_data = await call_read_bytes(read_bytes,
-                                              accessor,
-                                              pf,
-                                              index=index,
-                                              prefix=pf.prefix)
-            pattern = merge_pattern_list(pattern, file_data)
-        if pattern is None:
-            return NEVER_MATCH, True
-    if pattern is None:
-        raise ValueError(usage)
-    return pattern, False
 
 
 async def grep(

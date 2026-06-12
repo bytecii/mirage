@@ -13,7 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
-import { type FileStat, FileType } from '../../types.ts'
+import { materialize } from '../../io/types.ts'
+import { type FileStat, FileType, PathSpec } from '../../types.ts'
 import { getExtension } from '../resolve.ts'
 import { grepContextLines } from './grep_context.ts'
 
@@ -47,6 +48,46 @@ export function patternArg(
   if (typeof e === 'string') return e
   if (texts.length > 0 && texts[0] !== undefined) return texts[0]
   return null
+}
+
+export interface PatternResolution {
+  pattern: string | null
+  neverMatch: boolean
+  error: string | null
+}
+
+// Resolve the full pattern list from -e values, the positional, and -f
+// pattern files (read via the backend stream). Shared by the grep, rg, and
+// zgrep generics. When -f supplies zero patterns the NEVER_MATCH sentinel is
+// returned with neverMatch=true (callers must skip -F escaping for it).
+export async function resolvePatternFromFlags(
+  name: string,
+  texts: readonly string[],
+  flags: Record<string, string | boolean | string[]>,
+  paths: readonly PathSpec[],
+  mountPrefix: string | null | undefined,
+  stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
+): Promise<PatternResolution> {
+  let pattern = patternArg(texts, flags)
+  let neverMatch = false
+  if (Array.isArray(flags.f)) {
+    for (const filePath of flags.f) {
+      const patternSpec = PathSpec.fromStrPath(filePath, paths[0]?.prefix ?? mountPrefix ?? '')
+      let fileData: Uint8Array
+      try {
+        fileData = await materialize(stream(patternSpec))
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { pattern: null, neverMatch: false, error: `${name}: ${filePath}: ${msg}\n` }
+      }
+      pattern = mergePatternList(pattern, fileData)
+    }
+    if (pattern === null) {
+      pattern = NEVER_MATCH
+      neverMatch = true
+    }
+  }
+  return { pattern, neverMatch, error: null }
 }
 
 export function mergePatternList(
