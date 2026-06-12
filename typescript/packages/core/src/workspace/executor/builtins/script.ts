@@ -160,14 +160,28 @@ export async function handleSource(
   return [io.stdout, io, new ExecutionNode({ command: `source ${raw}`, exitCode: io.exitCode })]
 }
 
+// Finite non-negative decimals only ("0", "0.2", ".5", "1.", "+1", "1e-3").
+// GNU sleep additionally accepts "inf" and sleeps forever; an agent shell
+// must never hang, so non-finite intervals are rejected (deliberate
+// divergence). The regex also keeps Python/TypeScript parsing identical:
+// Number() alone would accept "0x10", "Infinity", and the empty string that
+// float() rejects, and float() accepts "inf", "nan", and "1_0".
+const SLEEP_INTERVAL = /^\+?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/
+
 export async function handleSleep(args: string[], signal?: AbortSignal): Promise<Result> {
   const raw = args[0]
   if (raw === undefined) {
-    return [null, new IOResult(), new ExecutionNode({ command: 'sleep', exitCode: 0 })]
+    const err = new TextEncoder().encode('sleep: missing operand\n')
+    return [
+      null,
+      new IOResult({ exitCode: 1, stderr: err }),
+      new ExecutionNode({ command: 'sleep', exitCode: 1 }),
+    ]
   }
-  const seconds = Number(raw)
+  // "1e309" passes the regex but overflows to Infinity, so check both.
+  const seconds = SLEEP_INTERVAL.test(raw) ? Number(raw) : Infinity
   if (!Number.isFinite(seconds)) {
-    const err = new TextEncoder().encode(`sleep: invalid argument: ${raw}\n`)
+    const err = new TextEncoder().encode(`sleep: invalid time interval '${raw}'\n`)
     return [
       null,
       new IOResult({ exitCode: 1, stderr: err }),

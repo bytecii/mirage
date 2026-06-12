@@ -15,7 +15,7 @@
 import { ResourceName } from '../../../types.ts'
 import { command } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { dirnameFn } from '../path_helper.ts'
+import { dirnameFn } from '../generic/dirname.ts'
 
 export const DROPBOX_DIRNAME = command({
   name: 'dirname',

@@ -15,7 +15,7 @@
 import { ResourceName } from '../../../types.ts'
 import { command } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { basenameFn } from '../path_helper.ts'
+import { basenameFn } from '../generic/basename.ts'
 
 export const GDRIVE_BASENAME = command({
   name: 'basename',
