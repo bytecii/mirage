@@ -23,7 +23,7 @@ async def grep(
     index: IndexCacheStore = None,
     **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(flags)
+    fl = FlagView(flags, spec=SPECS["grep"])
     paths = await resolve_glob(accessor, paths, index)
     pattern = pattern_arg(texts, fl)
     files = paths

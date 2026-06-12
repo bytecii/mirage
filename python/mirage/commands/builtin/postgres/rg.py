@@ -45,7 +45,7 @@ async def rg(
     index: IndexCacheStore = None,
     **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(flags)
+    fl = FlagView(flags, spec=SPECS["rg"])
     pattern_str = pattern_arg(texts, fl)
     if pattern_str is None:
         raise UsageError("rg: usage: rg [flags] pattern [path]")

@@ -22,6 +22,7 @@ from mirage.commands.builtin.grep_helper import (NEVER_MATCH, compile_pattern,
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.errors import UsageError
+from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
 from mirage.io.async_line_iterator import AsyncLineIterator
 from mirage.io.stream import exit_on_empty, quiet_match
@@ -100,7 +101,7 @@ async def grep(
     prefix: str = "",
     **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(flags)
+    fl = FlagView(flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
     pattern_file = fl.raw("f")
     if pattern is None and pattern_file is None:

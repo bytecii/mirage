@@ -1,5 +1,6 @@
 from collections.abc import (AsyncIterator, Awaitable, Callable, Mapping,
                              Sequence)
+from dataclasses import dataclass
 from functools import partial
 
 from mirage.cache.index import IndexCacheStore
@@ -16,10 +17,64 @@ from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.builtin.utils.wrap import (call_read_bytes, call_readdir,
                                                 call_stat)
 from mirage.commands.errors import UsageError
+from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
 from mirage.io.stream import exit_on_empty
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileStat, FileType, PathSpec
+
+
+@dataclass(frozen=True, slots=True)
+class RgFlags:
+    """Parsed rg flags (TS RgFlags parity); the complete set rg honors."""
+    ignore_case: bool
+    invert: bool
+    line_numbers: bool
+    count_only: bool
+    files_only: bool
+    whole_word: bool
+    fixed_string: bool
+    only_matching: bool
+    hidden: bool
+    file_type: str | None
+    glob_pattern: str | None
+    max_count: int | None
+    context_after: int
+    context_before: int
+
+
+def parse_flags(fl: FlagView, never_match: bool) -> RgFlags:
+    """Convert the raw flag bag into RgFlags, the only string-keyed reads.
+
+    Args:
+        fl (FlagView): spec-validated view over the raw flag kwargs.
+        never_match (bool): zero-pattern sentinel from resolve_pattern; it is
+            a regex, so it suppresses -F.
+    """
+    a_ctx = fl.int("A")
+    b_ctx = fl.int("B")
+    c_ctx = fl.int("C")
+    context_after = a_ctx if a_ctx is not None else 0
+    context_before = b_ctx if b_ctx is not None else 0
+    if c_ctx is not None:
+        # rg family: -C overrides -A/-B (grep keeps -A/-B precedence)
+        context_before = context_after = c_ctx
+    return RgFlags(
+        ignore_case=fl.bool("i"),
+        invert=fl.bool("v"),
+        line_numbers=fl.bool("n"),
+        count_only=fl.bool("c"),
+        files_only=fl.bool("args_l"),
+        whole_word=fl.bool("w"),
+        fixed_string=fl.bool("F") and not never_match,
+        only_matching=fl.bool("o"),
+        hidden=fl.bool("hidden"),
+        file_type=fl.str("type"),
+        glob_pattern=fl.str("glob"),
+        max_count=fl.int("m"),
+        context_after=context_after,
+        context_before=context_before,
+    )
 
 
 async def rg(
@@ -65,29 +120,11 @@ async def rg(
     Returns:
         tuple[ByteSource | None, IOResult]: Output stream and exit metadata.
     """
-    fl = FlagView(flags)
+    fl = FlagView(flags, spec=SPECS["rg"])
     pattern, never_match = await resolve_pattern(
         texts, fl, read_bytes, accessor, index,
         "rg: usage: rg [flags] pattern [path]")
-    ignore_case = fl.bool("i")
-    invert = fl.bool("v")
-    line_numbers = fl.bool("n")
-    count_only = fl.bool("c")
-    files_only = fl.bool("args_l")
-    whole_word = fl.bool("w")
-    fixed_string = fl.bool("F") and not never_match
-    only_matching = fl.bool("o")
-    hidden = fl.bool("hidden")
-    file_type = fl.str("type")
-    glob_pattern = fl.str("glob")
-    max_count = fl.int("m")
-    a_ctx = fl.int("A")
-    b_ctx = fl.int("B")
-    c_ctx = fl.int("C")
-    context_after = a_ctx if a_ctx is not None else 0
-    context_before = b_ctx if b_ctx is not None else 0
-    if c_ctx is not None:
-        context_before = context_after = c_ctx
+    f = parse_flags(fl, never_match)
 
     if paths:
         mount_prefix = paths[0].prefix
@@ -122,8 +159,8 @@ async def rg(
             except (FileNotFoundError, ValueError):
                 pass
 
-        needs_full = (is_dir or files_only or context_before or context_after
-                      or file_type or glob_pattern)
+        needs_full = (is_dir or f.files_only or f.context_before
+                      or f.context_after or f.file_type or f.glob_pattern)
         if needs_full:
             warnings_f: list[str] = []
             if scope_warning_str:
@@ -136,20 +173,20 @@ async def rg(
                     rb,
                     p.original,
                     pattern,
-                    ignore_case=ignore_case,
-                    invert=invert,
-                    line_numbers=line_numbers,
-                    count_only=count_only,
-                    files_only=files_only,
-                    fixed_string=fixed_string,
-                    only_matching=only_matching,
-                    max_count=max_count,
-                    whole_word=whole_word,
-                    context_before=context_before,
-                    context_after=context_after,
-                    file_type=file_type,
-                    glob_pattern=glob_pattern,
-                    hidden=hidden,
+                    ignore_case=f.ignore_case,
+                    invert=f.invert,
+                    line_numbers=f.line_numbers,
+                    count_only=f.count_only,
+                    files_only=f.files_only,
+                    fixed_string=f.fixed_string,
+                    only_matching=f.only_matching,
+                    max_count=f.max_count,
+                    whole_word=f.whole_word,
+                    context_before=f.context_before,
+                    context_after=f.context_after,
+                    file_type=f.file_type,
+                    glob_pattern=f.glob_pattern,
+                    hidden=f.hidden,
                     warnings=warnings_f,
                     file_prefix=p.original if len(paths) > 1 else None,
                 ))
@@ -158,20 +195,21 @@ async def rg(
                 return b"", IOResult(exit_code=1, stderr=stderr)
             return format_records(results), IOResult(stderr=stderr)
 
-        pat = compile_pattern(pattern, ignore_case, fixed_string, whole_word)
+        pat = compile_pattern(pattern, f.ignore_case, f.fixed_string,
+                              f.whole_word)
 
         if len(paths) > 1:
             all_results: list[str] = []
             for p in paths:
                 data = split_lines((await
                                     rb(p.original)).decode(errors="replace"))
-                hits = grep_lines(p.original, data, pat, invert, line_numbers,
-                                  count_only, files_only, only_matching,
-                                  max_count)
-                if count_only:
+                hits = grep_lines(p.original, data, pat, f.invert,
+                                  f.line_numbers, f.count_only, f.files_only,
+                                  f.only_matching, f.max_count)
+                if f.count_only:
                     if grep_count_has_matches(hits):
                         all_results.append(f"{p.original}:{hits[0]}")
-                elif files_only:
+                elif f.files_only:
                     all_results.extend(hits)
                 else:
                     all_results.extend(f"{p.original}:{r}" for r in hits)
@@ -187,13 +225,13 @@ async def rg(
         stream = grep_stream(
             source,
             pat,
-            invert=invert,
-            line_numbers=line_numbers,
-            only_matching=only_matching,
-            max_count=max_count,
-            count_only=count_only,
+            invert=f.invert,
+            line_numbers=f.line_numbers,
+            only_matching=f.only_matching,
+            max_count=f.max_count,
+            count_only=f.count_only,
         )
-        if count_only:
+        if f.count_only:
             stream = nonzero_count_stream(stream)
         io = IOResult()
         return exit_on_empty(stream, io), io
@@ -201,17 +239,17 @@ async def rg(
     source = _resolve_source(stdin,
                              "rg: usage: rg [flags] pattern [path]",
                              error_cls=UsageError)
-    pat = compile_pattern(pattern, ignore_case, fixed_string, whole_word)
+    pat = compile_pattern(pattern, f.ignore_case, f.fixed_string, f.whole_word)
     stream = grep_stream(
         source,
         pat,
-        invert=invert,
-        line_numbers=line_numbers,
-        only_matching=only_matching,
-        max_count=max_count,
-        count_only=count_only,
+        invert=f.invert,
+        line_numbers=f.line_numbers,
+        only_matching=f.only_matching,
+        max_count=f.max_count,
+        count_only=f.count_only,
     )
-    if count_only:
+    if f.count_only:
         stream = nonzero_count_stream(stream)
     io = IOResult()
     return exit_on_empty(stream, io), io

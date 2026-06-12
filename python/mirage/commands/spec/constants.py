@@ -13,3 +13,13 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 AMBIGUOUS_NAMES = {"l": "args_l", "O": "args_O", "I": "args_I", "1": "args_1"}
+
+
+def flag_kwarg_name(flag: str) -> str:
+    """Map a flag name to its dispatcher kwarg name.
+
+    Args:
+        flag (str): flag name with or without leading dashes.
+    """
+    clean = flag.lstrip("-").replace("-", "_")
+    return AMBIGUOUS_NAMES.get(clean, clean)

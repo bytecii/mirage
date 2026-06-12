@@ -37,7 +37,7 @@ async def grep(
     index: IndexCacheStore = None,
     **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(flags)
+    fl = FlagView(flags, spec=SPECS["grep"])
     resolved = await resolve_glob(accessor, paths, index) if paths else []
     recursive = fl.bool("r") or fl.bool("R")
     if recursive and any(is_cross_run_root(p) for p in resolved):

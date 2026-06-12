@@ -54,7 +54,7 @@ async def rg(
     index: IndexCacheStore = None,
     **flags: object,
 ) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(flags)
+    fl = FlagView(flags, spec=SPECS["rg"])
     pattern = pattern_arg(texts, fl)
     max_count = fl.int("m")
 
