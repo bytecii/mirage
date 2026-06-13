@@ -22,6 +22,8 @@ import { record, revisionFor, runWithRecording } from '../observe/context.ts'
 import { type OpKwargs, OpsRegistry, type RegisteredOp } from '../ops/registry.ts'
 import type { Resource } from '../resource/base.ts'
 import { createShellParser, type ShellParser } from '../shell/parse.ts'
+import { splitManifestAndBlobs } from './snapshot/manifest.ts'
+import { writeSnapshotTar } from './snapshot/tar_io.ts'
 import { DriftPolicy, FileStat, FileType, MountMode, type PathSpec } from '../types.ts'
 import { ContentDriftError } from './snapshot/drift.ts'
 import { Workspace } from './workspace.ts'
@@ -229,12 +231,13 @@ describe('Workspace snapshot: capture and replay drift detection', () => {
     // Strip revisions so the loader queues a drift check instead of pinning.
     state.fingerprints = (state.fingerprints ?? []).map((e) => ({
       path: e.path,
-      mountPrefix: e.mountPrefix,
+      mount_prefix: e.mount_prefix,
       fingerprint: e.fingerprint ?? null,
     }))
-    const snap = join(tempDir, 'drift.json')
+    const snap = join(tempDir, 'drift.tar')
+    const [manifest, blobs] = splitManifestAndBlobs(state as unknown as Record<string, unknown>)
     const { writeFileSync } = await import('node:fs')
-    writeFileSync(snap, JSON.stringify(state))
+    writeFileSync(snap, await writeSnapshotTar(manifest, blobs))
 
     accessor.put('/remote/a.txt', new TextEncoder().encode('v2'))
 

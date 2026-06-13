@@ -91,7 +91,7 @@ describe('Workspace.toStateDict / restore', () => {
     const state = await ws.toStateDict()
     expect(state.cache.entries.length).toBeGreaterThan(0)
     for (const m of state.mounts) {
-      Object.assign(m.resourceState, { config: { token: '<REDACTED>' } })
+      Object.assign(m.resource_state, { config: { token: '<REDACTED>' } })
     }
 
     const overrides: Record<string, RAMResource> = {}
@@ -141,15 +141,16 @@ describe('Workspace.snapshot / Workspace.load', () => {
     await loaded.close()
   })
 
-  it('rejects snapshots with unsupported format version', async () => {
+  it('rejects snapshots with an older unsupported format version', async () => {
     const ws = buildWorkspace()
-    const path = join(tempDir, 'bad.json')
-    await ws.snapshot(path)
-    const { readFileSync: rfs, writeFileSync } = await import('node:fs')
-    const content = rfs(path, 'utf-8').replace('"version": 2', '"version": 999')
-    writeFileSync(path, content)
+    const state = await ws.toStateDict()
+    state.version = 1
     await expect(
-      Workspace.load(path, { mode: MountMode.WRITE, ops: new OpsRegistry(), shellParser: parser }),
+      Workspace.fromState(state, {
+        mode: MountMode.WRITE,
+        ops: new OpsRegistry(),
+        shellParser: parser,
+      }),
     ).rejects.toThrow(/snapshot format/)
     await ws.close()
   })

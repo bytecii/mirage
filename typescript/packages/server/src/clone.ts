@@ -54,7 +54,7 @@ function existingRedactedResources(
     const prefix = normMountPrefix(m.prefix)
     if (skip.has(prefix)) continue
     const resource = prefixToResource[prefix]
-    if (resource !== undefined && resourceStateRequiresOverride(m.resourceState)) {
+    if (resource !== undefined && resourceStateRequiresOverride(m.resource_state)) {
       out[prefix] = resource
     }
   }

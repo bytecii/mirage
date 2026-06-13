@@ -33,8 +33,8 @@ function makeState(): WorkspaceStateDict {
         index: 0,
         prefix: '/m',
         mode: 'write',
-        resourceClass: 'ram',
-        resourceState: {
+        resource_class: 'ram',
+        resource_state: {
           type: 'ram',
           files: { '/a.txt': enc('hi'), '/sub/b.txt': enc('bee') },
           dirs: ['/'],
@@ -45,7 +45,7 @@ function makeState(): WorkspaceStateDict {
     cache: {
       limit: 100,
       entries: [
-        { key: 'k', data: enc('CACHE'), fingerprint: null, ttl: null, cachedAt: 0, size: 5 },
+        { key: 'k', data: enc('CACHE'), fingerprint: null, ttl: null, cached_at: 0, size: 5 },
       ],
     },
     history: [],
@@ -65,9 +65,9 @@ describe('stateTree', () => {
     const { entries, meta } = treeInputsFromState(makeState())
     const back = toState(entries, blobToMeta(metaToBlob(meta)))
     const mounts = back.mounts as unknown as {
-      resourceState: { files: Record<string, Uint8Array> }
+      resource_state: { files: Record<string, Uint8Array> }
     }[]
-    const rs = mounts[0]?.resourceState
+    const rs = mounts[0]?.resource_state
     expect(rs?.files['/a.txt']).toEqual(enc('hi'))
     expect(rs?.files['/sub/b.txt']).toEqual(enc('bee'))
     expect(back.cache.entries[0]?.data).toEqual(enc('CACHE'))
