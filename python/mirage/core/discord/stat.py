@@ -18,6 +18,7 @@ from mirage.accessor.discord import DiscordAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.core.discord.readdir import readdir as _readdir
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 from mirage.utils.filetype import filetype_from_mimetype
 
 VIRTUAL_DIRS = {"", "channels", "members"}
@@ -51,6 +52,7 @@ async def stat(
 ) -> FileStat:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -69,13 +71,13 @@ async def stat(
 
     if len(parts) == 1:
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         lookup = await index.get(virtual_key)
         if lookup.entry is None:
             await _populate_via_parent(accessor, virtual_key, prefix, index)
             lookup = await index.get(virtual_key)
             if lookup.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         return FileStat(
             name=lookup.entry.vfs_name or lookup.entry.name,
             type=FileType.DIRECTORY,
@@ -87,13 +89,13 @@ async def stat(
 
     if len(parts) == 3 and parts[1] == "channels":
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         lookup = await index.get(virtual_key)
         if lookup.entry is None:
             await _populate_via_parent(accessor, virtual_key, prefix, index)
             lookup = await index.get(virtual_key)
             if lookup.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         return FileStat(
             name=lookup.entry.vfs_name or lookup.entry.name,
             type=FileType.DIRECTORY,
@@ -102,13 +104,13 @@ async def stat(
 
     if len(parts) == 3 and parts[1] == "members":
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         lookup = await index.get(virtual_key)
         if lookup.entry is None:
             await _populate_via_parent(accessor, virtual_key, prefix, index)
             lookup = await index.get(virtual_key)
             if lookup.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         return FileStat(
             name=lookup.entry.vfs_name or lookup.entry.name,
             type=FileType.JSON,
@@ -132,13 +134,13 @@ async def stat(
     # <guild>/channels/<ch>/<date>/files/<blob>
     if (len(parts) == 6 and parts[1] == "channels" and parts[4] == "files"):
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         lookup = await index.get(virtual_key)
         if lookup.entry is None:
             await _populate_via_parent(accessor, virtual_key, prefix, index)
             lookup = await index.get(virtual_key)
             if lookup.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         mimetype = (lookup.entry.extra or {}).get("content_type", "")
         return FileStat(
             name=lookup.entry.vfs_name or lookup.entry.name,
@@ -150,4 +152,4 @@ async def stat(
             },
         )
 
-    raise FileNotFoundError(path)
+    raise enoent(virtual)

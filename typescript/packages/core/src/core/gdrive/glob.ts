@@ -14,11 +14,11 @@
 
 import type { GDriveAccessor } from '../../accessor/gdrive.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { fnmatch } from '../../util/fnmatch.ts'
+import { fnmatch } from '../../utils/fnmatch.ts'
 import { PathSpec } from '../../types.ts'
 import { SCOPE_ERROR } from '../github/constants.ts'
 import { readdir } from './readdir.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 
 export async function resolveGlob(
   accessor: GDriveAccessor,

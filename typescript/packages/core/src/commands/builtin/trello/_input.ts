@@ -16,7 +16,7 @@ import { readBytes } from '../../../core/trello/read.ts'
 import type { TrelloTransport } from '../../../core/trello/_client.ts'
 import { readStdinAsync } from '../utils/stream.ts'
 import type { CommandOpts } from '../../config.ts'
-import { stripSlash } from '../../../util/slash.ts'
+import { stripSlash } from '../../../utils/slash.ts'
 
 const DEC = new TextDecoder('utf-8', { fatal: false })
 

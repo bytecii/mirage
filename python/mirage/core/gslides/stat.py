@@ -16,6 +16,7 @@ from mirage.accessor.gslides import GSlidesAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.core.gslides.readdir import readdir as _readdir
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 
 VIRTUAL_DIRS = {"", "owned", "shared"}
 
@@ -27,6 +28,7 @@ async def stat(
 ) -> FileStat:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -40,7 +42,7 @@ async def stat(
         name = key if key else "/"
         return FileStat(name=name, type=FileType.DIRECTORY)
     if index is None:
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
     virtual_key = prefix + "/" + key if prefix else "/" + key
     result = await index.get(virtual_key)
     if result.entry is None:
@@ -58,7 +60,7 @@ async def stat(
             pass
         result = await index.get(virtual_key)
         if result.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
     return FileStat(
         name=result.entry.vfs_name,
         type=FileType.JSON,

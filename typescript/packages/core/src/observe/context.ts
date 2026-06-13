@@ -14,7 +14,7 @@
 
 import { createAsyncContext } from '../utils/async_context.ts'
 import { OpRecord } from './record.ts'
-import { rstripSlash } from '../util/slash.ts'
+import { rstripSlash } from '../utils/slash.ts'
 
 interface RecordingState {
   records: OpRecord[]

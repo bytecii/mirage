@@ -13,8 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '@struktoai/mirage-core'
+import { enoent } from '@struktoai/mirage-core'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { enoent, isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
+import { isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
 
 export async function* stream(accessor: SSHAccessor, p: PathSpec): AsyncIterable<Uint8Array> {
   const sftp = await accessor.sftp()
@@ -27,7 +28,7 @@ export async function* stream(accessor: SSHAccessor, p: PathSpec): AsyncIterable
       yield new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
     }
   } catch (err) {
-    if (isNoSuchFile(err)) throw enoent(virtual)
+    if (isNoSuchFile(err)) throw enoent(p)
     throw err
   }
 }
@@ -52,7 +53,7 @@ export async function rangeRead(
       total += u8.byteLength
     }
   } catch (err) {
-    if (isNoSuchFile(err)) throw enoent(virtual)
+    if (isNoSuchFile(err)) throw enoent(p)
     throw err
   }
   const out = new Uint8Array(total)

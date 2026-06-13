@@ -30,14 +30,14 @@ export async function unlink(
   const p = ensurePathSpec(path)
   const fileStat = await stat(accessor, p, index)
   if (fileStat.type === FileType.DIRECTORY) {
-    throw isADirectoryError(p.stripPrefix)
+    throw isADirectoryError(p.original)
   }
   const remotePath = backendPath(accessor.config, p)
   const startMs = performance.now()
   try {
     await dbxFetch(accessor, 'DELETE', 'files', remotePath)
   } catch (exc) {
-    if (isNotFound(exc)) throw notFoundError(p.stripPrefix)
+    if (isNotFound(exc)) throw notFoundError(p.original)
     throw exc
   }
   record('unlink', p.original, ResourceName.DATABRICKS_VOLUME, 0, startMs)

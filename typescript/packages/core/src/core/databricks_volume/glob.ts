@@ -15,7 +15,7 @@
 import type { DatabricksVolumeAccessor } from '../../accessor/databricks_volume.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { PathSpec } from '../../types.ts'
-import { fnmatch } from '../../util/fnmatch.ts'
+import { fnmatch } from '../../utils/fnmatch.ts'
 import { readdir } from './readdir.ts'
 
 const SCOPE_ERROR = 10_000

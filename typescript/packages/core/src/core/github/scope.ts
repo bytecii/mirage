@@ -12,8 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { fnmatch } from '../../util/fnmatch.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { fnmatch } from '../../utils/fnmatch.ts'
+import { stripSlash } from '../../utils/slash.ts'
 import type { PathSpec } from '../../types.ts'
 import type { TreeEntry } from './tree_entry.ts'
 

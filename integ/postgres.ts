@@ -19,6 +19,7 @@ import {
   PostgresResource,
   Workspace,
 } from "@struktoai/mirage-node";
+import { runNotFound } from "./cases.ts";
 
 const DSN =
   process.env.POSTGRES_DSN ?? "postgres://mirage:mirage@localhost:55432/mirage_integ";
@@ -130,6 +131,7 @@ async function main(): Promise<void> {
       if (name === "safeguard_cat_truncates") setCatSafeguard(ws, 2);
       await run(ws, name, cmd);
     }
+    await runNotFound(ws, MOUNT);
   } finally {
     await ws.close();
     await resource.close();

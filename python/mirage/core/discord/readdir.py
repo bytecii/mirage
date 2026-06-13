@@ -28,6 +28,7 @@ from mirage.core.discord.guilds import list_guilds
 from mirage.core.discord.history import list_messages_for_day
 from mirage.core.discord.members import list_members
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 logger = logging.getLogger(__name__)
 
@@ -88,14 +89,14 @@ async def _ensure_guild_id(
     raw_path: str,
 ) -> str:
     if index is None:
-        raise FileNotFoundError(raw_path)
+        raise enoent(raw_path)
     guild_virtual_key = prefix + "/" + guild_part
     lookup = await index.get(guild_virtual_key)
     if lookup.entry is None:
         await _readdir_root(accessor, prefix, prefix or "/", index)
         lookup = await index.get(guild_virtual_key)
     if lookup.entry is None:
-        raise FileNotFoundError(raw_path)
+        raise enoent(raw_path)
     return lookup.entry.id
 
 
@@ -175,7 +176,7 @@ async def _ensure_channel_lookup(
                                 index, raw_path)
         lookup = await index.get(channel_vk)
     if lookup.entry is None:
-        raise FileNotFoundError(raw_path)
+        raise enoent(raw_path)
     return lookup
 
 
@@ -296,7 +297,7 @@ async def _readdir_date_contents(
     raw_path: str,
 ) -> list[str]:
     if index is None:
-        raise FileNotFoundError(raw_path)
+        raise enoent(raw_path)
     cached = await index.list_dir(virtual_key)
     if cached.entries is not None:
         return cached.entries
@@ -305,7 +306,7 @@ async def _readdir_date_contents(
     await _fetch_day(accessor, lookup.entry.id, parts[3], virtual_key, index)
     cached = await index.list_dir(virtual_key)
     if cached.entries is None:
-        raise FileNotFoundError(raw_path)
+        raise enoent(raw_path)
     return cached.entries
 
 
@@ -319,7 +320,7 @@ async def _readdir_files_dir(
     raw_path: str,
 ) -> list[str]:
     if index is None:
-        raise FileNotFoundError(raw_path)
+        raise enoent(raw_path)
     cached = await index.list_dir(virtual_key)
     if cached.entries is not None:
         return cached.entries
@@ -330,7 +331,7 @@ async def _readdir_files_dir(
     await readdir(accessor, date_spec, index)
     cached = await index.list_dir(virtual_key)
     if cached.entries is None:
-        raise FileNotFoundError(raw_path)
+        raise enoent(raw_path)
     return cached.entries
 
 
@@ -358,7 +359,7 @@ async def readdir(
         if index is not None:
             lookup = await index.get(virtual_key)
             if lookup.entry is None:
-                raise FileNotFoundError(raw_path)
+                raise enoent(raw_path)
         return await _readdir_guild_top(prefix, key)
 
     if len(parts) == 2 and parts[1] == "channels":

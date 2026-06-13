@@ -14,7 +14,7 @@
 
 import { createAsyncContext } from '../utils/async_context.ts'
 import type { Session } from '../workspace/session/session.ts'
-import { stripSlash } from '../util/slash.ts'
+import { stripSlash } from '../utils/slash.ts'
 
 const sessionStorage = createAsyncContext<Session>()
 

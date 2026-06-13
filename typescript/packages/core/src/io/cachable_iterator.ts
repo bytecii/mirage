@@ -30,6 +30,10 @@ export class CachableAsyncIterator implements AsyncIterableIterator<Uint8Array> 
     return this.exhaustedFlag
   }
 
+  get bufferedChunks(): readonly Uint8Array[] {
+    return this.buffer
+  }
+
   [Symbol.asyncIterator](): AsyncIterableIterator<Uint8Array> {
     return this
   }
@@ -94,7 +98,7 @@ export class CachableAsyncIterator implements AsyncIterableIterator<Uint8Array> 
   }
 }
 
-function concat(chunks: Uint8Array[]): Uint8Array {
+export function concat(chunks: readonly Uint8Array[]): Uint8Array {
   let total = 0
   for (const c of chunks) total += c.byteLength
   const out = new Uint8Array(total)

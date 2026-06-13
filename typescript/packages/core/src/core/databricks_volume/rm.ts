@@ -56,7 +56,7 @@ export async function rmRecursive(
   try {
     await removeTreeRecurse(accessor, remoteRoot, removed)
   } catch (exc) {
-    if (isNotFound(exc)) throw notFoundError(p.stripPrefix)
+    if (isNotFound(exc)) throw notFoundError(p.original)
     throw exc
   }
   return removed.map((backend) => virtualPath(accessor.config, backend, ''))

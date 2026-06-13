@@ -17,7 +17,7 @@ import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { PathSpec } from '../../types.ts'
 import { getHistoryJsonl } from './history.ts'
 import { getUserProfile } from './users.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
 
 const encoder = new TextEncoder()
 

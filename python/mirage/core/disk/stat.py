@@ -40,6 +40,7 @@ async def stat(accessor: DiskAccessor,
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
+    virtual = path
     if prefix and path.startswith(prefix):
         rest = path[len(prefix):]
         if prefix.endswith("/") or rest == "" or rest.startswith("/"):
@@ -47,7 +48,7 @@ async def stat(accessor: DiskAccessor,
     root = accessor.root
     p = _resolve(root, path)
     if not await aio_path.exists(p):
-        raise FileNotFoundError(str(p))
+        raise FileNotFoundError(virtual)
     st = await aiofiles.os.stat(p)
     modified = to_iso_z(datetime.fromtimestamp(st.st_mtime, tz=timezone.utc))
     if await aio_path.isdir(p):

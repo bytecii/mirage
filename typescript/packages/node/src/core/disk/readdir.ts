@@ -15,6 +15,7 @@
 import type { DiskAccessor } from '../../accessor/disk.ts'
 import { readdir as fsReaddir } from 'node:fs/promises'
 import {
+  enotdir,
   IndexEntry,
   type IndexCacheStore,
   type PathSpec,
@@ -42,8 +43,8 @@ export async function readdir(
     entries = await fsReaddir(full)
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
-    if (code === 'ENOTDIR') throw new Error(`not a directory: ${virtual}`)
-    if (code === 'ENOENT') throw new Error(`not a directory: ${virtual}`)
+    if (code === 'ENOTDIR') throw enotdir(path)
+    if (code === 'ENOENT') throw enotdir(path)
     throw err
   }
   const base = norm(virtual)

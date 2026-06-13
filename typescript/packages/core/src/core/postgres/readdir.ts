@@ -18,7 +18,7 @@ import { PathSpec } from '../../types.ts'
 import type { PostgresAccessor } from '../../accessor/postgres.ts'
 import { listMatviews, listSchemas, listTables, listViews } from './_client.ts'
 import { detectScope } from './scope.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 
 export async function readdir(
   accessor: PostgresAccessor,

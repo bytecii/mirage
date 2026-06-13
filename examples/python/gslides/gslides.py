@@ -34,6 +34,15 @@ resource = GSlidesResource(config=config)
 async def main() -> None:
     ws = Workspace({"/gslides": resource}, mode=MountMode.WRITE)
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /gslides/__nf_missing__.txt",
+                "head /gslides/__nf_missing__.txt",
+                "stat /gslides/__nf_missing__.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     print("=== ls /gslides/ ===")
     r = await ws.execute("ls /gslides/")
     print(await r.stdout_str())

@@ -14,7 +14,7 @@
 
 import type { IndexCacheStore } from '../../../cache/index/store.ts'
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
-import { rstripSlash } from '../../../util/slash.ts'
+import { rstripSlash } from '../../../utils/slash.ts'
 
 export type StatFn = (path: PathSpec, index?: IndexCacheStore) => Promise<FileStat>
 

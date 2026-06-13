@@ -14,7 +14,7 @@
 
 import type { DiskAccessor } from '../../accessor/disk.ts'
 import { createReadStream } from 'node:fs'
-import { type PathSpec, recordStream, ResourceName } from '@struktoai/mirage-core'
+import { enoent, type PathSpec, recordStream, ResourceName } from '@struktoai/mirage-core'
 import { resolveSafe } from './utils.ts'
 
 export async function* stream(accessor: DiskAccessor, path: PathSpec): AsyncIterable<Uint8Array> {
@@ -31,7 +31,7 @@ export async function* stream(accessor: DiskAccessor, path: PathSpec): AsyncIter
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error(`file not found: ${virtual}`)
+      throw enoent(path)
     }
     throw err
   }

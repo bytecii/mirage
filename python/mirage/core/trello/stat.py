@@ -16,6 +16,7 @@ from mirage.accessor.trello import TrelloAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.core.trello.readdir import readdir as _readdir
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 
 VIRTUAL_DIRS = {"", "workspaces"}
 
@@ -52,6 +53,7 @@ async def stat(
 ) -> FileStat:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -70,10 +72,10 @@ async def stat(
 
     if len(parts) == 2 and parts[0] == "workspaces":
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         result = await _lookup_with_fallback(accessor, idx_key, prefix, index)
         if result.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         return FileStat(
             name=result.entry.vfs_name,
             type=FileType.DIRECTORY,
@@ -98,10 +100,10 @@ async def stat(
 
     if len(parts) == 4 and parts[0] == "workspaces" and parts[2] == "boards":
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         result = await _lookup_with_fallback(accessor, idx_key, prefix, index)
         if result.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         return FileStat(
             name=result.entry.vfs_name,
             type=FileType.DIRECTORY,
@@ -127,10 +129,10 @@ async def stat(
     if (len(parts) == 6 and parts[0] == "workspaces" and parts[2] == "boards"
             and parts[4] == "members"):
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         result = await _lookup_with_fallback(accessor, idx_key, prefix, index)
         if result.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         return FileStat(
             name=result.entry.vfs_name,
             type=FileType.JSON,
@@ -140,10 +142,10 @@ async def stat(
     if (len(parts) == 6 and parts[0] == "workspaces" and parts[2] == "boards"
             and parts[4] == "labels"):
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         result = await _lookup_with_fallback(accessor, idx_key, prefix, index)
         if result.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         return FileStat(
             name=result.entry.vfs_name,
             type=FileType.JSON,
@@ -153,10 +155,10 @@ async def stat(
     if (len(parts) == 6 and parts[0] == "workspaces" and parts[2] == "boards"
             and parts[4] == "lists"):
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         result = await _lookup_with_fallback(accessor, idx_key, prefix, index)
         if result.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         return FileStat(
             name=result.entry.vfs_name,
             type=FileType.DIRECTORY,
@@ -183,10 +185,10 @@ async def stat(
     if (len(parts) == 8 and parts[0] == "workspaces" and parts[2] == "boards"
             and parts[4] == "lists" and parts[6] == "cards"):
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         result = await _lookup_with_fallback(accessor, idx_key, prefix, index)
         if result.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         return FileStat(
             name=result.entry.vfs_name,
             type=FileType.DIRECTORY,
@@ -220,4 +222,4 @@ async def stat(
                 extra={"card_id": card_id},
             )
 
-    raise FileNotFoundError(path)
+    raise enoent(virtual)

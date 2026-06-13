@@ -15,8 +15,8 @@
 import type { GitHubAccessor } from '../../accessor/github.ts'
 import type { FindOptions } from '../../resource/base.ts'
 import type { PathSpec } from '../../types.ts'
-import { fnmatch } from '../../util/fnmatch.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { fnmatch } from '../../utils/fnmatch.ts'
+import { stripSlash } from '../../utils/slash.ts'
 
 function strip(path: PathSpec): string {
   const prefix = path.prefix

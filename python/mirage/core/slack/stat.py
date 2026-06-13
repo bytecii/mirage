@@ -16,6 +16,7 @@ from mirage.accessor.slack import SlackAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.core.slack.readdir import readdir as _readdir
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 from mirage.utils.filetype import filetype_from_mimetype
 
 VIRTUAL_DIRS = {"", "channels", "dms", "users"}
@@ -48,6 +49,7 @@ async def stat(
 ) -> FileStat:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     prefix = path.prefix if isinstance(path, PathSpec) else ""
     raw = path.original if isinstance(path, PathSpec) else path
     if prefix and raw.startswith(prefix):
@@ -63,13 +65,13 @@ async def stat(
 
     if len(parts) == 2 and parts[0] in ("channels", "dms"):
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         lookup = await index.get(virtual_key)
         if lookup.entry is None:
             await _populate_via_parent(accessor, virtual_key, prefix, index)
             lookup = await index.get(virtual_key)
             if lookup.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         return FileStat(
             name=lookup.entry.vfs_name or lookup.entry.name,
             type=FileType.DIRECTORY,
@@ -78,13 +80,13 @@ async def stat(
 
     if len(parts) == 2 and parts[0] == "users":
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         lookup = await index.get(virtual_key)
         if lookup.entry is None:
             await _populate_via_parent(accessor, virtual_key, prefix, index)
             lookup = await index.get(virtual_key)
             if lookup.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         return FileStat(
             name=lookup.entry.vfs_name or lookup.entry.name,
             type=FileType.JSON,
@@ -105,13 +107,13 @@ async def stat(
     if (len(parts) == 5 and parts[0] in ("channels", "dms")
             and parts[3] == "files"):
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         lookup = await index.get(virtual_key)
         if lookup.entry is None:
             await _populate_via_parent(accessor, virtual_key, prefix, index)
             lookup = await index.get(virtual_key)
             if lookup.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         mimetype = lookup.entry.extra.get("mimetype", "")
         return FileStat(
             name=lookup.entry.vfs_name or lookup.entry.name,
@@ -120,4 +122,4 @@ async def stat(
             extra={"file_id": lookup.entry.id},
         )
 
-    raise FileNotFoundError(path)
+    raise enoent(virtual)

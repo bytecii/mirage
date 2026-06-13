@@ -32,6 +32,7 @@ from mirage.workspace.executor.cross_mount import (handle_cross_mount,
 from mirage.workspace.executor.fanout import (_fan_out_traversal,
                                               _should_fan_out)
 from mirage.workspace.executor.find_action_dispatch import _apply_find_actions
+from mirage.workspace.executor.fs_error import format_fs_error
 from mirage.workspace.executor.jobs import (handle_jobs, handle_kill,
                                             handle_ps, handle_wait)
 from mirage.workspace.mount import MountRegistry
@@ -382,8 +383,9 @@ async def handle_command(
             env=session.env,
             exec_allowed=registry.is_exec_allowed(),
         )
-    except (FileNotFoundError, NotADirectoryError, PermissionError) as exc:
-        err = f"{cmd_name}: {exc}\n".encode()
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError,
+            FileExistsError, PermissionError) as exc:
+        err = format_fs_error(cmd_name, exc)
         return None, IOResult(exit_code=1,
                               stderr=err), ExecutionNode(command=cmd_str,
                                                          exit_code=1,

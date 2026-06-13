@@ -59,6 +59,14 @@ async function main(): Promise<void> {
   await runLabeled(ws, 'wc /data/hello.txt', 'wc /data/hello.txt')
   await runLabeled(ws, 'stat /data/hello.txt', 'stat /data/hello.txt')
   await runLabeled(ws, 'jq .name /data/user.json', 'jq ".name" /data/user.json')
+
+  console.log('=== not-found errors show the full virtual path ===')
+  for (const cmd of ['cat /data/missing.txt', 'head /data/missing.txt', 'stat /data/missing.txt']) {
+    const res = await ws.execute(cmd)
+    console.log(`$ ${cmd}`)
+    console.log(`  exit=${String(res.exitCode)}  ${new TextDecoder().decode(res.stderr).trim()}`)
+  }
+
   await runLabeled(ws, 'nl /data/reports/q1.csv', 'nl /data/reports/q1.csv')
   await runLabeled(ws, 'tree /data/', 'tree /data/')
   await runLabeled(ws, "find /data/ -name '*.txt'", `find /data/ -name '*.txt'`)

@@ -16,20 +16,15 @@ import type { ChromaAccessor } from '../../accessor/chroma.ts'
 import type { IndexEntry } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { PathSpec } from '../../types.ts'
-import { rstripSlash, stripSlash } from '../../util/slash.ts'
+import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { ensureTree } from './tree.ts'
+import { enoent } from '../../utils/errors.ts'
 
 export interface ResolvedChromaPath {
   virtualKey: string
   mountPrefix: string
   isDir: boolean
   entry: IndexEntry | null
-}
-
-function enoent(p: string): Error {
-  const err = new Error(p) as Error & { code?: string }
-  err.code = 'ENOENT'
-  return err
 }
 
 export async function resolvePath(

@@ -14,7 +14,8 @@
 
 import { type IndexCacheStore, type PathSpec, record } from '@struktoai/mirage-core'
 import type { HfAccessor } from '../../accessor/hf.ts'
-import { enoent, hfKey, isNotFound, rawPathOf } from './util.ts'
+import { hfKey, isNotFound, rawPathOf } from './util.ts'
+import { enoent } from '@struktoai/mirage-core'
 
 export interface HfReadOptions {
   offset?: number
@@ -47,7 +48,7 @@ export async function read(
         ? await op.read(key, readOptions)
         : await op.read(key)
   } catch (err) {
-    if (isNotFound(err)) throw enoent(rawPath)
+    if (isNotFound(err)) throw enoent(path)
     throw err
   }
   const bytes = new Uint8Array(data)

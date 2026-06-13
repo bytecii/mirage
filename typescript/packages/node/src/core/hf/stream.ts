@@ -16,7 +16,8 @@ import { type IndexCacheStore, type PathSpec, recordStream } from '@struktoai/mi
 import type { HfAccessor } from '../../accessor/hf.ts'
 import { DEFAULT_CHUNK_SIZE } from './constants.ts'
 import { read } from './read.ts'
-import { enoent, hfKey, isNotFound, rawPathOf } from './util.ts'
+import { hfKey, isNotFound, rawPathOf } from './util.ts'
+import { enoent } from '@struktoai/mirage-core'
 
 export async function rangeRead(
   accessor: HfAccessor,
@@ -42,7 +43,7 @@ export async function* stream(
   try {
     reader = await op.reader(key)
   } catch (err) {
-    if (isNotFound(err)) throw enoent(rawPath)
+    if (isNotFound(err)) throw enoent(path)
     throw err
   }
   const buf = Buffer.alloc(chunkSize)

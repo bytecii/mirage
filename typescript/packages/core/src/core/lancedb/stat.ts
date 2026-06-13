@@ -15,7 +15,7 @@
 import type { LanceDBAccessor } from '../../accessor/lancedb.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 import { read } from './read.ts'
 import { ScopeLevel, detectScope } from './scope.ts'
 

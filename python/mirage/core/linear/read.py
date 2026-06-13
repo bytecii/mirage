@@ -25,11 +25,13 @@ from mirage.core.linear.normalize import (normalize_comment, normalize_cycle,
 from mirage.core.linear.pathing import split_suffix_id
 from mirage.resource.linear.config import LinearConfig
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read_bytes(
     config: LinearConfig,
     path: PathSpec,
+    virtual: str,
 ) -> bytes:
     key = path.strip("/")
     parts = key.split("/")
@@ -44,7 +46,7 @@ async def read_bytes(
         for team in teams:
             if team.get("id") == team_id:
                 return to_json_bytes(normalize_team(team))
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
     if len(parts) == 4 and parts[0] == "teams" and parts[2] == "members":
         _, team_id = split_suffix_id(parts[1])
@@ -53,7 +55,7 @@ async def read_bytes(
         for user in users:
             if user.get("id") == user_id:
                 return to_json_bytes(normalize_user(user))
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
     if len(parts) == 5 and parts[0] == "teams" and parts[2] == "issues":
         _, issue_id = split_suffix_id(parts[3])
@@ -70,7 +72,7 @@ async def read_bytes(
                 for comment in comments
             ]
             return to_jsonl_bytes(rows)
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
     if len(parts) == 4 and parts[0] == "teams" and parts[2] == "projects":
         _, team_id = split_suffix_id(parts[1])
@@ -102,7 +104,7 @@ async def read_bytes(
                         team_name=team.get("name"),
                         issues=project_issues,
                     ))
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
     if len(parts) == 4 and parts[0] == "teams" and parts[2] == "cycles":
         _, team_id = split_suffix_id(parts[1])
@@ -111,9 +113,9 @@ async def read_bytes(
         for cycle in cycles:
             if cycle.get("id") == cycle_id:
                 return to_json_bytes(normalize_cycle(cycle, team_id=team_id))
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
-    raise FileNotFoundError(path)
+    raise enoent(virtual)
 
 
 async def read(
@@ -123,6 +125,7 @@ async def read(
 ) -> bytes:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -131,4 +134,4 @@ async def read(
         rest = path[len(prefix):]
         if prefix.endswith("/") or rest == "" or rest.startswith("/"):
             path = rest or "/"
-    return await read_bytes(accessor.config, path)
+    return await read_bytes(accessor.config, path, virtual)

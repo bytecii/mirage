@@ -6,6 +6,7 @@ from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.observe.context import record
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def write_bytes(accessor: NextcloudAccessor,
@@ -21,5 +22,5 @@ async def write_bytes(accessor: NextcloudAccessor,
     try:
         await op.write(key, data)
     except NotFound as exc:
-        raise FileNotFoundError(raw) from exc
+        raise enoent(path) from exc
     record("write", path.original, "nextcloud", len(data), start_ms)

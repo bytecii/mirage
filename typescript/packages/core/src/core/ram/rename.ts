@@ -15,7 +15,8 @@
 import type { RAMAccessor } from '../../accessor/ram.ts'
 import type { PathSpec } from '../../types.ts'
 import { norm, nowIso } from './utils.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 export function rename(accessor: RAMAccessor, src: PathSpec, dst: PathSpec): Promise<void> {
   const s = norm(src.stripPrefix)
@@ -48,5 +49,5 @@ export function rename(accessor: RAMAccessor, src: PathSpec, dst: PathSpec): Pro
     }
     return Promise.resolve()
   }
-  throw new Error(`file or directory not found: ${s}`)
+  throw enoent(src)
 }

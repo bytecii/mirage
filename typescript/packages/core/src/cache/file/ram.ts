@@ -25,6 +25,9 @@ export class RAMFileCacheStore extends RAMResource implements FileCache {
   private readonly limit: number
   private size = 0
   maxDrainBytes: number | null
+  // Promises cannot be cancelled; clearing the map makes the drain's
+  // completion check fail so the result is discarded instead.
+  readonly drainTasks = new Map<string, Promise<void>>()
 
   constructor(options: { limit?: string | number; maxDrainBytes?: number | null } = {}) {
     super()
@@ -121,6 +124,7 @@ export class RAMFileCacheStore extends RAMResource implements FileCache {
   }
 
   remove(key: string): Promise<void> {
+    this.drainTasks.delete(key)
     return this.lock.withLock(key, () => {
       const entry = this.entries.get(key)
       if (entry !== undefined) {
@@ -146,6 +150,7 @@ export class RAMFileCacheStore extends RAMResource implements FileCache {
   }
 
   clear(): Promise<void> {
+    this.drainTasks.clear()
     this.entries.clear()
     this.store.files.clear()
     this.size = 0

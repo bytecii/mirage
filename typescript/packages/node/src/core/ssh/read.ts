@@ -13,8 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '@struktoai/mirage-core'
+import { enoent } from '@struktoai/mirage-core'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { enoent, isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
+import { isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
 
 export async function read(accessor: SSHAccessor, p: PathSpec): Promise<Uint8Array> {
   const sftp = await accessor.sftp()
@@ -23,7 +24,7 @@ export async function read(accessor: SSHAccessor, p: PathSpec): Promise<Uint8Arr
   return new Promise<Uint8Array>((resolveFn, rejectFn) => {
     sftp.readFile(remote, (err, buf) => {
       if (err !== undefined) {
-        if (isNoSuchFile(err)) rejectFn(enoent(virtual))
+        if (isNoSuchFile(err)) rejectFn(enoent(p))
         else rejectFn(err)
         return
       }

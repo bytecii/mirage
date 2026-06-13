@@ -16,7 +16,7 @@ import type { DatabricksVolumeAccessor } from '../../accessor/databricks_volume.
 import { IndexEntry } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { PathSpec } from '../../types.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 import { dbxFetch } from './_client.ts'
 import { isNotFound, notFoundError } from './errors.ts'
 import { backendPath, virtualPath } from './path.ts'
@@ -66,7 +66,7 @@ export async function readdir(
   try {
     entries = await listDirectoryContents(accessor, remotePath)
   } catch (exc) {
-    if (isNotFound(exc)) throw notFoundError(listPath.stripPrefix)
+    if (isNotFound(exc)) throw notFoundError(listPath.original)
     throw exc
   }
   const pairs = entries

@@ -61,6 +61,6 @@ describe('core/ssh/rm.rmR', () => {
       files: new Map(),
       dirs: new Map([['/', {}]]),
     })
-    await expect(rmR(accessor, spec('/missing'))).rejects.toThrow(/file not found/)
+    await expect(rmR(accessor, spec('/missing'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

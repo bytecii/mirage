@@ -19,7 +19,8 @@ import { listAnnotations } from './annotations.ts'
 import { downloadArtifact } from './artifacts.ts'
 import { downloadJobLog, getJob, getRun, listJobsForRun } from './runs.ts'
 import { getWorkflow } from './workflows.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 const ENC = new TextEncoder()
 
@@ -30,12 +31,6 @@ function stripPrefix(path: PathSpec): string {
     p = p.slice(prefix.length) || '/'
   }
   return p
-}
-
-function enoent(p: string): Error {
-  const e = new Error(`ENOENT: ${p}`) as Error & { code: string }
-  e.code = 'ENOENT'
-  return e
 }
 
 function jsonBytes(value: unknown): Uint8Array {
@@ -54,31 +49,31 @@ export async function read(
   const virtualKey = `${prefix}/${key}`
 
   if (parts.length === 2 && parts[0] === 'workflows' && parts[1]?.endsWith('.json') === true) {
-    if (index === undefined) throw enoent(key)
+    if (index === undefined) throw enoent(path)
     const lookup = await index.get(virtualKey)
-    if (lookup.entry === undefined || lookup.entry === null) throw enoent(key)
+    if (lookup.entry === undefined || lookup.entry === null) throw enoent(path)
     const wf = await getWorkflow(accessor.transport, accessor.owner, accessor.repo, lookup.entry.id)
     return jsonBytes(wf)
   }
 
   if (parts.length === 3 && parts[0] === 'runs' && parts[2] === 'run.json') {
-    if (index === undefined) throw enoent(key)
+    if (index === undefined) throw enoent(path)
     const runDirname = parts[1]
-    if (runDirname === undefined) throw enoent(key)
+    if (runDirname === undefined) throw enoent(path)
     const runVirtual = `${prefix}/runs/${runDirname}`
     const lookup = await index.get(runVirtual)
-    if (lookup.entry === undefined || lookup.entry === null) throw enoent(key)
+    if (lookup.entry === undefined || lookup.entry === null) throw enoent(path)
     const run = await getRun(accessor.transport, accessor.owner, accessor.repo, lookup.entry.id)
     return jsonBytes(run)
   }
 
   if (parts.length === 3 && parts[0] === 'runs' && parts[2] === 'annotations.jsonl') {
-    if (index === undefined) throw enoent(key)
+    if (index === undefined) throw enoent(path)
     const runDirname = parts[1]
-    if (runDirname === undefined) throw enoent(key)
+    if (runDirname === undefined) throw enoent(path)
     const runVirtual = `${prefix}/runs/${runDirname}`
     const lookup = await index.get(runVirtual)
-    if (lookup.entry === undefined || lookup.entry === null) throw enoent(key)
+    if (lookup.entry === undefined || lookup.entry === null) throw enoent(path)
     const jobs = await listJobsForRun(
       accessor.transport,
       accessor.owner,
@@ -104,9 +99,9 @@ export async function read(
     parts[2] === 'jobs' &&
     parts[3]?.endsWith('.json') === true
   ) {
-    if (index === undefined) throw enoent(key)
+    if (index === undefined) throw enoent(path)
     const lookup = await index.get(virtualKey)
-    if (lookup.entry === undefined || lookup.entry === null) throw enoent(key)
+    if (lookup.entry === undefined || lookup.entry === null) throw enoent(path)
     const job = await getJob(accessor.transport, accessor.owner, accessor.repo, lookup.entry.id)
     return jsonBytes(job)
   }
@@ -117,20 +112,20 @@ export async function read(
     parts[2] === 'jobs' &&
     parts[3]?.endsWith('.log') === true
   ) {
-    if (index === undefined) throw enoent(key)
+    if (index === undefined) throw enoent(path)
     const lookup = await index.get(virtualKey)
-    if (lookup.entry === undefined || lookup.entry === null) throw enoent(key)
+    if (lookup.entry === undefined || lookup.entry === null) throw enoent(path)
     return downloadJobLog(accessor.transport, accessor.owner, accessor.repo, lookup.entry.id)
   }
 
   if (parts.length === 4 && parts[0] === 'runs' && parts[2] === 'artifacts') {
-    if (index === undefined) throw enoent(key)
+    if (index === undefined) throw enoent(path)
     const lookup = await index.get(virtualKey)
-    if (lookup.entry === undefined || lookup.entry === null) throw enoent(key)
+    if (lookup.entry === undefined || lookup.entry === null) throw enoent(path)
     return downloadArtifact(accessor.transport, accessor.owner, accessor.repo, lookup.entry.id)
   }
 
-  throw enoent(key)
+  throw enoent(path)
 }
 
 export async function* stream(

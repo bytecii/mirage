@@ -21,6 +21,7 @@ from mirage.cache.index import IndexCacheStore
 from mirage.core.ssh._client import _abs
 from mirage.core.timeutil import to_iso_z
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 from mirage.utils.filetype import guess_type
 
 
@@ -29,6 +30,7 @@ async def stat(accessor: SSHAccessor,
                index: IndexCacheStore = None) -> FileStat:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -55,4 +57,4 @@ async def stat(accessor: SSHAccessor,
             type=FileType.DIRECTORY if is_dir else guess_type(path),
         )
     except asyncssh.SFTPNoSuchFile:
-        raise FileNotFoundError(path)
+        raise enoent(virtual)

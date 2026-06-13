@@ -55,7 +55,7 @@ export async function readBytes(
   try {
     r = await dbxFetch(accessor, 'GET', 'files', remotePath, { headers })
   } catch (exc) {
-    if (isNotFound(exc)) throw notFoundError(path.stripPrefix)
+    if (isNotFound(exc)) throw notFoundError(path.original)
     throw exc
   }
   const data = new Uint8Array(await r.arrayBuffer())

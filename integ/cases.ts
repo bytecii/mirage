@@ -535,7 +535,44 @@ export const SLEEP_CASES: ReadonlyArray<readonly [string, string, number]> = [
   ["sleep_one", "sleep 1", 1],
 ];
 
+// Not-found errors must always show the full virtual path the user typed
+// (mount prefix included) plus the GNU strerror, identically across backends
+// and languages. Each case prints exit code and stderr.
+export const NOT_FOUND_CASES: ReadonlyArray<readonly [string, string]> = [
+  ["nf_cat", "cat /data/missing.txt"],
+  ["nf_head", "head /data/missing.txt"],
+  ["nf_tail", "tail /data/missing.txt"],
+  ["nf_wc", "wc /data/missing.txt"],
+  ["nf_stat", "stat /data/missing.txt"],
+  ["nf_grep", "grep x /data/missing.txt"],
+  ["nf_cat_nested", "cat /data/sub/missing.txt"],
+  ["nf_cat_pipe", "cat /data/missing.txt | cat"],
+];
+
 const ENC = new TextEncoder();
+
+// Backend-agnostic not-found probe: every backend (whatever its mount prefix)
+// must surface the full virtual path plus the GNU strerror. Read-only SaaS/DB
+// backends call runNotFound(ws, MOUNT) so the same invariant is checked there.
+const NOT_FOUND_PROGS: ReadonlyArray<readonly [string, string]> = [
+  ["nf_cat", "cat"],
+  ["nf_head", "head"],
+  ["nf_tail", "tail"],
+  ["nf_wc", "wc"],
+  ["nf_stat", "stat"],
+  ["nf_grep", "grep x"],
+];
+
+export async function runNotFound(ws: Workspace, mount: string): Promise<void> {
+  const target = `${mount.replace(/\/+$/, "")}/__nf_missing__.txt`;
+  for (const [name, prog] of NOT_FOUND_PROGS) {
+    const result = await ws.execute(`${prog} ${target}`);
+    const err = new TextDecoder().decode(result.stderr).trim();
+    process.stdout.write(`=== ${name} ===\n`);
+    process.stdout.write(`exit=${result.exitCode}\n`);
+    if (err) process.stdout.write(err + "\n");
+  }
+}
 
 export async function runCases(ws: Workspace): Promise<void> {
   for (const [path, content] of Object.entries(SEED_FILES)) {
@@ -563,6 +600,14 @@ export async function runCases(ws: Workspace): Promise<void> {
     process.stdout.write(`=== ${name} ===\n`);
     process.stdout.write(`exit=${result.exitCode}\n`);
     if (out) process.stdout.write(out.endsWith("\n") ? out : out + "\n");
+  }
+
+  for (const [name, cmd] of NOT_FOUND_CASES) {
+    const result = await ws.execute(cmd);
+    const err = new TextDecoder().decode(result.stderr).trim();
+    process.stdout.write(`=== ${name} ===\n`);
+    process.stdout.write(`exit=${result.exitCode}\n`);
+    if (err) process.stdout.write(err + "\n");
   }
 
   for (const [name, cmd, expected] of SLEEP_CASES) {

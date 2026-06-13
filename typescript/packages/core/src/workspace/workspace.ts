@@ -80,7 +80,8 @@ import { SessionManager } from './session/manager.ts'
 import type { Session } from './session/session.ts'
 import { ExecutionHistory } from './history.ts'
 import { ExecutionNode, ExecutionRecord } from './types.ts'
-import { stripSlash } from '../util/slash.ts'
+import { errorVirtualPath, gnuStrerror } from '../utils/errors.ts'
+import { stripSlash } from '../utils/slash.ts'
 
 const NOOP_ACCESSOR_INSTANCE = new NOOPAccessor()
 
@@ -826,11 +827,19 @@ export class Workspace {
       await this.dispatcher.applyIo(io)
       stdoutBytes = materialized === null ? new Uint8Array() : await materialize(materialized)
     } catch (err) {
-      // Lazy reads can fail while draining (e.g. a backend size guard thrown
-      // on the first pull); surface that as a failed command, not a crash.
-      const msg = err instanceof Error ? err.message : String(err)
+      // Lazy reads can fail while draining (e.g. head/tail that open the
+      // stream mid-pipeline, or a backend size guard thrown on the first
+      // pull); surface that as a failed command, not a crash. The command
+      // name is the first token of the pipeline's failing stage; for a bare
+      // command it is simply the command.
+      const strerror = gnuStrerror((err as { code?: string }).code)
+      const cmdName = command.trim().split(/\s+/)[0] ?? command
       io.exitCode = 1
-      io.stderr = new TextEncoder().encode(`${msg}\n`)
+      io.stderr = new TextEncoder().encode(
+        strerror !== null
+          ? `${cmdName}: ${errorVirtualPath(err)}: ${strerror}\n`
+          : `${err instanceof Error ? err.message : String(err)}\n`,
+      )
       targetSession.lastExitCode = 1
       stdoutBytes = new Uint8Array()
     }
@@ -1034,6 +1043,11 @@ export class Workspace {
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
+    const drainTasks = [...(this.cache.drainTasks?.values() ?? [])]
+    for (const task of drainTasks) {
+      await task
+    }
+    await this.cache.clear()
     for (const fn of this.closers.splice(0)) {
       try {
         await fn()

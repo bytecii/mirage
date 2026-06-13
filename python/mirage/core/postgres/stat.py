@@ -21,6 +21,7 @@ from mirage.cache.index import IndexCacheStore
 from mirage.core.postgres import _client
 from mirage.core.postgres.scope import detect_scope
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 
 
 async def stat(accessor: PostgresAccessor,
@@ -41,11 +42,15 @@ async def stat(accessor: PostgresAccessor,
         return FileStat(name="database.json", type=FileType.JSON)
 
     if scope.level == "schema":
+        if not await _schema_exists(accessor, scope.schema):
+            raise enoent(path)
         return FileStat(name=scope.schema,
                         type=FileType.DIRECTORY,
                         extra={"schema": scope.schema})
 
     if scope.level == "kind":
+        if not await _schema_exists(accessor, scope.schema):
+            raise enoent(path)
         return FileStat(name=scope.kind,
                         type=FileType.DIRECTORY,
                         extra={
@@ -54,6 +59,9 @@ async def stat(accessor: PostgresAccessor,
                         })
 
     if scope.level == "entity":
+        if not await _entity_exists(accessor, scope.schema, scope.kind,
+                                    scope.entity):
+            raise enoent(path)
         return FileStat(name=scope.entity,
                         type=FileType.DIRECTORY,
                         extra={
@@ -63,6 +71,9 @@ async def stat(accessor: PostgresAccessor,
                         })
 
     if scope.level == "entity_schema":
+        if not await _entity_exists(accessor, scope.schema, scope.kind,
+                                    scope.entity):
+            raise enoent(path)
         return FileStat(name="schema.json",
                         type=FileType.JSON,
                         extra={
@@ -72,10 +83,33 @@ async def stat(accessor: PostgresAccessor,
                         })
 
     if scope.level == "entity_rows":
+        if not await _entity_exists(accessor, scope.schema, scope.kind,
+                                    scope.entity):
+            raise enoent(path)
         return await _rows_stat(accessor, scope.schema, scope.kind,
                                 scope.entity)
 
-    raise FileNotFoundError(raw)
+    raise enoent(path)
+
+
+async def _schema_exists(accessor: PostgresAccessor, schema: str) -> bool:
+    pool = await accessor.pool()
+    async with pool.acquire() as conn:
+        schemas = await _client.list_schemas(conn, accessor.config.schemas)
+    return schema in schemas
+
+
+async def _entity_exists(accessor: PostgresAccessor, schema: str, kind: str,
+                         entity: str) -> bool:
+    pool = await accessor.pool()
+    async with pool.acquire() as conn:
+        if kind == "tables":
+            names = await _client.list_tables(conn, schema)
+        else:
+            views = await _client.list_views(conn, schema)
+            mviews = await _client.list_matviews(conn, schema)
+            names = sorted(set(views) | set(mviews))
+    return entity in names
 
 
 async def _rows_stat(accessor: PostgresAccessor, schema: str, kind: str,

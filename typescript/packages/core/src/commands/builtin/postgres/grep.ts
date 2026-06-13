@@ -56,6 +56,10 @@ async function grepCommand(
   if (first !== undefined && pattern !== null) {
     const scope = detectScope(first)
 
+    if (scope.level !== 'root') {
+      await postgresStat(accessor, first, opts.index ?? undefined)
+    }
+
     if (scope.level === 'root') {
       const results = await searchDatabase(accessor, pattern, limit)
       const allLines = formatGrepResults(results)

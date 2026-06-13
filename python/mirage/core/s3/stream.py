@@ -21,6 +21,14 @@ from mirage.core.s3._client import _client_kwargs, _key, async_session
 from mirage.core.s3.read import _fp_rev_from_response
 from mirage.observe.context import record, record_stream, revision_for
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
+
+
+def _is_not_found(exc: Exception) -> bool:
+    if hasattr(exc, "response"):
+        code = exc.response.get("Error", {}).get("Code")
+        return code in ("404", "NoSuchKey")
+    return False
 
 
 async def read_stream(
@@ -55,7 +63,12 @@ async def read_stream(
         kwargs: dict = {"Bucket": config.bucket, "Key": _key(path, config)}
         if pinned_revision is not None:
             kwargs["VersionId"] = pinned_revision
-        response = await client.get_object(**kwargs)
+        try:
+            response = await client.get_object(**kwargs)
+        except Exception as exc:
+            if _is_not_found(exc):
+                raise enoent(virtual) from exc
+            raise
         if rec is not None:
             fingerprint, revision = _fp_rev_from_response(response)
             rec.fingerprint = fingerprint
@@ -93,7 +106,12 @@ async def range_read(accessor: S3Accessor, path: PathSpec, start: int,
         pinned_revision = revision_for(virtual)
         if pinned_revision is not None:
             kwargs["VersionId"] = pinned_revision
-        response = await client.get_object(**kwargs)
+        try:
+            response = await client.get_object(**kwargs)
+        except Exception as exc:
+            if _is_not_found(exc):
+                raise enoent(virtual) from exc
+            raise
         data = await response["Body"].read()
         fingerprint, revision = _fp_rev_from_response(response)
         record("read",

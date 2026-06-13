@@ -19,6 +19,7 @@ from mirage.cache.index import IndexCacheStore, IndexEntry
 from mirage.core.google.drive import (MIME_TO_EXT, list_files,
                                       list_shared_drives)
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ async def readdir(
 ) -> list[str]:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.directory if path.pattern else path.original
@@ -70,7 +72,7 @@ async def readdir(
         drive_id = None
     else:
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         result = await index.get(virtual_key)
         if result.entry is None:
             parent_virtual = virtual_key.rstrip("/").rsplit("/", 1)[0] or "/"
@@ -80,7 +82,7 @@ async def readdir(
                 await readdir(accessor, parent_path, index)
                 result = await index.get(virtual_key)
             if result.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         folder_id = result.entry.id
         drive_id = result.entry.extra.get("drive_id")
 

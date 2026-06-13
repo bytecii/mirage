@@ -20,8 +20,8 @@ import type { MountRegistry } from '../mount/registry.ts'
 import { ExecutionNode } from '../types.ts'
 import { resolveAcrossMounts } from '../../commands/safeguard.ts'
 import { applyFindActions } from './find_action_dispatch.ts'
-import { rstripSlash } from '../../util/slash.ts'
-import { fnmatch } from '../../util/fnmatch.ts'
+import { rstripSlash } from '../../utils/slash.ts'
+import { fnmatch } from '../../utils/fnmatch.ts'
 
 type Result = [ByteSource | null, IOResult, ExecutionNode]
 

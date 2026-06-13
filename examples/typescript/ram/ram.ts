@@ -87,6 +87,14 @@ async function main(): Promise<void> {
   await runLabeled(ws, 'history (last 5)', 'history 5')
 
   console.log('')
+  console.log('=== not-found errors show the full virtual path ===')
+  for (const cmd of ['cat /data/missing.txt', 'head /data/missing.txt', 'stat /data/missing.txt']) {
+    const res = await ws.execute(cmd)
+    console.log(`$ ${cmd}`)
+    console.log(`  exit=${String(res.exitCode)}  ${new TextDecoder().decode(res.stderr).trim()}`)
+  }
+
+  console.log('')
   console.log('=== GLOB EXPANSION ===')
   console.log('')
   await ws.execute('echo "AA" | tee /data/a.txt')

@@ -15,6 +15,7 @@
 import asyncio
 import os
 
+from cases import run_not_found
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from mirage import MountMode, Workspace
@@ -177,6 +178,7 @@ async def main() -> None:
         if name == "safeguard_cat_truncates":
             _set_cat_safeguard(ws, max_lines=2)
         await _run(ws, name, cmd)
+    await run_not_found(ws, MOUNT)
 
 
 if __name__ == "__main__":

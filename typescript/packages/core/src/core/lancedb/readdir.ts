@@ -16,7 +16,7 @@ import type { LanceDBAccessor } from '../../accessor/lancedb.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { LanceRow } from './_driver.ts'
 import { PathSpec } from '../../types.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 import { ScopeLevel, detectScope } from './scope.ts'
 
 function notFound(p: string): Error {

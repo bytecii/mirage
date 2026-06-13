@@ -38,8 +38,8 @@ describe('core/disk/rename', () => {
     expect(await readFile(join(root, 'b'), 'utf-8')).toBe('A')
   })
   it('throws on missing source', async () => {
-    await expect(rename(accessor, spec('/missing'), spec('/x'))).rejects.toThrow(
-      /file or directory not found/,
-    )
+    await expect(rename(accessor, spec('/missing'), spec('/x'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
   })
 })

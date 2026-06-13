@@ -16,6 +16,7 @@ import type { RAMAccessor } from '../../accessor/ram.ts'
 import { IndexEntry, type IndexCacheStore } from '../../cache/index/index.ts'
 import { ResourceType } from '../../cache/index/config.ts'
 import type { PathSpec } from '../../types.ts'
+import { enotdir } from '../../utils/errors.ts'
 import { norm } from './utils.ts'
 
 export async function readdir(
@@ -34,7 +35,7 @@ export async function readdir(
   }
   const p = norm(virtual)
   if (!accessor.store.dirs.has(p)) {
-    throw new Error(`not a directory: ${p}`)
+    throw enotdir(path)
   }
   const dirPrefix = p === '/' ? '/' : `${p}/`
   const seen = new Set<string>()

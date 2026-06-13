@@ -15,7 +15,7 @@
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { PathSpec } from '../../types.ts'
 import type { S3Accessor } from '../../accessor/s3.ts'
-import { fnmatch } from '../../util/fnmatch.ts'
+import { fnmatch } from '../../utils/fnmatch.ts'
 import { SCOPE_ERROR } from './constants.ts'
 import { readdir } from './readdir.ts'
 

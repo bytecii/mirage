@@ -19,7 +19,7 @@ import { downloadFile } from './files.ts'
 import { getHistoryJsonl } from './history.ts'
 import { listMembers } from './members.ts'
 import { readdir as discordReaddir } from './readdir.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
 
 const encoder = new TextEncoder()
 

@@ -47,6 +47,14 @@ def accessor():
     return _accessor()
 
 
+@pytest.fixture(autouse=True)
+def _exists(monkeypatch):
+    monkeypatch.setattr("mirage.core.postgres.stat._schema_exists",
+                        AsyncMock(return_value=True))
+    monkeypatch.setattr("mirage.core.postgres.stat._entity_exists",
+                        AsyncMock(return_value=True))
+
+
 @pytest.mark.asyncio
 async def test_stat_root(accessor, index):
     result = await stat(accessor, PathSpec(original="/", directory="/"), index)
@@ -206,3 +214,26 @@ async def test_stat_invalid_raises(accessor, index):
             accessor,
             PathSpec(original="/public/tables/users/extra/foo",
                      directory="/public/tables/users/extra/foo"), index)
+
+
+@pytest.mark.asyncio
+async def test_stat_missing_schema_raises(accessor, index):
+    with patch("mirage.core.postgres.stat._schema_exists",
+               AsyncMock(return_value=False)):
+        with pytest.raises(FileNotFoundError):
+            await stat(
+                accessor,
+                PathSpec(original="/pg/__nf_missing__.txt",
+                         directory="/pg/__nf_missing__.txt",
+                         prefix="/pg"), index)
+
+
+@pytest.mark.asyncio
+async def test_stat_missing_entity_raises(accessor, index):
+    with patch("mirage.core.postgres.stat._entity_exists",
+               AsyncMock(return_value=False)):
+        with pytest.raises(FileNotFoundError):
+            await stat(
+                accessor,
+                PathSpec(original="/public/tables/nope",
+                         directory="/public/tables/nope"), index)

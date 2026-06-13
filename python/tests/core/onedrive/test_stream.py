@@ -34,10 +34,12 @@ async def test_read_stream_missing_raises_file_not_found():
                   "code": "itemNotFound",
                   "message": "no"
               }})
-        with pytest.raises(FileNotFoundError):
-            async for _ in read_stream(_accessor(),
-                                       PathSpec.from_str_path("/Docs/a.txt")):
+        with pytest.raises(FileNotFoundError) as exc:
+            async for _ in read_stream(
+                    _accessor(),
+                    PathSpec.from_str_path("/od/Docs/a.txt", "/od")):
                 pass
+    assert str(exc.value) == "/od/Docs/a.txt"
 
 
 @pytest.mark.asyncio

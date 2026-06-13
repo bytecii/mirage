@@ -75,7 +75,7 @@ describe('DevResource', () => {
 
   it('reads of unknown paths throw file-not-found', async () => {
     const { dev, registry } = setupOps()
-    await expect(call(registry, 'read', dev, '/nope')).rejects.toThrow(/file not found/)
+    await expect(call(registry, 'read', dev, '/nope')).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('readdir of root lists /null and /zero', async () => {

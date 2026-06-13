@@ -20,6 +20,7 @@ from mirage.cache.index import IndexCacheStore
 from mirage.core.databricks_volume.errors import is_not_found
 from mirage.core.databricks_volume.path import backend_path
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 from mirage.utils.filetype import guess_type
 
 
@@ -58,7 +59,7 @@ async def _directory_stat_or_raise(
                                 remote_path)
     except Exception as exc:
         if is_not_found(exc):
-            raise FileNotFoundError(path.strip_prefix) from exc
+            raise enoent(path) from exc
         raise
     return FileStat(name=_name_from_backend_path(remote_path),
                     type=FileType.DIRECTORY)

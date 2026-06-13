@@ -17,7 +17,7 @@ import { resolveGlob } from '../../../core/chroma/glob.ts'
 import { searchSegments } from '../../../core/chroma/search.ts'
 import { IOResult } from '../../../io/types.ts'
 import { PathSpec, ResourceName } from '../../../types.ts'
-import { rstripSlash } from '../../../util/slash.ts'
+import { rstripSlash } from '../../../utils/slash.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 

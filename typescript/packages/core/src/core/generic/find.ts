@@ -14,9 +14,9 @@
 
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { FindOptions } from '../../resource/base.ts'
-import { fnmatch } from '../../util/fnmatch.ts'
+import { fnmatch } from '../../utils/fnmatch.ts'
 import { FileType, PathSpec, type FileStat } from '../../types.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 
 export interface WalkFindDeps {
   readdir: (spec: PathSpec, index?: IndexCacheStore) => Promise<string[]>

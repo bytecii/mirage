@@ -16,13 +16,14 @@ import { record } from '../../observe/context.ts'
 import type { RAMAccessor } from '../../accessor/ram.ts'
 import { ResourceName, type PathSpec } from '../../types.ts'
 import { norm } from './utils.ts'
+import { enoent } from '../../utils/errors.ts'
 
 export function read(accessor: RAMAccessor, path: PathSpec): Promise<Uint8Array> {
   const start = performance.now()
   const p = norm(path.stripPrefix)
   const data = accessor.store.files.get(p)
   if (data === undefined) {
-    throw new Error(`file not found: ${p}`)
+    throw enoent(path)
   }
   record('read', p, ResourceName.RAM, data.byteLength, start)
   return Promise.resolve(data)

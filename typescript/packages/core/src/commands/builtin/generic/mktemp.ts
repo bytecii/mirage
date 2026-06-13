@@ -15,7 +15,7 @@
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { rstripSlash } from '../../../util/slash.ts'
+import { rstripSlash } from '../../../utils/slash.ts'
 
 const ENC = new TextEncoder()
 

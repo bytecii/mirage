@@ -2,6 +2,7 @@ from opendal.exceptions import NotFound
 
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def rm_r(accessor: NextcloudAccessor, path: PathSpec) -> None:
@@ -13,4 +14,4 @@ async def rm_r(accessor: NextcloudAccessor, path: PathSpec) -> None:
     try:
         await op.remove_all(key)
     except NotFound as exc:
-        raise FileNotFoundError(raw) from exc
+        raise enoent(path) from exc

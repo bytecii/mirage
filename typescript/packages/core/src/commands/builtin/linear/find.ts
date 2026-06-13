@@ -21,8 +21,8 @@ import { PathSpec, ResourceName } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { metadataProvision } from './_provision.ts'
-import { stripSlash } from '../../../util/slash.ts'
-import { fnmatch } from '../../../util/fnmatch.ts'
+import { stripSlash } from '../../../utils/slash.ts'
+import { fnmatch } from '../../../utils/fnmatch.ts'
 import { formatRecords } from '../utils/output.ts'
 
 async function walk(

@@ -16,15 +16,10 @@ import type { LangfuseAccessor } from '../../accessor/langfuse.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { PathSpec } from '../../types.ts'
 import { fetchDatasetItems, fetchDatasetRuns, fetchPrompt, fetchTrace } from './_client.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 const ENC = new TextEncoder()
-
-function enoent(path: string): Error {
-  const err = new Error(`ENOENT: ${path}`) as Error & { code: string }
-  err.code = 'ENOENT'
-  return err
-}
 
 function toJsonBytes(data: unknown): Uint8Array {
   return ENC.encode(JSON.stringify(data, null, 2))
@@ -47,10 +42,10 @@ export async function read(
     p = p.slice(prefix.length) || '/'
   }
   const key = stripSlash(p)
-  if (key === '') throw enoent(p)
+  if (key === '') throw enoent(path)
   const parts = key.split('/')
   for (const part of parts) {
-    if (part.startsWith('.')) throw enoent(p)
+    if (part.startsWith('.')) throw enoent(path)
   }
 
   if (parts[0] === 'traces' && parts.length === 2 && (parts[1] ?? '').endsWith('.json')) {
@@ -69,7 +64,7 @@ export async function read(
     const promptName = parts[1] ?? ''
     const versionStr = (parts[2] ?? '').slice(0, -'.json'.length)
     const version = Number.parseInt(versionStr, 10)
-    if (Number.isNaN(version)) throw enoent(p)
+    if (Number.isNaN(version)) throw enoent(path)
     const data = await fetchPrompt(accessor.transport, promptName, version)
     return toJsonBytes(data)
   }
@@ -91,9 +86,9 @@ export async function read(
     const runs = await fetchDatasetRuns(accessor.transport, datasetName)
     const matched = runs.filter((r) => r.name === runName)
     const first = matched[0]
-    if (first === undefined) throw enoent(p)
+    if (first === undefined) throw enoent(path)
     return toJsonBytes(first)
   }
 
-  throw enoent(p)
+  throw enoent(path)
 }

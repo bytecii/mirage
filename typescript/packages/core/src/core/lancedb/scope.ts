@@ -14,7 +14,7 @@
 
 import type { LanceDBConfigResolved } from '../../resource/lancedb/config.ts'
 import { PathSpec } from '../../types.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
 
 export const ScopeLevel = Object.freeze({
   ROOT: 'root',

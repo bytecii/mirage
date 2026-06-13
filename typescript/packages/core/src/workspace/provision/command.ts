@@ -23,7 +23,7 @@ import type { Session } from '../session/session.ts'
 import type { Accessor } from '../../accessor/base.ts'
 import type { Resource } from '../../resource/base.ts'
 import type { CommandOpts } from '../../commands/config.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 
 async function checkCacheHits(
   cache: FileCache | null,

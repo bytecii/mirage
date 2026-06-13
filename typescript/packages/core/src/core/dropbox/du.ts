@@ -15,7 +15,7 @@
 import type { DropboxAccessor } from '../../accessor/dropbox.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileType, PathSpec, type FileStat } from '../../types.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 import { readdir } from './readdir.ts'
 import { stat } from './stat.ts'
 

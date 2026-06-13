@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { type IndexCacheStore, record, ResourceName, type PathSpec } from '@struktoai/mirage-core'
+import { enoent } from '@struktoai/mirage-core'
 import type { RedisAccessor } from '../../accessor/redis.ts'
 import { norm } from './utils.ts'
 
@@ -25,7 +26,7 @@ export async function read(
   const p = norm(path.stripPrefix)
   const data = await accessor.store.getFile(p)
   if (data === null) {
-    throw new Error(`file not found: ${p}`)
+    throw enoent(path)
   }
   record('read', p, ResourceName.REDIS, data.byteLength, start)
   return data

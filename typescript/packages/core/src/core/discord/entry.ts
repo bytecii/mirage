@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { IndexEntry } from '../../cache/index/config.ts'
-import { makeIdName } from '../../util/naming.ts'
+import { makeIdName } from '../../utils/naming.ts'
 
 export const DiscordResourceType = Object.freeze({
   GUILD: 'discord/guild',

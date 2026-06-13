@@ -16,6 +16,8 @@ import asyncio
 import os
 from pathlib import Path
 
+from cases import run_not_found
+
 from mirage import MountMode, Workspace
 from mirage.resource.nextcloud import NextcloudConfig, NextcloudResource
 from mirage.types import CommandSafeguard
@@ -156,6 +158,7 @@ async def main() -> None:
         await _run(ws, name, tmpl.format(m=MOUNT))
     for name, tmpl in STREAMING_CASES:
         await _measure(ws, f"stream:{name}", tmpl.format(m=MOUNT))
+    await run_not_found(ws, MOUNT)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ from mirage.core.databricks_volume.errors import is_not_found
 from mirage.core.databricks_volume.path import backend_path
 from mirage.observe.context import record
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 def _is_directory_metadata(metadata: object) -> bool:
@@ -82,13 +83,13 @@ async def write_bytes(
         _ensure_parent_directory_sync,
         accessor,
         remote_parent,
-        path.strip_prefix,
+        path.original,
     )
     try:
         await asyncio.to_thread(_upload_bytes_sync, accessor, remote_path,
                                 data)
     except Exception as exc:
         if is_not_found(exc):
-            raise FileNotFoundError(path.strip_prefix) from exc
+            raise enoent(path) from exc
         raise
     record("write", path.original, "databricks_volume", len(data), start_ms)

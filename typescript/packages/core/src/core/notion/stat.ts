@@ -16,16 +16,11 @@ import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, type PathSpec } from '../../types.ts'
 import type { NotionTransport } from './_client.ts'
 import { parseSegment } from './pathing.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 export interface NotionStatAccessor {
   readonly transport: NotionTransport
-}
-
-function enoent(path: string): Error {
-  const err = new Error(`ENOENT: ${path}`) as Error & { code: string }
-  err.code = 'ENOENT'
-  return err
 }
 
 export async function stat(

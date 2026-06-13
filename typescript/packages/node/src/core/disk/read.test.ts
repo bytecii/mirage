@@ -38,6 +38,6 @@ describe('core/disk/read', () => {
   })
 
   it('throws "file not found" on ENOENT', async () => {
-    await expect(read(accessor, spec('/missing'))).rejects.toThrow(/file not found/)
+    await expect(read(accessor, spec('/missing'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

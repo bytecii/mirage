@@ -19,7 +19,8 @@ import { PathSpec } from '../../types.ts'
 import { listArtifacts } from './artifacts.ts'
 import { listJobsForRun, listRuns } from './runs.ts'
 import { listWorkflows } from './workflows.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 function safeName(name: string | undefined): string {
   if (name === undefined || name === '') return 'unknown'
@@ -33,12 +34,6 @@ function stripPrefix(path: PathSpec): string {
     p = p.slice(prefix.length) || '/'
   }
   return p
-}
-
-function enoent(p: string): Error {
-  const e = new Error(`ENOENT: ${p}`) as Error & { code: string }
-  e.code = 'ENOENT'
-  return e
 }
 
 export async function readdir(

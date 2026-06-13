@@ -21,6 +21,7 @@ from mirage.cache.index import IndexCacheStore
 from mirage.core.hf_buckets.stat import stat
 from mirage.observe.context import record
 from mirage.types import FileType, PathSpec
+from mirage.utils.errors import enoent
 
 
 async def unlink(accessor: HfBucketsAccessor,
@@ -38,5 +39,5 @@ async def unlink(accessor: HfBucketsAccessor,
     try:
         await op.delete(key)
     except NotFound as exc:
-        raise FileNotFoundError(raw) from exc
+        raise enoent(path) from exc
     record("unlink", path.original, accessor.RESOURCE_NAME, 0, start_ms)

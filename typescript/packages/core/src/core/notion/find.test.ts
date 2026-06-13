@@ -14,7 +14,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
 import type { NotionStatAccessor } from './stat.ts'
 
 const DIRS = new Set(['/db', '/db/sub'])

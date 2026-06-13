@@ -23,6 +23,7 @@ from mirage.core.databricks_volume.exists import exists
 from mirage.core.databricks_volume.path import backend_path
 from mirage.core.databricks_volume.stat import stat
 from mirage.types import FileType, PathSpec
+from mirage.utils.errors import enoent, enotdir
 
 
 def _create_directory_sync(
@@ -44,14 +45,14 @@ async def mkdir(
         await asyncio.to_thread(_create_directory_sync, accessor, remote_path)
         return
     if await exists(accessor, path):
-        raise FileExistsError(path.strip_prefix)
+        raise FileExistsError(path.original)
     parent = parent_path(path)
     parent_stat = await stat(accessor, parent, index)
     if parent_stat.type != FileType.DIRECTORY:
-        raise NotADirectoryError(path.strip_prefix)
+        raise enotdir(path)
     try:
         await asyncio.to_thread(_create_directory_sync, accessor, remote_path)
     except Exception as exc:
         if is_not_found(exc):
-            raise FileNotFoundError(path.strip_prefix) from exc
+            raise enoent(path) from exc
         raise

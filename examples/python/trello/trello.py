@@ -33,6 +33,15 @@ resource = TrelloResource(config=config)
 async def main() -> None:
     ws = Workspace({"/trello": resource}, mode=MountMode.WRITE)
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /trello/__nf_missing__.txt",
+                "head /trello/__nf_missing__.txt",
+                "stat /trello/__nf_missing__.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     print("=== ls /trello/workspaces/ ===")
     result = await ws.execute("ls /trello/workspaces/")
     print(await result.stdout_str())

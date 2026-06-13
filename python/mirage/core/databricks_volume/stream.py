@@ -23,6 +23,7 @@ from mirage.core.databricks_volume.path import backend_path
 from mirage.core.databricks_volume.read import read_bytes
 from mirage.observe.context import record_stream
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 def _download_contents(response) -> BinaryIO:
@@ -70,7 +71,7 @@ async def read_stream(
             yield chunk
     except Exception as exc:
         if is_not_found(exc):
-            raise FileNotFoundError(path.strip_prefix) from exc
+            raise enoent(path) from exc
         raise
     finally:
         if contents is not None:

@@ -21,6 +21,7 @@ from mirage.core.mongodb.types import (KIND_TO_DIR, KIND_TO_RESOURCE_TYPE,
                                        RESOURCE_TYPE_DATABASE, EntityKind,
                                        ScopeLevel)
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 def is_dir_name(child: str) -> bool:
@@ -47,7 +48,7 @@ async def readdir(
     if scope.level == ScopeLevel.DATABASE:
         if not await database_exists(accessor.client, accessor.config,
                                      scope.database, accessor):
-            raise FileNotFoundError(path.original)
+            raise enoent(path)
         base = f"{prefix}/{scope.database}"
         return [
             f"{base}/database.json",
@@ -58,7 +59,7 @@ async def readdir(
     if scope.level == ScopeLevel.KIND_DIR:
         if not await database_exists(accessor.client, accessor.config,
                                      scope.database, accessor):
-            raise FileNotFoundError(path.original)
+            raise enoent(path)
         return await _list_kind_dir(accessor, scope.database, scope.kind,
                                     virtual_key, index, prefix)
 
@@ -66,7 +67,7 @@ async def readdir(
         if not await entity_exists(accessor.client, accessor.config,
                                    scope.database, scope.name, scope.kind,
                                    accessor):
-            raise FileNotFoundError(path.original)
+            raise enoent(path)
         base = (f"{prefix}/{scope.database}/"
                 f"{KIND_TO_DIR[scope.kind]}/{scope.name}")
         return [
@@ -74,7 +75,7 @@ async def readdir(
             f"{base}/documents.jsonl",
         ]
 
-    raise FileNotFoundError(path.original)
+    raise enoent(path)
 
 
 async def _list_root(

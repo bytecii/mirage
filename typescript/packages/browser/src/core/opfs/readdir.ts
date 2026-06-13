@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '@struktoai/mirage-core'
+import { enotdir } from '@struktoai/mirage-core'
 import type { OPFSAccessor } from '../../accessor/opfs.ts'
 import { isNotFound, iterEntries, norm, resolveDirHandle } from './utils.ts'
 
@@ -23,9 +24,9 @@ export async function readdir(accessor: OPFSAccessor, path: PathSpec): Promise<s
   try {
     dir = await resolveDirHandle(root, virtual, { create: false })
   } catch (err) {
-    if (isNotFound(err)) throw new Error(`not a directory: ${virtual}`)
+    if (isNotFound(err)) throw enotdir(path)
     if (err instanceof DOMException && err.name === 'TypeMismatchError') {
-      throw new Error(`not a directory: ${virtual}`)
+      throw enotdir(path)
     }
     throw err
   }

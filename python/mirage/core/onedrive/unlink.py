@@ -16,14 +16,16 @@ from mirage.accessor.onedrive import OneDriveAccessor
 from mirage.core.onedrive._client import (GraphError, graph_delete, item_url,
                                           split_path)
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def unlink(accessor: OneDriveAccessor, path: PathSpec) -> None:
+    virtual = path.original if isinstance(path, PathSpec) else path
     _, stripped = split_path(path)
     try:
         await graph_delete(accessor.config,
                            item_url(accessor.config, "/" + stripped))
     except GraphError as exc:
         if exc.status == 404:
-            raise FileNotFoundError(stripped)
+            raise enoent(virtual)
         raise

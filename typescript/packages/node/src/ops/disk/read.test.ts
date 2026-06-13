@@ -38,6 +38,8 @@ describe('readOp', () => {
   })
 
   it('throws on missing file', async () => {
-    await expect(readOp.fn(res.accessor, spec('/nope'), [], {})).rejects.toThrow(/file not found/)
+    await expect(readOp.fn(res.accessor, spec('/nope'), [], {})).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
   })
 })

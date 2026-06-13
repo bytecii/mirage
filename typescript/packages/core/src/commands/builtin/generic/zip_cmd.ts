@@ -16,7 +16,7 @@ import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import { deflateRaw } from '../../../utils/compress.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { lstripSlash } from '../../../util/slash.ts'
+import { lstripSlash } from '../../../utils/slash.ts'
 
 const ENC = new TextEncoder()
 

@@ -21,6 +21,7 @@ from mirage.core.postgres._schema_json import (build_database_json,
                                                build_entity_schema_json)
 from mirage.core.postgres.scope import detect_scope
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read(
@@ -57,7 +58,7 @@ async def read(
                                 limit=limit,
                                 offset=offset)
 
-    raise FileNotFoundError(raw)
+    raise enoent(path)
 
 
 async def _read_rows(accessor: PostgresAccessor, schema: str, entity: str, *,

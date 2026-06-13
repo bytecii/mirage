@@ -250,6 +250,93 @@ async function main(): Promise<void> {
     console.log('\n=== grep "$(echo queue)" /gcs/data/example.jsonl | wc -l (sub as pattern) ===')
     r = await run(ws, 'grep "$(echo queue)" /gcs/data/example.jsonl | wc -l')
     console.log(`  count: ${r.stdout.trim()}`)
+
+    // ── on-the-fly maxDrainBytes (cancellable cache drain) ────────────
+    const target = '/gcs/data/example.jsonl'
+    await ws.cache.clear()
+    console.log('\n=== max_drain_bytes=1MB then cat | head (drain cancelled) ===')
+    ws.maxDrainBytes = 1_000_000
+    r = await run(ws, `cat ${target} | head -n 3`)
+    console.log(`  head returned ${r.stdout.split('\n').filter((l) => l !== '').length} lines`)
+    let drainKeys = [...(ws.cache.drainTasks?.keys() ?? [])]
+    console.log(`  drain tasks: ${JSON.stringify(drainKeys)}`)
+    for (const k of drainKeys) await ws.cache.drainTasks?.get(k)
+    let cached: Uint8Array | null = null
+    for (const k of drainKeys) cached = (await ws.cache.get(k)) ?? cached
+    console.log(
+      `  cache after small budget: ${
+        cached !== null
+          ? `POPULATED (${cached.byteLength} bytes)`
+          : 'EMPTY (drain cancelled, as expected)'
+      }`,
+    )
+
+    await ws.cache.clear()
+    console.log('\n=== max_drain_bytes=None then cat | head (drain completes) ===')
+    ws.maxDrainBytes = null
+    r = await run(ws, `cat ${target} | head -n 3`)
+    console.log(`  head returned ${r.stdout.split('\n').filter((l) => l !== '').length} lines`)
+    drainKeys = [...(ws.cache.drainTasks?.keys() ?? [])]
+    console.log(`  drain tasks: ${JSON.stringify(drainKeys)}`)
+    for (const k of drainKeys) await ws.cache.drainTasks?.get(k)
+    cached = null
+    for (const k of drainKeys) cached = (await ws.cache.get(k)) ?? cached
+    console.log(
+      `  cache after unbounded: ${
+        cached !== null ? `POPULATED (${cached.byteLength} bytes, as expected)` : 'EMPTY'
+      }`,
+    )
+
+    // ── chunk-level streaming + multi-stage pipe backpressure ─────────
+    console.log('\n=== STREAMING (single command) ===')
+    r = await run(ws, `stat -c '%s' ${target}`)
+    const size = Number.parseInt(r.stdout.trim(), 10)
+    console.log(`  object size: ${size.toLocaleString('en-US')} bytes`)
+
+    const measure = async (label: string, cmd: string): Promise<void> => {
+      const before = ws.records.reduce((sum, rec) => sum + rec.bytes, 0)
+      const t0 = performance.now()
+      const res = await run(ws, cmd)
+      const dt = (performance.now() - t0) / 1000
+      const net = ws.records.reduce((sum, rec) => sum + rec.bytes, 0) - before
+      const head = res.stdout.trim().split('\n').filter((l) => l !== '')
+      const first = (head[0] ?? '').slice(0, 48)
+      console.log(
+        `  ${label.padEnd(42)} bytes=${net.toLocaleString('en-US').padStart(10)}  ` +
+          `t=${dt.toFixed(2).padStart(4)}s  lines=${String(head.length).padStart(4)}  ` +
+          `out0=${JSON.stringify(first)}`,
+      )
+    }
+
+    await ws.cache.clear()
+    await measure('head -n 1 (line-streamed)', `head -n 1 ${target}`)
+    await ws.cache.clear()
+    await measure('head -c 100 (byte-range)', `head -c 100 ${target}`)
+    await ws.cache.clear()
+    await measure('grep -m 1 (early-exit)', `grep -m 1 mirage ${target}`)
+
+    console.log('\n=== STREAMING CHAIN (multi-stage pipe backpressure) ===')
+    await ws.cache.clear()
+    await measure('cat | head -n 1', `cat ${target} | head -n 1`)
+    await ws.cache.clear()
+    await measure('cat | tr A-Z a-z | head -n 1', `cat ${target} | tr A-Z a-z | head -n 1`)
+    await ws.cache.clear()
+    await measure('cat | grep mirage | head -n 1', `cat ${target} | grep mirage | head -n 1`)
+    await ws.cache.clear()
+    await measure(
+      '4-stage: cat|tr|grep|head -n 1',
+      `cat ${target} | tr A-Z a-z | grep mirage | head -n 1`,
+    )
+    await ws.cache.clear()
+    await measure(
+      '5-stage: cat|tr|grep|head|wc -l',
+      `cat ${target} | tr A-Z a-z | grep mirage | head -n 1 | wc -l`,
+    )
+    await ws.cache.clear()
+    await measure('non-cancellable: cat | wc -l', `cat ${target} | wc -l`)
+
+    const total = ws.records.reduce((sum, rec) => sum + rec.bytes, 0)
+    console.log(`\nStats: ${ws.records.length} ops, ${total} bytes transferred`)
   } finally {
     await ws.close()
   }

@@ -25,7 +25,7 @@ import {
   type BackendKeyFn,
   type StatFn,
 } from '../utils/copy.ts'
-import { rstripSlash } from '../../../util/slash.ts'
+import { rstripSlash } from '../../../utils/slash.ts'
 
 const ENC = new TextEncoder()
 

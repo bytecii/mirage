@@ -17,7 +17,7 @@ import { IndexEntry } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { PathSpec } from '../../types.ts'
 import { MIME_TO_EXT, listFiles, listSharedDrives } from '../google/drive.ts'
-import { rstripSlash, stripSlash } from '../../util/slash.ts'
+import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 
 export const DIRECTORY_RESOURCE_TYPES: ReadonlySet<string> = new Set([
   'gdrive/folder',

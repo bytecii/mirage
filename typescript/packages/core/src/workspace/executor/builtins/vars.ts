@@ -230,7 +230,10 @@ export async function handleRead(
       new ExecutionNode({ command: 'read', exitCode: 1 }),
     ]
   }
-  const line = new TextDecoder().decode(lineBytes).replace(/\n+$/, '')
+  const decodedLine = new TextDecoder().decode(lineBytes)
+  let lineEnd = decodedLine.length
+  while (lineEnd > 0 && decodedLine.charCodeAt(lineEnd - 1) === 10) lineEnd--
+  const line = decodedLine.slice(0, lineEnd)
   const ifs = session.env.IFS ?? ' \t\n'
   let parts: string[]
   if (ifs === ' \t\n') {

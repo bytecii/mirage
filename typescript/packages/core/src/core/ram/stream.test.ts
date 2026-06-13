@@ -43,7 +43,7 @@ describe('stream (RAM)', () => {
     const it = stream(new RAMAccessor(store), mkPath('/nope.txt'))
     await expect(async () => {
       for await (const _ of it) void _
-    }).rejects.toThrow(/not found/)
+    }).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('records bytes under active recording context', async () => {

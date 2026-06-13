@@ -52,6 +52,15 @@ async def _run(ws, cmd):
 async def main():
     ws = Workspace({"/langfuse": resource}, mode=MountMode.READ)
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /langfuse/__nf_missing__.txt",
+                "head /langfuse/__nf_missing__.txt",
+                "stat /langfuse/__nf_missing__.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     print("=" * 60)
     print("LS across all directories")
     print("=" * 60)

@@ -1059,7 +1059,7 @@ export { readdir as chromaReaddir } from './core/chroma/readdir.ts'
 export { stat as chromaStat } from './core/chroma/stat.ts'
 export { resolveGlob as resolveChromaGlob } from './core/chroma/glob.ts'
 export { searchSegments as chromaSearch } from './core/chroma/search.ts'
-export { scoreFromDistance } from './util/score.ts'
+export { scoreFromDistance } from './utils/score.ts'
 export {
   countDocuments as mongoCountDocuments,
   findDocuments as mongoFindDocuments,
@@ -1080,8 +1080,9 @@ export {
 } from './core/mongodb/search.ts'
 export { setHttpProxyBase } from './commands/builtin/utils/http.ts'
 
-export { lstripSlash, rstripSlash, stripSlash } from './util/slash.ts'
-export { fnmatch } from './util/fnmatch.ts'
+export { lstripSlash, rstripSlash, stripSlash } from './utils/slash.ts'
+export { fnmatch } from './utils/fnmatch.ts'
+export { enoent, enotdir, errorVirtualPath, type FsError, gnuStrerror } from './utils/errors.ts'
 
 export {
   DatabricksVolumeAccessor,

@@ -15,17 +15,12 @@
 import type { GDocsAccessor } from '../../accessor/gdocs.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { PathSpec } from '../../types.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
 import { deleteFile } from '../google/drive.ts'
 import { readdir as coreReaddir } from './readdir.ts'
+import { enoent } from '../../utils/errors.ts'
 
 const VIRTUAL_DIRS = new Set(['', 'owned', 'shared'])
-
-function enoent(p: string): Error & { code: string } {
-  const e = new Error(`ENOENT: ${p}`) as Error & { code: string }
-  e.code = 'ENOENT'
-  return e
-}
 
 function eisdir(p: string): Error & { code: string } {
   const e = new Error(`EISDIR: ${p}`) as Error & { code: string }

@@ -21,7 +21,8 @@ import { processBoxnote } from '../filetype/boxnote.ts'
 import { downloadFile, downloadFileStream, getExtractedText } from './api.ts'
 import type { BoxTokenManager } from './_client.ts'
 import { readdir } from './readdir.ts'
-import { rstripSlash, stripSlash } from '../../util/slash.ts'
+import { rstripSlash, stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 const ENC = new TextEncoder()
 
@@ -55,12 +56,6 @@ async function processBoxOffice(
     body_text: bodyText,
   }
   return ENC.encode(JSON.stringify(envelope, null, 2) + '\n')
-}
-
-function enoent(p: string): Error {
-  const e = new Error(`ENOENT: ${p}`) as Error & { code: string }
-  e.code = 'ENOENT'
-  return e
 }
 
 function eisdir(p: string): Error {

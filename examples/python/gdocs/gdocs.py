@@ -34,6 +34,15 @@ resource = GDocsResource(config=config)
 async def main() -> None:
     ws = Workspace({"/gdocs": resource}, mode=MountMode.WRITE)
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /gdocs/__nf_missing__.txt",
+                "head /gdocs/__nf_missing__.txt",
+                "stat /gdocs/__nf_missing__.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     print("=== ls /gdocs/ ===")
     r = await ws.execute("ls /gdocs/")
     print(await r.stdout_str())

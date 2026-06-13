@@ -17,7 +17,7 @@ import type { RAMAccessor } from '../../accessor/ram.ts'
 import { PathSpec } from '../../types.ts'
 import { SCOPE_ERROR } from './constants.ts'
 import { readdir } from './readdir.ts'
-import { fnmatch } from '../../util/fnmatch.ts'
+import { fnmatch } from '../../utils/fnmatch.ts'
 
 function basenameOf(p: string): string {
   return p.slice(p.lastIndexOf('/') + 1)

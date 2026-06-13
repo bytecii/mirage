@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import chromadb  # noqa: E402
+from cases import run_not_found  # noqa: E402
 
 from mirage import MountMode, Workspace  # noqa: E402
 from mirage.resource.chroma import ChromaConfig, ChromaResource  # noqa: E402
@@ -264,6 +265,7 @@ async def main() -> None:
     # unit tests (tests/core/chroma/test_search.py).
     for name, tmpl in CASES:
         await run_case(ws, name, tmpl.format(root=MOUNT))
+    await run_not_found(ws, MOUNT)
 
 
 if __name__ == "__main__":

@@ -12,11 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { parseIdName } from '../../util/naming.ts'
-import { sanitizeName } from '../../util/sanitize.ts'
+import { parseIdName } from '../../utils/naming.ts'
+import { sanitizeName } from '../../utils/sanitize.ts'
 
-export { sanitizeName } from '../../util/sanitize.ts'
-export { parseIdName as splitSuffixId } from '../../util/naming.ts'
+export { sanitizeName } from '../../utils/sanitize.ts'
+export { parseIdName as splitSuffixId } from '../../utils/naming.ts'
 
 export function stripDashes(id: string): string {
   return id.replace(/-/g, '')

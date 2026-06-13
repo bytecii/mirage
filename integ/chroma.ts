@@ -16,6 +16,7 @@ import { randomBytes } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { ChromaClient } from "chromadb";
 import { ChromaResource, MountMode, Workspace } from "@struktoai/mirage-node";
+import { runNotFound } from "./cases.ts";
 
 const CHROMA_HOST = process.env.CHROMA_HOST ?? "localhost";
 const CHROMA_PORT = Number.parseInt(process.env.CHROMA_PORT ?? "8000", 10);
@@ -226,6 +227,7 @@ async function main(): Promise<void> {
     for (const [name, tmpl] of CASES) {
       await runCase(ws, name, tmpl.replaceAll("{root}", MOUNT));
     }
+    await runNotFound(ws, MOUNT);
   } finally {
     await ws.close();
   }

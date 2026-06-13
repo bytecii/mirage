@@ -16,15 +16,10 @@ import type { GSlidesAccessor } from '../../accessor/gslides.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
 import { readdir as coreReaddir } from './readdir.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 const VIRTUAL_DIRS = new Set(['', 'owned', 'shared'])
-
-function enoent(p: string): Error & { code: string } {
-  const e = new Error(`ENOENT: ${p}`) as Error & { code: string }
-  e.code = 'ENOENT'
-  return e
-}
 
 export async function stat(
   accessor: GSlidesAccessor,

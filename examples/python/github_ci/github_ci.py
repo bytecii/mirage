@@ -34,6 +34,14 @@ resource = GitHubCIResource(config=config)
 async def main():
     ws = Workspace({"/ci": resource}, mode=MountMode.READ)
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /ci/__nf_missing__.txt", "head /ci/__nf_missing__.txt",
+                "stat /ci/__nf_missing__.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     # ── discover structure ────────────────────────────
     print("=== ls /ci/ (root) ===")
     r = await ws.execute("ls /ci/")

@@ -18,6 +18,10 @@ vi.mock('./_client.ts', () => ({
   fetchColumns: vi.fn(),
   estimatedRowCount: vi.fn(),
   tableSizeBytes: vi.fn(),
+  listSchemas: vi.fn(() => Promise.resolve(['public', 'analytics'])),
+  listTables: vi.fn(() => Promise.resolve(['users'])),
+  listViews: vi.fn(() => Promise.resolve(['daily_revenue'])),
+  listMatviews: vi.fn(() => Promise.resolve([])),
 }))
 
 import { PostgresAccessor } from '../../accessor/postgres.ts'
@@ -96,6 +100,19 @@ describe('stat', () => {
         new PathSpec({
           original: '/pg/public/sequences',
           directory: '/pg/public/',
+          prefix: '/pg',
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('throws ENOENT for a non-existent schema', async () => {
+    await expect(
+      stat(
+        makeAccessor(),
+        new PathSpec({
+          original: '/pg/__nf_missing__.txt',
+          directory: '/pg/',
           prefix: '/pg',
         }),
       ),

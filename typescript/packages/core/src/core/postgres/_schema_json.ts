@@ -27,7 +27,7 @@ import {
   listViews,
   tableSizeBytes,
 } from './_client.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 
 export interface DatabaseTable {
   schema: string

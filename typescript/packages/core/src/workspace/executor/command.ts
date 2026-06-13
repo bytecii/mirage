@@ -38,7 +38,8 @@ import { maybeWithTimeout } from '../../commands/builtin/utils/safeguard.ts'
 import { resolveAcrossMounts, resolveSafeguard } from '../../commands/safeguard.ts'
 import type { ExecuteNodeFn } from './jobs.ts'
 import { handleJobs, handleKill, handlePs, handleWait } from './jobs.ts'
-import { rstripSlash, stripSlash } from '../../util/slash.ts'
+import { errorVirtualPath, gnuStrerror } from '../../utils/errors.ts'
+import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 
 const JOB_BUILTINS: ReadonlySet<string> = new Set(['wait', 'fg', 'kill', 'jobs', 'ps'])
 
@@ -286,8 +287,12 @@ export async function handleCommand(
     })
     return [stdout, io, exec]
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    const errBytes = new TextEncoder().encode(`${cmdName}: ${msg}\n`)
+    const strerror = gnuStrerror((err as { code?: string }).code)
+    const line =
+      strerror !== null
+        ? `${cmdName}: ${errorVirtualPath(err)}: ${strerror}\n`
+        : `${cmdName}: ${err instanceof Error ? err.message : String(err)}\n`
+    const errBytes = new TextEncoder().encode(line)
     return [
       null,
       new IOResult({ exitCode: 1, stderr: errBytes }),

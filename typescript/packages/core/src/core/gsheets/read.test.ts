@@ -74,6 +74,6 @@ describe('gsheets read auto-bootstrap', () => {
       directory: '/gsheets/owned/Missing__xyz.gsheet.json',
       prefix: '/gsheets',
     })
-    await expect(read(accessor, path, index)).rejects.toThrow(/ENOENT/)
+    await expect(read(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

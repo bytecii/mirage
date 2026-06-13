@@ -17,6 +17,7 @@ from mirage.cache.index import IndexCacheStore
 from mirage.core.gdocs.readdir import readdir
 from mirage.core.google.drive import delete_file
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 VIRTUAL_DIRS = {"", "owned", "shared"}
 
@@ -35,7 +36,7 @@ async def unlink(
     if key in VIRTUAL_DIRS:
         raise IsADirectoryError(raw)
     if index is None:
-        raise FileNotFoundError(raw)
+        raise enoent(path)
     virtual_key = prefix + "/" + key if prefix else "/" + key
     result = await index.get(virtual_key)
     if result.entry is None:
@@ -44,7 +45,7 @@ async def unlink(
         await readdir(accessor, parent_path, index)
         result = await index.get(virtual_key)
     if result.entry is None:
-        raise FileNotFoundError(raw)
+        raise enoent(path)
     await delete_file(accessor.token_manager, result.entry.id)
     parent_dir = "/".join(virtual_key.rsplit("/", 1)[:-1]) or "/"
     await index.invalidate_dir(parent_dir)

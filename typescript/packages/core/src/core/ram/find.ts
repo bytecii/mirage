@@ -15,8 +15,8 @@
 import type { RAMAccessor } from '../../accessor/ram.ts'
 import type { PathSpec } from '../../types.ts'
 import { norm } from './utils.ts'
-import { rstripSlash } from '../../util/slash.ts'
-import { fnmatch } from '../../util/fnmatch.ts'
+import { rstripSlash } from '../../utils/slash.ts'
+import { fnmatch } from '../../utils/fnmatch.ts'
 
 export interface FindOptions {
   name?: string | null

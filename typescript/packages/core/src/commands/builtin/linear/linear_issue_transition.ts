@@ -24,6 +24,7 @@ import { IOResult } from '../../../io/types.ts'
 import { ResourceName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { CommandSpec, OperandKind, Option } from '../../spec/types.ts'
+import { enoent } from '../../../utils/errors.ts'
 
 const ENC = new TextEncoder()
 
@@ -35,12 +36,6 @@ const SPEC = new CommandSpec({
     new Option({ long: '--state_name', valueKind: OperandKind.TEXT }),
   ],
 })
-
-function enoent(path: string): Error {
-  const err = new Error(`ENOENT: ${path}`) as Error & { code: string }
-  err.code = 'ENOENT'
-  return err
-}
 
 async function resolveStateId(
   transport: LinearTransport,

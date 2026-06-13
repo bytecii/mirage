@@ -14,7 +14,7 @@
 
 import type { GitHubAccessor } from '../../accessor/github.ts'
 import { PathSpec } from '../../types.ts'
-import { lstripSlash, stripSlash } from '../../util/slash.ts'
+import { lstripSlash, stripSlash } from '../../utils/slash.ts'
 import { type GitHubCodeSearchResult, searchCode } from './_client.ts'
 
 export type { GitHubCodeSearchResult } from './_client.ts'

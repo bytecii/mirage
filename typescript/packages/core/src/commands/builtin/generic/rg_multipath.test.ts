@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { FileStat, FileType, PathSpec } from '../../../types.ts'
-import { rstripSlash } from '../../../util/slash.ts'
+import { rstripSlash } from '../../../utils/slash.ts'
 import type { CommandFn, CommandOpts } from '../../config.ts'
 import { rgGeneric } from './rg.ts'
 

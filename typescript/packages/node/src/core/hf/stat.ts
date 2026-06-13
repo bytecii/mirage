@@ -22,7 +22,8 @@ import {
 } from '@struktoai/mirage-core'
 import type { Metadata } from 'opendal'
 import type { HfAccessor } from '../../accessor/hf.ts'
-import { enoent, isNotFound, rawPathOf } from './util.ts'
+import { isNotFound, rawPathOf } from './util.ts'
+import { enoent } from '@struktoai/mirage-core'
 
 export async function stat(
   accessor: HfAccessor,
@@ -52,7 +53,7 @@ export async function stat(
     const parent = virtualKey.slice(0, virtualKey.lastIndexOf('/')) || '/'
     const parentListing = await index.listDir(parent)
     if (parentListing.entries !== undefined && parentListing.entries !== null) {
-      throw enoent(rawPath)
+      throw enoent(path)
     }
   }
   const op = await accessor.operator()
@@ -84,5 +85,5 @@ export async function stat(
   } catch (err) {
     if (!isNotFound(err)) throw err
   }
-  throw enoent(rawPath)
+  throw enoent(path)
 }

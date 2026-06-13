@@ -105,3 +105,21 @@ exit=0
 exit=1
 === grep_no_match ===
 exit=1
+=== nf_cat ===
+exit=1
+cat: /db/__nf_missing__.txt: No such file or directory
+=== nf_head ===
+exit=1
+head: /db/__nf_missing__.txt: No such file or directory
+=== nf_tail ===
+exit=1
+tail: /db/__nf_missing__.txt: No such file or directory
+=== nf_wc ===
+exit=1
+wc: /db/__nf_missing__.txt: No such file or directory
+=== nf_stat ===
+exit=1
+stat: /db/__nf_missing__.txt: No such file or directory
+=== nf_grep ===
+exit=1
+grep: /db/__nf_missing__.txt: No such file or directory

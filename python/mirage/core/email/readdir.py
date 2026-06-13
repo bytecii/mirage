@@ -20,6 +20,7 @@ from mirage.cache.index import IndexCacheStore, IndexEntry
 from mirage.core.email._client import fetch_headers, list_message_uids
 from mirage.core.email.folders import list_folders
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 TITLE_MAX = 80
 UNSAFE = re.compile(r"[^\w\s\-.]")
@@ -55,6 +56,7 @@ async def readdir(
 ) -> list[str]:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.directory if path.pattern else path.original
@@ -93,7 +95,7 @@ async def readdir(
             if cached.entries is not None:
                 return cached.entries
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         max_msgs = accessor.config.max_messages
         uids = await list_message_uids(accessor,
                                        folder_name,
@@ -154,7 +156,7 @@ async def readdir(
 
     if depth == 2:
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         cached = await index.list_dir(virtual_key)
         if cached.entries is not None:
             return cached.entries
@@ -167,11 +169,11 @@ async def readdir(
         cached = await index.list_dir(virtual_key)
         if cached.entries is not None:
             return cached.entries
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
     if depth == 3:
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         cached = await index.list_dir(virtual_key)
         if cached.entries is not None:
             return cached.entries
@@ -184,6 +186,6 @@ async def readdir(
         cached = await index.list_dir(virtual_key)
         if cached.entries is not None:
             return cached.entries
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
-    raise FileNotFoundError(path)
+    raise enoent(virtual)

@@ -15,7 +15,7 @@
 import type { Resource } from '../../resource/base.ts'
 import { PathSpec } from '../../types.ts'
 import type { MountRegistry } from '../mount/registry.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 
 export interface ResourceWithGlob extends Resource {
   glob(paths: readonly PathSpec[], prefix?: string): Promise<PathSpec[]>

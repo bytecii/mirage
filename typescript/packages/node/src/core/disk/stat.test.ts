@@ -47,6 +47,6 @@ describe('core/disk/stat', () => {
   })
 
   it('throws "file not found" on missing', async () => {
-    await expect(stat(accessor, spec('/nope'))).rejects.toThrow(/file not found/)
+    await expect(stat(accessor, spec('/nope'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

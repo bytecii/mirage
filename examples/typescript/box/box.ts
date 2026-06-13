@@ -62,6 +62,13 @@ async function main(): Promise<void> {
   const resource = new BoxResource(buildConfig())
   const ws = new Workspace({ '/box': resource }, { mode: MountMode.READ })
   try {
+    console.log('=== not-found errors show the full virtual path ===')
+    for (const cmd of ['cat /box/__nf_missing__.txt', 'head /box/__nf_missing__.txt', 'stat /box/__nf_missing__.txt']) {
+      const res = await ws.execute(cmd)
+      console.log(`$ ${cmd}`)
+      console.log(`  exit=${String(res.exitCode)}  ${new TextDecoder().decode(res.stderr).trim()}`)
+    }
+
     await show(ws, 'ls /box/')
     await show(ws, 'tree -L 2 /box/', 1200)
     await show(ws, 'du -h /box/')

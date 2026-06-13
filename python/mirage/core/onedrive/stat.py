@@ -17,6 +17,7 @@ from mirage.cache.index import IndexCacheStore
 from mirage.core.onedrive._client import (GraphError, graph_get, item_url,
                                           split_path)
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 from mirage.utils.filetype import guess_type
 
 
@@ -41,6 +42,7 @@ def _entry_stat(item: dict) -> FileStat:
 async def stat(accessor: OneDriveAccessor,
                path: PathSpec,
                index: IndexCacheStore = None) -> FileStat:
+    virtual = path.original if isinstance(path, PathSpec) else path
     prefix, stripped = split_path(path)
     if not stripped:
         return FileStat(name="/", type=FileType.DIRECTORY)
@@ -58,13 +60,13 @@ async def stat(accessor: OneDriveAccessor,
         parent = virtual_key.rsplit("/", 1)[0] or "/"
         parent_listing = await index.list_dir(parent)
         if parent_listing.entries is not None:
-            raise FileNotFoundError(stripped)
+            raise enoent(virtual)
 
     try:
         item = await graph_get(accessor.config,
                                item_url(accessor.config, "/" + stripped))
     except GraphError as exc:
         if exc.status == 404:
-            raise FileNotFoundError(stripped)
+            raise enoent(virtual)
         raise
     return _entry_stat(item)

@@ -42,7 +42,7 @@ describe('core/ssh/readdir', () => {
       files: new Map(),
       dirs: new Map([['/', {}]]),
     })
-    await expect(readdir(accessor, spec('/missing'))).rejects.toThrow(/file not found/)
+    await expect(readdir(accessor, spec('/missing'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('preserves the mount prefix in returned paths', async () => {

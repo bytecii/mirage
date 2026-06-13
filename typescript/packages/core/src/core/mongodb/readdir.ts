@@ -20,7 +20,7 @@ import { databaseExists, entityExists, listCollections, listDatabases } from './
 import { detectScope } from './scope.ts'
 import type { EntityKind } from './types.ts'
 import { KIND_TO_DIR, KIND_TO_RESOURCE_TYPE, RESOURCE_TYPE_DATABASE, ScopeLevel } from './types.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 
 function notFound(p: string): Error {
   const err = new Error(p) as Error & { code?: string }

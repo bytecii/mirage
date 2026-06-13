@@ -16,7 +16,9 @@ import type { GmailAccessor } from '../../accessor/gmail.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
 import { readdir as coreReaddir } from './readdir.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { listLabels } from './labels.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 function guessType(name: string): FileType {
   const lower = name.toLowerCase()
@@ -34,18 +36,11 @@ function guessType(name: string): FileType {
   return FileType.BINARY
 }
 
-function enoent(p: string): Error {
-  const e = new Error(`ENOENT: ${p}`) as Error & { code: string }
-  e.code = 'ENOENT'
-  return e
-}
-
 export async function stat(
   accessor: GmailAccessor,
   path: PathSpec,
   index?: IndexCacheStore,
 ): Promise<FileStat> {
-  void accessor
   const prefix = path.prefix
   let p = path.original
   if (prefix !== '' && p.startsWith(prefix)) p = p.slice(prefix.length) || '/'
@@ -56,7 +51,12 @@ export async function stat(
   const virtualKey = prefix !== '' ? `${prefix}/${key}` : `/${key}`
   let result = await index.get(virtualKey)
   if (result.entry === undefined || result.entry === null) {
-    if (!key.includes('/')) return new FileStat({ name: key, type: FileType.DIRECTORY })
+    if (!key.includes('/')) {
+      const labels = await listLabels(accessor.tokenManager)
+      const names = new Set(labels.map((lb) => (lb.type === 'system' ? lb.id : (lb.name ?? lb.id))))
+      if (names.has(key)) return new FileStat({ name: key, type: FileType.DIRECTORY })
+      throw enoent(path.original)
+    }
     const parentVirtual = virtualKey.slice(0, virtualKey.lastIndexOf('/')) || '/'
     try {
       await coreReaddir(

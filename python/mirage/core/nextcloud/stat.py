@@ -4,6 +4,7 @@ from opendal.types import EntryMode
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 from mirage.utils.filetype import guess_type
 
 
@@ -33,7 +34,7 @@ async def stat(accessor: NextcloudAccessor,
         parent = virtual_key.rsplit("/", 1)[0] or "/"
         parent_listing = await index.list_dir(parent)
         if parent_listing.entries is not None:
-            raise FileNotFoundError(raw)
+            raise enoent(path)
     op = accessor.operator()
     key = stripped
     try:
@@ -59,4 +60,4 @@ async def stat(accessor: NextcloudAccessor,
             )
     except NotFound:
         pass
-    raise FileNotFoundError(raw)
+    raise enoent(path)

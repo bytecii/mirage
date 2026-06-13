@@ -39,7 +39,7 @@ describe('disk streaming commands on missing files', () => {
   it('cat /missing returns exit=1 with stderr', async () => {
     const res = await ws.execute('cat /disk/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/No such file or directory/)
   })
 
   it('cat /missing.txt; echo after=$? yields after=1', async () => {
@@ -55,25 +55,25 @@ describe('disk streaming commands on missing files', () => {
   it('head /missing.txt returns exit=1', async () => {
     const res = await ws.execute('head /disk/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/No such file or directory/)
   })
 
   it('grep pat /missing.txt returns exit=1', async () => {
     const res = await ws.execute('grep foo /disk/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/No such file or directory/)
   })
 
   it('tail /missing.txt returns exit=1', async () => {
     const res = await ws.execute('tail /disk/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/No such file or directory/)
   })
 
   it('wc /missing.txt returns exit=1', async () => {
     const res = await ws.execute('wc /disk/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/No such file or directory/)
   })
 
   it('cat works on existing disk file', async () => {

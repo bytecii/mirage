@@ -29,6 +29,6 @@ describe('opfs/read', () => {
     expect(new TextDecoder().decode(await read(accessor, spec('/x')))).toBe('hello')
   })
   it('throws "file not found" on missing', async () => {
-    await expect(read(accessor, spec('/nope'))).rejects.toThrow(/file not found/)
+    await expect(read(accessor, spec('/nope'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

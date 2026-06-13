@@ -62,6 +62,13 @@ async function main(): Promise<void> {
   const resource = await DatabricksVolumeResource.create(config)
   const ws = new Workspace({ '/dbx/': resource }, { mode: MountMode.READ })
   try {
+    console.log('=== not-found errors show the full virtual path ===')
+    for (const cmd of ['cat /dbx/__nf_missing__.txt', 'head /dbx/__nf_missing__.txt', 'stat /dbx/__nf_missing__.txt']) {
+      const res = await ws.execute(cmd)
+      console.log(`$ ${cmd}`)
+      console.log(`  exit=${String(res.exitCode)}  ${new TextDecoder().decode(res.stderr).trim()}`)
+    }
+
     await run(ws, 'ls /dbx/')
     await run(ws, 'tree -L 2 /dbx/')
     await run(ws, 'find /dbx/ -name "*.md"')

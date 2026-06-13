@@ -12,10 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { sanitizeName } from '../../util/sanitize.ts'
+import { sanitizeName } from '../../utils/sanitize.ts'
 
-export { sanitizeName } from '../../util/sanitize.ts'
-export { parseIdName as splitSuffixId } from '../../util/naming.ts'
+export { sanitizeName } from '../../utils/sanitize.ts'
+export { parseIdName as splitSuffixId } from '../../utils/naming.ts'
 
 function pickString(record: Record<string, unknown>, ...keys: readonly string[]): string {
   for (const key of keys) {

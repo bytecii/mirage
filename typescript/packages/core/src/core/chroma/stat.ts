@@ -16,12 +16,8 @@ import type { ChromaAccessor } from '../../accessor/chroma.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
 import { resolvePath } from './path.ts'
-
-function enoent(p: string): Error {
-  const err = new Error(p) as Error & { code?: string }
-  err.code = 'ENOENT'
-  return err
-}
+import { enoent } from '../../utils/errors.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 
 export function statLight(
   accessor: ChromaAccessor,
@@ -57,8 +53,8 @@ export async function stat(
 }
 
 export function statName(virtualKey: string, mountPrefix: string): string {
-  const root = mountPrefix.replace(/\/+$/, '') !== '' ? mountPrefix.replace(/\/+$/, '') : '/'
+  const root = rstripSlash(mountPrefix) !== '' ? rstripSlash(mountPrefix) : '/'
   if (virtualKey === root) return '/'
-  const stripped = virtualKey.replace(/\/+$/, '')
+  const stripped = rstripSlash(virtualKey)
   return stripped.split('/').pop() ?? '/'
 }

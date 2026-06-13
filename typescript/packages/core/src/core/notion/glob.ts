@@ -14,7 +14,7 @@
 
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { PathSpec } from '../../types.ts'
-import { fnmatch } from '../../util/fnmatch.ts'
+import { fnmatch } from '../../utils/fnmatch.ts'
 import { SCOPE_ERROR } from '../s3/constants.ts'
 import type { NotionTransport } from './_client.ts'
 import { readdir } from './readdir.ts'

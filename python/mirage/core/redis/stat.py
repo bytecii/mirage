@@ -15,6 +15,7 @@
 from mirage.accessor.redis import RedisAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 from mirage.utils.filetype import guess_type
 
 
@@ -29,6 +30,7 @@ async def stat(
 ) -> FileStat:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -53,4 +55,4 @@ async def stat(
             modified=await store.get_modified(p),
             type=guess_type(p),
         )
-    raise FileNotFoundError(p)
+    raise enoent(virtual)

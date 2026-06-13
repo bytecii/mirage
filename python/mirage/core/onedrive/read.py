@@ -22,6 +22,7 @@ from mirage.core.onedrive._client import (GraphError, graph_get_bytes,
 from mirage.core.onedrive.versions import capture_metadata
 from mirage.observe.context import active_recorder, record, revision_for
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 def _range_header(offset: int, size: int | None) -> str | None:
@@ -65,7 +66,7 @@ async def read_bytes(accessor: OneDriveAccessor,
             data = await graph_get_bytes(config, url, range_header)
     except GraphError as exc:
         if exc.status == 404:
-            raise FileNotFoundError(stripped)
+            raise enoent(virtual)
         raise
     record("read",
            stripped,

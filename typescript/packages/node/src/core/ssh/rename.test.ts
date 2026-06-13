@@ -57,6 +57,8 @@ describe('core/ssh/rename', () => {
       files: new Map(),
       dirs: new Map([['/', {}]]),
     })
-    await expect(rename(accessor, spec('/missing'), spec('/dst'))).rejects.toThrow(/file not found/)
+    await expect(rename(accessor, spec('/missing'), spec('/dst'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
   })
 })

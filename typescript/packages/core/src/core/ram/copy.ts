@@ -15,12 +15,13 @@
 import type { RAMAccessor } from '../../accessor/ram.ts'
 import type { PathSpec } from '../../types.ts'
 import { norm, nowIso } from './utils.ts'
+import { enoent } from '../../utils/errors.ts'
 
 export function copy(accessor: RAMAccessor, src: PathSpec, dst: PathSpec): Promise<void> {
   const s = norm(src.stripPrefix)
   const d = norm(dst.stripPrefix)
   const data = accessor.store.files.get(s)
-  if (data === undefined) throw new Error(`file not found: ${s}`)
+  if (data === undefined) throw enoent(src)
   accessor.store.files.set(d, data)
   accessor.store.modified.set(d, nowIso())
   return Promise.resolve()

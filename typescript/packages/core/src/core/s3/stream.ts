@@ -17,6 +17,7 @@ import { ResourceName, type PathSpec } from '../../types.ts'
 import type { S3Accessor } from '../../accessor/s3.ts'
 import { createS3Client, isNotFoundError, loadS3Module, s3Key } from './_client.ts'
 import { fpRevFromS3Response } from './read.ts'
+import { enoent } from '../../utils/errors.ts'
 
 const DEFAULT_CHUNK_SIZE = 8192
 
@@ -83,9 +84,7 @@ export async function* stream(accessor: S3Accessor, path: PathSpec): AsyncIterab
     }
   } catch (err) {
     if (isNotFoundError(err)) {
-      const e = new Error(`S3 object not found: ${rawPath}`) as Error & { code: string }
-      e.code = 'ENOENT'
-      throw e
+      throw enoent(path)
     }
     throw err
   } finally {

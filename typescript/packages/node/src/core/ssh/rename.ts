@@ -13,8 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '@struktoai/mirage-core'
+import { enoent } from '@struktoai/mirage-core'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { enoent, isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
+import { isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
 
 export async function rename(accessor: SSHAccessor, src: PathSpec, dst: PathSpec): Promise<void> {
   const sftp = await accessor.sftp()
@@ -29,7 +30,7 @@ export async function rename(accessor: SSHAccessor, src: PathSpec, dst: PathSpec
         resolveFn()
         return
       }
-      if (isNoSuchFile(err)) rejectFn(enoent(srcVirtual))
+      if (isNoSuchFile(err)) rejectFn(enoent(src))
       else rejectFn(err)
     })
   })

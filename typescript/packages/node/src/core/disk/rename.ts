@@ -14,7 +14,7 @@
 
 import type { DiskAccessor } from '../../accessor/disk.ts'
 import { rename as fsRename } from 'node:fs/promises'
-import type { PathSpec } from '@struktoai/mirage-core'
+import { enoent, type PathSpec } from '@struktoai/mirage-core'
 import { resolveSafe } from './utils.ts'
 
 export async function rename(accessor: DiskAccessor, src: PathSpec, dst: PathSpec): Promise<void> {
@@ -24,7 +24,7 @@ export async function rename(accessor: DiskAccessor, src: PathSpec, dst: PathSpe
     await fsRename(s, d)
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error(`file or directory not found: ${src.stripPrefix}`)
+      throw enoent(src)
     }
     throw err
   }

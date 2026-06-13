@@ -15,6 +15,7 @@
 from mirage.accessor.langfuse import LangfuseAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 
 TOP_LEVEL_DIRS = {"traces", "sessions", "prompts", "datasets"}
 
@@ -34,6 +35,7 @@ async def stat(
     """
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -50,7 +52,7 @@ async def stat(
     parts = key.split("/")
 
     if any(p.startswith(".") for p in parts):
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
     if len(parts) == 1 and parts[0] in TOP_LEVEL_DIRS:
         return FileStat(name=parts[0], type=FileType.DIRECTORY)
@@ -98,4 +100,4 @@ async def stat(
             and parts[3].endswith(".jsonl")):
         return FileStat(name=parts[3], type=FileType.TEXT)
 
-    raise FileNotFoundError(path)
+    raise enoent(virtual)

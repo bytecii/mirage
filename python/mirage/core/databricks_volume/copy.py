@@ -90,7 +90,7 @@ async def copy(
                              src) == backend_path(accessor.config, dst)
     if src_stat.type == FileType.DIRECTORY:
         if not recursive:
-            raise IsADirectoryError(src.strip_prefix)
+            raise IsADirectoryError(src.original)
         if same_path:
             return
         remote_src = backend_path(accessor.config, src)
@@ -99,8 +99,8 @@ async def copy(
             # Copying a directory into its own subtree creates the destination
             # inside the source, so the walk would descend into the fresh copy
             # forever. Refuse before any create_directory/upload.
-            raise ValueError(f"cannot copy a directory, '{src.strip_prefix}', "
-                             f"into itself, '{dst.strip_prefix}'")
+            raise ValueError(f"cannot copy a directory, '{src.original}', "
+                             f"into itself, '{dst.original}'")
         await asyncio.to_thread(_copy_tree_sync, accessor, remote_src,
                                 remote_dst)
         return

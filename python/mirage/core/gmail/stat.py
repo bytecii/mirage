@@ -16,8 +16,10 @@ from mimetypes import guess_type as _guess_mime
 
 from mirage.accessor.gmail import GmailAccessor
 from mirage.cache.index import IndexCacheStore
+from mirage.core.gmail.labels import list_labels
 from mirage.core.gmail.readdir import readdir as _readdir
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 from mirage.utils.filetype import filetype_from_mimetype
 
 
@@ -33,6 +35,7 @@ async def stat(
 ) -> FileStat:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -45,11 +48,19 @@ async def stat(
     if not key:
         return FileStat(name="/", type=FileType.DIRECTORY)
     if index is None:
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
     virtual_key = prefix + "/" + key if prefix else "/" + key
     result = await index.get(virtual_key)
     if result.entry is None and "/" not in key:
-        return FileStat(name=key, type=FileType.DIRECTORY)
+        labels = await list_labels(accessor.token_manager)
+        names = {
+            lb["id"] if lb.get("type") == "system" else lb.get(
+                "name", lb["id"])
+            for lb in labels
+        }
+        if key in names:
+            return FileStat(name=key, type=FileType.DIRECTORY)
+        raise enoent(virtual)
     if result.entry is None:
         parent_virtual = virtual_key.rsplit("/", 1)[0] or "/"
         try:
@@ -65,7 +76,7 @@ async def stat(
             pass
         result = await index.get(virtual_key)
         if result.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
     rt = result.entry.resource_type
     if rt == "gmail/label":
         return FileStat(

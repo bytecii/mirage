@@ -69,6 +69,7 @@ async def test_stat_missing_raises_file_not_found():
                   "code": "itemNotFound",
                   "message": "no"
               }})
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(FileNotFoundError) as exc:
             await stat(_accessor(),
-                       PathSpec.from_str_path("/Docs/report.docx"))
+                       PathSpec.from_str_path("/od/Docs/report.docx", "/od"))
+    assert str(exc.value) == "/od/Docs/report.docx"

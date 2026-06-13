@@ -15,7 +15,7 @@
 import type { DiskAccessor } from '../../accessor/disk.ts'
 import { stat as fsStat } from 'node:fs/promises'
 import path from 'node:path'
-import { FileStat, FileType, guessType, type PathSpec } from '@struktoai/mirage-core'
+import { enoent, FileStat, FileType, guessType, type PathSpec } from '@struktoai/mirage-core'
 import { resolveSafe } from './utils.ts'
 
 export async function stat(accessor: DiskAccessor, p: PathSpec): Promise<FileStat> {
@@ -26,7 +26,7 @@ export async function stat(accessor: DiskAccessor, p: PathSpec): Promise<FileSta
     st = await fsStat(full)
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error(`file not found: ${virtual}`)
+      throw enoent(p)
     }
     throw err
   }

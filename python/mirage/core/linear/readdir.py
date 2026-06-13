@@ -21,6 +21,7 @@ from mirage.core.linear.pathing import (cycle_filename, issue_dirname,
                                         member_filename, project_filename,
                                         team_dirname)
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 VIRTUAL_ROOTS = ("teams", )
 
@@ -32,6 +33,7 @@ async def readdir(
 ) -> list[str]:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.directory if path.pattern else path.original
@@ -85,7 +87,7 @@ async def readdir(
                 await readdir(accessor, parent, index)
                 result = await index.get(idx_key)
             if result.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         return [
             f"{prefix}/{key}/team.json",
             f"{prefix}/{key}/members",
@@ -108,13 +110,13 @@ async def readdir(
                 await readdir(accessor, parent, index)
                 result = await index.get(team_vkey)
             if result.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
             team_id = result.entry.id
             listing = await index.list_dir(idx_key)
             if listing.entries is not None:
                 return listing.entries
         else:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         users = await list_team_members(accessor.config, team_id)
         entries = []
         for user in users:
@@ -146,13 +148,13 @@ async def readdir(
                 await readdir(accessor, parent, index)
                 result = await index.get(team_vkey)
             if result.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
             team_id = result.entry.id
             listing = await index.list_dir(idx_key)
             if listing.entries is not None:
                 return listing.entries
         else:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         issues = await list_team_issues(accessor.config, team_id)
         entries = []
         for issue in issues:
@@ -182,7 +184,7 @@ async def readdir(
                 await readdir(accessor, parent, index)
                 result = await index.get(idx_key)
             if result.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         return [f"{prefix}/{key}/issue.json", f"{prefix}/{key}/comments.jsonl"]
 
     if len(parts) == 3 and parts[0] == "teams" and parts[2] == "projects":
@@ -198,13 +200,13 @@ async def readdir(
                 await readdir(accessor, parent, index)
                 result = await index.get(team_vkey)
             if result.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
             team_id = result.entry.id
             listing = await index.list_dir(idx_key)
             if listing.entries is not None:
                 return listing.entries
         else:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         projects = await list_team_projects(accessor.config, team_id)
         entries = []
         for project in projects:
@@ -235,13 +237,13 @@ async def readdir(
                 await readdir(accessor, parent, index)
                 result = await index.get(team_vkey)
             if result.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
             team_id = result.entry.id
             listing = await index.list_dir(idx_key)
             if listing.entries is not None:
                 return listing.entries
         else:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         cycles = await list_team_cycles(accessor.config, team_id)
         entries = []
         for cycle in cycles:

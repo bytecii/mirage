@@ -33,6 +33,15 @@ resource = GoogleDriveResource(config=config)
 async def main() -> None:
     ws = Workspace({"/gdrive": resource}, mode=MountMode.WRITE)
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /gdrive/__nf_missing__.txt",
+                "head /gdrive/__nf_missing__.txt",
+                "stat /gdrive/__nf_missing__.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     print("=== ls /gdrive/ ===")
     result = await ws.execute("ls /gdrive/")
     print(await result.stdout_str())

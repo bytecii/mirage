@@ -43,6 +43,6 @@ describe('core/disk/stream', () => {
 
   it('throws "file not found" on missing', async () => {
     const it = stream(accessor, spec('/missing'))
-    await expect(it[Symbol.asyncIterator]().next()).rejects.toThrow(/file not found/)
+    await expect(it[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

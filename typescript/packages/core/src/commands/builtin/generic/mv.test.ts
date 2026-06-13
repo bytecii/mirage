@@ -15,7 +15,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ByteSource, IOResult } from '../../../io/types.ts'
 import { FileStat, FileType, PathSpec } from '../../../types.ts'
-import { rstripSlash } from '../../../util/slash.ts'
+import { rstripSlash } from '../../../utils/slash.ts'
 import { mvGeneric } from './mv.ts'
 
 const DEC = new TextDecoder()

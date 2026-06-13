@@ -18,7 +18,7 @@ import type { Resource } from '../../resource/base.ts'
 import { DevResource } from '../../resource/dev/dev.ts'
 import { ConsistencyPolicy, MountMode, PathSpec } from '../../types.ts'
 import { Mount } from './mount.ts'
-import { rstripSlash, stripSlash } from '../../util/slash.ts'
+import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 
 export const DEV_PREFIX = '/dev/'
 

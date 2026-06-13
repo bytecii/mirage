@@ -39,7 +39,7 @@ describe('core/ssh/read', () => {
       files: new Map(),
       dirs: new Map([['/', {}]]),
     })
-    await expect(read(accessor, spec('/missing'))).rejects.toThrow(/file not found/)
+    await expect(read(accessor, spec('/missing'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('joins the configured root with the virtual path', async () => {

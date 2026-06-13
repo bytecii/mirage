@@ -35,6 +35,15 @@ resource = EmailResource(config=config)
 async def main() -> None:
     ws = Workspace({"/email": resource}, mode=MountMode.READ)
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /email/__nf_missing__.txt",
+                "head /email/__nf_missing__.txt",
+                "stat /email/__nf_missing__.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     print("=== ls /email/ ===")
     result = await ws.execute("ls /email/")
     print(await result.stdout_str())

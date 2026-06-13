@@ -74,6 +74,8 @@ async def grep(
 
         if scope.level in (ScopeLevel.ENTITY, ScopeLevel.DATABASE,
                            ScopeLevel.ROOT):
+            if scope.level != ScopeLevel.ROOT:
+                await _stat(accessor, paths[0], index=index)
             entity_match = (scope.level == ScopeLevel.ENTITY and scope.database
                             and scope.name)
             if entity_match:

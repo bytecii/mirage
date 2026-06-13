@@ -16,7 +16,7 @@ import { readBytes } from '../../../core/linear/read.ts'
 import type { LinearTransport } from '../../../core/linear/_client.ts'
 import { readStdinAsync } from '../utils/stream.ts'
 import type { CommandOpts } from '../../config.ts'
-import { stripSlash } from '../../../util/slash.ts'
+import { stripSlash } from '../../../utils/slash.ts'
 
 const DEC = new TextDecoder('utf-8', { fatal: false })
 
@@ -35,7 +35,7 @@ export async function resolveTextInput(
   if (opts.filePath !== null && opts.filePath !== '') {
     const stripped = stripSlash(opts.filePath)
     const path = stripped !== '' ? `/${stripped}` : '/'
-    const data = await readBytes(transport, path)
+    const data = await readBytes(transport, path, path)
     return DEC.decode(data)
   }
   const raw = await readStdinAsync(opts.stdin)

@@ -20,13 +20,15 @@ from mirage.core.lancedb.query import row_record
 from mirage.core.lancedb.render import render_card
 from mirage.core.lancedb.scope import ScopeLevel, detect_scope
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
-async def _resolve_row(accessor: LanceDBAccessor, scope, config) -> dict:
+async def _resolve_row(accessor: LanceDBAccessor, scope, config,
+                       virtual: str) -> dict:
     row = await row_record(accessor, scope.table, config.id_column,
                            scope.row_id)
     if row is None:
-        raise FileNotFoundError(scope.resource_path)
+        raise enoent(virtual)
     return row
 
 
@@ -48,10 +50,10 @@ async def read(
     config = accessor.config
     scope = detect_scope(path, config)
     if scope.level != ScopeLevel.ROW:
-        raise FileNotFoundError(path.original)
-    row = await _resolve_row(accessor, scope, config)
+        raise enoent(path)
+    row = await _resolve_row(accessor, scope, config, path.original)
     if scope.blob:
         if not config.blob_column:
-            raise FileNotFoundError(path.original)
+            raise enoent(path)
         return _blob_bytes(row.get(config.blob_column))
     return render_card(row, config)

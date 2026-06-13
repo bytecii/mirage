@@ -14,7 +14,7 @@
 
 import { MountMode } from '../types.ts'
 import type { Mount } from './mount/mount.ts'
-import { rstripSlash } from '../util/slash.ts'
+import { rstripSlash } from '../utils/slash.ts'
 
 const HELP_HINT =
   'Tip: run `man` to list every available command grouped by resource, `man <cmd>` for a single entry, and `<cmd> --help` for flag details.'

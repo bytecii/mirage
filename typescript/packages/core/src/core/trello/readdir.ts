@@ -32,17 +32,12 @@ import {
   memberFilename,
   workspaceDirname,
 } from './pathing.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 export interface TrelloReaddirFilter {
   workspaceId?: string
   boardIds?: readonly string[]
-}
-
-function enoent(path: string): Error {
-  const err = new Error(`ENOENT: ${path}`) as Error & { code: string }
-  err.code = 'ENOENT'
-  return err
 }
 
 function pickString(record: Record<string, unknown>, key: string): string {
@@ -139,7 +134,7 @@ export async function readdir(
   }
 
   if (parts.length === 3 && parts[0] === 'workspaces' && parts[2] === 'boards') {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const wsKey = makeVirtualKey(prefix, parts.slice(0, 2).join('/'))
     const ws = await ensureLookup(accessor, index, filter, prefix, 'workspaces', wsKey)
     const listing = await index.listDir(virtualKey)
@@ -190,7 +185,7 @@ export async function readdir(
     parts[2] === 'boards' &&
     parts[4] === 'members'
   ) {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const boardKey = makeVirtualKey(prefix, parts.slice(0, 4).join('/'))
     const parentKey = parts.slice(0, 3).join('/')
     const board = await ensureLookup(accessor, index, filter, prefix, parentKey, boardKey)
@@ -228,7 +223,7 @@ export async function readdir(
     parts[2] === 'boards' &&
     parts[4] === 'labels'
   ) {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const boardKey = makeVirtualKey(prefix, parts.slice(0, 4).join('/'))
     const parentKey = parts.slice(0, 3).join('/')
     const board = await ensureLookup(accessor, index, filter, prefix, parentKey, boardKey)
@@ -263,7 +258,7 @@ export async function readdir(
     parts[2] === 'boards' &&
     parts[4] === 'lists'
   ) {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const boardKey = makeVirtualKey(prefix, parts.slice(0, 4).join('/'))
     const parentKey = parts.slice(0, 3).join('/')
     const board = await ensureLookup(accessor, index, filter, prefix, parentKey, boardKey)
@@ -312,7 +307,7 @@ export async function readdir(
     parts[4] === 'lists' &&
     parts[6] === 'cards'
   ) {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const listKey = makeVirtualKey(prefix, parts.slice(0, 6).join('/'))
     const parentKey = parts.slice(0, 5).join('/')
     const list = await ensureLookup(accessor, index, filter, prefix, parentKey, listKey)

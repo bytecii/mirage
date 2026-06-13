@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from mirage.cache.index import IndexCacheStore, IndexEntry
 from mirage.core.dify.tree import ensure_tree
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,7 @@ async def resolve_path(accessor, path: PathSpec,
         return ResolvedDifyPath(virtual_key=virtual_key,
                                 mount_prefix=mount_prefix,
                                 is_dir=True)
-    raise FileNotFoundError(path.original)
+    raise enoent(path)
 
 
 def virtual_key_for(path: PathSpec) -> str:

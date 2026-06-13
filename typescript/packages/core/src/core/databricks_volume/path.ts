@@ -14,7 +14,7 @@
 
 import type { DatabricksVolumeConfig } from '../../resource/databricks_volume/config.ts'
 import { PathSpec } from '../../types.ts'
-import { stripSlash, rstripSlash } from '../../util/slash.ts'
+import { stripSlash, rstripSlash } from '../../utils/slash.ts'
 
 export function normalizePosix(path: string): string {
   const absolute = path.startsWith('/')

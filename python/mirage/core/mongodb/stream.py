@@ -23,6 +23,7 @@ from mirage.core.mongodb._client import (find_documents, iter_documents,
 from mirage.core.mongodb.scope import detect_scope
 from mirage.core.mongodb.types import PRIMARY_KEY, ScopeLevel
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 def _apply_elision(value: dict, paths: set[str]) -> dict:
@@ -69,7 +70,7 @@ async def read_tail(
     """
     scope = detect_scope(path)
     if scope.level != ScopeLevel.DOCUMENTS:
-        raise FileNotFoundError(path.original)
+        raise enoent(path)
     limit = min(n, accessor.config.max_doc_limit)
     docs = await find_documents(
         accessor.client,
@@ -100,7 +101,7 @@ async def read_stream(
         path = PathSpec(original=path, directory=path)
     scope = detect_scope(path)
     if scope.level != ScopeLevel.DOCUMENTS:
-        raise FileNotFoundError(path.original)
+        raise enoent(path)
     elide = _elision_paths(accessor.config, scope.database, scope.name)
     async for doc in iter_documents(
             accessor.client,
@@ -123,7 +124,7 @@ async def watch_stream(
         path = PathSpec(original=path, directory=path)
     scope = detect_scope(path)
     if scope.level != ScopeLevel.DOCUMENTS:
-        raise FileNotFoundError(path.original)
+        raise enoent(path)
     elide = _elision_paths(accessor.config, scope.database, scope.name)
     async for doc in iter_inserts(accessor.client, scope.database, scope.name):
         if elide:

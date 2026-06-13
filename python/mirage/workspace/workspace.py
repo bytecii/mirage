@@ -51,6 +51,7 @@ from mirage.types import (DEFAULT_AGENT_ID, DEFAULT_SESSION_ID,
                           PathSpec, StateKey)
 from mirage.workspace.abort import MirageAbortError
 from mirage.workspace.dispatcher import Dispatcher
+from mirage.workspace.executor.fs_error import format_fs_error
 from mirage.workspace.file_prompt import build_file_prompt
 from mirage.workspace.fuse import FuseManager
 from mirage.workspace.history import ExecutionHistory
@@ -732,6 +733,12 @@ class Workspace:
             msg = f"{exc}\n".encode()
             io = IOResult(exit_code=2, stderr=msg)
             exec_node = ExecutionNode(command=command, stderr=msg, exit_code=2)
+            return io
+        except OSError as exc:
+            cmd_name = command.split()[0] if command.split() else command
+            msg = format_fs_error(cmd_name, exc)
+            io = IOResult(exit_code=1, stderr=msg)
+            exec_node = ExecutionNode(command=command, stderr=msg, exit_code=1)
             return io
         except Exception as exc:
             io = IOResult(exit_code=1, stderr=str(exc).encode())

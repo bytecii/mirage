@@ -20,6 +20,7 @@ from mirage.core.langfuse._client import (fetch_dataset_items,
                                           fetch_dataset_runs, fetch_prompt,
                                           fetch_trace)
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 def _json_bytes(data: dict) -> bytes:
@@ -48,6 +49,7 @@ async def read(
     """
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -59,7 +61,7 @@ async def read(
     key = path.strip("/")
 
     if any(p.startswith(".") for p in key.split("/")):
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
     parts = key.split("/")
 
@@ -94,7 +96,7 @@ async def read(
         runs = await fetch_dataset_runs(accessor.api, dataset_name)
         matched = [r for r in runs if r.get("name") == run_name]
         if not matched:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         return _json_bytes(matched[0])
 
-    raise FileNotFoundError(path)
+    raise enoent(virtual)

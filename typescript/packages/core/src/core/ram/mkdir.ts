@@ -15,7 +15,7 @@
 import type { RAMAccessor } from '../../accessor/ram.ts'
 import type { PathSpec } from '../../types.ts'
 import { norm, nowIso, parent } from './utils.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
 
 export function mkdir(accessor: RAMAccessor, path: PathSpec, parents = false): Promise<void> {
   const p = norm(path.stripPrefix)

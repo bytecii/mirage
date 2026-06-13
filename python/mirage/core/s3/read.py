@@ -19,6 +19,7 @@ from mirage.cache.index import IndexCacheStore
 from mirage.core.s3._client import _client_kwargs, _key, async_session
 from mirage.observe.context import record, revision_for
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 def _fp_rev_from_response(resp: dict) -> tuple[str | None, str | None]:
@@ -91,5 +92,5 @@ async def read_bytes(accessor: S3Accessor,
     except Exception as exc:
         if (hasattr(exc, "response")
                 and exc.response.get("Error", {}).get("Code") == "NoSuchKey"):
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         raise

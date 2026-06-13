@@ -94,7 +94,7 @@ describe('readdir parent recursion', () => {
     const index = new RAMIndexCacheStore()
     await expect(
       readdir(accessor, new PathSpec({ original: '/docs', directory: '/docs' }), index),
-    ).rejects.toThrow(/ENOENT/)
+    ).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
 

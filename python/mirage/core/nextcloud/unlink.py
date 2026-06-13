@@ -5,6 +5,7 @@ from opendal.exceptions import NotFound
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.observe.context import record
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def unlink(accessor: NextcloudAccessor, path: PathSpec) -> None:
@@ -17,5 +18,5 @@ async def unlink(accessor: NextcloudAccessor, path: PathSpec) -> None:
     try:
         await op.delete(key)
     except NotFound as exc:
-        raise FileNotFoundError(raw) from exc
+        raise enoent(path) from exc
     record("unlink", path.original, "nextcloud", 0, start_ms)

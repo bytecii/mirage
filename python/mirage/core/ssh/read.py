@@ -21,6 +21,7 @@ from mirage.cache.index import IndexCacheStore
 from mirage.core.ssh._client import _abs
 from mirage.observe.context import record
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read_bytes(accessor: SSHAccessor,
@@ -30,6 +31,7 @@ async def read_bytes(accessor: SSHAccessor,
                      size: int | None = None) -> bytes:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -49,4 +51,4 @@ async def read_bytes(accessor: SSHAccessor,
         record("read", path, "ssh", len(data), start_ms)
         return data
     except asyncssh.SFTPNoSuchFile:
-        raise FileNotFoundError(path)
+        raise enoent(virtual)

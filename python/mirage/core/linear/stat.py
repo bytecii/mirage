@@ -16,6 +16,7 @@ from mirage.accessor.linear import LinearAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.core.linear.readdir import readdir as _readdir
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 
 VIRTUAL_DIRS = {"", "teams"}
 
@@ -48,6 +49,7 @@ async def stat(
 ) -> FileStat:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -66,13 +68,13 @@ async def stat(
 
     if len(parts) == 2 and parts[0] == "teams":
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         result = await index.get(idx_key)
         if result.entry is None:
             await _populate_via_parent(accessor, idx_key, prefix, index)
             result = await index.get(idx_key)
             if result.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         return FileStat(
             name=result.entry.vfs_name,
             type=FileType.DIRECTORY,
@@ -98,13 +100,13 @@ async def stat(
 
     if len(parts) == 4 and parts[0] == "teams" and parts[2] == "members":
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         result = await index.get(idx_key)
         if result.entry is None:
             await _populate_via_parent(accessor, idx_key, prefix, index)
             result = await index.get(idx_key)
             if result.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         return FileStat(
             name=result.entry.vfs_name,
             type=FileType.JSON,
@@ -113,13 +115,13 @@ async def stat(
 
     if len(parts) == 4 and parts[0] == "teams" and parts[2] == "issues":
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         result = await index.get(idx_key)
         if result.entry is None:
             await _populate_via_parent(accessor, idx_key, prefix, index)
             result = await index.get(idx_key)
             if result.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         return FileStat(
             name=result.entry.vfs_name,
             type=FileType.DIRECTORY,
@@ -156,13 +158,13 @@ async def stat(
             "projects", "cycles"
     }:
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         result = await index.get(idx_key)
         if result.entry is None:
             await _populate_via_parent(accessor, idx_key, prefix, index)
             result = await index.get(idx_key)
             if result.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         return FileStat(
             name=result.entry.vfs_name,
             type=FileType.JSON,
@@ -172,4 +174,4 @@ async def stat(
             },
         )
 
-    raise FileNotFoundError(path)
+    raise enoent(virtual)

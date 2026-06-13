@@ -30,16 +30,11 @@ import {
   projectFilename,
   teamDirname,
 } from './pathing.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 export interface LinearReaddirFilter {
   teamIds?: readonly string[]
-}
-
-function enoent(path: string): Error {
-  const err = new Error(`ENOENT: ${path}`) as Error & { code: string }
-  err.code = 'ENOENT'
-  return err
 }
 
 function pickString(record: Record<string, unknown>, key: string): string {
@@ -143,7 +138,7 @@ export async function readdir(
   }
 
   if (parts.length === 3 && parts[0] === 'teams' && parts[2] === 'members') {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const teamKey = makeVirtualKey(prefix, parts.slice(0, 2).join('/'))
     const team = await ensureLookup(accessor, index, filter, prefix, 'teams', teamKey)
     const listing = await index.listDir(virtualKey)
@@ -173,7 +168,7 @@ export async function readdir(
   }
 
   if (parts.length === 3 && parts[0] === 'teams' && parts[2] === 'issues') {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const teamKey = makeVirtualKey(prefix, parts.slice(0, 2).join('/'))
     const team = await ensureLookup(accessor, index, filter, prefix, 'teams', teamKey)
     const listing = await index.listDir(virtualKey)
@@ -210,7 +205,7 @@ export async function readdir(
   }
 
   if (parts.length === 3 && parts[0] === 'teams' && parts[2] === 'projects') {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const teamKey = makeVirtualKey(prefix, parts.slice(0, 2).join('/'))
     const team = await ensureLookup(accessor, index, filter, prefix, 'teams', teamKey)
     const listing = await index.listDir(virtualKey)
@@ -239,7 +234,7 @@ export async function readdir(
   }
 
   if (parts.length === 3 && parts[0] === 'teams' && parts[2] === 'cycles') {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const teamKey = makeVirtualKey(prefix, parts.slice(0, 2).join('/'))
     const team = await ensureLookup(accessor, index, filter, prefix, 'teams', teamKey)
     const listing = await index.listDir(virtualKey)

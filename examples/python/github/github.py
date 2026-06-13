@@ -34,6 +34,15 @@ async def main() -> None:
     )
     ws = Workspace({"/github": resource}, mode=MountMode.READ)
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /github/__nf_missing__.txt",
+                "head /github/__nf_missing__.txt",
+                "stat /github/__nf_missing__.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     r = await ws.execute("ls /github")
     print(await r.stdout_str())
 

@@ -68,6 +68,14 @@ async def main() -> None:
     result = await ws.execute('jq ".name" /data/user.json')
     print(await result.stdout_str())
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /data/missing.txt", "head /data/missing.txt",
+                "stat /data/missing.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     print("=== nl /data/reports/q1.csv ===")
     result = await ws.execute("nl /data/reports/q1.csv")
     print(await result.stdout_str())

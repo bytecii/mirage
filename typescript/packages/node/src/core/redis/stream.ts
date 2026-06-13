@@ -18,6 +18,7 @@ import {
   ResourceName,
   type PathSpec,
 } from '@struktoai/mirage-core'
+import { enoent } from '@struktoai/mirage-core'
 import type { RedisAccessor } from '../../accessor/redis.ts'
 import { norm } from './utils.ts'
 
@@ -28,7 +29,7 @@ export async function* stream(
 ): AsyncIterable<Uint8Array> {
   const p = norm(path.stripPrefix)
   const data = await accessor.store.getFile(p)
-  if (data === null) throw new Error(`file not found: ${p}`)
+  if (data === null) throw enoent(path)
   const rec = recordStream('read', p, ResourceName.REDIS)
   if (rec !== null) rec.bytes = data.byteLength
   yield data

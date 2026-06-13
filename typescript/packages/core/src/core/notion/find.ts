@@ -18,8 +18,8 @@ import { type FileStat, FileType, PathSpec } from '../../types.ts'
 import type { NotionStatAccessor } from './stat.ts'
 import { readdir } from './readdir.ts'
 import { stat } from './stat.ts'
-import { stripSlash } from '../../util/slash.ts'
-import { fnmatch } from '../../util/fnmatch.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { fnmatch } from '../../utils/fnmatch.ts'
 
 async function collect(
   accessor: NotionStatAccessor,

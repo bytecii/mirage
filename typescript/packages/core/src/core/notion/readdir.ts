@@ -19,16 +19,11 @@ import type { NotionTransport } from './_client.ts'
 import { pageSegmentName } from './normalize.ts'
 import { getChildPages, searchTopLevelPages } from './pages.ts'
 import { parseSegment, sanitizeName } from './pathing.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 export interface NotionReaddirAccessor {
   readonly transport: NotionTransport
-}
-
-function enoent(path: string): Error {
-  const err = new Error(`ENOENT: ${path}`) as Error & { code: string }
-  err.code = 'ENOENT'
-  return err
 }
 
 function pickString(record: Record<string, unknown>, key: string): string {
@@ -86,7 +81,7 @@ export async function readdir(
     try {
       parsed = parseSegment(lastSegment)
     } catch {
-      throw enoent(p)
+      throw enoent(path)
     }
     const pageIdxKey = `/${parts.join('/')}`
 

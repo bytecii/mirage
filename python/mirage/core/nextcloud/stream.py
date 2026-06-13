@@ -8,6 +8,7 @@ from mirage.cache.index import IndexCacheStore
 from mirage.core.nextcloud.constants import DEFAULT_CHUNK_SIZE
 from mirage.observe.context import record, record_stream
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def range_read(accessor: NextcloudAccessor, path: PathSpec, start: int,
@@ -24,7 +25,7 @@ async def range_read(accessor: NextcloudAccessor, path: PathSpec, start: int,
                 await f.seek(start)
             data = await f.read(end - start)
     except NotFound as exc:
-        raise FileNotFoundError(raw) from exc
+        raise enoent(path) from exc
     record("read", raw, "nextcloud", len(data), start_ms)
     return data
 
@@ -52,4 +53,4 @@ async def read_stream(
                     rec.bytes += len(chunk_bytes)
                 yield chunk_bytes
     except NotFound as exc:
-        raise FileNotFoundError(raw) from exc
+        raise enoent(path) from exc

@@ -21,7 +21,8 @@ import { channelDirname, dmDirname, fileBlobName, userFilename } from './formatt
 import { fetchMessagesForDay, type SlackMessage } from './history.ts'
 import { detectScope } from './scope.ts'
 import { listUsers } from './users.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 export const VIRTUAL_ROOTS = ['channels', 'dms', 'users'] as const
 
@@ -84,12 +85,6 @@ export function dateRange(latestTs: number, created: number, maxDays = 90): stri
     cursor -= dayMs
   }
   return dates
-}
-
-function enoent(path: string): Error {
-  const e = new Error(`ENOENT: ${path}`) as Error & { code: string }
-  e.code = 'ENOENT'
-  return e
 }
 
 interface PathParts {
@@ -224,7 +219,7 @@ async function readdirChannelDates(
   index: IndexCacheStore | undefined,
 ): Promise<string[]> {
   if (index === undefined) {
-    throw enoent(parts.raw)
+    throw enoent(parts.path)
   }
   let lookup = await index.get(parts.virtualKey)
   if (lookup.entry === undefined || lookup.entry === null) {
@@ -238,7 +233,7 @@ async function readdirChannelDates(
     lookup = await index.get(parts.virtualKey)
   }
   if (lookup.entry === undefined || lookup.entry === null) {
-    throw enoent(parts.raw)
+    throw enoent(parts.path)
   }
   const listing = await index.listDir(parts.virtualKey)
   if (listing.entries !== undefined && listing.entries !== null) {
@@ -348,14 +343,14 @@ async function readdirDateContents(
   segments: string[],
   index: IndexCacheStore | undefined,
 ): Promise<string[]> {
-  if (index === undefined) throw enoent(parts.raw)
+  if (index === undefined) throw enoent(parts.path)
   const cached = await index.listDir(parts.virtualKey)
   if (cached.entries !== undefined && cached.entries !== null) {
     return cached.entries
   }
   const chanSeg = segments[1]
   const dateStr = segments[2]
-  if (chanSeg === undefined || dateStr === undefined) throw enoent(parts.raw)
+  if (chanSeg === undefined || dateStr === undefined) throw enoent(parts.path)
   const parentVirtual = `${parts.prefix}/${container}/${chanSeg}`
   let parentLookup = await index.get(parentVirtual)
   if (parentLookup.entry === undefined || parentLookup.entry === null) {
@@ -368,14 +363,14 @@ async function readdirDateContents(
     parentLookup = await index.get(parentVirtual)
   }
   if (parentLookup.entry === undefined || parentLookup.entry === null) {
-    throw enoent(parts.raw)
+    throw enoent(parts.path)
   }
   await fetchDay(accessor, parentLookup.entry.id, dateStr, parts.virtualKey, index)
   const refreshed = await index.listDir(parts.virtualKey)
   if (refreshed.entries !== undefined && refreshed.entries !== null) {
     return refreshed.entries
   }
-  throw enoent(parts.raw)
+  throw enoent(parts.path)
 }
 
 async function readdirFilesDir(
@@ -385,14 +380,14 @@ async function readdirFilesDir(
   segments: string[],
   index: IndexCacheStore | undefined,
 ): Promise<string[]> {
-  if (index === undefined) throw enoent(parts.raw)
+  if (index === undefined) throw enoent(parts.path)
   const cached = await index.listDir(parts.virtualKey)
   if (cached.entries !== undefined && cached.entries !== null) {
     return cached.entries
   }
   const chanSeg = segments[1]
   const dateStr = segments[2]
-  if (chanSeg === undefined || dateStr === undefined) throw enoent(parts.raw)
+  if (chanSeg === undefined || dateStr === undefined) throw enoent(parts.path)
   const datePath = `${parts.prefix}/${container}/${chanSeg}/${dateStr}`
   const dateSpec = new PathSpec({
     original: datePath,
@@ -404,7 +399,7 @@ async function readdirFilesDir(
   if (refreshed.entries !== undefined && refreshed.entries !== null) {
     return refreshed.entries
   }
-  throw enoent(parts.raw)
+  throw enoent(parts.path)
 }
 
 export async function readdir(

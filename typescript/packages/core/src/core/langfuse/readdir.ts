@@ -23,7 +23,8 @@ import {
   fetchSessions,
   fetchTraces,
 } from './_client.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 const TOP_LEVEL_DIRS = ['traces', 'sessions', 'prompts', 'datasets'] as const
 
@@ -32,12 +33,6 @@ const DEFAULT_TRACE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 
 function defaultFromTimestamp(): string {
   return new Date(Date.now() - DEFAULT_TRACE_WINDOW_MS).toISOString()
-}
-
-function enoent(path: string): Error {
-  const err = new Error(`ENOENT: ${path}`) as Error & { code: string }
-  err.code = 'ENOENT'
-  return err
 }
 
 function pickString(record: Record<string, unknown>, key: string): string {
@@ -294,7 +289,7 @@ export async function readdir(
   }
   const key = stripSlash(p)
   for (const part of key.split('/')) {
-    if (key !== '' && part.startsWith('.')) throw enoent(p)
+    if (key !== '' && part.startsWith('.')) throw enoent(path)
   }
   const virtualKey = makeVirtualKey(prefix, key)
 
@@ -339,5 +334,5 @@ export async function readdir(
     return readdirDatasetRuns(accessor, parts[1] ?? '', virtualKey, index, prefix)
   }
 
-  throw enoent(p)
+  throw enoent(path)
 }

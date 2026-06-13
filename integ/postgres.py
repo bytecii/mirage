@@ -16,6 +16,7 @@ import asyncio
 import os
 
 import asyncpg
+from cases import run_not_found
 
 from mirage import MountMode, Workspace
 from mirage.resource.postgres import PostgresConfig, PostgresResource
@@ -125,6 +126,7 @@ async def main() -> None:
         if name == "safeguard_cat_truncates":
             _set_cat_safeguard(ws, max_lines=2)
         await _run(ws, name, cmd)
+    await run_not_found(ws, MOUNT)
     await resource.accessor.close()
 
 

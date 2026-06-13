@@ -17,6 +17,7 @@ from mirage.cache.index import IndexCacheStore
 from mirage.core.s3._client import _client_kwargs, _key, async_session
 from mirage.core.timeutil import to_iso_z
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 from mirage.utils.filetype import guess_type
 
 
@@ -32,6 +33,7 @@ async def stat(accessor: S3Accessor,
                index: IndexCacheStore = None) -> FileStat:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original if isinstance(path, PathSpec) else path
     original_prefix = ""
     if isinstance(path, PathSpec):
         original_prefix = path.prefix
@@ -69,7 +71,7 @@ async def stat(accessor: S3Accessor,
         parent = virtual_key.rsplit("/", 1)[0] or "/"
         parent_listing = await index.list_dir(parent)
         if parent_listing.entries is not None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
 
     # Slow path: no index cache available, or parent directory not yet
     # listed. Hit the network.
@@ -114,4 +116,4 @@ async def stat(accessor: S3Accessor,
                 type=FileType.DIRECTORY,
             )
 
-        raise FileNotFoundError(path)
+        raise enoent(virtual)

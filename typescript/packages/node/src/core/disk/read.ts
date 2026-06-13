@@ -14,7 +14,7 @@
 
 import type { DiskAccessor } from '../../accessor/disk.ts'
 import { readFile } from 'node:fs/promises'
-import { type PathSpec, record, ResourceName } from '@struktoai/mirage-core'
+import { enoent, type PathSpec, record, ResourceName } from '@struktoai/mirage-core'
 import { resolveSafe } from './utils.ts'
 
 export async function read(accessor: DiskAccessor, path: PathSpec): Promise<Uint8Array> {
@@ -26,7 +26,7 @@ export async function read(accessor: DiskAccessor, path: PathSpec): Promise<Uint
     data = await readFile(full)
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new Error(`file not found: ${virtual}`)
+      throw enoent(path)
     }
     throw err
   }

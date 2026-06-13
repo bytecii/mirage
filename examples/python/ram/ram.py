@@ -147,6 +147,14 @@ async def main() -> None:
     result = await ws.execute("base64 /data/hello.txt")
     print(await result.stdout_str())
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /data/missing.txt", "head /data/missing.txt",
+                "stat /data/missing.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     print("=== history (last 5) ===")
     result = await ws.execute("history 5")
     print(await result.stdout_str())

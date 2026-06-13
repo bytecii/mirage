@@ -6,6 +6,7 @@ from mirage.commands.builtin.utils.output import (format_optional_records,
                                                   format_records)
 from mirage.io.types import IOResult
 from mirage.types import FileStat, FileType, LsSortBy, PathSpec
+from mirage.utils.errors import fs_strerror
 
 
 def get_extension(name: str) -> str | None:
@@ -55,7 +56,8 @@ async def walk(
         try:
             return [await stat(path, index)], warnings
         except (FileNotFoundError, ValueError) as exc:
-            warnings.append(f"ls: cannot access '{path.original}': {exc}")
+            detail = fs_strerror(exc) or exc
+            warnings.append(f"ls: cannot access '{path.original}': {detail}")
             return [], warnings
 
     try:
@@ -64,7 +66,8 @@ async def walk(
         file_entry = await _file_entry(path, stat, index)
         if file_entry is not None:
             return [file_entry], warnings
-        warnings.append(f"ls: cannot access '{path.original}': {exc}")
+        warnings.append(
+            f"ls: cannot access '{path.original}': {fs_strerror(exc) or exc}")
         return [], warnings
 
     if not entries:
@@ -81,7 +84,8 @@ async def walk(
         try:
             s = await stat(entry_spec, index)
         except (FileNotFoundError, ValueError) as exc:
-            warnings.append(f"ls: cannot access '{entry}': {exc}")
+            warnings.append(
+                f"ls: cannot access '{entry}': {fs_strerror(exc) or exc}")
             continue
         if not all_files and s.name.startswith("."):
             continue

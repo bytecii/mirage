@@ -48,6 +48,14 @@ def show_plan(label: str, dr) -> None:
 async def main():
     print(f"=== mounted {resource.accessor.bucket_uri} at /ds/ ===")
 
+    print("\n=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /ds/__nf_missing__.txt", "head /ds/__nf_missing__.txt",
+                "stat /ds/__nf_missing__.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     # ── discover structure ──────────────────────────────
     print("\n=== ls /ds/ ===")
     r = await ws.execute("ls /ds/")

@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { enoent } from './errors.ts'
 import { pathSafeName, sanitizeName } from './sanitize.ts'
 
 /**
@@ -35,17 +36,17 @@ export function makeIdName(displayName: string, resourceId: string, pathSafe = f
  */
 export function parseIdName(name: string, suffix = ''): [string, string] {
   if (suffix !== '' && !name.endsWith(suffix)) {
-    throw new Error(`ENOENT: ${name}`)
+    throw enoent(name)
   }
   const raw = suffix !== '' ? name.slice(0, -suffix.length) : name
   const idx = raw.lastIndexOf('__')
   if (idx === -1) {
-    throw new Error(`ENOENT: ${name}`)
+    throw enoent(name)
   }
   const label = raw.slice(0, idx)
   const id = raw.slice(idx + 2)
   if (id === '') {
-    throw new Error(`ENOENT: ${name}`)
+    throw enoent(name)
   }
   return [label, id]
 }

@@ -19,6 +19,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { NotionResource as BrowserNotionResource } from "@struktoai/mirage-browser";
 import { MemoryOAuthClientProvider } from "@struktoai/mirage-core";
 import { MountMode, NotionResource, Workspace } from "@struktoai/mirage-node";
+import { runNotFound } from "./cases.ts";
 
 const MOUNT = "/notion";
 const PAGE_A = "aaaa1111-2222-3333-4444-555566667777";
@@ -286,6 +287,7 @@ async function main(): Promise<void> {
       const n = String(allCases.length);
       process.stderr.write(`mcp parity: ${n}/${n} cases byte-identical\n`);
     }
+    await runNotFound(restWs, MOUNT);
   } finally {
     await restWs.close();
     await mcpWs.close();

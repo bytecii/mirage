@@ -16,12 +16,7 @@ import type { ChromaAccessor } from '../../accessor/chroma.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { PathSpec } from '../../types.ts'
 import { resolvePath } from './path.ts'
-
-function enoent(p: string): Error {
-  const err = new Error(p) as Error & { code?: string }
-  err.code = 'ENOENT'
-  return err
-}
+import { enoent } from '../../utils/errors.ts'
 
 function enotdir(p: string): Error {
   const err = new Error(`ENOTDIR: ${p}`) as Error & { code?: string }

@@ -44,10 +44,10 @@ describe('splitSuffixId', () => {
     expect(splitSuffixId('alice__u1.json', '.json')).toEqual(['alice', 'u1'])
   })
   it('throws when missing __', () => {
-    expect(() => splitSuffixId('plain')).toThrow(/ENOENT/)
+    expect(() => splitSuffixId('plain')).toThrow(/plain/)
   })
   it('throws when suffix mismatch', () => {
-    expect(() => splitSuffixId('alice__u1', '.json')).toThrow(/ENOENT/)
+    expect(() => splitSuffixId('alice__u1', '.json')).toThrow(/__/)
   })
 })
 

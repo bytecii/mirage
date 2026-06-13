@@ -19,6 +19,7 @@ from pathlib import Path
 
 import aiobotocore.client
 import boto3
+from cases import run_not_found
 from moto.server import ThreadedMotoServer
 
 from mirage import MountMode, Workspace
@@ -298,6 +299,7 @@ async def main() -> None:
                 _safeguard.DEFAULT_COMMAND_SAFEGUARDS.pop("sleep", None)
             else:
                 _safeguard.DEFAULT_COMMAND_SAFEGUARDS["sleep"] = prev_sleep
+        await run_not_found(ws, MOUNTS[0])
     finally:
         server.stop()
 

@@ -15,7 +15,7 @@
 import { PathSpec } from '../../types.ts'
 import type { EntityKind } from './types.ts'
 import { KIND_DIR_NAMES, ScopeLevel } from './types.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
 
 export interface MongoDBScope {
   level: ScopeLevel

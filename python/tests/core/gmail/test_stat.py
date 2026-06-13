@@ -169,6 +169,43 @@ async def test_stat_not_found(accessor, index):
 
 
 @pytest.mark.asyncio
+async def test_stat_unknown_top_level_raises(accessor, index):
+    with patch(
+            "mirage.core.gmail.stat.list_labels",
+            new_callable=AsyncMock,
+            return_value=[{
+                "type": "system",
+                "id": "INBOX"
+            }],
+    ):
+        with pytest.raises(FileNotFoundError):
+            await stat(
+                accessor,
+                PathSpec(original="/gmail/NoSuchLabel",
+                         directory="/gmail/NoSuchLabel",
+                         prefix="/gmail"), index)
+
+
+@pytest.mark.asyncio
+async def test_stat_real_label_via_api(accessor, index):
+    with patch(
+            "mirage.core.gmail.stat.list_labels",
+            new_callable=AsyncMock,
+            return_value=[{
+                "type": "system",
+                "id": "STARRED"
+            }],
+    ):
+        result = await stat(
+            accessor,
+            PathSpec(original="/gmail/STARRED",
+                     directory="/gmail/STARRED",
+                     prefix="/gmail"), index)
+    assert result.type == FileType.DIRECTORY
+    assert result.name == "STARRED"
+
+
+@pytest.mark.asyncio
 async def test_stat_index_none_raises(accessor):
     with pytest.raises(FileNotFoundError):
         await stat(

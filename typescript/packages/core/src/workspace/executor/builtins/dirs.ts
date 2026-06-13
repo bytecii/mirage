@@ -42,7 +42,8 @@ export async function handleCd(
     stat = s as { type?: string } | null
   } catch (exc) {
     const msg = exc instanceof Error ? exc.message : String(exc)
-    if (/not found|no such file/i.test(msg)) {
+    const code = (exc as { code?: string }).code
+    if (code === 'ENOENT' || /not found|no such file/i.test(msg)) {
       notFound = true
     } else {
       const err = new TextEncoder().encode(`cd: ${raw}: ${msg}\n`)

@@ -16,7 +16,8 @@ import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { formatLsLong } from '../utils/formatting.ts'
-import { rstripSlash } from '../../../util/slash.ts'
+import { gnuStrerror } from '../../../utils/errors.ts'
+import { rstripSlash } from '../../../utils/slash.ts'
 import { formatRecords } from '../utils/output.ts'
 
 type Readdir = (p: PathSpec) => Promise<string[]>
@@ -97,7 +98,9 @@ async function walkGrouped(
   try {
     stats = await listDir(readdir, stat, dir, opts.all)
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
+    const msg =
+      gnuStrerror((err as { code?: string }).code) ??
+      (err instanceof Error ? err.message : String(err))
     warnings.push(`ls: cannot access '${dir.original}': ${msg}`)
     return
   }
@@ -147,7 +150,9 @@ export async function lsGeneric(
       try {
         collected.push(await stat(p))
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
+        const msg =
+          gnuStrerror((err as { code?: string }).code) ??
+          (err instanceof Error ? err.message : String(err))
         warnings.push(`ls: cannot access '${p.original}': ${msg}`)
       }
     }
@@ -192,7 +197,9 @@ export async function lsGeneric(
       try {
         stats = [await stat(p)]
       } catch {
-        const msg = err instanceof Error ? err.message : String(err)
+        const msg =
+          gnuStrerror((err as { code?: string }).code) ??
+          (err instanceof Error ? err.message : String(err))
         warnings.push(`ls: cannot access '${p.original}': ${msg}`)
         continue
       }

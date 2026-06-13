@@ -15,8 +15,8 @@
 import type { PathSpec } from '@struktoai/mirage-core'
 import type { SFTPWrapper, Stats } from 'ssh2'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { enoent, isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
-import { stripSlash } from '@struktoai/mirage-core'
+import { isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
+import { enoent, stripSlash } from '@struktoai/mirage-core'
 
 async function statRemote(sftp: SFTPWrapper, remote: string): Promise<Stats | null> {
   return new Promise<Stats | null>((resolveFn) => {
@@ -53,7 +53,7 @@ export async function mkdir(accessor: SSHAccessor, p: PathSpec, recursive: boole
     try {
       await mkdirOne(sftp, remote, false)
     } catch (err) {
-      if (isNoSuchFile(err)) throw enoent(virtual)
+      if (isNoSuchFile(err)) throw enoent(p)
       throw err
     }
     return

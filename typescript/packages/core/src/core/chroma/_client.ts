@@ -14,6 +14,7 @@
 
 import type { Where } from 'chromadb'
 import type { ChromaAccessor } from '../../accessor/chroma.ts'
+import { enoent } from '../../utils/errors.ts'
 
 export const PATH_TREE_ID = '__path_tree__'
 export const PAGE_CHUNK_BATCH_SIZE = 100
@@ -21,12 +22,6 @@ export const PAGE_CHUNK_BATCH_SIZE = 100
 export interface ChromaChunk {
   document: string
   metadata: Record<string, unknown>
-}
-
-function enoent(p: string): Error {
-  const err = new Error(p) as Error & { code?: string }
-  err.code = 'ENOENT'
-  return err
 }
 
 export function metadataString(value: unknown): string | null {

@@ -14,9 +14,9 @@
 
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
-import { rstripSlash } from '../../../util/slash.ts'
+import { rstripSlash } from '../../../utils/slash.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { fnmatch } from '../../../util/fnmatch.ts'
+import { fnmatch } from '../../../utils/fnmatch.ts'
 import { formatRecords } from '../utils/output.ts'
 
 interface TreeOpts {

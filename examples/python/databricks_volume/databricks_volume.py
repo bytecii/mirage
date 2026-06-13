@@ -55,6 +55,14 @@ async def _run(ws, cmd):
 async def main():
     ws = Workspace({"/dbx/": resource}, mode=MountMode.READ)
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /dbx/__nf_missing__.txt", "head /dbx/__nf_missing__.txt",
+                "stat /dbx/__nf_missing__.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     await _run(ws, "ls /dbx/")
     await _run(ws, "tree -L 2 /dbx/")
     await _run(ws, 'find /dbx/ -name "*.md"')

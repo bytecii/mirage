@@ -109,6 +109,16 @@ async def run_cases(ws: Workspace) -> None:
         print(f"exit={result.exit_code}")
         if out:
             print(out, end="" if out.endswith("\n") else "\n")
+    nf_target = f"{MOUNT.rstrip('/')}/__nf_missing__.txt"
+    for nf_name, nf_prog in (("nf_cat", "cat"), ("nf_head", "head"),
+                             ("nf_tail", "tail"), ("nf_wc", "wc"),
+                             ("nf_stat", "stat"), ("nf_grep", "grep x")):
+        result = await ws.execute(f"{nf_prog} {nf_target}")
+        err = (await result.stderr_str()).strip()
+        print(f"=== {nf_name} ===")
+        print(f"exit={result.exit_code}")
+        if err:
+            print(err)
 
 
 async def main() -> None:

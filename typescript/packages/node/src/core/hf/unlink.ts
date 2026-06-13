@@ -15,7 +15,8 @@
 import { FileType, type IndexCacheStore, type PathSpec, record } from '@struktoai/mirage-core'
 import type { HfAccessor } from '../../accessor/hf.ts'
 import { stat } from './stat.ts'
-import { enoent, hfKey, isNotFound, rawPathOf } from './util.ts'
+import { hfKey, isNotFound, rawPathOf } from './util.ts'
+import { enoent } from '@struktoai/mirage-core'
 
 export async function unlink(
   accessor: HfAccessor,
@@ -35,7 +36,7 @@ export async function unlink(
   try {
     await op.delete(key)
   } catch (err) {
-    if (isNotFound(err)) throw enoent(rawPath)
+    if (isNotFound(err)) throw enoent(path)
     throw err
   }
   record('unlink', path.original, accessor.resourceName, 0, startMs)

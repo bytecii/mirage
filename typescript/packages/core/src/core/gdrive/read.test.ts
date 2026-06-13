@@ -81,7 +81,7 @@ describe('gdrive read auto-bootstrap', () => {
     const accessor = makeAccessor()
     const index = new RAMIndexCacheStore()
     const path = new PathSpec({ original: '/missing.txt', directory: '/missing.txt' })
-    await expect(read(accessor, path, index)).rejects.toThrow(/ENOENT/)
+    await expect(read(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('throws EISDIR when reading a shared drive root', async () => {

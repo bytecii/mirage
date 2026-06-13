@@ -17,6 +17,7 @@ from mirage.cache.index import IndexCacheStore
 from mirage.core.gdrive import DIRECTORY_RESOURCE_TYPES
 from mirage.core.gdrive.readdir import readdir as _readdir
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 from mirage.utils.filetype import guess_type
 
 
@@ -27,6 +28,7 @@ async def stat(
 ) -> FileStat:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -39,7 +41,7 @@ async def stat(
     if not key:
         return FileStat(name="/", type=FileType.DIRECTORY)
     if index is None:
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
     virtual_key = prefix + "/" + key if prefix else "/" + key
     result = await index.get(virtual_key)
     if result.entry is None:
@@ -57,7 +59,7 @@ async def stat(
             pass
         result = await index.get(virtual_key)
         if result.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
     if result.entry.resource_type in DIRECTORY_RESOURCE_TYPES:
         return FileStat(
             name=result.entry.vfs_name,

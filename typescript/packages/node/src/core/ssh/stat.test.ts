@@ -50,6 +50,6 @@ describe('core/ssh/stat', () => {
       files: new Map(),
       dirs: new Map([['/', {}]]),
     })
-    await expect(stat(accessor, spec('/nope'))).rejects.toThrow(/file not found/)
+    await expect(stat(accessor, spec('/nope'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

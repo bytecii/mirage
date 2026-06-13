@@ -19,6 +19,7 @@ from mirage.cache.index import IndexCacheStore, LookupStatus
 from mirage.core.github._client import github_get
 from mirage.core.github.config import GitHubConfig
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read_bytes(config: GitHubConfig, owner: str, repo: str,
@@ -40,6 +41,7 @@ async def read(
 ) -> bytes:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -50,11 +52,11 @@ async def read(
             path = rest or "/"
     key = "/" + path.strip("/")
     if index is None:
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
     result = await index.get(key)
     if result.status == LookupStatus.NOT_FOUND or result.entry is None:
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
     if result.entry.resource_type == "folder":
-        raise IsADirectoryError(path)
+        raise IsADirectoryError(virtual)
     return await read_bytes(accessor.config, accessor.owner, accessor.repo,
                             result.entry.id)

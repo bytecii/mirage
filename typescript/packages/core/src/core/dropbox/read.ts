@@ -17,13 +17,8 @@ import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { PathSpec } from '../../types.ts'
 import { dropboxDownload, dropboxDownloadStream } from './_client.ts'
 import { readdir } from './readdir.ts'
-import { rstripSlash, stripSlash } from '../../util/slash.ts'
-
-function enoent(p: string): Error {
-  const e = new Error(`ENOENT: ${p}`) as Error & { code: string }
-  e.code = 'ENOENT'
-  return e
-}
+import { rstripSlash, stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 function eisdir(p: string): Error {
   const e = new Error(`EISDIR: ${p}`) as Error & { code: string }

@@ -18,6 +18,7 @@ from mirage.io import IOResult
 from mirage.io.stream import async_chain, materialize
 from mirage.shell.types import ERREXIT_EXEMPT_TYPES
 from mirage.shell.types import NodeType as NT
+from mirage.workspace.executor.fs_error import format_fs_error
 from mirage.workspace.executor.jobs import handle_background
 from mirage.workspace.types import ExecutionNode
 
@@ -63,18 +64,24 @@ async def execute_program(
                                                   call_stack)
             # Materialize stdout so lazy exit codes (e.g. from
             # exit_on_empty in grep) are finalized before $? is set.
-            drain_err: str | None = None
+            drain_err: bytes | None = None
             try:
                 stdout = await materialize(stdout)
+            except OSError as exc:
+                # Lazy reads (head/tail opening the stream mid-pipeline) can
+                # fail on the first pull; format as a GNU coreutils line with
+                # the virtual path, mirroring the eager executor chokepoint.
+                cmd_name = (last_exec.command.split()[0]
+                            if last_exec.command else "")
+                drain_err = format_fs_error(cmd_name, exc)
+                stdout = None
             except Exception as exc:
-                # Lazy reads can fail on the first pull (e.g. a backend size
-                # guard); surface that as a failed statement, not a crash.
-                drain_err = str(exc)
+                drain_err = f"{exc}\n".encode()
                 stdout = None
             io.sync_exit_code()
             if drain_err is not None:
                 existing = await materialize(io.stderr) or b""
-                io.stderr = existing + f"{drain_err}\n".encode()
+                io.stderr = existing + drain_err
                 io.exit_code = 1
             session.last_exit_code = io.exit_code
             i += 1

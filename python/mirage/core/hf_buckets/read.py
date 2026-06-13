@@ -20,6 +20,7 @@ from mirage.accessor.hf_buckets import HfBucketsAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.observe.context import record
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read_bytes(accessor: HfBucketsAccessor,
@@ -43,6 +44,6 @@ async def read_bytes(accessor: HfBucketsAccessor,
         else:
             data = bytes(await op.read(key))
     except NotFound as exc:
-        raise FileNotFoundError(raw) from exc
+        raise enoent(path) from exc
     record("read", raw, accessor.RESOURCE_NAME, len(data), start_ms)
     return data

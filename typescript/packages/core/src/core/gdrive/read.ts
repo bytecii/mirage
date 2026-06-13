@@ -21,13 +21,8 @@ import { readSpreadsheet } from '../gsheets/read.ts'
 import { readPresentation } from '../gslides/read.ts'
 import type { TokenManager } from '../google/_client.ts'
 import { DIRECTORY_RESOURCE_TYPES, readdir } from './readdir.ts'
-import { rstripSlash, stripSlash } from '../../util/slash.ts'
-
-function enoent(p: string): Error {
-  const e = new Error(`ENOENT: ${p}`) as Error & { code: string }
-  e.code = 'ENOENT'
-  return e
-}
+import { rstripSlash, stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 function eisdir(p: string): Error {
   const e = new Error(`EISDIR: ${p}`) as Error & { code: string }

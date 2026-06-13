@@ -22,6 +22,7 @@ from mirage.core.databricks_volume.path import backend_path, virtual_path
 from mirage.core.databricks_volume.stat import stat
 from mirage.core.databricks_volume.unlink import unlink
 from mirage.types import FileType, PathSpec
+from mirage.utils.errors import enoent
 
 
 def _list_directory_sync(
@@ -85,6 +86,6 @@ async def rm_recursive(
                                           remote_root)
     except Exception as exc:
         if is_not_found(exc):
-            raise FileNotFoundError(path.strip_prefix) from exc
+            raise enoent(path) from exc
         raise
     return [virtual_path(accessor.config, backend, "") for backend in removed]

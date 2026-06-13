@@ -27,6 +27,8 @@ describe('readOp (opfs)', () => {
 
   it('throws on missing file', async () => {
     const accessor = makeMockAccessor()
-    await expect(readOp.fn(accessor, spec('/nope'), [], {})).rejects.toThrow(/file not found/)
+    await expect(readOp.fn(accessor, spec('/nope'), [], {})).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
   })
 })

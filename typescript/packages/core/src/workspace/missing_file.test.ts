@@ -49,7 +49,7 @@ describe('streaming commands on missing files', () => {
     const { ws } = buildWorkspace()
     const res = await ws.execute('cat /ram/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/missing\.txt/)
     await ws.close()
   })
 
@@ -63,7 +63,7 @@ describe('streaming commands on missing files', () => {
   it('cat works with 2>&1 stderr redirect', async () => {
     const { ws } = buildWorkspace()
     const res = await ws.execute('cat /ram/missing.txt 2>&1')
-    expect(DEC.decode(res.stdout)).toMatch(/file not found/)
+    expect(DEC.decode(res.stdout)).toMatch(/missing\.txt/)
     await ws.close()
   })
 
@@ -78,7 +78,7 @@ describe('streaming commands on missing files', () => {
     const { ws } = buildWorkspace()
     const res = await ws.execute('head /ram/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/missing\.txt/)
     await ws.close()
   })
 
@@ -93,7 +93,7 @@ describe('streaming commands on missing files', () => {
     const { ws } = buildWorkspace()
     const res = await ws.execute('grep foo /ram/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/missing\.txt/)
     await ws.close()
   })
 
@@ -101,7 +101,7 @@ describe('streaming commands on missing files', () => {
     const { ws } = buildWorkspace()
     const res = await ws.execute('tail /ram/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/missing\.txt/)
     await ws.close()
   })
 
@@ -109,7 +109,7 @@ describe('streaming commands on missing files', () => {
     const { ws } = buildWorkspace()
     const res = await ws.execute('wc /ram/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/missing\.txt/)
     await ws.close()
   })
 

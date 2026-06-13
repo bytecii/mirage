@@ -18,6 +18,7 @@ from mirage.core.notion.normalize import normalize_page, to_json_bytes
 from mirage.core.notion.pages import get_page, list_block_tree
 from mirage.core.notion.pathing import split_suffix_id
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read_page_json(config, page_id: str) -> bytes:
@@ -34,6 +35,7 @@ async def read(
 ) -> bytes:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -46,7 +48,7 @@ async def read(
     parts = key.split("/")
 
     if not key or key == "pages":
-        raise IsADirectoryError(path)
+        raise IsADirectoryError(virtual)
 
     if len(parts) >= 3 and parts[0] == "pages" and parts[-1] == "page.json":
         _, page_id = split_suffix_id(parts[-2])
@@ -54,6 +56,6 @@ async def read(
 
     if len(parts
            ) >= 2 and parts[0] == "pages" and not parts[-1].endswith(".json"):
-        raise IsADirectoryError(path)
+        raise IsADirectoryError(virtual)
 
-    raise FileNotFoundError(path)
+    raise enoent(virtual)

@@ -20,6 +20,7 @@ from mirage.accessor.hf_buckets import HfBucketsAccessor
 from mirage.cache.index import IndexCacheStore, IndexEntry
 from mirage.core.hf_buckets.constants import SCOPE_ERROR
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ async def readdir(accessor: HfBucketsAccessor, path: PathSpec,
                 meta = entry.metadata
                 sizes[base] = meta.content_length if meta else None
     except NotFound as exc:
-        raise FileNotFoundError(target) from exc
+        raise enoent(path) from exc
     names = sorted(names)
     if len(names) > SCOPE_ERROR:
         logger.warning(

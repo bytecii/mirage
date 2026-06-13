@@ -17,7 +17,7 @@ import type { ByteSource } from '../io/types.ts'
 import { OperandKind } from './spec/types.ts'
 import type { CommandSpec } from './spec/types.ts'
 import { parseCommand } from './spec/parser.ts'
-import { lstripSlash } from '../util/slash.ts'
+import { lstripSlash } from '../utils/slash.ts'
 
 export const COMPOUND_EXTENSIONS: ReadonlySet<string> = new Set([
   '.gdoc.json',

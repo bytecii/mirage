@@ -20,6 +20,7 @@ from mirage.core.slack import files as slack_files
 from mirage.core.slack.history import get_history_jsonl
 from mirage.core.slack.users import get_user_profile
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read(
@@ -29,6 +30,7 @@ async def read(
 ) -> bytes:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     prefix = path.prefix if isinstance(path, PathSpec) else ""
     raw = path.original if isinstance(path, PathSpec) else path
     if prefix and raw.startswith(prefix):
@@ -40,11 +42,11 @@ async def read(
             and parts[3] == "chat.jsonl"):
         parent_key = f"{parts[0]}/{parts[1]}"
         if index is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         virtual_key = prefix + "/" + parent_key
         lookup = await index.get(virtual_key)
         if lookup.entry is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         channel_id = lookup.entry.id
         date_str = parts[2]
         return await get_history_jsonl(accessor.config, channel_id, date_str)
@@ -52,25 +54,25 @@ async def read(
     if (len(parts) == 5 and parts[0] in ("channels", "dms")
             and parts[3] == "files"):
         if index is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         virtual_key = prefix + "/" + key
         lookup = await index.get(virtual_key)
         if lookup.entry is None or not lookup.entry.extra:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         url = lookup.entry.extra.get("url_private_download")
         if not url:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         return await slack_files.download_file(accessor.config, url)
 
     if len(parts) == 2 and parts[0] == "users":
         if index is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         virtual_key = prefix + "/" + key
         lookup = await index.get(virtual_key)
         if lookup.entry is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         user = await get_user_profile(accessor.config, lookup.entry.id)
         return json.dumps(user, ensure_ascii=False,
                           separators=(",", ":")).encode()
 
-    raise FileNotFoundError(key)
+    raise enoent(virtual)

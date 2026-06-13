@@ -16,7 +16,7 @@ import type { LanceDBAccessor } from '../../accessor/lancedb.ts'
 import type { LanceRow } from './_driver.ts'
 import type { LanceDBConfigResolved } from '../../resource/lancedb/config.ts'
 import type { PathSpec } from '../../types.ts'
-import { rstripSlash, stripSlash } from '../../util/slash.ts'
+import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { renderCard } from './render.ts'
 
 const ENC = new TextEncoder()

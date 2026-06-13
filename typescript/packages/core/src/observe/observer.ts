@@ -18,7 +18,7 @@ import { utcDateFolder } from '../utils/dates.ts'
 import type { ExecutionRecord } from '../workspace/types.ts'
 import { LogEntry } from './log_entry.ts'
 import type { OpRecord } from './record.ts'
-import { rstripSlash } from '../util/slash.ts'
+import { rstripSlash } from '../utils/slash.ts'
 
 export class Observer {
   readonly resource: Resource

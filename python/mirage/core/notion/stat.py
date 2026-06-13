@@ -16,6 +16,7 @@ from mirage.accessor.notion import NotionAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.core.notion.pathing import split_suffix_id
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 from mirage.utils.filetype import guess_type
 
 
@@ -26,6 +27,7 @@ async def stat(
 ) -> FileStat:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -61,4 +63,4 @@ async def stat(
             extra={"page_id": page_id},
         )
 
-    raise FileNotFoundError(path)
+    raise enoent(virtual)

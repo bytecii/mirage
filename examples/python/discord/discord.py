@@ -35,6 +35,15 @@ def _assert_nonempty(text: str, msg: str) -> None:
 async def main():
     ws = Workspace({"/discord": resource}, mode=MountMode.READ)
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /discord/__nf_missing__.txt",
+                "head /discord/__nf_missing__.txt",
+                "stat /discord/__nf_missing__.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     # ── discover structure ────────────────────────────
     print("=== ls /discord/ (guilds) ===")
     r = await ws.execute("ls /discord/")

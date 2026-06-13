@@ -51,7 +51,7 @@ export async function writeBytes(
   const remoteParent = backendPath(accessor.config, parentPath(p))
   const remotePath = backendPath(accessor.config, p)
   const startMs = performance.now()
-  await ensureParentDirectory(accessor, remoteParent, p.stripPrefix)
+  await ensureParentDirectory(accessor, remoteParent, p.original)
   try {
     await dbxFetch(accessor, 'PUT', 'files', remotePath, {
       query: { overwrite: 'true' },
@@ -59,7 +59,7 @@ export async function writeBytes(
       body: data,
     })
   } catch (exc) {
-    if (isNotFound(exc)) throw notFoundError(p.stripPrefix)
+    if (isNotFound(exc)) throw notFoundError(p.original)
     throw exc
   }
   record('write', p.original, ResourceName.DATABRICKS_VOLUME, data.byteLength, startMs)

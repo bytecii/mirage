@@ -22,6 +22,7 @@ from mirage.core.databricks_volume.errors import is_not_found
 from mirage.core.databricks_volume.path import backend_path
 from mirage.observe.context import record
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 def _read_response_bytes(response) -> bytes:
@@ -103,7 +104,7 @@ async def read_bytes(
         )
     except Exception as exc:
         if is_not_found(exc):
-            raise FileNotFoundError(path.strip_prefix) from exc
+            raise enoent(path) from exc
         raise
     record("read", virtual, "databricks_volume", len(data), start_ms)
     return data

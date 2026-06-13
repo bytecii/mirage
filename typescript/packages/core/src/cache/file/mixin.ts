@@ -35,4 +35,7 @@ export interface FileCache {
   readonly cacheSize: number
   readonly cacheLimit: number
   maxDrainBytes: number | null
+  // Present only on stores that support background drains (mirrors the
+  // Python RAM cache's _drain_tasks); applyIo skips draining without it.
+  readonly drainTasks?: Map<string, Promise<void>>
 }

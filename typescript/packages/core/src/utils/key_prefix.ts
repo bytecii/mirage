@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { lstripSlash } from '../util/slash.ts'
+import { lstripSlash } from '../utils/slash.ts'
 
 /** Normalize a key prefix: empty/undefined → '', strip leading /, ensure trailing /. */
 export function normalize(raw: string | undefined): string {

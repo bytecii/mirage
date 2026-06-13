@@ -56,6 +56,10 @@ async function grepCommand(
   if (first !== undefined && pattern !== null) {
     const scope = detectScope(first)
 
+    if (scope.level !== ScopeLevel.ROOT) {
+      await mongoStat(accessor, first, opts.index ?? undefined)
+    }
+
     if (scope.level === ScopeLevel.ROOT) {
       const dbs = await listDatabases(accessor)
       const results: Awaited<ReturnType<typeof searchDatabase>> = []

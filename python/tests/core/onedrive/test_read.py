@@ -126,6 +126,7 @@ async def test_read_missing_raises_file_not_found():
                   "code": "itemNotFound",
                   "message": "no"
               }})
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(FileNotFoundError) as exc:
             await read_bytes(_accessor(),
-                             PathSpec.from_str_path("/Docs/a.txt"))
+                             PathSpec.from_str_path("/od/Docs/a.txt", "/od"))
+    assert str(exc.value) == "/od/Docs/a.txt"

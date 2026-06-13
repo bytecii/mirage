@@ -23,6 +23,7 @@ from mirage.core.mongodb.scope import detect_scope
 from mirage.core.mongodb.stream import read_stream
 from mirage.core.mongodb.types import ScopeLevel
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read(
@@ -37,7 +38,7 @@ async def read(
         if not await entity_exists(accessor.client, accessor.config,
                                    scope.database, scope.name, scope.kind,
                                    accessor):
-            raise FileNotFoundError(path.original)
+            raise enoent(path)
         chunks: list[bytes] = []
         async for chunk in read_stream(accessor, path, index):
             chunks.append(chunk)
@@ -46,7 +47,7 @@ async def read(
         if not await entity_exists(accessor.client, accessor.config,
                                    scope.database, scope.name, scope.kind,
                                    accessor):
-            raise FileNotFoundError(path.original)
+            raise enoent(path)
         payload = await build_collection_schema_json(accessor, scope.database,
                                                      scope.name)
         return (dumps(payload, json_options=RELAXED_JSON_OPTIONS) +
@@ -54,8 +55,8 @@ async def read(
     if scope.level == ScopeLevel.DATABASE_JSON:
         if not await database_exists(accessor.client, accessor.config,
                                      scope.database, accessor):
-            raise FileNotFoundError(path.original)
+            raise enoent(path)
         payload = await build_database_json(accessor, scope.database)
         return (dumps(payload, json_options=RELAXED_JSON_OPTIONS) +
                 "\n").encode()
-    raise FileNotFoundError(path.original)
+    raise enoent(path)

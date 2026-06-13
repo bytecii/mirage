@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { type IndexCacheStore, type PathSpec } from '@struktoai/mirage-core'
+import { enotdir } from '@struktoai/mirage-core'
 import type { RedisAccessor } from '../../accessor/redis.ts'
 import { RedisIndexEntry } from './entry.ts'
 import { norm } from './utils.ts'
@@ -34,7 +35,7 @@ export async function readdir(
   const store = accessor.store
   const p = norm(virtual)
   if (!(await store.hasDir(p))) {
-    throw new Error(`not a directory: ${p}`)
+    throw enotdir(path)
   }
   const dirPrefix = p === '/' ? '/' : `${p}/`
   const seen = new Set<string>()

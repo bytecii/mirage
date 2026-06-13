@@ -20,6 +20,8 @@ from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
+from cases import run_not_found
+
 from mirage import MountMode, Workspace
 from mirage.resource.dify import DifyConfig, DifyResource
 
@@ -298,6 +300,7 @@ async def main() -> None:
             await _run(ws, name, tmpl.format(root=MOUNT))
         for name, cmds in ACCOUNTING_CASES:
             await _measure_calls(base_url, name, cmds)
+        await run_not_found(ws, MOUNT)
     finally:
         server.shutdown()
 

@@ -42,6 +42,8 @@ describe('core/disk/copy', () => {
     expect(await readFile(join(root, 'a/b/dst'), 'utf-8')).toBe('X')
   })
   it('throws on missing source', async () => {
-    await expect(copy(accessor, spec('/missing'), spec('/x'))).rejects.toThrow(/file not found/)
+    await expect(copy(accessor, spec('/missing'), spec('/x'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
   })
 })

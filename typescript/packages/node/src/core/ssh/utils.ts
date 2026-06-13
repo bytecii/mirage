@@ -34,12 +34,6 @@ export function joinRoot(root: string, rel: string): string {
   return `${r}/${stripped}`
 }
 
-export function enoent(path: string): Error & { code: 'ENOENT' } {
-  const err = new Error(`file not found: ${path}`) as Error & { code: 'ENOENT' }
-  err.code = 'ENOENT'
-  return err
-}
-
 export function isNoSuchFile(err: unknown): boolean {
   if (err === null || err === undefined) return false
   if (typeof err !== 'object') return false

@@ -18,13 +18,8 @@ import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { PathSpec } from '../../types.ts'
 import { fetchDirTree } from './_client.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
-import { stripSlash } from '../../util/slash.ts'
-
-function enoent(path: string): Error {
-  const e = new Error(`ENOENT: ${path}`) as Error & { code: string }
-  e.code = 'ENOENT'
-  return e
-}
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 function stripPrefix(path: PathSpec): string {
   const prefix = path.prefix
@@ -62,7 +57,7 @@ export async function readdir(
     if (accessor.truncated) {
       return fallbackReaddir(accessor, key, index, prefix)
     }
-    throw enoent(stripped)
+    throw enoent(path)
   }
   return []
 }
@@ -74,7 +69,7 @@ async function fallbackReaddir(
   prefix: string,
 ): Promise<string[]> {
   const parentSha = await resolveDirSha(accessor, key, index)
-  if (parentSha === null) throw enoent(key)
+  if (parentSha === null) throw enoent(`${prefix}/${key}`)
   const entries = await fetchDirTree(accessor.transport, accessor.owner, accessor.repo, parentSha)
   const childKeys: string[] = []
   const childEntries: [string, IndexEntry][] = []

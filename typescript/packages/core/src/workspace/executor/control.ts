@@ -24,7 +24,7 @@ import type { TSNodeLike } from '../expand/variable.ts'
 import type { Session } from '../session/session.ts'
 import { ExecutionNode } from '../types.ts'
 import type { ExecuteNodeFn } from './jobs.ts'
-import { fnmatch } from '../../util/fnmatch.ts'
+import { fnmatch } from '../../utils/fnmatch.ts'
 
 function installStdinBuffer(
   session: Session,

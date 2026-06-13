@@ -16,8 +16,39 @@ import { FileStat, FileType, PathSpec } from '../../types.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { sha256Hex } from '../../utils/hash.ts'
 import type { PostgresAccessor } from '../../accessor/postgres.ts'
-import { estimatedRowCount, fetchColumns, tableSizeBytes } from './_client.ts'
+import {
+  estimatedRowCount,
+  fetchColumns,
+  listMatviews,
+  listSchemas,
+  listTables,
+  listViews,
+  tableSizeBytes,
+} from './_client.ts'
 import { detectScope } from './scope.ts'
+import { enoent } from '../../utils/errors.ts'
+
+async function schemaExists(accessor: PostgresAccessor, schema: string): Promise<boolean> {
+  const schemas = await listSchemas(accessor, accessor.config.schemas)
+  return schemas.includes(schema)
+}
+
+async function entityExists(
+  accessor: PostgresAccessor,
+  schema: string,
+  kind: string,
+  entity: string,
+): Promise<boolean> {
+  let names: string[]
+  if (kind === 'tables') {
+    names = await listTables(accessor, schema)
+  } else {
+    const views = await listViews(accessor, schema)
+    const mviews = await listMatviews(accessor, schema)
+    names = [...new Set([...views, ...mviews])]
+  }
+  return names.includes(entity)
+}
 
 export async function stat(
   accessor: PostgresAccessor,
@@ -39,6 +70,7 @@ export async function stat(
     return new FileStat({ name: 'database.json', type: FileType.JSON })
   }
   if (scope.level === 'schema') {
+    if (!(await schemaExists(accessor, scope.schema))) throw enoent(spec)
     return new FileStat({
       name: scope.schema,
       type: FileType.DIRECTORY,
@@ -46,6 +78,7 @@ export async function stat(
     })
   }
   if (scope.level === 'kind') {
+    if (!(await schemaExists(accessor, scope.schema))) throw enoent(spec)
     return new FileStat({
       name: scope.kind,
       type: FileType.DIRECTORY,
@@ -53,6 +86,7 @@ export async function stat(
     })
   }
   if (scope.level === 'entity') {
+    if (!(await entityExists(accessor, scope.schema, scope.kind, scope.entity))) throw enoent(spec)
     return new FileStat({
       name: scope.entity,
       type: FileType.DIRECTORY,
@@ -60,6 +94,7 @@ export async function stat(
     })
   }
   if (scope.level === 'entity_schema') {
+    if (!(await entityExists(accessor, scope.schema, scope.kind, scope.entity))) throw enoent(spec)
     return new FileStat({
       name: 'schema.json',
       type: FileType.JSON,
@@ -67,11 +102,10 @@ export async function stat(
     })
   }
   if (scope.level === 'entity_rows') {
+    if (!(await entityExists(accessor, scope.schema, scope.kind, scope.entity))) throw enoent(spec)
     return rowsStat(accessor, scope.schema, scope.kind, scope.entity)
   }
-  const err = new Error(raw) as Error & { code?: string }
-  err.code = 'ENOENT'
-  throw err
+  throw enoent(spec)
 }
 
 async function rowsStat(

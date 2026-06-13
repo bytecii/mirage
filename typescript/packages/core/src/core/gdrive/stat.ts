@@ -16,13 +16,8 @@ import type { GDriveAccessor } from '../../accessor/gdrive.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
 import { DIRECTORY_RESOURCE_TYPES, readdir as coreReaddir } from './readdir.ts'
-import { stripSlash } from '../../util/slash.ts'
-
-function enoent(p: string): Error & { code: string } {
-  const e = new Error(`ENOENT: ${p}`) as Error & { code: string }
-  e.code = 'ENOENT'
-  return e
-}
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 function guessType(name: string): FileType {
   const lower = name.toLowerCase()

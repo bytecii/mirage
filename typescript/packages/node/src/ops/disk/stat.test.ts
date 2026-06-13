@@ -47,6 +47,8 @@ describe('statOp', () => {
   })
 
   it('throws on missing path', async () => {
-    await expect(statOp.fn(res.accessor, spec('/nope'), [], {})).rejects.toThrow(/file not found/)
+    await expect(statOp.fn(res.accessor, spec('/nope'), [], {})).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
   })
 })

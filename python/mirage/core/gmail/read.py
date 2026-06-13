@@ -20,6 +20,7 @@ from mirage.cache.index import IndexCacheStore
 from mirage.core.gmail.messages import get_attachment, get_message_processed
 from mirage.core.gmail.readdir import readdir
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read(
@@ -29,6 +30,7 @@ async def read(
 ) -> bytes:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -39,7 +41,7 @@ async def read(
             path = rest or "/"
     key = path.strip("/")
     if index is None:
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
     virtual_key = prefix + "/" + key if prefix else "/" + key
     result = await index.get(virtual_key)
     if result.entry is None:
@@ -52,15 +54,15 @@ async def read(
             except Exception:
                 pass
         if result.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
     if result.entry.resource_type in ("gmail/label", "gmail/date",
                                       "gmail/attachment_dir"):
-        raise IsADirectoryError(path)
+        raise IsADirectoryError(virtual)
     if result.entry.resource_type == "gmail/attachment":
         att_dir_key = posixpath.dirname(virtual_key)
         att_dir_result = await index.get(att_dir_key)
         if att_dir_result.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         message_id = att_dir_result.entry.id
         attachment_id = result.entry.id
         return await get_attachment(accessor.token_manager, message_id,

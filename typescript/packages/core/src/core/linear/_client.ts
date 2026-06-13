@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { enoent } from '../../utils/errors.ts'
 export class LinearApiError extends Error {
   constructor(
     message: string,
@@ -282,12 +283,6 @@ export async function listIssueComments(
   issueId: string,
 ): Promise<Record<string, unknown>[]> {
   return paginate(transport, ISSUE_COMMENTS_QUERY, { issueId }, ['issue', 'comments'])
-}
-
-function enoent(path: string): Error {
-  const err = new Error(`ENOENT: ${path}`) as Error & { code: string }
-  err.code = 'ENOENT'
-  return err
 }
 
 export async function resolveIssueId(

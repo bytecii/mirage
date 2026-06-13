@@ -30,9 +30,3 @@ export function hfKey(rawPath: string): string {
 export function isNotFound(err: unknown): boolean {
   return err instanceof Error && err.message.startsWith('NotFound')
 }
-
-export function enoent(rawPath: string): Error & { code: string } {
-  const e = new Error(`HF path not found: ${rawPath}`) as Error & { code: string }
-  e.code = 'ENOENT'
-  return e
-}

@@ -79,6 +79,12 @@ async function main(): Promise<void> {
   const entries = await fs.promises.readdir('/data/')
   console.log('require("fs").promises.readdir:', entries.slice(0, 3).join(', '), '...')
 
+  console.log('\n━━━ not-found errors show the full virtual path ━━━')
+  for (const cmd of ['cat /data/missing.json', 'head /data/missing.json', 'stat /data/missing.json']) {
+    const res = await ws.execute(cmd)
+    console.log(`$ ${cmd}\n  exit=${String(res.exitCode)}  ${new TextDecoder().decode(res.stderr).trim()}`)
+  }
+
   await ws.close()
   rmSync(tmp, { recursive: true, force: true })
 }

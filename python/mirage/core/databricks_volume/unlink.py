@@ -23,6 +23,7 @@ from mirage.core.databricks_volume.path import backend_path
 from mirage.core.databricks_volume.stat import stat
 from mirage.observe.context import record
 from mirage.types import FileType, PathSpec
+from mirage.utils.errors import enoent
 
 
 def _delete_file_sync(
@@ -40,13 +41,13 @@ async def unlink(
     path = ensure_path_spec(path)
     file_stat = await stat(accessor, path, index)
     if file_stat.type == FileType.DIRECTORY:
-        raise IsADirectoryError(path.strip_prefix)
+        raise IsADirectoryError(path.original)
     remote_path = backend_path(accessor.config, path)
     start_ms = int(time.monotonic() * 1000)
     try:
         await asyncio.to_thread(_delete_file_sync, accessor, remote_path)
     except Exception as exc:
         if is_not_found(exc):
-            raise FileNotFoundError(path.strip_prefix) from exc
+            raise enoent(path) from exc
         raise
     record("unlink", path.original, "databricks_volume", 0, start_ms)

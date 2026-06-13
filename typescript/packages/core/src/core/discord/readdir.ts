@@ -23,7 +23,8 @@ import { listGuilds } from './guilds.ts'
 import { listMessagesForDay } from './history.ts'
 import { listMembers } from './members.ts'
 import { DiscordApiError } from './_client.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 const DISCORD_EPOCH = 1420070400000n
 const SOFT_STATUSES = new Set([403, 404, 429])
@@ -51,12 +52,6 @@ export function dateRangeDescending(endDate: string, days = 30): string[] {
     dates.push(`${yy}-${mm}-${dd}`)
   }
   return dates
-}
-
-function enoent(path: string): Error {
-  const e = new Error(`ENOENT: ${path}`) as Error & { code: string }
-  e.code = 'ENOENT'
-  return e
 }
 
 function todayUtc(): string {

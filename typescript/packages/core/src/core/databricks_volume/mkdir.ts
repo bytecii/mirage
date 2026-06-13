@@ -44,15 +44,15 @@ export async function mkdir(
   const p = ensurePathSpec(path)
   const remotePath = backendPath(accessor.config, p)
   if (parents) {
-    await createDirectory(accessor, remotePath, p.stripPrefix)
+    await createDirectory(accessor, remotePath, p.original)
     return
   }
   if (await exists(accessor, p)) {
-    throw alreadyExistsError(p.stripPrefix)
+    throw alreadyExistsError(p.original)
   }
   const parentStat = await stat(accessor, parentPath(p), index)
   if (parentStat.type !== FileType.DIRECTORY) {
-    throw notADirectoryError(p.stripPrefix)
+    throw notADirectoryError(p.original)
   }
-  await createDirectory(accessor, remotePath, p.stripPrefix)
+  await createDirectory(accessor, remotePath, p.original)
 }

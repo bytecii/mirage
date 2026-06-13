@@ -12,8 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { pathSafeName, sanitizeName } from '../../util/sanitize.ts'
-import { makeIdName } from '../../util/naming.ts'
+import { pathSafeName, sanitizeName } from '../../utils/sanitize.ts'
+import { makeIdName } from '../../utils/naming.ts'
 import type { SlackScope } from './scope.ts'
 
 const DEC = new TextDecoder('utf-8', { fatal: false })

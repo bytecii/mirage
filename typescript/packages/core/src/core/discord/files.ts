@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { pathSafeName } from '../../util/sanitize.ts'
+import { pathSafeName } from '../../utils/sanitize.ts'
 
 export interface DiscordAttachment {
   id: string

@@ -15,7 +15,7 @@
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { rstripSlash, stripSlash } from '../../../util/slash.ts'
+import { rstripSlash, stripSlash } from '../../../utils/slash.ts'
 import { formatRecords } from '../utils/output.ts'
 
 function humanSize(n: number): string {

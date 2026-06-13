@@ -42,7 +42,7 @@ export async function* readStream(
       headers: { Accept: 'application/octet-stream' },
     })
   } catch (exc) {
-    if (isNotFound(exc)) throw notFoundError(path.stripPrefix)
+    if (isNotFound(exc)) throw notFoundError(path.original)
     throw exc
   }
   const body = r.body

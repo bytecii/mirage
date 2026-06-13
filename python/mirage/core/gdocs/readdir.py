@@ -18,6 +18,7 @@ from mirage.core.google.date_glob import glob_to_modified_range
 from mirage.core.google.drive import GoogleFileSuffix, list_all_files
 from mirage.resource.gdocs.doc_entry import make_filename
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 MIME = "application/vnd.google-apps.document"
 
@@ -34,6 +35,7 @@ async def readdir(
 ) -> list[str]:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     modified_range = None
     if isinstance(path, PathSpec):
         prefix = path.prefix
@@ -51,7 +53,7 @@ async def readdir(
         return [f"{prefix}/owned", f"{prefix}/shared"]
 
     if key not in ("owned", "shared"):
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
     if index is not None and not modified_range:
         cached = await index.list_dir(virtual_key)

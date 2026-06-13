@@ -19,6 +19,7 @@ from mirage.accessor.email import EmailAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.core.email._client import fetch_attachment, fetch_message
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read(
@@ -28,6 +29,7 @@ async def read(
 ) -> bytes:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -38,26 +40,26 @@ async def read(
             path = rest or "/"
     key = path.strip("/")
     if index is None:
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
     virtual_key = prefix + "/" + key if prefix else "/" + key
     result = await index.get(virtual_key)
     if result.entry is None:
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
     if result.entry.resource_type in ("email/folder", "email/date",
                                       "email/attachment_dir"):
-        raise IsADirectoryError(path)
+        raise IsADirectoryError(virtual)
     if result.entry.resource_type == "email/attachment":
         parent_key = posixpath.dirname(virtual_key)
         parent_result = await index.get(parent_key)
         if parent_result.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         uid = parent_result.entry.id
         parts = virtual_key.strip("/").split("/")
         folder = parts[1] if prefix else parts[0]
         filename = result.entry.vfs_name
         data = await fetch_attachment(accessor, folder, uid, filename)
         if data is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         return data
     parts = virtual_key.strip("/").split("/")
     folder = parts[1] if prefix else parts[0]

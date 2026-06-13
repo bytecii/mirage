@@ -34,7 +34,7 @@ import type { RegisteredOp } from '../../ops/registry.ts'
 import type { Resource } from '../../resource/base.ts'
 import { type CommandSafeguard, ConsistencyPolicy, MountMode, PathSpec } from '../../types.ts'
 import type { PyodideRuntime } from '../executor/python/runtime.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 
 type CmdKey = string
 type OpKey = string

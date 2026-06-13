@@ -24,6 +24,7 @@ from mirage.core.gmail.messages import (_extract_attachments, _extract_header,
                                         get_message_raw, list_messages)
 from mirage.core.google.drive import GoogleFileSuffix
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,7 @@ async def readdir(
 ) -> list[str]:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.directory if path.pattern else path.original
@@ -181,7 +183,7 @@ async def readdir(
             if cached.entries is not None:
                 return cached.entries
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         label_key = prefix + "/" + label_name if prefix else "/" + label_name
         result = await index.get(label_key)
         if result.entry is None:
@@ -201,7 +203,7 @@ async def readdir(
                     e,
                 )
         if result.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         label_id = result.entry.id
         msg_ids = await list_messages(
             accessor.token_manager,
@@ -221,7 +223,7 @@ async def readdir(
 
     if depth == 2:
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         cached = await index.list_dir(virtual_key)
         if cached.entries is not None:
             return cached.entries
@@ -268,18 +270,18 @@ async def readdir(
                 cached = await index.list_dir(virtual_key)
                 if cached.entries is not None:
                     return cached.entries
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         label_path = prefix + "/" + parts[0] if prefix else "/" + parts[0]
         await readdir(accessor,
                       PathSpec.from_str_path(label_path, prefix=prefix), index)
         cached = await index.list_dir(virtual_key)
         if cached.entries is not None:
             return cached.entries
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
     if depth == 3:
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         cached = await index.list_dir(virtual_key)
         if cached.entries is not None:
             return cached.entries
@@ -290,6 +292,6 @@ async def readdir(
         cached = await index.list_dir(virtual_key)
         if cached.entries is not None:
             return cached.entries
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
-    raise FileNotFoundError(path)
+    raise enoent(virtual)

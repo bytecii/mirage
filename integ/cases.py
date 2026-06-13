@@ -607,6 +607,44 @@ EXIT_CODE_CASES: list[tuple[str, str]] = [
     ("sleep_infinity", "sleep Infinity"),
 ]
 
+# Not-found errors must always show the full virtual path the user typed
+# (mount prefix included) plus the GNU strerror, identically across backends
+# and languages. Each case prints exit code and stderr.
+NOT_FOUND_CASES: list[tuple[str, str]] = [
+    ("nf_cat", "cat /data/missing.txt"),
+    ("nf_head", "head /data/missing.txt"),
+    ("nf_tail", "tail /data/missing.txt"),
+    ("nf_wc", "wc /data/missing.txt"),
+    ("nf_stat", "stat /data/missing.txt"),
+    ("nf_grep", "grep x /data/missing.txt"),
+    ("nf_cat_nested", "cat /data/sub/missing.txt"),
+    ("nf_cat_pipe", "cat /data/missing.txt | cat"),
+]
+
+# Backend-agnostic not-found probe: every backend (whatever its mount prefix)
+# must surface the full virtual path plus the GNU strerror. Read-only SaaS/DB
+# backends call run_not_found(ws, MOUNT) so the invariant is checked there too.
+NOT_FOUND_PROGS: list[tuple[str, str]] = [
+    ("nf_cat", "cat"),
+    ("nf_head", "head"),
+    ("nf_tail", "tail"),
+    ("nf_wc", "wc"),
+    ("nf_stat", "stat"),
+    ("nf_grep", "grep x"),
+]
+
+
+async def run_not_found(ws, mount: str) -> None:
+    target = f"{mount.rstrip('/')}/__nf_missing__.txt"
+    for name, prog in NOT_FOUND_PROGS:
+        result = await ws.execute(f"{prog} {target}")
+        err = (await result.stderr_str()).strip()
+        print(f"=== {name} ===")
+        print(f"exit={result.exit_code}")
+        if err:
+            print(err)
+
+
 SLEEP_CASES: list[tuple[str, str, float]] = [
     ("sleep_zero", "sleep 0", 0.0),
     ("sleep_fraction", "sleep 0.2", 0.2),
@@ -633,6 +671,14 @@ async def run_cases(ws) -> None:
         print(f"exit={result.exit_code}")
         if out:
             print(out, end="" if out.endswith("\n") else "\n")
+
+    for name, cmd in NOT_FOUND_CASES:
+        result = await ws.execute(cmd)
+        err = (await result.stderr_str()).strip()
+        print(f"=== {name} ===")
+        print(f"exit={result.exit_code}")
+        if err:
+            print(err)
 
     for name, cmd, expected in SLEEP_CASES:
         start = time.monotonic()

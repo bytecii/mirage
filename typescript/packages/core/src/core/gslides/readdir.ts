@@ -19,7 +19,7 @@ import type { PathSpec } from '../../types.ts'
 import { globToModifiedRange } from '../google/date_glob.ts'
 import { GoogleFileSuffix, listAllFiles } from '../google/drive.ts'
 import { makeFilename } from '../../resource/gslides/slide_entry.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
 
 const MIME = 'application/vnd.google-apps.presentation'
 

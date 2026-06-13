@@ -14,7 +14,7 @@
 
 import type { GDocsAccessor } from '../../accessor/gdocs.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { fnmatch } from '../../util/fnmatch.ts'
+import { fnmatch } from '../../utils/fnmatch.ts'
 import { PathSpec } from '../../types.ts'
 import { SCOPE_ERROR } from '../github/constants.ts'
 import { readdir } from './readdir.ts'

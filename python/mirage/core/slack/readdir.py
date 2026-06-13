@@ -26,6 +26,7 @@ from mirage.core.slack.history import fetch_messages_for_day
 from mirage.core.slack.scope import SlackScope, detect_scope
 from mirage.core.slack.users import list_users
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +192,7 @@ async def _readdir_channel_dates(
     index: IndexCacheStore | None,
 ) -> list[str]:
     if index is None:
-        raise FileNotFoundError(path)
+        raise enoent(path)
     lookup = await index.get(virtual_key)
     if lookup.entry is None:
         parent_str = prefix + "/" + container
@@ -201,7 +202,7 @@ async def _readdir_channel_dates(
         await readdir(accessor, parent, index)
         lookup = await index.get(virtual_key)
     if lookup.entry is None:
-        raise FileNotFoundError(path)
+        raise enoent(path)
     listing = await index.list_dir(virtual_key)
     if listing.entries is not None:
         return listing.entries
@@ -240,7 +241,7 @@ async def _readdir_date_contents(
     index: IndexCacheStore | None,
 ) -> list[str]:
     if index is None:
-        raise FileNotFoundError(path)
+        raise enoent(path)
     cached = await index.list_dir(virtual_key)
     if cached.entries is not None:
         return cached.entries
@@ -254,13 +255,13 @@ async def _readdir_date_contents(
         await readdir(accessor, parent, index)
         parent_lookup = await index.get(parent_vk)
     if parent_lookup.entry is None:
-        raise FileNotFoundError(path)
+        raise enoent(path)
     channel_id = parent_lookup.entry.id
     await _fetch_day(accessor, channel_id, date_str, virtual_key, index)
     cached = await index.list_dir(virtual_key)
     if cached.entries is not None:
         return cached.entries
-    raise FileNotFoundError(path)
+    raise enoent(path)
 
 
 async def _readdir_files_dir(
@@ -275,7 +276,7 @@ async def _readdir_files_dir(
     index: IndexCacheStore | None,
 ) -> list[str]:
     if index is None:
-        raise FileNotFoundError(path)
+        raise enoent(path)
     cached = await index.list_dir(virtual_key)
     if cached.entries is not None:
         return cached.entries
@@ -287,7 +288,7 @@ async def _readdir_files_dir(
     cached = await index.list_dir(virtual_key)
     if cached.entries is not None:
         return cached.entries
-    raise FileNotFoundError(path)
+    raise enoent(path)
 
 
 async def readdir(

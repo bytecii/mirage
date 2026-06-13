@@ -17,6 +17,7 @@ import asyncssh
 from mirage.accessor.ssh import SSHAccessor
 from mirage.core.ssh._client import _abs
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read_stream(accessor: SSHAccessor,
@@ -25,6 +26,7 @@ async def read_stream(accessor: SSHAccessor,
                       chunk_size: int = 8192):
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         path = path.strip_prefix
     config = accessor.config
@@ -38,7 +40,7 @@ async def read_stream(accessor: SSHAccessor,
                     break
                 yield chunk
     except asyncssh.SFTPNoSuchFile:
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
 
 async def range_read(accessor: SSHAccessor, path: PathSpec, start: int,
@@ -51,4 +53,4 @@ async def range_read(accessor: SSHAccessor, path: PathSpec, start: int,
             await f.seek(start)
             return await f.read(end - start)
     except asyncssh.SFTPNoSuchFile:
-        raise FileNotFoundError(path)
+        raise enoent(path)

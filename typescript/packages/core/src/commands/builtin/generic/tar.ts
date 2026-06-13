@@ -17,8 +17,8 @@ import { PathSpec } from '../../../types.ts'
 import { gzip, gunzip } from '../../../utils/compress.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { readTar, writeTar, type TarEntry } from '../tar_helper.ts'
-import { lstripSlash, rstripSlash, stripSlash } from '../../../util/slash.ts'
-import { fnmatch } from '../../../util/fnmatch.ts'
+import { lstripSlash, rstripSlash, stripSlash } from '../../../utils/slash.ts'
+import { fnmatch } from '../../../utils/fnmatch.ts'
 
 const ENC = new TextEncoder()
 

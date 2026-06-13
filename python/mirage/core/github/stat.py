@@ -15,12 +15,14 @@
 from mirage.cache.index import IndexCacheStore
 from mirage.core.github.readdir import readdir as _readdir
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 from mirage.utils.filetype import guess_type
 
 
 async def stat(accessor, path: PathSpec, index: IndexCacheStore) -> FileStat:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -61,4 +63,4 @@ async def stat(accessor, path: PathSpec, index: IndexCacheStore) -> FileStat:
             fingerprint=result.entry.id,
             extra={"sha": result.entry.id},
         )
-    raise FileNotFoundError(path)
+    raise enoent(virtual)

@@ -40,6 +40,6 @@ describe('core/ssh/unlink', () => {
       files: new Map(),
       dirs: new Map([['/', {}]]),
     })
-    await expect(unlink(accessor, spec('/missing'))).rejects.toThrow(/file not found/)
+    await expect(unlink(accessor, spec('/missing'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

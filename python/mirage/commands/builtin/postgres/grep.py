@@ -68,6 +68,9 @@ async def grep(
     if paths and pattern is not None:
         scope = detect_scope(paths[0])
 
+        if scope.level != "root":
+            await _stat(accessor, paths[0], index=index)
+
         if scope.level == "root":
             results = await search_database(accessor, pattern, limit)
             all_lines = format_grep_results(results)

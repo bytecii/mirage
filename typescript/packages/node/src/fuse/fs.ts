@@ -76,6 +76,12 @@ const UNKNOWN_SIZE_SENTINEL = 100 * 1024 * 1024 // 100 MiB
 type Cb<T> = (code: number, result?: T) => void
 
 function classifyError(err: unknown): number {
+  const code = (err as { code?: string }).code
+  if (code === 'ENOTEMPTY') return ENOTEMPTY
+  if (code === 'ENOTDIR') return ENOTDIR
+  if (code === 'EACCES') return EACCES
+  if (code === 'EEXIST') return EEXIST
+  if (code === 'ENOENT') return ENOENT
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase()
   if (msg.includes('not empty') || msg.includes('enotempty')) return ENOTEMPTY
   if (msg.includes('not a directory') || msg.includes('enotdir')) return ENOTDIR

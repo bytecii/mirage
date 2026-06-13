@@ -22,6 +22,7 @@ from mirage.core.github_ci.runs import (download_job_log, get_job, get_run,
                                         list_jobs_for_run)
 from mirage.core.github_ci.workflows import get_workflow
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read(
@@ -31,6 +32,7 @@ async def read(
 ) -> bytes:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -45,22 +47,22 @@ async def read(
     if len(parts) == 2 and parts[0] == "workflows" and parts[1].endswith(
             ".json"):
         if index is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         virtual_key = prefix + "/" + key
         lookup = await index.get(virtual_key)
         if lookup.entry is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         wf = await get_workflow(accessor.config, lookup.entry.id)
         return json.dumps(wf, indent=2, ensure_ascii=False).encode()
 
     # /runs/<workflow>_<run-id>/run.json
     if (len(parts) == 3 and parts[0] == "runs" and parts[2] == "run.json"):
         if index is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         run_virtual = prefix + "/" + f"{parts[0]}/{parts[1]}"
         lookup = await index.get(run_virtual)
         if lookup.entry is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         run = await get_run(accessor.config, lookup.entry.id)
         return json.dumps(run, indent=2, ensure_ascii=False).encode()
 
@@ -68,11 +70,11 @@ async def read(
     if (len(parts) == 3 and parts[0] == "runs"
             and parts[2] == "annotations.jsonl"):
         if index is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         run_virtual = prefix + "/" + f"{parts[0]}/{parts[1]}"
         lookup = await index.get(run_virtual)
         if lookup.entry is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         jobs = await list_jobs_for_run(accessor.config, lookup.entry.id)
         lines = []
         for j in jobs:
@@ -88,11 +90,11 @@ async def read(
     if (len(parts) == 4 and parts[0] == "runs" and parts[2] == "jobs"
             and parts[3].endswith(".json")):
         if index is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         virtual_key = prefix + "/" + key
         lookup = await index.get(virtual_key)
         if lookup.entry is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         job = await get_job(accessor.config, lookup.entry.id)
         return json.dumps(job, indent=2, ensure_ascii=False).encode()
 
@@ -100,21 +102,21 @@ async def read(
     if (len(parts) == 4 and parts[0] == "runs" and parts[2] == "jobs"
             and parts[3].endswith(".log")):
         if index is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         virtual_key = prefix + "/" + key
         lookup = await index.get(virtual_key)
         if lookup.entry is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         return await download_job_log(accessor.config, lookup.entry.id)
 
     # /runs/<workflow>_<run-id>/artifacts/<name>_<id>.zip
     if (len(parts) == 4 and parts[0] == "runs" and parts[2] == "artifacts"):
         if index is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         virtual_key = prefix + "/" + key
         lookup = await index.get(virtual_key)
         if lookup.entry is None:
-            raise FileNotFoundError(key)
+            raise enoent(virtual)
         return await download_artifact(accessor.config, lookup.entry.id)
 
-    raise FileNotFoundError(key)
+    raise enoent(virtual)

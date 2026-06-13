@@ -23,6 +23,7 @@ from mirage.core.onedrive.read import read_bytes
 from mirage.core.onedrive.versions import capture_metadata
 from mirage.observe.context import record_stream, revision_for
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read_stream(
@@ -56,7 +57,7 @@ async def read_stream(
             yield chunk
     except GraphError as exc:
         if exc.status == 404:
-            raise FileNotFoundError(stripped)
+            raise enoent(virtual)
         raise
 
 

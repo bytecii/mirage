@@ -15,7 +15,7 @@
 import type { DatabricksVolumeAccessor } from '../../accessor/databricks_volume.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileType, type PathSpec } from '../../types.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 import { dbxFetch } from './_client.ts'
 import { ensurePathSpec } from './_helpers.ts'
 import { isADirectoryError } from './errors.ts'
@@ -78,7 +78,7 @@ export async function copy(
   // so a missing source or `cp` of a directory still raises.
   const samePath = backendPath(accessor.config, s) === backendPath(accessor.config, d)
   if (srcStat.type === FileType.DIRECTORY) {
-    if (!recursive) throw isADirectoryError(s.stripPrefix)
+    if (!recursive) throw isADirectoryError(s.original)
     if (samePath) return
     const remoteSrc = backendPath(accessor.config, s)
     const remoteDst = backendPath(accessor.config, d)
@@ -86,9 +86,7 @@ export async function copy(
       // Copying a directory into its own subtree creates the destination
       // inside the source, so the walk would descend into the fresh copy
       // forever. Refuse before any create_directory/upload.
-      throw new Error(
-        `cannot copy a directory, '${s.stripPrefix}', into itself, '${d.stripPrefix}'`,
-      )
+      throw new Error(`cannot copy a directory, '${s.original}', into itself, '${d.original}'`)
     }
     await copyTree(accessor, remoteSrc, remoteDst)
     return

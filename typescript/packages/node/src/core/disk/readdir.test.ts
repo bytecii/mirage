@@ -44,6 +44,6 @@ describe('core/disk/readdir', () => {
   })
 
   it('throws "not a directory" on missing path', async () => {
-    await expect(readdir(accessor, spec('/missing'))).rejects.toThrow(/not a directory/)
+    await expect(readdir(accessor, spec('/missing'))).rejects.toMatchObject({ code: 'ENOTDIR' })
   })
 })

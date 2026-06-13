@@ -17,7 +17,8 @@ import { FileStat, FileType, type PathSpec } from '../../types.ts'
 import { guessType } from '../../utils/filetype.ts'
 import type { S3Accessor } from '../../accessor/s3.ts'
 import { createS3Client, isNotFoundError, loadS3Module, s3Key } from './_client.ts'
-import { rstripSlash, stripSlash } from '../../util/slash.ts'
+import { rstripSlash, stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 function basename(path: string): string {
   const stripped = rstripSlash(path)
@@ -68,9 +69,7 @@ export async function stat(
     const parent = virtualKey.replace(/\/[^/]*$/, '') || '/'
     const parentListing = await index.listDir(parent)
     if (parentListing.entries !== undefined && parentListing.entries !== null) {
-      const e = new Error(`S3 object not found: ${rawPath}`) as Error & { code: string }
-      e.code = 'ENOENT'
-      throw e
+      throw enoent(path)
     }
   }
 
@@ -98,9 +97,7 @@ export async function stat(
       if ((listResp.CommonPrefixes?.length ?? 0) > 0 || (listResp.Contents?.length ?? 0) > 0) {
         return new FileStat({ name: basename(rawPath) || '/', type: FileType.DIRECTORY })
       }
-      const e = new Error(`S3 object not found: ${rawPath}`) as Error & { code: string }
-      e.code = 'ENOENT'
-      throw e
+      throw enoent(path)
     }
 
     try {
@@ -143,9 +140,7 @@ export async function stat(
       return new FileStat({ name: basename(rawPath) || '/', type: FileType.DIRECTORY })
     }
 
-    const e = new Error(`S3 object not found: ${rawPath}`) as Error & { code: string }
-    e.code = 'ENOENT'
-    throw e
+    throw enoent(path)
   } finally {
     ;(client as unknown as { destroy?: () => void }).destroy?.()
   }

@@ -19,6 +19,7 @@ import {
   MountMode,
   Workspace,
 } from "@struktoai/mirage-node";
+import { runNotFound } from "./cases.ts";
 
 const MONGODB_URI = process.env.MONGODB_URI ?? "mongodb://localhost:27017";
 const DB = "mirage_integ";
@@ -121,6 +122,7 @@ async function main(): Promise<void> {
       if (name === "safeguard_cat_truncates") setCatSafeguard(ws, 2);
       await run(ws, name, cmd);
     }
+    await runNotFound(ws, MOUNT);
   } finally {
     await ws.close();
     await resource.close();

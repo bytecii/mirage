@@ -16,8 +16,8 @@ import type { FindOptions } from '../../resource/base.ts'
 import type { PathSpec } from '../../types.ts'
 import type { S3Accessor } from '../../accessor/s3.ts'
 import { loadS3Module, rawPathOf, s3Prefix, stripKeyPrefix, withClient } from './_client.ts'
-import { rstripSlash } from '../../util/slash.ts'
-import { fnmatch } from '../../util/fnmatch.ts'
+import { rstripSlash } from '../../utils/slash.ts'
+import { fnmatch } from '../../utils/fnmatch.ts'
 
 export async function find(
   accessor: S3Accessor,

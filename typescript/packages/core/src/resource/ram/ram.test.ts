@@ -93,7 +93,7 @@ describe('RAMResource write + read', () => {
 
   it('read missing file throws', async () => {
     const { ram, registry } = setup()
-    await expect(call(registry, 'read', ram, '/nope')).rejects.toThrow(/file not found/)
+    await expect(call(registry, 'read', ram, '/nope')).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
 
@@ -126,7 +126,9 @@ describe('RAMResource readdir', () => {
 
   it('throws when path is not a directory', async () => {
     const { ram, registry } = setup()
-    await expect(call(registry, 'readdir', ram, '/missing')).rejects.toThrow(/not a directory/)
+    await expect(call(registry, 'readdir', ram, '/missing')).rejects.toMatchObject({
+      code: 'ENOTDIR',
+    })
   })
 })
 
@@ -149,7 +151,7 @@ describe('RAMResource stat', () => {
 
   it('throws for missing files', async () => {
     const { ram, registry } = setup()
-    await expect(call(registry, 'stat', ram, '/gone')).rejects.toThrow(/file not found/)
+    await expect(call(registry, 'stat', ram, '/gone')).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
 
@@ -158,14 +160,14 @@ describe('RAMResource unlink + rmdir', () => {
     const { ram, registry } = setup()
     await call(registry, 'write', ram, '/x', new Uint8Array([1]))
     await call(registry, 'unlink', ram, '/x')
-    await expect(call(registry, 'read', ram, '/x')).rejects.toThrow(/file not found/)
+    await expect(call(registry, 'read', ram, '/x')).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('removes directories', async () => {
     const { ram, registry } = setup()
     await call(registry, 'mkdir', ram, '/d')
     await call(registry, 'rmdir', ram, '/d')
-    await expect(call(registry, 'readdir', ram, '/d')).rejects.toThrow(/not a directory/)
+    await expect(call(registry, 'readdir', ram, '/d')).rejects.toMatchObject({ code: 'ENOTDIR' })
   })
 })
 
@@ -213,7 +215,7 @@ describe('RAMResource rename', () => {
     const { ram, registry } = setup()
     await call(registry, 'write', ram, '/src', new TextEncoder().encode('x'))
     await call(registry, 'rename', ram, '/src', PathSpec.fromStrPath('/dst'))
-    await expect(call(registry, 'read', ram, '/src')).rejects.toThrow(/file not found/)
+    await expect(call(registry, 'read', ram, '/src')).rejects.toMatchObject({ code: 'ENOENT' })
     expect(await call(registry, 'read', ram, '/dst')).toEqual(new TextEncoder().encode('x'))
   })
 
@@ -231,7 +233,7 @@ describe('RAMResource rename', () => {
     const { ram, registry } = setup()
     await expect(
       call(registry, 'rename', ram, '/nope', PathSpec.fromStrPath('/dst')),
-    ).rejects.toThrow(/not found/)
+    ).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
 

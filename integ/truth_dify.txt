@@ -74,3 +74,21 @@ list=1 detail=1 segments=0 retrieve=0
 list=1 detail=3 segments=0 retrieve=0
 === calls_cat ===
 list=1 detail=0 segments=1 retrieve=0
+=== nf_cat ===
+exit=1
+cat: /knowledge/__nf_missing__.txt: No such file or directory
+=== nf_head ===
+exit=1
+head: /knowledge/__nf_missing__.txt: No such file or directory
+=== nf_tail ===
+exit=1
+tail: /knowledge/__nf_missing__.txt: No such file or directory
+=== nf_wc ===
+exit=1
+wc: /knowledge/__nf_missing__.txt: No such file or directory
+=== nf_stat ===
+exit=1
+stat: /knowledge/__nf_missing__.txt: No such file or directory
+=== nf_grep ===
+exit=1
+grep: /knowledge/__nf_missing__.txt: No such file or directory

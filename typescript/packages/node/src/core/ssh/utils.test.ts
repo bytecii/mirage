@@ -14,14 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { PathSpec } from '@struktoai/mirage-core'
-import {
-  enoent,
-  isDirectoryAttrs,
-  isFileAttrs,
-  isNoSuchFile,
-  joinRoot,
-  stripPrefix,
-} from './utils.ts'
+import { isDirectoryAttrs, isFileAttrs, isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
 
 describe('stripPrefix', () => {
   it('removes the prefix from the original path', () => {
@@ -63,15 +56,6 @@ describe('joinRoot', () => {
   })
   it('strips trailing slash from root: "/data/" + "/foo" -> "/data/foo"', () => {
     expect(joinRoot('/data/', '/foo')).toBe('/data/foo')
-  })
-})
-
-describe('enoent', () => {
-  it('returns an Error with code ENOENT and the path in the message', () => {
-    const err = enoent('/x')
-    expect(err).toBeInstanceOf(Error)
-    expect(err.code).toBe('ENOENT')
-    expect(err.message).toContain('/x')
   })
 })
 

@@ -52,6 +52,13 @@ async function main(): Promise<void> {
   const resource = new DropboxResource(buildConfig())
   const ws = new Workspace({ '/dropbox': resource }, { mode: MountMode.READ })
   try {
+    console.log('=== not-found errors show the full virtual path ===')
+    for (const cmd of ['cat /dropbox/__nf_missing__.txt', 'head /dropbox/__nf_missing__.txt', 'stat /dropbox/__nf_missing__.txt']) {
+      const res = await ws.execute(cmd)
+      console.log(`$ ${cmd}`)
+      console.log(`  exit=${String(res.exitCode)}  ${new TextDecoder().decode(res.stderr).trim()}`)
+    }
+
     await show(ws, 'ls /dropbox/')
     await show(ws, 'tree -L 2 /dropbox/', 1200)
     await show(ws, 'du -h /dropbox/')

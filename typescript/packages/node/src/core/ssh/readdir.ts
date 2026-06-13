@@ -15,8 +15,8 @@
 import type { FileEntryWithStats } from 'ssh2'
 import type { PathSpec } from '@struktoai/mirage-core'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
-import { enoent, isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
-import { stripSlash } from '@struktoai/mirage-core'
+import { isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
+import { enoent, stripSlash } from '@struktoai/mirage-core'
 
 export async function readdir(accessor: SSHAccessor, p: PathSpec): Promise<string[]> {
   const sftp = await accessor.sftp()
@@ -25,7 +25,7 @@ export async function readdir(accessor: SSHAccessor, p: PathSpec): Promise<strin
   const list = await new Promise<FileEntryWithStats[]>((resolveFn, rejectFn) => {
     sftp.readdir(remote, (err, entries) => {
       if (err !== undefined) {
-        if (isNoSuchFile(err)) rejectFn(enoent(virtual))
+        if (isNoSuchFile(err)) rejectFn(enoent(p))
         else rejectFn(err)
         return
       }

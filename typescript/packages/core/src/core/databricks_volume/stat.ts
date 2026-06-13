@@ -16,7 +16,7 @@ import type { DatabricksVolumeAccessor } from '../../accessor/databricks_volume.
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, type PathSpec } from '../../types.ts'
 import { guessType } from '../../utils/filetype.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
 import { dbxFetch } from './_client.ts'
 import { isNotFound, notFoundError } from './errors.ts'
 import { backendPath } from './path.ts'
@@ -41,7 +41,7 @@ async function directoryStatOrRaise(
   try {
     await dbxFetch(accessor, 'HEAD', 'directories', remotePath)
   } catch (exc) {
-    if (isNotFound(exc)) throw notFoundError(path.stripPrefix)
+    if (isNotFound(exc)) throw notFoundError(path.original)
     throw exc
   }
   return new FileStat({ name: nameFromBackendPath(remotePath), type: FileType.DIRECTORY })

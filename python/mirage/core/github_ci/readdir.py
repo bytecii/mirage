@@ -18,6 +18,7 @@ from mirage.core.github_ci.artifacts import list_artifacts
 from mirage.core.github_ci.runs import list_jobs_for_run, list_runs
 from mirage.core.github_ci.workflows import list_workflows
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 def _safe_name(name: str) -> str:
@@ -33,6 +34,7 @@ async def readdir(
 ) -> list[str]:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.directory if path.pattern else path.original
@@ -110,7 +112,7 @@ async def readdir(
                 await readdir(accessor, parent, index)
                 lookup = await index.get(virtual_key)
             if lookup.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
         base = f"{prefix}/{key}"
         return [
             f"{base}/run.json",
@@ -136,10 +138,10 @@ async def readdir(
                 await readdir(accessor, parent, index)
                 run_lookup = await index.get(run_virtual)
             if run_lookup.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
             run_id = run_lookup.entry.id
         else:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         jobs = await list_jobs_for_run(accessor.config, run_id)
         entries = []
         names = []
@@ -186,10 +188,10 @@ async def readdir(
                 await readdir(accessor, parent, index)
                 run_lookup = await index.get(run_virtual)
             if run_lookup.entry is None:
-                raise FileNotFoundError(path)
+                raise enoent(virtual)
             run_id = run_lookup.entry.id
         else:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         artifacts = await list_artifacts(accessor.config, run_id)
         entries = []
         names = []

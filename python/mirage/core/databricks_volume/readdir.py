@@ -20,6 +20,7 @@ from mirage.cache.index import IndexCacheStore, IndexEntry
 from mirage.core.databricks_volume.errors import is_not_found
 from mirage.core.databricks_volume.path import backend_path, virtual_path
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 logger = logging.getLogger(__name__)
 SCOPE_ERROR = 10_000
@@ -53,7 +54,7 @@ async def readdir(
         )
     except Exception as exc:
         if is_not_found(exc):
-            raise FileNotFoundError(list_path.strip_prefix) from exc
+            raise enoent(list_path) from exc
         raise
     pairs = sorted(
         (virtual_path(accessor.config, entry.path, path.prefix), entry)

@@ -32,6 +32,15 @@ resource = SlackResource(config=config)
 async def main():
     ws = Workspace({"/slack": resource}, mode=MountMode.READ)
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /slack/__nf_missing__.txt",
+                "head /slack/__nf_missing__.txt",
+                "stat /slack/__nf_missing__.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     # ── discover structure ────────────────────────────
     print("=== ls /slack/ (root) ===")
     r = await ws.execute("ls /slack/")

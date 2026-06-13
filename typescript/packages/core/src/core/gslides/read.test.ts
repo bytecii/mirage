@@ -74,6 +74,6 @@ describe('gslides read auto-bootstrap', () => {
       directory: '/gslides/owned/Missing__xyz.gslide.json',
       prefix: '/gslides',
     })
-    await expect(read(accessor, path, index)).rejects.toThrow(/ENOENT/)
+    await expect(read(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

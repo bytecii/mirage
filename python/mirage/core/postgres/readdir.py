@@ -17,6 +17,7 @@ from mirage.cache.index import IndexCacheStore, IndexEntry
 from mirage.core.postgres import _client
 from mirage.core.postgres.scope import detect_scope
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 def is_dir_name(child: str) -> bool:
@@ -52,7 +53,7 @@ async def readdir(accessor: PostgresAccessor,
             f"{prefix}{base}/schema.json",
             f"{prefix}{base}/rows.jsonl",
         ]
-    raise FileNotFoundError(raw)
+    raise enoent(path)
 
 
 async def _list_root(accessor: PostgresAccessor, virtual_key: str,

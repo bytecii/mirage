@@ -46,8 +46,8 @@ describe('core/ssh/copy', () => {
         ['/data', {}],
       ]),
     })
-    await expect(copy(accessor, spec('/data/missing'), spec('/data/x'))).rejects.toThrow(
-      /file not found/,
-    )
+    await expect(copy(accessor, spec('/data/missing'), spec('/data/x'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
   })
 })

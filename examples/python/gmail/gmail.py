@@ -34,6 +34,15 @@ resource = GmailResource(config=config)
 async def main() -> None:
     ws = Workspace({"/gmail": resource}, mode=MountMode.WRITE)
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /gmail/__nf_missing__.txt",
+                "head /gmail/__nf_missing__.txt",
+                "stat /gmail/__nf_missing__.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     # ls root labels
     print("=== ls /gmail/ ===")
     result = await ws.execute("ls /gmail/")

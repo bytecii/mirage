@@ -30,6 +30,15 @@ resource = LinearResource(config=config)
 async def main() -> None:
     ws = Workspace({"/linear": resource}, mode=MountMode.READ)
 
+    print("=== not-found errors show the full virtual path ===")
+    for cmd in ("cat /linear/__nf_missing__.txt",
+                "head /linear/__nf_missing__.txt",
+                "stat /linear/__nf_missing__.txt"):
+        result = await ws.execute(cmd)
+        print(f"$ {cmd}")
+        print(f"  exit={result.exit_code}  "
+              f"{(await result.stderr_str()).strip()}")
+
     print("=== ls /linear/teams/ ===")
     result = await ws.execute("ls /linear/teams/")
     print(await result.stdout_str())

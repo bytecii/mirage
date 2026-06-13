@@ -14,7 +14,8 @@
 
 import { type IndexCacheStore, type PathSpec, record } from '@struktoai/mirage-core'
 import type { HfAccessor } from '../../accessor/hf.ts'
-import { enoent, hfKey, isNotFound, rawPathOf } from './util.ts'
+import { hfKey, isNotFound, rawPathOf } from './util.ts'
+import { enoent } from '@struktoai/mirage-core'
 
 export async function write(
   accessor: HfAccessor,
@@ -29,7 +30,7 @@ export async function write(
   try {
     await op.write(key, Buffer.from(data))
   } catch (err) {
-    if (isNotFound(err)) throw enoent(rawPath)
+    if (isNotFound(err)) throw enoent(path)
     throw err
   }
   record('write', path.original, accessor.resourceName, data.byteLength, startMs)

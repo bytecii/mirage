@@ -38,13 +38,8 @@ import {
   type NormalizedProjectIssue,
 } from './normalize.ts'
 import { splitSuffixId } from './pathing.ts'
-import { stripSlash } from '../../util/slash.ts'
-
-function enoent(path: string): Error {
-  const err = new Error(`ENOENT: ${path}`) as Error & { code: string }
-  err.code = 'ENOENT'
-  return err
-}
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 export interface ReadFilter {
   teamIds?: readonly string[]
@@ -53,6 +48,7 @@ export interface ReadFilter {
 export async function readBytes(
   transport: LinearTransport,
   path: string,
+  virtual: string,
   filter: ReadFilter = {},
 ): Promise<Uint8Array> {
   const key = stripSlash(path)
@@ -68,7 +64,7 @@ export async function readBytes(
     for (const team of teams) {
       if (team.id === teamId) return toJsonBytes(normalizeTeam(team))
     }
-    throw enoent(path)
+    throw enoent(virtual)
   }
 
   if (parts.length === 4 && parts[0] === 'teams' && parts[2] === 'members') {
@@ -78,7 +74,7 @@ export async function readBytes(
     for (const user of users) {
       if (user.id === userId) return toJsonBytes(normalizeUser(user))
     }
-    throw enoent(path)
+    throw enoent(virtual)
   }
 
   if (parts.length === 5 && parts[0] === 'teams' && parts[2] === 'issues') {
@@ -93,7 +89,7 @@ export async function readBytes(
       const rows = comments.map((c) => normalizeComment(c, issueId, normIssue.issue_key))
       return toJsonlBytes(rows)
     }
-    throw enoent(path)
+    throw enoent(virtual)
   }
 
   if (parts.length === 4 && parts[0] === 'teams' && parts[2] === 'projects') {
@@ -125,7 +121,7 @@ export async function readBytes(
         )
       }
     }
-    throw enoent(path)
+    throw enoent(virtual)
   }
 
   if (parts.length === 4 && parts[0] === 'teams' && parts[2] === 'cycles') {
@@ -135,10 +131,10 @@ export async function readBytes(
     for (const cycle of cycles) {
       if (cycle.id === cycleId) return toJsonBytes(normalizeCycle(cycle, teamId))
     }
-    throw enoent(path)
+    throw enoent(virtual)
   }
 
-  throw enoent(path)
+  throw enoent(virtual)
 }
 
 export async function read(
@@ -152,5 +148,5 @@ export async function read(
   if (prefix !== '' && p.startsWith(prefix)) {
     p = p.slice(prefix.length) || '/'
   }
-  return readBytes(accessor.transport, p, filter)
+  return readBytes(accessor.transport, p, path.original, filter)
 }

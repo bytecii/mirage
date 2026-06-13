@@ -19,6 +19,7 @@ import {
   type IndexCacheStore,
   type PathSpec,
 } from '@struktoai/mirage-core'
+import { enoent } from '@struktoai/mirage-core'
 import type { RedisAccessor } from '../../accessor/redis.ts'
 import { basename, norm } from './utils.ts'
 
@@ -45,5 +46,5 @@ export async function stat(
       type: guessType(p),
     })
   }
-  throw new Error(`file not found: ${p}`)
+  throw enoent(path)
 }

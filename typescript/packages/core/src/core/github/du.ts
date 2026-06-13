@@ -14,7 +14,7 @@
 
 import type { GitHubAccessor } from '../../accessor/github.ts'
 import type { PathSpec } from '../../types.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
 
 function strip(path: PathSpec): string {
   const prefix = path.prefix

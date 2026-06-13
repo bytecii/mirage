@@ -19,6 +19,7 @@ from mirage.core.mongodb._client import (count_documents, database_exists,
 from mirage.core.mongodb.scope import detect_scope
 from mirage.core.mongodb.types import KIND_TO_DIR, EntityKind, ScopeLevel
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 
 
 async def stat(
@@ -36,7 +37,7 @@ async def stat(
     if scope.level == ScopeLevel.DATABASE:
         if not await database_exists(accessor.client, accessor.config,
                                      scope.database, accessor):
-            raise FileNotFoundError(path.original)
+            raise enoent(path)
         return FileStat(
             name=scope.database,
             type=FileType.DIRECTORY,
@@ -46,7 +47,7 @@ async def stat(
     if scope.level == ScopeLevel.KIND_DIR:
         if not await database_exists(accessor.client, accessor.config,
                                      scope.database, accessor):
-            raise FileNotFoundError(path.original)
+            raise enoent(path)
         return FileStat(
             name=_kind_dir_name(scope.kind),
             type=FileType.DIRECTORY,
@@ -60,7 +61,7 @@ async def stat(
         if not await entity_exists(accessor.client, accessor.config,
                                    scope.database, scope.name, scope.kind,
                                    accessor):
-            raise FileNotFoundError(path.original)
+            raise enoent(path)
         doc_count = await count_documents(accessor.client, scope.database,
                                           scope.name)
         return FileStat(
@@ -78,7 +79,7 @@ async def stat(
         if not await entity_exists(accessor.client, accessor.config,
                                    scope.database, scope.name, scope.kind,
                                    accessor):
-            raise FileNotFoundError(path.original)
+            raise enoent(path)
         return await _documents_stat(accessor, scope.database, scope.kind,
                                      scope.name)
 
@@ -86,7 +87,7 @@ async def stat(
         if not await entity_exists(accessor.client, accessor.config,
                                    scope.database, scope.name, scope.kind,
                                    accessor):
-            raise FileNotFoundError(path.original)
+            raise enoent(path)
         return FileStat(
             name="schema.json",
             type=FileType.TEXT,
@@ -100,14 +101,14 @@ async def stat(
     if scope.level == ScopeLevel.DATABASE_JSON:
         if not await database_exists(accessor.client, accessor.config,
                                      scope.database, accessor):
-            raise FileNotFoundError(path.original)
+            raise enoent(path)
         return FileStat(
             name="database.json",
             type=FileType.TEXT,
             extra={"database": scope.database},
         )
 
-    raise FileNotFoundError(path.original)
+    raise enoent(path)
 
 
 def _kind_dir_name(kind: EntityKind) -> str:

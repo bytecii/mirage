@@ -21,6 +21,7 @@ from mirage.core.databricks_volume.errors import is_not_found
 from mirage.core.databricks_volume.path import backend_path
 from mirage.core.databricks_volume.stat import stat
 from mirage.types import FileType, PathSpec
+from mirage.utils.errors import enoent, enotdir
 
 
 def _list_directory_sync(
@@ -45,20 +46,20 @@ async def rmdir(
     path = ensure_path_spec(path)
     file_stat = await stat(accessor, path, index)
     if file_stat.type != FileType.DIRECTORY:
-        raise NotADirectoryError(path.strip_prefix)
+        raise enotdir(path)
     remote_path = backend_path(accessor.config, path)
     try:
         entries = await asyncio.to_thread(_list_directory_sync, accessor,
                                           remote_path)
     except Exception as exc:
         if is_not_found(exc):
-            raise FileNotFoundError(path.strip_prefix) from exc
+            raise enoent(path) from exc
         raise
     if entries:
-        raise OSError(f"directory not empty: {path.strip_prefix}")
+        raise OSError(f"directory not empty: {path.original}")
     try:
         await asyncio.to_thread(_delete_directory_sync, accessor, remote_path)
     except Exception as exc:
         if is_not_found(exc):
-            raise FileNotFoundError(path.strip_prefix) from exc
+            raise enoent(path) from exc
         raise

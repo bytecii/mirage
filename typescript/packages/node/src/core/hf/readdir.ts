@@ -22,7 +22,8 @@ import {
 } from '@struktoai/mirage-core'
 import type { HfAccessor } from '../../accessor/hf.ts'
 import { SCOPE_ERROR } from './constants.ts'
-import { enoent, isNotFound } from './util.ts'
+import { isNotFound } from './util.ts'
+import { enoent } from '@struktoai/mirage-core'
 
 export async function readdir(
   accessor: HfAccessor,
@@ -54,7 +55,7 @@ export async function readdir(
   try {
     entries = await op.list(listPath)
   } catch (err) {
-    if (isNotFound(err)) throw enoent(target)
+    if (isNotFound(err)) throw enoent(path)
     throw err
   }
   for (const entry of entries) {

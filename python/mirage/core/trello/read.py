@@ -25,11 +25,13 @@ from mirage.core.trello.normalize import (normalize_board, normalize_card,
 from mirage.core.trello.pathing import split_suffix_id
 from mirage.resource.trello.config import TrelloConfig
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read_bytes(
     config: TrelloConfig,
     path: PathSpec,
+    virtual: str,
 ) -> bytes:
     key = path.strip("/")
     parts = key.split("/")
@@ -41,7 +43,7 @@ async def read_bytes(
         for ws in workspaces:
             if ws.get("id") == ws_id:
                 return to_json_bytes(normalize_workspace(ws))
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
     if (len(parts) == 5 and parts[0] == "workspaces" and parts[2] == "boards"
             and parts[4] == "board.json"):
@@ -57,7 +59,7 @@ async def read_bytes(
         for member in members:
             if member.get("id") == member_id:
                 return to_json_bytes(normalize_member(member))
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
     if (len(parts) == 6 and parts[0] == "workspaces" and parts[2] == "boards"
             and parts[4] == "labels"):
@@ -67,7 +69,7 @@ async def read_bytes(
         for label in labels:
             if label.get("id") == label_id:
                 return to_json_bytes(normalize_label(label))
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
     if (len(parts) == 7 and parts[0] == "workspaces" and parts[2] == "boards"
             and parts[4] == "lists" and parts[6] == "list.json"):
@@ -77,7 +79,7 @@ async def read_bytes(
         for lst in lists:
             if lst.get("id") == list_id:
                 return to_json_bytes(normalize_list(lst))
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
 
     if (len(parts) == 9 and parts[0] == "workspaces" and parts[2] == "boards"
             and parts[4] == "lists" and parts[6] == "cards"
@@ -96,7 +98,7 @@ async def read_bytes(
         ]
         return to_jsonl_bytes(rows)
 
-    raise FileNotFoundError(path)
+    raise enoent(virtual)
 
 
 async def read(
@@ -106,6 +108,7 @@ async def read(
 ) -> bytes:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -114,4 +117,4 @@ async def read(
         rest = path[len(prefix):]
         if prefix.endswith("/") or rest == "" or rest.startswith("/"):
             path = rest or "/"
-    return await read_bytes(accessor.config, path)
+    return await read_bytes(accessor.config, path, virtual)

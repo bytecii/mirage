@@ -43,7 +43,7 @@ describe.skipIf(skip)('redis streaming commands on missing files', () => {
   it('cat /missing.txt returns exit=1 with stderr', async () => {
     const res = await ws.execute('cat /redis/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/No such file or directory/)
   })
 
   it('cat /missing; echo after=$? yields after=1', async () => {
@@ -59,24 +59,24 @@ describe.skipIf(skip)('redis streaming commands on missing files', () => {
   it('head /missing returns exit=1', async () => {
     const res = await ws.execute('head /redis/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/No such file or directory/)
   })
 
   it('grep pat /missing returns exit=1', async () => {
     const res = await ws.execute('grep foo /redis/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/No such file or directory/)
   })
 
   it('tail /missing returns exit=1', async () => {
     const res = await ws.execute('tail /redis/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/No such file or directory/)
   })
 
   it('wc /missing returns exit=1', async () => {
     const res = await ws.execute('wc /redis/missing.txt')
     expect(res.exitCode).toBe(1)
-    expect(DEC.decode(res.stderr)).toMatch(/file not found/)
+    expect(DEC.decode(res.stderr)).toMatch(/No such file or directory/)
   })
 })

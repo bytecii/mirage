@@ -16,15 +16,10 @@ import type { TrelloAccessor } from '../../accessor/trello.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
 import { readdir as coreReaddir } from './readdir.ts'
-import { stripSlash } from '../../util/slash.ts'
+import { stripSlash } from '../../utils/slash.ts'
+import { enoent } from '../../utils/errors.ts'
 
 const VIRTUAL_DIRS = new Set(['', 'workspaces'])
-
-function enoent(path: string): Error {
-  const err = new Error(`ENOENT: ${path}`) as Error & { code: string }
-  err.code = 'ENOENT'
-  return err
-}
 
 function makeVirtualKey(prefix: string, key: string): string {
   if (key === '') return prefix !== '' ? prefix : '/'
@@ -79,9 +74,9 @@ export async function stat(
   const parts = key.split('/')
 
   if (parts.length === 2 && parts[0] === 'workspaces') {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const result = await lookupWithFallback(accessor, virtualKey, prefix, index)
-    if (result.entry === undefined || result.entry === null) throw enoent(p)
+    if (result.entry === undefined || result.entry === null) throw enoent(path)
     return new FileStat({
       name: result.entry.vfsName,
       type: FileType.DIRECTORY,
@@ -109,9 +104,9 @@ export async function stat(
   }
 
   if (parts.length === 4 && parts[0] === 'workspaces' && parts[2] === 'boards') {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const result = await lookupWithFallback(accessor, virtualKey, prefix, index)
-    if (result.entry === undefined || result.entry === null) throw enoent(p)
+    if (result.entry === undefined || result.entry === null) throw enoent(path)
     return new FileStat({
       name: result.entry.vfsName,
       type: FileType.DIRECTORY,
@@ -144,9 +139,9 @@ export async function stat(
     parts[2] === 'boards' &&
     parts[4] === 'members'
   ) {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const result = await lookupWithFallback(accessor, virtualKey, prefix, index)
-    if (result.entry === undefined || result.entry === null) throw enoent(p)
+    if (result.entry === undefined || result.entry === null) throw enoent(path)
     return new FileStat({
       name: result.entry.vfsName,
       type: FileType.JSON,
@@ -160,9 +155,9 @@ export async function stat(
     parts[2] === 'boards' &&
     parts[4] === 'labels'
   ) {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const result = await lookupWithFallback(accessor, virtualKey, prefix, index)
-    if (result.entry === undefined || result.entry === null) throw enoent(p)
+    if (result.entry === undefined || result.entry === null) throw enoent(path)
     return new FileStat({
       name: result.entry.vfsName,
       type: FileType.JSON,
@@ -176,9 +171,9 @@ export async function stat(
     parts[2] === 'boards' &&
     parts[4] === 'lists'
   ) {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const result = await lookupWithFallback(accessor, virtualKey, prefix, index)
-    if (result.entry === undefined || result.entry === null) throw enoent(p)
+    if (result.entry === undefined || result.entry === null) throw enoent(path)
     return new FileStat({
       name: result.entry.vfsName,
       type: FileType.DIRECTORY,
@@ -217,9 +212,9 @@ export async function stat(
     parts[4] === 'lists' &&
     parts[6] === 'cards'
   ) {
-    if (index === undefined) throw enoent(p)
+    if (index === undefined) throw enoent(path)
     const result = await lookupWithFallback(accessor, virtualKey, prefix, index)
-    if (result.entry === undefined || result.entry === null) throw enoent(p)
+    if (result.entry === undefined || result.entry === null) throw enoent(path)
     return new FileStat({
       name: result.entry.vfsName,
       type: FileType.DIRECTORY,
@@ -262,5 +257,5 @@ export async function stat(
     }
   }
 
-  throw enoent(p)
+  throw enoent(path)
 }

@@ -24,6 +24,7 @@ from mirage.core.google.drive import download_file
 from mirage.core.gsheets.read import read_spreadsheet
 from mirage.core.gslides.read import read_presentation
 from mirage.types import PathSpec
+from mirage.utils.errors import enoent
 
 
 async def read_bytes(
@@ -40,6 +41,7 @@ async def read(
 ) -> bytes:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -50,7 +52,7 @@ async def read(
             path = rest or "/"
     key = path.strip("/")
     if index is None:
-        raise FileNotFoundError(path)
+        raise enoent(virtual)
     virtual_key = prefix + "/" + key if prefix else "/" + key
     result = await index.get(virtual_key)
     if result.entry is None:
@@ -66,9 +68,9 @@ async def read(
                 # parent refresh failed; fall through to FileNotFoundError
                 pass
         if result.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
     if result.entry.resource_type in DIRECTORY_RESOURCE_TYPES:
-        raise IsADirectoryError(path)
+        raise IsADirectoryError(virtual)
     if result.entry.resource_type == "gdrive/gdoc":
         return await read_doc(accessor.token_manager, result.entry.id)
     if result.entry.resource_type == "gdrive/gsheet":

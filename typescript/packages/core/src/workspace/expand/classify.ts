@@ -14,7 +14,7 @@
 
 import { PathSpec } from '../../types.ts'
 import type { MountRegistry } from '../mount/registry.ts'
-import { rstripSlash } from '../../util/slash.ts'
+import { rstripSlash } from '../../utils/slash.ts'
 
 const FILENAME_CHAR = /[a-zA-Z0-9_./]/
 const NON_PATH_CHAR = /[(){}=;|&<> ]/

@@ -16,6 +16,7 @@ from mirage.accessor.github_ci import GitHubCIAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.core.github_ci.readdir import readdir as _readdir
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 
 VIRTUAL_DIRS = {"workflows", "runs", "jobs", "artifacts"}
 
@@ -51,6 +52,7 @@ async def stat(
 ) -> FileStat:
     if isinstance(path, str):
         path = PathSpec(original=path, directory=path)
+    virtual = path.original
     if isinstance(path, PathSpec):
         prefix = path.prefix
         path = path.original
@@ -72,11 +74,11 @@ async def stat(
     if len(parts) == 2 and parts[0] == "workflows" and parts[1].endswith(
             ".json"):
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         lookup = await _lookup_with_fallback(accessor, virtual_key, prefix,
                                              index)
         if lookup.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         return FileStat(
             name=lookup.entry.vfs_name or lookup.entry.name,
             type=FileType.JSON,
@@ -85,11 +87,11 @@ async def stat(
 
     if len(parts) == 2 and parts[0] == "runs":
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         lookup = await _lookup_with_fallback(accessor, virtual_key, prefix,
                                              index)
         if lookup.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         return FileStat(
             name=lookup.entry.vfs_name or lookup.entry.name,
             type=FileType.DIRECTORY,
@@ -109,11 +111,11 @@ async def stat(
     if (len(parts) == 4 and parts[0] == "runs" and parts[2] == "jobs"
             and parts[3].endswith(".json")):
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         lookup = await _lookup_with_fallback(accessor, virtual_key, prefix,
                                              index)
         if lookup.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         return FileStat(
             name=lookup.entry.vfs_name or lookup.entry.name,
             type=FileType.JSON,
@@ -123,11 +125,11 @@ async def stat(
     if (len(parts) == 4 and parts[0] == "runs" and parts[2] == "jobs"
             and parts[3].endswith(".log")):
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         lookup = await _lookup_with_fallback(accessor, virtual_key, prefix,
                                              index)
         if lookup.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         return FileStat(
             name=lookup.entry.vfs_name or lookup.entry.name,
             type=FileType.TEXT,
@@ -136,11 +138,11 @@ async def stat(
 
     if (len(parts) == 4 and parts[0] == "runs" and parts[2] == "artifacts"):
         if index is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         lookup = await _lookup_with_fallback(accessor, virtual_key, prefix,
                                              index)
         if lookup.entry is None:
-            raise FileNotFoundError(path)
+            raise enoent(virtual)
         return FileStat(
             name=lookup.entry.vfs_name or lookup.entry.name,
             type=FileType.ZIP,
@@ -148,4 +150,4 @@ async def stat(
             extra={"artifact_id": lookup.entry.id},
         )
 
-    raise FileNotFoundError(path)
+    raise enoent(virtual)

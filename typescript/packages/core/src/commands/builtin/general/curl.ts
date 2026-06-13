@@ -18,7 +18,7 @@ import { PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { httpFormRequest, httpRequest } from '../utils/http.ts'
-import { rstripSlash } from '../../../util/slash.ts'
+import { rstripSlash } from '../../../utils/slash.ts'
 
 const ENC = new TextEncoder()
 

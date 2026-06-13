@@ -217,3 +217,21 @@ exit=1
 /notion/pages/Project_Roadmap__aaaa1111-2222-3333-4444-555566667777/page.json:0
 /notion/pages/Project_Roadmap__aaaa1111-2222-3333-4444-555566667777/Q1_Goals__cccc1111-2222-3333-4444-555566667777/page.json:0
 /notion/pages/Notes__bbbb2222-3333-4444-5555-666677778888/page.json:0
+=== nf_cat ===
+exit=1
+cat: /notion/__nf_missing__.txt: No such file or directory
+=== nf_head ===
+exit=1
+head: /notion/__nf_missing__.txt: No such file or directory
+=== nf_tail ===
+exit=1
+tail: /notion/__nf_missing__.txt: No such file or directory
+=== nf_wc ===
+exit=1
+wc: /notion/__nf_missing__.txt: No such file or directory
+=== nf_stat ===
+exit=1
+stat: /notion/__nf_missing__.txt: No such file or directory
+=== nf_grep ===
+exit=1
+grep: /notion/__nf_missing__.txt: No such file or directory

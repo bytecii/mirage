@@ -17,6 +17,7 @@ import { record, revisionFor } from '../../observe/context.ts'
 import { ResourceName, type PathSpec } from '../../types.ts'
 import type { S3Accessor } from '../../accessor/s3.ts'
 import { createS3Client, isNotFoundError, loadS3Module, s3Key, streamToBuffer } from './_client.ts'
+import { enoent } from '../../utils/errors.ts'
 
 export interface S3ReadOptions {
   offset?: number
@@ -90,9 +91,7 @@ export async function read(
     return bytes
   } catch (err) {
     if (isNotFoundError(err)) {
-      const e = new Error(`S3 object not found: ${rawPath}`) as Error & { code: string }
-      e.code = 'ENOENT'
-      throw e
+      throw enoent(path)
     }
     throw err
   } finally {

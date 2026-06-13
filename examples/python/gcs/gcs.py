@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import json
 import os
 import time
 
@@ -107,7 +108,7 @@ async def main():
     r = await ws.execute("jq .metadata /gcs/data/example.json")
     print(f"  {(await r.stdout_str()).strip()[:200]}")
 
-    print("\n=== jq -r '.departments[].teams[].name'"
+    print("\n=== jq '.departments[].teams[].name'"
           " /gcs/data/example.json ===")
     r = await ws.execute(
         'jq ".departments[].teams[].name" /gcs/data/example.json')
@@ -272,21 +273,24 @@ async def main():
     print("\n=== echo \"\\$X\" (escaped dollar stays literal) ===")
     await ws.execute("export X=expanded")
     r = await ws.execute('echo "\\$X"')
-    print(f"  stdout: {(await r.stdout_str()).strip()!r} (expect '$X')")
+    print(f"  stdout: {json.dumps((await r.stdout_str()).strip())}"
+          " (expect '$X')")
 
     print("\n=== echo \"$X\" (unescaped dollar expands) ===")
     r = await ws.execute('echo "$X"')
-    print(f"  stdout: {(await r.stdout_str()).strip()!r} (expect 'expanded')")
+    print(f"  stdout: {json.dumps((await r.stdout_str()).strip())}"
+          " (expect 'expanded')")
 
     print("\n=== echo '$X' (single quotes keep $X literal) ===")
     r = await ws.execute("echo '$X'")
-    print(f"  stdout: {(await r.stdout_str()).strip()!r} (expect '$X')")
+    print(f"  stdout: {json.dumps((await r.stdout_str()).strip())}"
+          " (expect '$X')")
 
     print("\n=== cat \"$DIR/example.json\" (env var in path) ===")
     await ws.execute("export DIR=/gcs/data")
     r = await ws.execute('cat "$DIR/example.json" | head -n 3')
     out = (await r.stdout_str()).strip().splitlines()
-    print(f"  first lines: {out}")
+    print(f"  first lines: {json.dumps(out, separators=(',', ':'))}")
 
     print("\n=== cat $(echo /gcs/data/example.json) | head -n 1"
           " (command sub as path) ===")
@@ -312,7 +316,7 @@ async def main():
     r = await ws.execute(f"cat {target} | head -n 3")
     print(f"  head returned {len((await r.stdout_str()).splitlines())} lines")
     drain_keys = list(ws.cache._drain_tasks.keys())
-    print(f"  drain tasks: {drain_keys}")
+    print(f"  drain tasks: {json.dumps(drain_keys, separators=(',', ':'))}")
     for k in drain_keys:
         await ws.cache._drain_tasks[k]
     cached = None
@@ -330,7 +334,7 @@ async def main():
     r = await ws.execute(f"cat {target} | head -n 3")
     print(f"  head returned {len((await r.stdout_str()).splitlines())} lines")
     drain_keys = list(ws.cache._drain_tasks.keys())
-    print(f"  drain tasks: {drain_keys}")
+    print(f"  drain tasks: {json.dumps(drain_keys, separators=(',', ':'))}")
     for k in drain_keys:
         await ws.cache._drain_tasks[k]
     cached = None
@@ -358,7 +362,7 @@ async def main():
         head = (await r.stdout_str()).strip().splitlines()
         first = head[0][:48] if head else ""
         print(f"  {label:42s} bytes={net:>10,}  t={dt:4.2f}s  "
-              f"lines={len(head):>4}  out0={first!r}")
+              f"lines={len(head):>4}  out0={json.dumps(first)}")
 
     await ws.cache.clear()
     await measure("head -n 1 (line-streamed)", f"head -n 1 {target}")

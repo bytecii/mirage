@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { rstripSlash, stripSlash } from './util/slash.ts'
+import { rstripSlash, stripSlash } from './utils/slash.ts'
 
 export const MountMode = Object.freeze({
   READ: 'read',
