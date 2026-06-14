@@ -12,7 +12,6 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import json
 import time
 
 from mirage.workspace.history import ExecutionHistory
@@ -54,40 +53,6 @@ def test_history_clear():
     h.append(_make_record())
     h.clear()
     assert len(h.entries()) == 0
-
-
-def test_history_persist_jsonl(tmp_path):
-    path = str(tmp_path / "history.jsonl")
-    h = ExecutionHistory(max_entries=100, persist_path=path)
-    h.append(_make_record(command="grep foo"))
-    h.append(_make_record(command="cat bar"))
-
-    with open(path) as f:
-        lines = f.readlines()
-    assert len(lines) == 2
-    first = json.loads(lines[0])
-    assert first["command"] == "grep foo"
-    second = json.loads(lines[1])
-    assert second["command"] == "cat bar"
-
-
-def test_history_persist_eviction_still_writes_all(tmp_path):
-    path = str(tmp_path / "history.jsonl")
-    h = ExecutionHistory(max_entries=2, persist_path=path)
-    for i in range(5):
-        h.append(_make_record(command=f"cmd-{i}"))
-
-    assert len(h.entries()) == 2
-
-    with open(path) as f:
-        lines = f.readlines()
-    assert len(lines) == 5
-
-
-def test_history_no_persist():
-    h = ExecutionHistory(max_entries=100, persist_path=None)
-    h.append(_make_record())
-    assert len(h.entries()) == 1
 
 
 def test_history_entries_returns_copy():

@@ -52,6 +52,21 @@ check_safeguard() {
   fi
 }
 
+# cross.yaml sets default_session_id: crosssess. Both CLIs must read the
+# snake_case top-level key and seed the workspace's default session with it.
+# (TS emits sessionId, Python emits session_id in the create payload.)
+check_default_session() {
+  local create_json="$1" name="$2"
+  local sid
+  sid="$(echo "$create_json" | jq -r '.sessions[0].sessionId // .sessions[0].session_id // empty')"
+  if [ "$sid" == "crosssess" ]; then
+    echo "  OK   default_session_id applied ($name)"
+  else
+    echo "  FAIL default_session_id not applied by $name: got '$sid' (expected crosssess)"
+    fail=1
+  fi
+}
+
 run_direction() {
   local writer_cli="$1" writer_name="$2" reader_cli="$3" reader_name="$4"
   local tar="/tmp/cross-${writer_name}-to-${reader_name}.tar"
@@ -60,7 +75,9 @@ run_direction() {
 
   freeport
   $writer_cli workspace delete cross_w >/dev/null 2>&1 || true
-  $writer_cli workspace create "$YAML" --id cross_w >/dev/null
+  local create_json
+  create_json="$($writer_cli workspace create "$YAML" --id cross_w)"
+  check_default_session "$create_json" "$writer_name"
   seed "$writer_cli" cross_w
   check_safeguard "$writer_cli" "$writer_name"
 

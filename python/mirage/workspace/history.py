@@ -12,33 +12,27 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import json
 from collections import deque
 
 from mirage.workspace.types import ExecutionRecord
 
 
 class ExecutionHistory:
-    """Bounded execution history with optional JSONL persistence.
+    """Bounded in-memory execution history.
+
+    Durable command logs are the Observer's responsibility (it persists
+    every command into a resource/mount); this buffer is the in-process
+    record for programmatic access.
 
     Args:
         max_entries (int): Maximum number of records kept in memory.
-        persist_path (str | None): Path to JSONL file for on-disk persistence.
     """
 
-    def __init__(
-        self,
-        max_entries: int = 100,
-        persist_path: str | None = None,
-    ) -> None:
+    def __init__(self, max_entries: int = 100) -> None:
         self._buffer: deque[ExecutionRecord] = deque(maxlen=max_entries)
-        self._persist_path = persist_path
 
     def append(self, record: ExecutionRecord) -> None:
         self._buffer.append(record)
-        if self._persist_path is not None:
-            with open(self._persist_path, "a") as f:
-                f.write(json.dumps(record.to_dict()) + "\n")
 
     def entries(self) -> list[ExecutionRecord]:
         return list(self._buffer)

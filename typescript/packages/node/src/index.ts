@@ -41,13 +41,6 @@ export { RedisFileCacheStore, type RedisFileCacheOptions } from './cache/redis/f
 export { FuseManager } from './workspace/fuse.ts'
 export { MirageFS, type MirageFSOptions, type FuseAttr } from './fuse/fs.ts'
 export {
-  nativeExec,
-  nativeExecStream,
-  type NativeExecOptions,
-  type NativeExecResult,
-  type NativeProcess,
-} from './native.ts'
-export {
   mount as fuseMount,
   mountBackground as fuseMountBackground,
   type FuseHandle,

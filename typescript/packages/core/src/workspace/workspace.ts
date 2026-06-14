@@ -43,6 +43,7 @@ import { readSnapshotTar } from './snapshot/tar_io.ts'
 import type { WorkspaceStateDict } from './snapshot/types.ts'
 import {
   type CommandSafeguard,
+  ConsistencyPolicy,
   DEFAULT_AGENT_ID,
   DriftPolicy,
   FileType,
@@ -77,6 +78,7 @@ const NOOP_ACCESSOR_INSTANCE = new NOOPAccessor()
 export interface WorkspaceOptions {
   mode?: MountMode
   modeOverrides?: Record<string, MountMode>
+  consistency?: ConsistencyPolicy
   commandSafeguards?: Record<string, Record<string, CommandSafeguard>>
   /**
    * Behaviour for the post-load drift check on fingerprinted reads. Only
@@ -95,6 +97,7 @@ export interface WorkspaceOptions {
   shellParserFactory?: () => Promise<ShellParser>
   agentId?: string
   sessionId?: string
+  historyLimit?: number
   cacheLimit?: string | number
   cache?: FileCache & Resource
   index?: IndexConfig
@@ -132,7 +135,6 @@ export interface ExecuteOptions {
   provision?: boolean
   sessionId?: string
   agentId?: string
-  native?: boolean
   /**
    * Abort the in-progress execution. Observed cooperatively at recursion
    * boundaries between LIST/PIPELINE/loop iterations and inside `sleep`.
@@ -177,7 +179,7 @@ export class Workspace {
   readonly agentId: string
   readonly cache: FileCache & Resource
   private readonly dispatcher: Dispatcher
-  readonly history: ExecutionHistory = new ExecutionHistory()
+  readonly history: ExecutionHistory
   readonly observer: Observer
   readonly records: OpRecord[] = []
   readonly fs: WorkspaceFS
@@ -216,6 +218,8 @@ export class Workspace {
       ...(options.modeOverrides ?? {}),
       [observerPrefix]: MountMode.READ,
     })
+    const consistency = options.consistency ?? ConsistencyPolicy.LAZY
+    this.registry.setConsistency(consistency)
     if (options.index !== undefined) {
       for (const resource of Object.values(resources)) {
         resource.setIndex?.(options.index)
@@ -232,9 +236,16 @@ export class Workspace {
       workspaceBridge: this.buildWorkspaceBridge(),
     })
     this.closers.push(() => this.pythonRuntime.close())
+    this.history = new ExecutionHistory(
+      options.historyLimit !== undefined ? { maxEntries: options.historyLimit } : {},
+    )
     this.cache = options.cache ?? new RAMFileCacheStore({ limit: options.cacheLimit ?? '512MB' })
-    this.dispatcher = new Dispatcher(this.registry, this.cache, this.opsRegistry, (p) =>
-      this.resolve(p),
+    this.dispatcher = new Dispatcher(
+      this.registry,
+      this.cache,
+      this.opsRegistry,
+      (p) => this.resolve(p),
+      consistency,
     )
     const defaultMount = this.registry.setDefaultMount(this.cache)
     for (const resource of [...Object.values(withObserver), this.cache]) {

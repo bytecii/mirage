@@ -3,7 +3,6 @@ consistency: LAZY
 default_session_id: default
 default_agent_id: default
 fuse: false
-native: false
 history: 50
 
 cache:

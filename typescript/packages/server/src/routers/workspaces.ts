@@ -89,8 +89,15 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       }
       const ws = new Workspace(resourceMap, {
         mode: args.options.mode,
+        consistency: args.options.consistency,
         modeOverrides,
+        sessionId: args.options.sessionId,
+        agentId: args.options.agentId,
+        ...(args.options.fuse === true ? { fuse: true } : {}),
         ...(Object.keys(commandSafeguards).length > 0 ? { commandSafeguards } : {}),
+        ...(args.options.historyLimit !== undefined
+          ? { historyLimit: args.options.historyLimit }
+          : {}),
         ...(args.options.cache !== undefined ? { cache: args.options.cache } : {}),
         ...(args.options.index !== undefined ? { index: args.options.index } : {}),
       })

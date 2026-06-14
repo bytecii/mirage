@@ -1,6 +1,18 @@
 mode: WRITE
 consistency: LAZY
 
+# Snake_case top-level keys must parse + apply identically in both CLIs.
+default_session_id: crosssess
+default_agent_id: crossagent
+history: 50
+cache:
+  type: ram
+  limit: 256MB
+  max_drain_bytes: 1048576
+index:
+  type: ram
+  ttl: 600
+
 mounts:
   /ram:
     resource: ram

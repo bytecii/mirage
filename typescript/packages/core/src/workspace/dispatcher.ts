@@ -20,7 +20,7 @@ import { runWithRevisions } from '../observe/context.ts'
 import type { OpsRegistry } from '../ops/registry.ts'
 import { type OpKwargs } from '../ops/registry.ts'
 import type { Resource } from '../resource/base.ts'
-import { MountMode, type PathSpec } from '../types.ts'
+import { ConsistencyPolicy, MountMode, type PathSpec } from '../types.ts'
 import type { DispatchFn } from './executor/cross_mount.ts'
 import type { MountRegistry } from './mount/registry.ts'
 
@@ -42,24 +42,43 @@ export class Dispatcher {
   private readonly cache: FileCache & Resource
   private readonly opsRegistry: OpsRegistry
   private readonly resolveFn: ResolveFn
+  private readonly consistency: ConsistencyPolicy
 
   constructor(
     registry: MountRegistry,
     cache: FileCache & Resource,
     opsRegistry: OpsRegistry,
     resolveFn: ResolveFn,
+    consistency: ConsistencyPolicy = ConsistencyPolicy.LAZY,
   ) {
     this.registry = registry
     this.cache = cache
     this.opsRegistry = opsRegistry
     this.resolveFn = resolveFn
+    this.consistency = consistency
   }
 
   dispatch: DispatchFn = async (opName, path, args, kwargs) => {
     const [resource, scope, mode] = await this.resolveFn(path.original)
     const cacheable = resource.isRemote === true
     if (cacheable && DISPATCH_READ_OPS.has(opName)) {
-      const cached = await this.cache.get(path.original)
+      let cached = await this.cache.get(path.original)
+      if (
+        cached !== null &&
+        this.consistency === ConsistencyPolicy.ALWAYS &&
+        resource.fingerprint !== undefined
+      ) {
+        let remoteFp: string | null = null
+        try {
+          remoteFp = await resource.fingerprint(scope)
+        } catch {
+          remoteFp = null
+        }
+        if (remoteFp !== null && !(await this.cache.isFresh(path.original, remoteFp))) {
+          await this.cache.remove(path.original)
+          cached = null
+        }
+      }
       if (cached !== null) {
         return [cached, new IOResult({ reads: { [path.original]: cached } })]
       }

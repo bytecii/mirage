@@ -43,7 +43,7 @@ async def run_command_tree(
     Executes the AST root, then applies the value barrier and the
     command safeguard, folding the safeguard's stderr and exit code
     into the result. This is the seam between the Workspace shell
-    (sessions, drift, history, recording, native dispatch) and the
+    (sessions, drift, history, recording) and the
     command executor: a caller hands in a parsed tree plus its
     dependencies and gets back the resolved result. Byte recording is
     the caller's responsibility, so the active recorder spans the

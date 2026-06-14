@@ -121,4 +121,88 @@ describe('configToWorkspaceArgs', () => {
     })
     await expect(configToWorkspaceArgs(cfg)).rejects.toThrow(/invalid onExceed/)
   })
+
+  it('reads snake_case default_session_id / default_agent_id (Python YAML)', async () => {
+    const cfg = loadWorkspaceConfig({
+      mounts: { '/': { resource: 'ram' } },
+      default_session_id: 'sess-1',
+      default_agent_id: 'agent-1',
+    })
+    const args = await configToWorkspaceArgs(cfg)
+    expect(args.options.sessionId).toBe('sess-1')
+    expect(args.options.agentId).toBe('agent-1')
+  })
+
+  it('reads snake_case index key_prefix into the index config', async () => {
+    const cfg = loadWorkspaceConfig({
+      mounts: { '/': { resource: 'ram' } },
+      index: { type: 'redis', url: 'redis://localhost:6379/0', key_prefix: 'idx:' },
+    })
+    const args = await configToWorkspaceArgs(cfg)
+    expect(args.options.index).toEqual({
+      type: 'redis',
+      url: 'redis://localhost:6379/0',
+      keyPrefix: 'idx:',
+    })
+  })
+
+  it('builds a redis cache from snake_case key_prefix / max_drain_bytes', async () => {
+    const cfg = loadWorkspaceConfig({
+      mounts: { '/': { resource: 'ram' } },
+      cache: { type: 'redis', key_prefix: 'c:', max_drain_bytes: 1024 },
+    })
+    const args = await configToWorkspaceArgs(cfg)
+    expect(args.options.cache).toBeInstanceOf(RedisFileCacheStore)
+  })
+
+  it('threads the history cap into options.historyLimit', async () => {
+    const cfg = loadWorkspaceConfig({
+      mounts: { '/': { resource: 'ram' } },
+      history: 7,
+    })
+    const args = await configToWorkspaceArgs(cfg)
+    expect(args.options.historyLimit).toBe(7)
+  })
+
+  it('coerces consistency (default lazy, accepts always, rejects junk)', async () => {
+    const dflt = await configToWorkspaceArgs(
+      loadWorkspaceConfig({ mounts: { '/': { resource: 'ram' } } }),
+    )
+    expect(dflt.options.consistency).toBe('lazy')
+    const always = await configToWorkspaceArgs(
+      loadWorkspaceConfig({ mounts: { '/': { resource: 'ram' } }, consistency: 'ALWAYS' }),
+    )
+    expect(always.options.consistency).toBe('always')
+    await expect(
+      configToWorkspaceArgs(
+        loadWorkspaceConfig({ mounts: { '/': { resource: 'ram' } }, consistency: 'soon' }),
+      ),
+    ).rejects.toThrow(/invalid consistency/)
+  })
+
+  it('threads fuse:true into options.fuse and omits it otherwise', async () => {
+    const withFuse = await configToWorkspaceArgs(
+      loadWorkspaceConfig({ mounts: { '/': { resource: 'ram' } }, fuse: true }),
+    )
+    expect(withFuse.options.fuse).toBe(true)
+    const withoutFuse = await configToWorkspaceArgs(
+      loadWorkspaceConfig({ mounts: { '/': { resource: 'ram' } } }),
+    )
+    expect(withoutFuse.options.fuse).toBeUndefined()
+  })
+
+  it('leaves mount config snake_case keys untouched (resource credentials)', () => {
+    const cfg = loadWorkspaceConfig({
+      mounts: {
+        '/s3': {
+          resource: 'ram',
+          config: { aws_access_key_id: 'AKIA', endpoint_url: 'http://localhost:9000' },
+        },
+      },
+    })
+    expect(cfg.mounts['/s3']?.config).toEqual({
+      aws_access_key_id: 'AKIA',
+      endpoint_url: 'http://localhost:9000',
+    })
+  })
 })

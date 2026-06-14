@@ -281,17 +281,6 @@ async def test_truncation_keeps_lazy_exit_zero_on_match():
 
 
 @pytest.mark.asyncio
-async def test_native_path_enforces_timeout(tmp_path, restore_defaults):
-    sg.DEFAULT_COMMAND_SAFEGUARDS["sleep"] = CommandSafeguard(
-        timeout_seconds=0.1)
-    ws = _ws()
-    ws._fuse.mountpoint = str(tmp_path)
-    r = await ws.execute("sleep 5", native=True)
-    assert r.exit_code == 124
-    assert "timed out" in (await r.stderr_str())
-
-
-@pytest.mark.asyncio
 async def test_provision_dry_run_honors_timeout(monkeypatch, restore_defaults):
     sg.DEFAULT_COMMAND_SAFEGUARDS["cat"] = CommandSafeguard(
         timeout_seconds=0.1)

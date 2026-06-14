@@ -173,9 +173,7 @@ class WorkspaceConfig(BaseModel):
     default_session_id: str = "default"
     default_agent_id: str = "default"
     fuse: bool = False
-    native: bool = False
     history: int | None = 100
-    history_path: str | None = None
     cache: CacheBlock | None = None
     index: IndexBlock | None = None
 
@@ -212,9 +210,7 @@ class WorkspaceConfig(BaseModel):
             "session_id": self.default_session_id,
             "agent_id": self.default_agent_id,
             "fuse": self.fuse,
-            "native": self.native,
             "history": self.history,
-            "history_path": self.history_path,
         }
         if self.cache is not None:
             kwargs["cache"] = _build_cache_config(self.cache)
