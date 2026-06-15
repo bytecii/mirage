@@ -135,6 +135,13 @@ async def expand_parts(
             for word in expanded.split():
                 if word:
                     result.append(word)
+        elif p.type == NT.STRING:
+            # A quoted word stays a word even when it expands to "" (echo
+            # "" or "$EMPTY"), except "$@"/"${a[@]}" which yield zero words.
+            if expanded or not _has_at_expansion(p):
+                result.append(expanded)
+        elif p.type == NT.RAW_STRING:
+            result.append(expanded)
         else:
             if expanded:
                 result.append(expanded)

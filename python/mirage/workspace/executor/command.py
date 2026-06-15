@@ -144,7 +144,7 @@ def _parse_flags(
         if isinstance(item, PathSpec):
             scope_map[item.original] = item
             stripped = item.original.rstrip("/")
-            if stripped != item.original:
+            if stripped and stripped != item.original:
                 scope_map[stripped] = item
 
     spec = mount.spec_for(cmd_name)

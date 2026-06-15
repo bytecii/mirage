@@ -295,6 +295,35 @@ def test_expand_parts_splits_expansion_braces():
     assert result == ["echo", "x", "y", "z"]
 
 
+def test_expand_parts_keeps_empty_raw_string():
+    """A quoted empty literal '' is a real (empty) argument, not dropped."""
+    parts = _cmd_parts("echo a '' b")
+    result = _run(expand_parts(parts, _session(), _execute_fn()))
+    assert result == ["echo", "a", "", "b"]
+
+
+def test_expand_parts_keeps_empty_double_quote():
+    """A quoted empty literal "" is a real (empty) argument, not dropped."""
+    parts = _cmd_parts('echo a "" b')
+    result = _run(expand_parts(parts, _session(), _execute_fn()))
+    assert result == ["echo", "a", "", "b"]
+
+
+def test_expand_parts_keeps_empty_quoted_var():
+    """A quoted expansion that yields empty stays a word (bash keeps "$x")."""
+    parts = _cmd_parts('echo a "$EMPTY" b')
+    session = _session(env={"EMPTY": ""})
+    result = _run(expand_parts(parts, session, _execute_fn()))
+    assert result == ["echo", "a", "", "b"]
+
+
+def test_expand_parts_drops_empty_quoted_dollar_at():
+    """Quoted "$@" with no positional args yields zero words, not one empty."""
+    parts = _cmd_parts('echo a "$@" b')
+    result = _run(expand_parts(parts, _session(), _execute_fn()))
+    assert result == ["echo", "a", "b"]
+
+
 # ══════════════════════════════════════════════
 # classify_word
 # ══════════════════════════════════════════════

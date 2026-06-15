@@ -129,6 +129,12 @@ export async function expandParts(
       for (const word of expanded.split(/\s+/)) {
         if (word !== '') result.push(word)
       }
+    } else if (p.type === NT.STRING) {
+      // A quoted word stays a word even when it expands to "" (echo ""
+      // or "$EMPTY"), except "$@"/"${a[@]}" which yield zero words.
+      if (expanded !== '' || !hasAtExpansion(p)) result.push(expanded)
+    } else if (p.type === NT.RAW_STRING) {
+      result.push(expanded)
     } else if (expanded !== '') {
       result.push(expanded)
     }

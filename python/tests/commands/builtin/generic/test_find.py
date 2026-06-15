@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import asdict
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
@@ -7,7 +8,10 @@ import pytest
 from mirage.commands.builtin.generic.find import (FindArgs, apply_mount_prefix,
                                                   apply_mtime_filter,
                                                   parse_find_args, walk_find)
-from mirage.types import FileStat, FileType, FindType, PathSpec
+from mirage.commands.errors import FindParseError
+from mirage.resource.ram import RAMResource
+from mirage.types import FileStat, FileType, FindType, MountMode, PathSpec
+from mirage.workspace import Workspace
 
 
 def _defaults() -> dict:
@@ -273,3 +277,48 @@ async def test_walk_find_size_filter_propagates_other_stat_errors():
                         is_dir_name=lambda c: False,
                         index=None,
                         args=FindArgs(min_size=1))
+
+
+@pytest.mark.parametrize("kwargs,flag,value", [
+    ({
+        "maxdepth": "abc"
+    }, "-maxdepth", "abc"),
+    ({
+        "mindepth": "xx"
+    }, "-mindepth", "xx"),
+    ({
+        "size": ""
+    }, "-size", ""),
+    ({
+        "size": "abc"
+    }, "-size", "abc"),
+    ({
+        "mtime": "abc"
+    }, "-mtime", "abc"),
+])
+def test_parse_find_args_invalid_numeric_raises_find_parse_error(
+        kwargs, flag, value):
+    with pytest.raises(FindParseError) as exc:
+        parse_find_args((), **kwargs)
+    assert str(exc.value) == f"find: invalid argument '{value}' to '{flag}'"
+
+
+@pytest.mark.parametrize("expr", [
+    "-maxdepth abc",
+    "-mindepth xx",
+    "-size ''",
+    "-size abc",
+    "-mtime abc",
+])
+def test_find_invalid_numeric_arg_exits_one_with_clean_stderr(expr):
+
+    async def _go() -> tuple[int, str]:
+        ws = Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+        ws.create_session("s")
+        r = await ws.execute(f"find / {expr}", session_id="s")
+        return r.exit_code, await r.stderr_str()
+
+    code, stderr = asyncio.run(_go())
+    assert code == 1
+    assert stderr.startswith("find: invalid argument ")
+    assert stderr.endswith("\n")

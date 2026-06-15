@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
+import type { IOResult } from '../../../io/types.ts'
 import type { FindOptions } from '../../../resource/base.ts'
 import { PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
@@ -50,6 +51,29 @@ describe('generic command find', () => {
   it('propagates non-ENOENT errors', async () => {
     await expect(findGeneric([spec('/limited')], [], makeOpts(), fakeFind)).rejects.toThrow(
       'rate limited',
+    )
+  })
+
+  it.each([
+    ['maxdepth', 'abc', '-maxdepth'],
+    ['mindepth', 'xx', '-mindepth'],
+    ['size', '', '-size'],
+    ['size', 'abc', '-size'],
+    ['mtime', 'abc', '-mtime'],
+  ])('exits 1 with clean stderr for invalid %s=%s', async (flag, value, label) => {
+    const opts = {
+      stdin: null,
+      flags: { [flag]: value },
+      filetypeFns: null,
+      cwd: '/',
+    } as unknown as CommandOpts
+    const result = await findGeneric([spec('/')], [], opts, fakeFind)
+    expect(result).not.toBeNull()
+    const [out, io] = result as [Uint8Array | null, IOResult]
+    expect(out).toBeNull()
+    expect(io.exitCode).toBe(1)
+    expect(DEC.decode(io.stderr as Uint8Array)).toBe(
+      `find: invalid argument '${value}' to '${label}'\n`,
     )
   })
 })

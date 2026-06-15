@@ -17,19 +17,33 @@ import time
 from datetime import datetime, timezone
 
 from mirage.commands.builtin.utils.types import _Readdir, _Stat
+from mirage.commands.errors import FindParseError
 from mirage.types import FileType
+
+
+def _parse_depth(value: str, flag: str) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        raise FindParseError(
+            f"find: invalid argument '{value}' to '{flag}'") from None
 
 
 def _parse_size(spec: str) -> tuple[int | None, int | None]:
     suffixes = {"c": 1, "k": 1024, "M": 1024**2, "G": 1024**3}
-    if spec.startswith("+"):
-        raw = spec[1:]
-    elif spec.startswith("-"):
+    if spec.startswith(("+", "-")):
         raw = spec[1:]
     else:
         raw = spec
+    digits = raw.rstrip("ckMG")
+    if not digits:
+        raise FindParseError(f"find: invalid argument '{spec}' to '-size'")
     mult = suffixes.get(raw[-1], 1)
-    num = int(raw.rstrip("ckMG")) * mult
+    try:
+        num = int(digits) * mult
+    except ValueError:
+        raise FindParseError(
+            f"find: invalid argument '{spec}' to '-size'") from None
     if spec.startswith("+"):
         return num, None
     if spec.startswith("-"):
@@ -40,7 +54,11 @@ def _parse_size(spec: str) -> tuple[int | None, int | None]:
 def _parse_mtime(spec: str) -> tuple[float | None, float | None]:
     now = time.time()
     day = 86400
-    n = int(spec.lstrip("+-"))
+    try:
+        n = int(spec.lstrip("+-"))
+    except ValueError:
+        raise FindParseError(
+            f"find: invalid argument '{spec}' to '-mtime'") from None
     if spec.startswith("+"):
         return None, now - n * day
     if spec.startswith("-"):

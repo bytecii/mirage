@@ -313,7 +313,7 @@ function parseFlags(
     if (item instanceof PathSpec) {
       scopeMap.set(item.original, item)
       const stripped = rstripSlash(item.original)
-      if (stripped !== item.original) scopeMap.set(stripped, item)
+      if (stripped !== '' && stripped !== item.original) scopeMap.set(stripped, item)
     }
   }
 

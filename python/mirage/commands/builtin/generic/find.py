@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.find_helper import (_extract_not_name,
                                                  _extract_or_names,
-                                                 _parse_mtime, _parse_size)
+                                                 _parse_depth, _parse_mtime,
+                                                 _parse_size)
 from mirage.commands.builtin.utils.output import format_records
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileStat, FileType, FindType, PathSpec
@@ -43,8 +44,9 @@ def parse_find_args(
     ftype: FindType | str | None = type
     if type in (FindType.DIRECTORY.value, FindType.FILE.value):
         ftype = FindType(type)
-    md = int(maxdepth) if maxdepth is not None else None
-    md_min = int(mindepth) if mindepth is not None else None
+    md = _parse_depth(maxdepth, "-maxdepth") if maxdepth is not None else None
+    md_min = (_parse_depth(mindepth, "-mindepth")
+              if mindepth is not None else None)
     min_size, max_size = (None, None)
     if size is not None:
         min_size, max_size = _parse_size(size)

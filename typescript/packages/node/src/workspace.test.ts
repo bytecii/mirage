@@ -58,4 +58,28 @@ describe('@struktoai/mirage-node Workspace', () => {
     expect(calls).toBe(1)
     await ws.close()
   })
+
+  it.each([['-maxdepth abc'], ['-mindepth xx'], ["-size ''"], ['-size abc'], ['-mtime abc']])(
+    'find %s exits 1 with a clean stderr instead of crashing',
+    async (expr) => {
+      const ws = new Workspace({ '/': new RAMResource() }, { mode: MountMode.WRITE })
+      const res = await ws.execute(`find / ${expr}`)
+      expect(res.exitCode).toBe(1)
+      const stderr = new TextDecoder().decode(res.stderr)
+      expect(stderr.startsWith('find: invalid argument ')).toBe(true)
+      expect(stderr.endsWith('\n')).toBe(true)
+      await ws.close()
+    },
+  )
+
+  it.each([
+    ["echo a '' b", 'a  b\n'],
+    ['echo a "" b', 'a  b\n'],
+  ])('keeps a quoted empty string as a real argument: %s', async (cmd, expected) => {
+    const ws = new Workspace({ '/': new RAMResource() }, { mode: MountMode.WRITE })
+    const res = await ws.execute(cmd)
+    expect(res.exitCode).toBe(0)
+    expect(new TextDecoder().decode(res.stdout)).toBe(expected)
+    await ws.close()
+  })
 })

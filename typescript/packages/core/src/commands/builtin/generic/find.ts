@@ -91,6 +91,22 @@ export async function findGeneric(
   const minDepth = minDepthFlag !== null ? Number.parseInt(minDepthFlag, 10) : null
   const [minSize, maxSize] = sizeFlag !== null ? parseSize(sizeFlag) : [null, null]
   const [mtimeMin, mtimeMax] = mtimeFlag !== null ? parseMtime(mtimeFlag) : [null, null]
+  const isNan = (v: number | null): boolean => v !== null && Number.isNaN(v)
+  let badArg: readonly [string, string] | null = null
+  if (maxDepthFlag !== null && isNan(maxDepth)) badArg = [maxDepthFlag, '-maxdepth']
+  else if (minDepthFlag !== null && isNan(minDepth)) badArg = [minDepthFlag, '-mindepth']
+  else if (sizeFlag !== null && (isNan(minSize) || isNan(maxSize))) badArg = [sizeFlag, '-size']
+  else if (mtimeFlag !== null && (isNan(mtimeMin) || isNan(mtimeMax)))
+    badArg = [mtimeFlag, '-mtime']
+  if (badArg !== null) {
+    return [
+      null,
+      new IOResult({
+        exitCode: 1,
+        stderr: ENC.encode(`find: invalid argument '${badArg[0]}' to '${badArg[1]}'\n`),
+      }),
+    ]
+  }
   const nameExclude = extractNotName(texts)
   const orNames = extractOrNames(nameFlag, texts)
   const matches: string[] = []

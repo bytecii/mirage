@@ -14,6 +14,7 @@
 
 import fnmatch
 
+from mirage.commands.errors import FindParseError
 from mirage.commands.safeguard import resolve_across_mounts
 from mirage.io import IOResult
 from mirage.io.stream import materialize
@@ -223,6 +224,11 @@ async def _fan_out_traversal(
                                                  sub_flags,
                                                  stdin=stdin,
                                                  cwd=cwd)
+        except FindParseError:
+            # A bad numeric/size/mtime argument is a usage error that
+            # applies to every mount identically; fail the whole command
+            # instead of silently skipping mounts and exiting 0.
+            raise
         except Exception:
             continue
 

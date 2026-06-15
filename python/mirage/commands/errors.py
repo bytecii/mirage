@@ -15,3 +15,7 @@
 
 class UsageError(ValueError):
     """Command-line usage error (GNU semantics: stderr message, exit 2)."""
+
+
+class FindParseError(ValueError):
+    """Invalid numeric argument to a find predicate (GNU find: exit 1)."""
