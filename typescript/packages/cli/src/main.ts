@@ -20,12 +20,14 @@ import { registerProvisionCommand } from './provision.ts'
 import { registerSessionCommands } from './session.ts'
 import { registerWorkspaceCommands } from './workspace.ts'
 
+declare const __CLI_VERSION__: string
+
 export function buildProgram(): Command {
   const program = new Command()
   program
     .name('mirage')
     .description('Mirage daemon CLI: manage workspaces and execute commands.')
-    .version('0.0.0')
+    .version(__CLI_VERSION__)
   registerWorkspaceCommands(program)
   registerSessionCommands(program)
   registerJobCommands(program)
