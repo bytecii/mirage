@@ -2,8 +2,8 @@ import pytest
 
 pytest.importorskip("claude_agent_sdk")
 
-from mirage import MountMode, RAMResource, Workspace
-from mirage.agents.claude_agent_sdk.server import _MirageTools
+from mirage import MountMode, RAMResource, Workspace  # noqa: E402
+from mirage.agents.claude_agent_sdk.server import _MirageTools  # noqa: E402
 
 
 @pytest.fixture
@@ -26,7 +26,8 @@ async def test_execute_command_echo(tools):
 @pytest.mark.asyncio
 async def test_execute_command_pipe(tools, workspace):
     await workspace.ops.write("/pipe.txt", b"aaa\nbbb\naaa\n")
-    result = await tools.execute_command({"command": "cat /pipe.txt | sort | uniq | wc -l"})
+    result = await tools.execute_command(
+        {"command": "cat /pipe.txt | sort | uniq | wc -l"})
     assert "2" in result["content"][0]["text"]
 
 
@@ -77,7 +78,11 @@ async def test_write_file_already_exists(tools, workspace):
 @pytest.mark.asyncio
 async def test_edit_file(tools, workspace):
     await workspace.ops.write("/edit.txt", b"foo bar baz")
-    result = await tools.edit({"path": "/edit.txt", "old_string": "bar", "new_string": "qux"})
+    result = await tools.edit({
+        "path": "/edit.txt",
+        "old_string": "bar",
+        "new_string": "qux"
+    })
     assert result.get("is_error") is not True
     data = await workspace.ops.read("/edit.txt")
     assert data == b"foo qux baz"
@@ -85,7 +90,11 @@ async def test_edit_file(tools, workspace):
 
 @pytest.mark.asyncio
 async def test_edit_file_not_found(tools):
-    result = await tools.edit({"path": "/missing.txt", "old_string": "x", "new_string": "y"})
+    result = await tools.edit({
+        "path": "/missing.txt",
+        "old_string": "x",
+        "new_string": "y"
+    })
     assert result["is_error"] is True
     assert "not found" in result["content"][0]["text"]
 
@@ -93,7 +102,11 @@ async def test_edit_file_not_found(tools):
 @pytest.mark.asyncio
 async def test_edit_string_not_found(tools, workspace):
     await workspace.ops.write("/nostr.txt", b"hello world")
-    result = await tools.edit({"path": "/nostr.txt", "old_string": "xyz", "new_string": "abc"})
+    result = await tools.edit({
+        "path": "/nostr.txt",
+        "old_string": "xyz",
+        "new_string": "abc"
+    })
     assert result["is_error"] is True
     assert "not found" in result["content"][0]["text"]
 
@@ -101,7 +114,11 @@ async def test_edit_string_not_found(tools, workspace):
 @pytest.mark.asyncio
 async def test_edit_multiple_occurrences_without_replace_all(tools, workspace):
     await workspace.ops.write("/multi.txt", b"aa bb aa")
-    result = await tools.edit({"path": "/multi.txt", "old_string": "aa", "new_string": "cc"})
+    result = await tools.edit({
+        "path": "/multi.txt",
+        "old_string": "aa",
+        "new_string": "cc"
+    })
     assert result["is_error"] is True
     assert "replace_all" in result["content"][0]["text"]
 
@@ -109,16 +126,32 @@ async def test_edit_multiple_occurrences_without_replace_all(tools, workspace):
 @pytest.mark.asyncio
 async def test_edit_replace_all(tools, workspace):
     await workspace.ops.write("/all.txt", b"aa bb aa")
-    result = await tools.edit({"path": "/all.txt", "old_string": "aa", "new_string": "cc", "replace_all": True})
+    result = await tools.edit({
+        "path": "/all.txt",
+        "old_string": "aa",
+        "new_string": "cc",
+        "replace_all": True
+    })
     assert result.get("is_error") is not True
     data = await workspace.ops.read("/all.txt")
     assert data == b"cc bb cc"
 
 
 @pytest.mark.asyncio
+async def test_write_creates_parent_dirs(tools, workspace):
+    result = await tools.write({
+        "path": "/nested/deep/file.txt",
+        "content": "hi"
+    })
+    assert result.get("is_error") is not True
+    data = await workspace.ops.read("/nested/deep/file.txt")
+    assert data == b"hi"
+
+
+@pytest.mark.asyncio
 async def test_ls(tools, workspace):
-    await workspace.ops.write("/dir/a.txt", b"a")
-    await workspace.ops.write("/dir/b.txt", b"b")
+    await tools.write({"path": "/dir/a.txt", "content": "a"})
+    await tools.write({"path": "/dir/b.txt", "content": "b"})
     result = await tools.ls({"path": "/dir"})
     text = result["content"][0]["text"]
     assert "a.txt" in text
@@ -127,7 +160,8 @@ async def test_ls(tools, workspace):
 
 @pytest.mark.asyncio
 async def test_grep(tools, workspace):
-    await workspace.ops.write("/search.txt", b"hello world\ngoodbye world\nhello again\n")
+    await workspace.ops.write("/search.txt",
+                              b"hello world\ngoodbye world\nhello again\n")
     result = await tools.grep({"pattern": "hello", "path": "/"})
     text = result["content"][0]["text"]
     assert "hello" in text

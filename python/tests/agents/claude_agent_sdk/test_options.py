@@ -2,8 +2,8 @@ import pytest
 
 claude_agent_sdk = pytest.importorskip("claude_agent_sdk")
 
-from mirage import MountMode, RAMResource, Workspace
-from mirage.agents.claude_agent_sdk.options import build_options
+from mirage import MountMode, RAMResource, Workspace  # noqa: E402
+from mirage.agents.claude_agent_sdk.options import build_options  # noqa: E402
 
 
 @pytest.fixture

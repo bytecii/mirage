@@ -20,8 +20,7 @@ try:
 except ImportError as exc:
     raise ImportError(
         "`claude-agent-sdk` not installed. "
-        "Install with: pip install 'mirage-ai[claude-agent-sdk]'"
-    ) from exc
+        "Install with: pip install 'mirage-ai[claude-agent-sdk]'") from exc
 
 from mirage.io.types import IOResult
 from mirage.workspace.workspace import Workspace
@@ -30,33 +29,30 @@ _EXECUTE_DESCRIPTION = (
     "Run a shell-style command on the Mirage virtual filesystem. "
     "Supports cat, grep, find, head, tail, ls, wc, sort, uniq, tee, pipe, "
     "and any other Unix command on mounted resources (S3, disk, RAM, etc.). "
-    "Also supports reading structured files: cat on .parquet/.orc/.csv returns a table."
-)
+    "Also supports reading structured files: "
+    "cat on .parquet/.orc/.csv returns a table.")
 
 _READ_DESCRIPTION = (
     "Read the contents of a file on the Mirage virtual filesystem. "
     "Returns line-numbered text. "
     "Optionally pass 'offset' (default 0) to start at a given line "
-    "and 'limit' (default 2000) to cap the number of lines returned."
-)
+    "and 'limit' (default 2000) to cap the number of lines returned.")
 
 _WRITE_DESCRIPTION = (
     "Write content to a new file on the Mirage virtual filesystem. "
-    "Fails if the file already exists — use edit to modify an existing file."
-)
+    "Fails if the file already exists; use edit to modify an existing file.")
 
 _EDIT_DESCRIPTION = (
     "Replace a string in an existing file on the Mirage virtual filesystem. "
     "Fails if old_string is not found or appears more than once. "
-    "Pass replace_all=true (default false) to replace every occurrence."
-)
+    "Pass replace_all=true (default false) to replace every occurrence.")
 
-_LS_DESCRIPTION = "List files and directories at the given path on the Mirage virtual filesystem."
+_LS_DESCRIPTION = ("List files and directories at the given path "
+                   "on the Mirage virtual filesystem.")
 
 _GREP_DESCRIPTION = (
     "Search for a pattern in files on the Mirage virtual filesystem. "
-    "Supports regex. Searches recursively under path."
-)
+    "Supports regex. Searches recursively under path.")
 
 
 def _decode(value: bytes | None) -> str:
@@ -73,13 +69,40 @@ def _io_to_str(io: IOResult) -> str:
     return stdout
 
 
+def _text(text: str) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": text}]}
+
+
+def _error(text: str) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": text}], "is_error": True}
+
+
+def _io_to_result(io: IOResult) -> dict[str, Any]:
+    result = _text(_io_to_str(io))
+    if io.exit_code != 0:
+        result["is_error"] = True
+    return result
+
+
 class _MirageTools:
+
     def __init__(self, workspace: Workspace) -> None:
         self._ws = workspace
 
     async def execute_command(self, args: dict[str, Any]) -> dict[str, Any]:
         io = await self._ws.execute(args["command"])
-        return {"content": [{"type": "text", "text": _io_to_str(io)}]}
+        return _io_to_result(io)
+
+    async def _ensure_parents(self, path: str) -> None:
+        parts = [p for p in path.split("/") if p]
+        ops = self._ws.ops
+        current = ""
+        for part in parts[:-1]:
+            current += "/" + part
+            try:
+                await ops.mkdir(current)
+            except FileExistsError:
+                continue
 
     async def read(self, args: dict[str, Any]) -> dict[str, Any]:
         path = args["path"]
@@ -89,15 +112,14 @@ class _MirageTools:
         try:
             data = await ops.read(path)
         except (FileNotFoundError, ValueError) as exc:
-            return {
-                "content": [{"type": "text", "text": f"Error: {exc}"}],
-                "is_error": True,
-            }
+            return _error(f"Error: {exc}")
         text = data.decode("utf-8", errors="replace")
         lines = text.splitlines(keepends=True)
         sliced = lines[offset:offset + limit]
-        numbered = [f"{i + offset + 1:>6}\t{line}" for i, line in enumerate(sliced)]
-        return {"content": [{"type": "text", "text": "".join(numbered)}]}
+        numbered = [
+            f"{i + offset + 1:>6}\t{line}" for i, line in enumerate(sliced)
+        ]
+        return _text("".join(numbered))
 
     async def write(self, args: dict[str, Any]) -> dict[str, Any]:
         path = args["path"]
@@ -105,20 +127,14 @@ class _MirageTools:
         ops = self._ws.ops
         try:
             await ops.stat(path)
-            return {
-                "content": [{"type": "text", "text": f"Error: file '{path}' already exists"}],
-                "is_error": True,
-            }
-        except (FileNotFoundError, ValueError):
+        except FileNotFoundError:
             pass
-        parent = "/".join(path.rstrip("/").split("/")[:-1]) or "/"
-        try:
-            await ops.mkdir(parent)
-        except (FileExistsError, ValueError):
-            pass
+        else:
+            return _error(f"Error: file '{path}' already exists")
+        await self._ensure_parents(path)
         data = content.encode("utf-8") if isinstance(content, str) else content
         await ops.write(path, data)
-        return {"content": [{"type": "text", "text": f"Written: {path}"}]}
+        return _text(f"Written: {path}")
 
     async def edit(self, args: dict[str, Any]) -> dict[str, Any]:
         path = args["path"]
@@ -128,38 +144,33 @@ class _MirageTools:
         ops = self._ws.ops
         try:
             data = await ops.read(path)
-        except (FileNotFoundError, ValueError):
-            return {
-                "content": [{"type": "text", "text": f"Error: file '{path}' not found"}],
-                "is_error": True,
-            }
+        except FileNotFoundError:
+            return _error(f"Error: file '{path}' not found")
         content = data.decode("utf-8", errors="replace")
         count = content.count(old_string)
         if count == 0:
-            return {
-                "content": [{"type": "text", "text": f"Error: string not found in file: '{old_string}'"}],
-                "is_error": True,
-            }
+            return _error(f"Error: string not found in file: '{old_string}'")
         if count > 1 and not replace_all:
-            return {
-                "content": [{"type": "text", "text": f"Error: string appears {count} times. Pass replace_all=true"}],
-                "is_error": True,
-            }
-        new_content = content.replace(old_string, new_string) if replace_all else content.replace(old_string, new_string, 1)
+            return _error(
+                f"Error: string appears {count} times. Pass replace_all=true")
+        new_content = content.replace(
+            old_string, new_string) if replace_all else content.replace(
+                old_string, new_string, 1)
         await ops.write(path, new_content.encode("utf-8"))
         occurrences = count if replace_all else 1
-        return {"content": [{"type": "text", "text": f"Edited: {path} ({occurrences} occurrence(s))"}]}
+        return _text(f"Edited: {path} ({occurrences} occurrence(s))")
 
     async def ls(self, args: dict[str, Any]) -> dict[str, Any]:
         path = args["path"]
         io = await self._ws.execute(f"ls {shlex.quote(path)}")
-        return {"content": [{"type": "text", "text": _io_to_str(io)}]}
+        return _io_to_result(io)
 
     async def grep(self, args: dict[str, Any]) -> dict[str, Any]:
         pattern = args["pattern"]
         path = args["path"]
-        io = await self._ws.execute(f"grep -rn {shlex.quote(pattern)} {shlex.quote(path)}")
-        return {"content": [{"type": "text", "text": _io_to_str(io)}]}
+        io = await self._ws.execute(
+            f"grep -rn {shlex.quote(pattern)} {shlex.quote(path)}")
+        return _text(_io_to_str(io))
 
 
 def MirageServer(workspace: Workspace):
@@ -176,11 +187,31 @@ def MirageServer(workspace: Workspace):
         name="mirage",
         version="1.0.0",
         tools=[
-            tool("execute_command", _EXECUTE_DESCRIPTION, {"command": str})(tools_impl.execute_command),
-            tool("read", _READ_DESCRIPTION, {"path": str}, annotations=ToolAnnotations(readOnlyHint=True))(tools_impl.read),
-            tool("write", _WRITE_DESCRIPTION, {"path": str, "content": str})(tools_impl.write),
-            tool("edit", _EDIT_DESCRIPTION, {"path": str, "old_string": str, "new_string": str})(tools_impl.edit),
-            tool("ls", _LS_DESCRIPTION, {"path": str}, annotations=ToolAnnotations(readOnlyHint=True))(tools_impl.ls),
-            tool("grep", _GREP_DESCRIPTION, {"pattern": str, "path": str}, annotations=ToolAnnotations(readOnlyHint=True))(tools_impl.grep),
+            tool("execute_command", _EXECUTE_DESCRIPTION,
+                 {"command": str})(tools_impl.execute_command),
+            tool("read",
+                 _READ_DESCRIPTION, {"path": str},
+                 annotations=ToolAnnotations(readOnlyHint=True))(
+                     tools_impl.read),
+            tool("write", _WRITE_DESCRIPTION, {
+                "path": str,
+                "content": str
+            })(tools_impl.write),
+            tool("edit", _EDIT_DESCRIPTION, {
+                "path": str,
+                "old_string": str,
+                "new_string": str
+            })(tools_impl.edit),
+            tool("ls",
+                 _LS_DESCRIPTION, {"path": str},
+                 annotations=ToolAnnotations(readOnlyHint=True))(
+                     tools_impl.ls),
+            tool("grep",
+                 _GREP_DESCRIPTION, {
+                     "pattern": str,
+                     "path": str
+                 },
+                 annotations=ToolAnnotations(readOnlyHint=True))(
+                     tools_impl.grep),
         ],
     )
