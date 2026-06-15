@@ -93,7 +93,7 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
         modeOverrides,
         sessionId: args.options.sessionId,
         agentId: args.options.agentId,
-        ...(args.options.fuse === true ? { fuse: true } : {}),
+        ...(args.options.fuseMounts !== undefined ? { fuseMounts: args.options.fuseMounts } : {}),
         ...(Object.keys(commandSafeguards).length > 0 ? { commandSafeguards } : {}),
         ...(args.options.historyLimit !== undefined
           ? { historyLimit: args.options.historyLimit }

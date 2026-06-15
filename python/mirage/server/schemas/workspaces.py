@@ -39,6 +39,7 @@ class WorkspaceDetail(BaseModel):
     id: str
     mode: str
     created_at: float
+    fuse_mountpoints: dict[str, str] = Field(default_factory=dict)
     sessions: list[SessionSummary] = Field(default_factory=list)
     mounts: list[MountSummary] = Field(default_factory=list)
     internals: WorkspaceInternals | None = None

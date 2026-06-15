@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { execSync } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Workspace } from '@struktoai/mirage-core'
@@ -28,6 +28,8 @@ export interface FuseHandle {
 export interface MountOptions {
   mountpoint?: string
   agentId?: string
+  /** Scope the mount to a single workspace mount prefix (subtree exposure). */
+  rootPrefix?: string
   /**
    * When true, `@zkochan/fuse-native`'s `autoUnmount` flag is set so the
    * kernel releases the mount if the process exits abnormally. Defaults to
@@ -80,9 +82,19 @@ export function forceUnmount(mountpoint: string): void {
 
 export async function mount(ws: Workspace, options: MountOptions = {}): Promise<FuseHandle> {
   const Fuse = await loadFuse()
-  const mountpoint = options.mountpoint ?? mkdtempSync(join(tmpdir(), 'mirage-fuse-'))
+  let mountpoint: string
+  if (options.mountpoint !== undefined) {
+    // Pinned path: create it if missing, mirroring Python's os.makedirs.
+    mkdirSync(options.mountpoint, { recursive: true })
+    mountpoint = options.mountpoint
+  } else {
+    mountpoint = mkdtempSync(join(tmpdir(), 'mirage-fuse-'))
+  }
   const agentId = options.agentId
-  const mfs = new MirageFS(ws, agentId !== undefined ? { agentId } : {})
+  const mfs = new MirageFS(ws, {
+    ...(agentId !== undefined ? { agentId } : {}),
+    ...(options.rootPrefix !== undefined ? { rootPrefix: options.rootPrefix } : {}),
+  })
   const autoUnmount = options.autoUnmount ?? process.platform === 'linux'
   // attr_timeout=0 (string: the option serializer drops falsy values) keeps
   // the kernel from caching the UNKNOWN_SIZE_SENTINEL that getattr reports

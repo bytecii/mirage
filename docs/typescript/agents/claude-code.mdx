@@ -24,11 +24,11 @@ const ws = new Workspace(
     '/': new RAMResource(),
     '/s3/': new S3Resource({ bucket: 'my-bucket', /* ... */ }),
   },
-  { mode: MountMode.WRITE, fuse: true },
+  { mode: MountMode.WRITE, fuseMounts: { '/': true } },
 )
 await ws.execute('true') // wait for mount
 
-console.log(`cd ${ws.fuseMountpoint} && claude`)
+console.log(`cd ${ws.fuseMountpoints['/']} && claude`)
 // ... run claude in another terminal, then:
 await ws.close() // auto-unmounts
 ```

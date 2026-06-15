@@ -37,9 +37,40 @@ from mirage.resource.ram import RAMResource
 with Workspace(
     {"/data": RAMResource()},
     mode=MountMode.WRITE,
-    fuse=True,
+    fuse_mounts={"/data": True},
 ) as ws:
-    print("mountpoint:", ws.fuse_mountpoint)
+    print("mountpoints:", ws.fuse_mountpoints)
 ```
 
 If the printed path exists under `/tmp/mirage-*`, FUSE is wired up correctly.
+
+## Per-mount FUSE
+
+FUSE is configured **per mount**. Each mount whose `fuse` is set is exposed at
+its own mountpoint, showing only that mount's subtree. The value is either
+`true` (mount at a fresh temp directory) or a path string (mount there,
+creating the directory if missing):
+
+```yaml
+mode: WRITE
+mounts:
+  /data:
+    resource: ram
+    fuse: /tmp/data-repo   # explicit path
+  /s3:
+    resource: s3
+    fuse: true             # temp directory
+  /logs:
+    resource: disk
+    # no fuse key, not FUSE-exposed
+```
+
+`ws.fuse_mountpoints` returns a `{prefix: path}` map of the live mountpoints.
+
+<Warning>
+  **macOS allows only one in-process FUSE mount.** macFUSE registers a
+  process-global signal source, so a second simultaneous mount in the same
+  process fails with `fuse: cannot register signal source`. Multiple per-mount
+  FUSE mounts work on Linux; on macOS, enable `fuse` on a single mount per
+  workspace (or run additional mounts in separate processes).
+</Warning>

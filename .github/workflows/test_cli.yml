@@ -37,6 +37,7 @@ jobs:
               - 'integ/cross.sh'
               - 'integ/cross.yaml'
               - 'integ/parity.sh'
+              - 'integ/cli_fuse.sh'
               - '.github/workflows/test_cli.yml'
 
   python:
@@ -630,6 +631,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install libfuse (mfusepy + @zkochan/fuse-native, for the CLI FUSE e2e)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3 libfuse3-dev libfuse2t64 || \
+            sudo apt-get install -y fuse3 libfuse3-dev libfuse2
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -696,6 +703,12 @@ jobs:
       - name: Run CLI feature parity (subshell, sessions, versioning, fuse)
         run: |
           bash integ/parity.sh \
+            "python/.venv/bin/mirage" \
+            "node typescript/packages/cli/dist/bin/mirage.js"
+
+      - name: Run CLI end-to-end FUSE (two per-mount subtrees, real libfuse)
+        run: |
+          bash integ/cli_fuse.sh \
             "python/.venv/bin/mirage" \
             "node typescript/packages/cli/dist/bin/mirage.js"
 

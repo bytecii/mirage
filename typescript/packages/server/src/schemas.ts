@@ -43,6 +43,7 @@ export interface WorkspaceDetail {
   id: string
   mode: string
   createdAt: number
+  fuseMountpoints: Record<string, string>
   sessions: SessionSummary[]
   mounts: MountSummary[]
   internals: WorkspaceInternals | null

@@ -37,7 +37,10 @@ class MirageFS(fuse.Operations):
 
     use_ns = True
 
-    def __init__(self, ws_or_ops, agent_id: str | None = None) -> None:
+    def __init__(self,
+                 ws_or_ops,
+                 agent_id: str | None = None,
+                 root_prefix: str = "") -> None:
         if isinstance(ws_or_ops, Ops):
             self._ops = ws_or_ops
             self.ws = None
@@ -47,7 +50,13 @@ class MirageFS(fuse.Operations):
         self.agent_id = (agent_id or os.environ.get(_ENV_AGENT_ID)
                          or f"agent-{uuid.uuid4().hex[:8]}")
         self._now = time.time_ns()
-        self._prefixes = [m.prefix for m in self._ops._mounts]
+        self._root = root_prefix.rstrip("/")
+        # When scoped to a single mount, the FUSE root maps onto that mount and
+        # there are no virtual intermediate directories to synthesize.
+        if self._root:
+            self._prefixes = []
+        else:
+            self._prefixes = [m.prefix for m in self._ops._mounts]
         self._handles: dict[int, dict] = {}
         self._next_fh = 1
         self._loop = asyncio.new_event_loop()
@@ -57,6 +66,14 @@ class MirageFS(fuse.Operations):
 
     def _run(self, coro):
         return run_async_from_sync(coro, self._loop)
+
+    def _resolve(self, path: str) -> str:
+        """Map a FUSE path onto the workspace, honoring the mount root."""
+        if not self._root:
+            return path
+        if path == "/":
+            return self._root
+        return self._root + path
 
     def _whoami_content(self) -> bytes:
         mounts = [m.prefix for m in self._ops._mounts]
@@ -136,7 +153,7 @@ class MirageFS(fuse.Operations):
         if self._is_virtual_dir(path):
             return self._dir_stat()
         try:
-            s = self._run(self._ops.stat(path))
+            s = self._run(self._ops.stat(self._resolve(path)))
             if s.type == FileType.DIRECTORY:
                 return self._dir_stat()
             size = s.size
@@ -156,7 +173,7 @@ class MirageFS(fuse.Operations):
         if path == "/":
             names.add(".mirage")
         try:
-            entries = self._run(self._ops.readdir(path))
+            entries = self._run(self._ops.readdir(self._resolve(path)))
             for e in entries:
                 part = e.rstrip("/").rsplit("/", 1)[-1]
                 if part and not is_macos_metadata(part):
@@ -173,7 +190,7 @@ class MirageFS(fuse.Operations):
         ctx = self._handles.get(fh, {})
         try:
             if "data" not in ctx:
-                ctx["data"] = self._run(self._ops.read(path))
+                ctx["data"] = self._run(self._ops.read(self._resolve(path)))
             return ctx["data"][offset:offset + size]
         except (FileNotFoundError, ValueError):
             raise fuse.FuseOSError(errno.ENOENT)
@@ -190,13 +207,13 @@ class MirageFS(fuse.Operations):
         try:
             existing = b""
             try:
-                existing = self._run(self._ops.read(path))
+                existing = self._run(self._ops.read(self._resolve(path)))
             except FileNotFoundError:
                 pass
             if offset > len(existing):
                 existing = existing + b"\0" * (offset - len(existing))
             new_data = existing[:offset] + data + existing[offset + len(data):]
-            self._run(self._ops.write(path, new_data))
+            self._run(self._ops.write(self._resolve(path), new_data))
             return len(data)
         except PermissionError:
             raise fuse.FuseOSError(errno.EACCES)
@@ -205,7 +222,7 @@ class MirageFS(fuse.Operations):
 
     def create(self, path: str, mode, fi=None) -> int:
         try:
-            self._run(self._ops.create(path))
+            self._run(self._ops.create(self._resolve(path)))
         except PermissionError:
             raise fuse.FuseOSError(errno.EACCES)
         except ValueError:
@@ -218,7 +235,7 @@ class MirageFS(fuse.Operations):
 
     def mkdir(self, path: str, mode) -> None:
         try:
-            self._run(self._ops.mkdir(path))
+            self._run(self._ops.mkdir(self._resolve(path)))
         except PermissionError:
             raise fuse.FuseOSError(errno.EACCES)
         except ValueError:
@@ -226,7 +243,7 @@ class MirageFS(fuse.Operations):
 
     def unlink(self, path: str) -> None:
         try:
-            self._run(self._ops.unlink(path))
+            self._run(self._ops.unlink(self._resolve(path)))
         except PermissionError:
             raise fuse.FuseOSError(errno.EACCES)
         except FileNotFoundError:
@@ -234,7 +251,7 @@ class MirageFS(fuse.Operations):
 
     def rename(self, old: str, new: str, flags: int = 0) -> None:
         try:
-            self._run(self._ops.rename(old, new))
+            self._run(self._ops.rename(self._resolve(old), self._resolve(new)))
         except PermissionError:
             raise fuse.FuseOSError(errno.EACCES)
         except (FileNotFoundError, ValueError):
@@ -242,7 +259,7 @@ class MirageFS(fuse.Operations):
 
     def rmdir(self, path: str) -> None:
         try:
-            self._run(self._ops.rmdir(path))
+            self._run(self._ops.rmdir(self._resolve(path)))
         except PermissionError:
             raise fuse.FuseOSError(errno.EACCES)
         except OSError:
@@ -284,7 +301,7 @@ class MirageFS(fuse.Operations):
             try:
                 existing = b""
                 try:
-                    existing = self._run(self._ops.read(path))
+                    existing = self._run(self._ops.read(self._resolve(path)))
                 except FileNotFoundError:
                     pass
                 merged = bytearray(existing)
@@ -293,7 +310,7 @@ class MirageFS(fuse.Operations):
                     if end > len(merged):
                         merged.extend(b"\0" * (end - len(merged)))
                     merged[off:off + len(chunk)] = chunk
-                self._run(self._ops.write(path, bytes(merged)))
+                self._run(self._ops.write(self._resolve(path), bytes(merged)))
                 ctx["write_buf"] = []
             except PermissionError:
                 raise fuse.FuseOSError(errno.EACCES)
@@ -309,7 +326,7 @@ class MirageFS(fuse.Operations):
             self._handles[fh] = {"path": path}
             return fh
         try:
-            s = self._run(self._ops.stat(path))
+            s = self._run(self._ops.stat(self._resolve(path)))
         except (FileNotFoundError, ValueError):
             raise fuse.FuseOSError(errno.ENOENT)
         ctx = {"path": path}
@@ -318,7 +335,7 @@ class MirageFS(fuse.Operations):
             # now. getattr() will find the cached data and return real size,
             # allowing cat/read to exit cleanly instead of waiting for 1GB.
             try:
-                ctx["data"] = self._run(self._ops.read(path))
+                ctx["data"] = self._run(self._ops.read(self._resolve(path)))
             except (FileNotFoundError, ValueError):
                 pass
         fh = self._next_fh
@@ -332,7 +349,7 @@ class MirageFS(fuse.Operations):
 
     def truncate(self, path: str, length: int, fh=None) -> None:
         try:
-            self._run(self._ops.truncate(path, length))
+            self._run(self._ops.truncate(self._resolve(path), length))
         except PermissionError:
             raise fuse.FuseOSError(errno.EACCES)
         except ValueError:

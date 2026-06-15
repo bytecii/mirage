@@ -1,0 +1,5 @@
+data_cat_a=alpha
+logs_cat_b=beta
+logs_size_b=5
+data_pinned=yes
+distinct_mounts=yes

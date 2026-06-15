@@ -31,12 +31,22 @@ class FuseManager:
     def mountpoint(self, path: str | None) -> None:
         self._mountpoint = path
 
-    def setup(self, ws: object) -> None:
+    def setup(self,
+              ws: object,
+              root_prefix: str = "",
+              mountpoint: str | None = None) -> None:
+        import os
         import tempfile
 
         from mirage.fuse.mount import mount_background
-        self._mountpoint = tempfile.mkdtemp(prefix="mirage-")
-        self._thread = mount_background(ws, self._mountpoint)
+        if mountpoint:
+            os.makedirs(mountpoint, exist_ok=True)
+            self._mountpoint = mountpoint
+        else:
+            self._mountpoint = tempfile.mkdtemp(prefix="mirage-")
+        self._thread = mount_background(ws,
+                                        self._mountpoint,
+                                        root_prefix=root_prefix)
         self._auto = True
 
     def unmount(self) -> None:

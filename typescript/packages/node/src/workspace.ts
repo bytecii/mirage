@@ -42,11 +42,17 @@ function loadShellParser(): Promise<ShellParser> {
 }
 
 export interface NodeWorkspaceOptions extends WorkspaceOptions {
-  fuse?: boolean
+  /**
+   * Per-mount FUSE exposure: `{ '/data': true, '/s3': '/tmp/s3' }`. A value of
+   * `true` mounts at a fresh temp dir; a string pins the mountpoint (created if
+   * missing). Each entry becomes its own FUSE mount scoped to that prefix.
+   */
+  fuseMounts?: Record<string, boolean | string>
 }
 
 export class Workspace extends CoreWorkspace {
-  private readonly autoFuseManager: FuseManager | null
+  private readonly autoFuseManagers = new Map<string, FuseManager>()
+  private readonly fuseMountpointsMap = new Map<string, string>()
   private fuseSetupPromise: Promise<void> | null = null
 
   constructor(resources: Record<string, Resource>, options: NodeWorkspaceOptions = {}) {
@@ -54,11 +60,18 @@ export class Workspace extends CoreWorkspace {
       ...options,
       shellParserFactory: options.shellParserFactory ?? loadShellParser,
     })
-    this.autoFuseManager = options.fuse === true ? new FuseManager() : null
-    if (this.autoFuseManager !== null) {
+    const fuseMounts = options.fuseMounts ?? {}
+    const setups: Promise<void>[] = []
+    for (const [prefix, target] of Object.entries(fuseMounts)) {
+      if (target === false) continue
+      const fm = new FuseManager()
+      this.autoFuseManagers.set(prefix, fm)
+      const opts = {
+        rootPrefix: prefix,
+        ...(typeof target === 'string' ? { mountpoint: target } : {}),
+      }
       // Kick off mount eagerly; await inside execute() / close() so callers
-      // don't need to await the constructor. Python mirrors this: fuse=True
-      // runs setup() during __init__ and __enter__ just returns self.
+      // don't need to await the constructor (Python mirrors this).
       //
       // A failed auto-mount (e.g. libfuse absent on the host) degrades to an
       // unmounted but fully usable workspace, mirroring Python: there the mount
@@ -66,18 +79,29 @@ export class Workspace extends CoreWorkspace {
       // On Node's single event loop we must swallow it here, otherwise the
       // unhandled rejection would terminate the process under Node's default
       // unhandled-rejection policy.
-      const fm = this.autoFuseManager
-      this.fuseSetupPromise = fm.setup(this).then(
-        () => undefined,
-        (err: unknown) => {
-          process.stderr.write(
-            `mirage: FUSE auto-mount failed, continuing without it: ${
-              err instanceof Error ? err.message : String(err)
-            }\n`,
-          )
-        },
+      setups.push(
+        fm.setup(this, opts).then(
+          (mountpoint) => {
+            this.fuseMountpointsMap.set(prefix, mountpoint)
+          },
+          (err: unknown) => {
+            process.stderr.write(
+              `mirage: FUSE auto-mount failed for ${prefix}, continuing without it: ${
+                err instanceof Error ? err.message : String(err)
+              }\n`,
+            )
+          },
+        ),
       )
     }
+    if (setups.length > 0) {
+      this.fuseSetupPromise = Promise.all(setups).then(() => undefined)
+    }
+  }
+
+  /** Map each FUSE-exposed mount prefix to its live mountpoint. */
+  get fuseMountpoints(): Record<string, string> {
+    return Object.fromEntries(this.fuseMountpointsMap)
   }
 
   private async ensureFuseReady(): Promise<void> {
@@ -109,8 +133,8 @@ export class Workspace extends CoreWorkspace {
 
   override async close(): Promise<void> {
     await this.ensureFuseReady().catch(() => undefined)
-    if (this.autoFuseManager !== null) {
-      await this.autoFuseManager.close(this)
+    for (const fm of this.autoFuseManagers.values()) {
+      await fm.close(this)
     }
     await super.close()
   }

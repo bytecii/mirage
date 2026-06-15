@@ -155,6 +155,7 @@ class MountBlock(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     command_safeguards: dict[str,
                              CommandSafeguard] = Field(default_factory=dict)
+    fuse: bool | str = False
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -172,7 +173,6 @@ class WorkspaceConfig(BaseModel):
     consistency: ConsistencyPolicy = ConsistencyPolicy.LAZY
     default_session_id: str = "default"
     default_agent_id: str = "default"
-    fuse: bool = False
     history: int | None = 100
     cache: CacheBlock | None = None
     index: IndexBlock | None = None
@@ -196,6 +196,7 @@ class WorkspaceConfig(BaseModel):
                 ``Workspace`` constructor expects.
         """
         resources: dict[str, Any] = {}
+        fuse_mounts: dict[str, bool | str] = {}
         for prefix, block in self.mounts.items():
             prov = build_resource(block.resource, block.config)
             mode = block.mode if block.mode is not None else self.mode
@@ -203,13 +204,15 @@ class WorkspaceConfig(BaseModel):
                 resources[prefix] = (prov, mode, block.command_safeguards)
             else:
                 resources[prefix] = (prov, mode)
+            if block.fuse:
+                fuse_mounts[prefix] = block.fuse
         kwargs: dict[str, Any] = {
             "resources": resources,
             "mode": self.mode,
             "consistency": self.consistency,
             "session_id": self.default_session_id,
             "agent_id": self.default_agent_id,
-            "fuse": self.fuse,
+            "fuse_mounts": fuse_mounts,
             "history": self.history,
         }
         if self.cache is not None:

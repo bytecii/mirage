@@ -26,9 +26,9 @@ s3 = S3Resource(S3Config(bucket="my-bucket"))
 with Workspace(
     {"/": (RAMResource(), MountMode.WRITE),
      "/s3": (s3, MountMode.READ)},
-    fuse=True,
+    fuse_mounts={"/": True},
 ) as ws:
-    print(f"cd {ws.fuse_mountpoint} && claude")
+    print(f"cd {ws.fuse_mountpoints['/']} && claude")
     input("Press Enter when done...")
 ```
 

@@ -100,6 +100,7 @@
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.0.0",
     "@lancedb/lancedb": "^0.30.0",
+    "@zkochan/fuse-native": "^0.1.0",
     "@types/mailparser": "^3.4.6",
     "@types/nodemailer": "^8.0.0",
     "@types/pg": "^8.11.0",

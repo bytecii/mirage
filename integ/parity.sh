@@ -25,10 +25,10 @@ YML
 FUSE_YAML=/tmp/parity-fuse.yaml
 cat > "$FUSE_YAML" <<'YML'
 mode: WRITE
-fuse: true
 mounts:
   /:
     resource: ram
+    fuse: true
 YML
 
 freeport() { lsof -ti:8765 2>/dev/null | xargs kill -9 2>/dev/null; sleep 1; }

@@ -100,12 +100,14 @@ function classifyError(err: unknown): number {
 
 export interface MirageFSOptions {
   agentId?: string
+  rootPrefix?: string
 }
 
 export class MirageFS {
   private readonly ws: Workspace
   readonly agentId: string
   private readonly now: Date
+  private readonly root: string
   private readonly prefixes: string[]
   private readonly handles = new Map<number, Handle>()
   private readonly prefetchCache = new Map<string, PrefetchEntry>()
@@ -121,12 +123,20 @@ export class MirageFS {
       process.env[ENV_AGENT_ID] ??
       `agent-${Math.random().toString(36).slice(2, 10)}`
     this.now = new Date()
-    this.prefixes = ws.mounts().map((m) => m.prefix)
+    this.root = options.rootPrefix !== undefined ? rstripSlash(options.rootPrefix) : ''
+    // When scoped to a single mount, the FUSE root maps onto that mount and
+    // there are no virtual intermediate directories to synthesize.
+    this.prefixes = this.root === '' ? ws.mounts().map((m) => m.prefix) : []
     this.uid = typeof process.getuid === 'function' ? process.getuid() : 0
     this.gid = typeof process.getgid === 'function' ? process.getgid() : 0
   }
 
   // ── helpers ──────────────────────────────────────────────────────
+
+  private resolve(path: string): string {
+    if (this.root === '') return path
+    return path === '/' ? this.root : this.root + path
+  }
 
   private whoamiContent(): Uint8Array {
     const lines = [`agent: ${this.agentId}`, 'cwd: /', `mounts: ${this.prefixes.join(', ')}`]
@@ -215,7 +225,7 @@ export class MirageFS {
     if (inflight !== undefined) return inflight
     const promise = (async (): Promise<Uint8Array | null> => {
       try {
-        const data = await this.ws.fs.readFile(path)
+        const data = await this.ws.fs.readFile(this.resolve(path))
         this.prefetchCache.set(path, { data, expires: Date.now() + PREFETCH_TTL_MS })
         return data
       } catch {
@@ -241,7 +251,7 @@ export class MirageFS {
     // post-write invalidation. The lower-level fs helper is useful internally,
     // but using it from FUSE made READ-mode mounts reject create while still
     // allowing buffered overwrite on flush.
-    await this.ws.dispatch('write', path, [data])
+    await this.ws.dispatch('write', this.resolve(path), [data])
   }
 
   // ── FUSE op surface (mirrors mfusepy Operations) ─────────────────
@@ -293,7 +303,7 @@ export class MirageFS {
         return
       }
       try {
-        const s = await this.ws.fs.stat(path)
+        const s = await this.ws.fs.stat(this.resolve(path))
         if (s.type === FileType.DIRECTORY) {
           cb(0, this.dirStat())
           return
@@ -329,7 +339,7 @@ export class MirageFS {
       const names = new Set(this.virtualChildren(path))
       if (path === '/') names.add('.mirage')
       try {
-        const entries = await this.ws.fs.readdir(path)
+        const entries = await this.ws.fs.readdir(this.resolve(path))
         for (const e of entries) {
           const part = rstripSlash(e).split('/').pop() ?? ''
           if (part !== '' && !isMacosMetadata(part)) names.add(part)
@@ -368,9 +378,10 @@ export class MirageFS {
         // filetype dispatch.
         if (ctx !== undefined && ctx.data === undefined) {
           const cached = this.cachedData(path)
-          ctx.data = cached ?? (await this.ws.fs.readFile(path))
+          ctx.data = cached ?? (await this.ws.fs.readFile(this.resolve(path)))
         }
-        const data = ctx?.data ?? this.cachedData(path) ?? (await this.ws.fs.readFile(path))
+        const data =
+          ctx?.data ?? this.cachedData(path) ?? (await this.ws.fs.readFile(this.resolve(path)))
         const slice = data.subarray(pos, pos + len)
         buf.set(slice, 0)
         cb(slice.byteLength)
@@ -400,7 +411,7 @@ export class MirageFS {
       try {
         let existing: Uint8Array = new Uint8Array(0)
         try {
-          existing = await this.ws.fs.readFile(path, { raw: true })
+          existing = await this.ws.fs.readFile(this.resolve(path), { raw: true })
         } catch {
           // file may not exist yet
         }
@@ -436,7 +447,7 @@ export class MirageFS {
         // "create empty" from "write bytes" get the right code path. Falls back
         // to writeFile(empty) when the resource doesn't expose `create`.
         try {
-          await this.ws.dispatch('create', path)
+          await this.ws.dispatch('create', this.resolve(path))
         } catch (dispatchErr) {
           const msg = (
             dispatchErr instanceof Error ? dispatchErr.message : String(dispatchErr)
@@ -456,7 +467,7 @@ export class MirageFS {
   private mkdir(path: string, _mode: number, cb: (code: number) => void): void {
     void (async () => {
       try {
-        await this.ws.fs.mkdir(path)
+        await this.ws.fs.mkdir(this.resolve(path))
         cb(0)
       } catch (err) {
         cb(classifyError(err))
@@ -467,7 +478,7 @@ export class MirageFS {
   private unlink(path: string, cb: (code: number) => void): void {
     void (async () => {
       try {
-        await this.ws.fs.unlink(path)
+        await this.ws.fs.unlink(this.resolve(path))
         cb(0)
       } catch (err) {
         cb(classifyError(err))
@@ -478,7 +489,7 @@ export class MirageFS {
   private rename(src: string, dst: string, cb: (code: number) => void): void {
     void (async () => {
       try {
-        await this.ws.fs.rename(src, dst)
+        await this.ws.fs.rename(this.resolve(src), this.resolve(dst))
         cb(0)
       } catch (err) {
         cb(classifyError(err))
@@ -493,7 +504,7 @@ export class MirageFS {
         // cleanly. Message-string sniffing alone (classifyError) is unreliable
         // across backends; check contents first.
         try {
-          const entries = await this.ws.fs.readdir(path)
+          const entries = await this.ws.fs.readdir(this.resolve(path))
           if (entries.length > 0) {
             cb(ENOTEMPTY)
             return
@@ -502,7 +513,7 @@ export class MirageFS {
           // readdir failure — fall through to rmdir and let it raise the real
           // error (e.g. ENOENT for missing path).
         }
-        await this.ws.fs.rmdir(path)
+        await this.ws.fs.rmdir(this.resolve(path))
         cb(0)
       } catch (err) {
         cb(classifyError(err))
@@ -517,13 +528,15 @@ export class MirageFS {
         // backends). Fall back to read/resize/write for resources that don't
         // expose one.
         try {
-          await this.ws.dispatch('truncate', path, [size])
+          await this.ws.dispatch('truncate', this.resolve(path), [size])
         } catch (dispatchErr) {
           const msg = (
             dispatchErr instanceof Error ? dispatchErr.message : String(dispatchErr)
           ).toLowerCase()
           if (!msg.includes('no op')) throw dispatchErr
-          const data = await this.ws.fs.readFile(path, { raw: true }).catch(() => new Uint8Array(0))
+          const data = await this.ws.fs
+            .readFile(this.resolve(path), { raw: true })
+            .catch(() => new Uint8Array(0))
           const out = new Uint8Array(size)
           out.set(data.subarray(0, Math.min(data.byteLength, size)), 0)
           await this.writeFile(path, out)
@@ -587,7 +600,7 @@ export class MirageFS {
         return
       }
       try {
-        const s = await this.ws.fs.stat(path)
+        const s = await this.ws.fs.stat(this.resolve(path))
         const ctx: Handle = { path }
         if (s.size === null && s.type !== FileType.DIRECTORY) {
           const data = await this.prefetch(path)
@@ -621,7 +634,7 @@ export class MirageFS {
       try {
         let existing: Uint8Array = new Uint8Array(0)
         try {
-          existing = await this.ws.fs.readFile(path, { raw: true })
+          existing = await this.ws.fs.readFile(this.resolve(path), { raw: true })
         } catch {
           // ignore
         }

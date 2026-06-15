@@ -34,8 +34,9 @@ def _run_fuse(fs: MirageFS, mountpoint: str, foreground: bool) -> None:
 
 def mount_background(ws: Workspace,
                      mountpoint: str,
-                     agent_id: str | None = None) -> threading.Thread:
-    fs = MirageFS(ws, agent_id=agent_id)
+                     agent_id: str | None = None,
+                     root_prefix: str = "") -> threading.Thread:
+    fs = MirageFS(ws, agent_id=agent_id, root_prefix=root_prefix)
     t = threading.Thread(target=_run_fuse,
                          args=(fs, mountpoint, True),
                          daemon=True)

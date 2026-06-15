@@ -20,8 +20,9 @@ Then install [OpenAI Codex](https://github.com/openai/codex) separately.
 from mirage import MountMode, Workspace
 from mirage.resource.ram import RAMResource
 
-with Workspace({"/": RAMResource()}, mode=MountMode.WRITE, fuse=True) as ws:
-    print(f"cd {ws.fuse_mountpoint} && codex")
+with Workspace({"/": RAMResource()}, mode=MountMode.WRITE,
+               fuse_mounts={"/": True}) as ws:
+    print(f"cd {ws.fuse_mountpoints['/']} && codex")
     input("Press Enter when done...")
 ```
 

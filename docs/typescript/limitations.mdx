@@ -43,9 +43,10 @@ readFileSync('/data/x.txt')  // hits the real filesystem, throws ENOENT
     If you want ESM-imported `node:fs` to see your mounted data, expose the workspace as a real filesystem. Mount FUSE, then every `fs` call, ESM or CJS, goes through the kernel.
 
     ```ts
-    const ws = new Workspace({ '/data/': new RAMResource() }, { fuse: true })
+    const ws = new Workspace({ '/data': new RAMResource() }, { fuseMounts: { '/data': true } })
     import { readFile } from 'node:fs/promises'
-    const bytes = await readFile(`${ws.fuseMountpoint}/data/x.txt`)
+    // The `/data` subtree is exposed at the mountpoint root, so paths are relative to it.
+    const bytes = await readFile(`${ws.fuseMountpoints['/data']}/x.txt`)
     ```
   </Tab>
   <Tab title="Use Mirage's VFS API directly">
@@ -81,12 +82,14 @@ We report a 100 MiB sentinel. The read handler returns 0 past the actual data le
 **What this means in practice.**
 
 ```ts
-const ws = new Workspace({ '/slack/': new SlackResource({ apiKey }) }, { fuse: true })
+const ws = new Workspace({ '/slack': new SlackResource({ apiKey }) }, { fuseMounts: { '/slack': true } })
+// The `/slack` subtree is exposed at the mountpoint root, so paths are relative to it.
+const slackMp = ws.fuseMountpoints['/slack']
 // ✅ Works, most channels have <100 MiB of daily history
-await readFile(`${ws.fuseMountpoint}/slack/channels/general__C123/2026-04-12/chat.jsonl`)
+await readFile(`${slackMp}/channels/general__C123/2026-04-12/chat.jsonl`)
 
 // ⚠️ Truncated to 100 MiB if the actual day exceeds it
-await readFile(`${ws.fuseMountpoint}/slack/channels/super-busy-channel__C456/2026-04-12/chat.jsonl`)
+await readFile(`${slackMp}/channels/super-busy-channel__C456/2026-04-12/chat.jsonl`)
 ```
 
 `ls -l` shows `100M` for any unfetched API-backed file. Once a file has been opened, the real size is cached and subsequent `ls -l` shows the actual byte count.
@@ -128,7 +131,7 @@ The browser SDK runs entirely in-page: no kernel, no subprocesses, no Node `fs`.
 
 ### 1. No FUSE
 
-Browsers can't mount filesystems. `Workspace({ fuse: true })` throws on construction. Use `ws.execute(...)` (virtual executor) and `ws.fs.readFile/writeFile` instead. Every builtin (`cat`, `grep`, `jq`, `awk`, `python3`, etc.) is reimplemented in-process, so most agent code paths work unchanged from Node.
+Browsers can't mount filesystems. A workspace with `fuseMounts` throws on construction. Use `ws.execute(...)` (virtual executor) and `ws.fs.readFile/writeFile` instead. Every builtin (`cat`, `grep`, `jq`, `awk`, `python3`, etc.) is reimplemented in-process, so most agent code paths work unchanged from Node.
 
 ### 2. OPFS quotas and persistence
 
@@ -170,7 +173,7 @@ These resources are only exposed by `@struktoai/mirage-node` because their drive
 | FUSE `cat` of a Trello/Linear/Slack file ≤ 100 MiB | Node | ✅ works |
 | FUSE `cat` of an API-backed file > 100 MiB | Node | ❌ truncated; use `ws.fs.readFile` or `ws.execute('cat …')` |
 | `ws.execute(...)` virtual builtins | Browser | ✅ works |
-| `Workspace({ fuse: true })` | Browser | ❌ throws; not supported |
+| `Workspace({ fuseMounts })` | Browser | ❌ throws; not supported |
 | OPFS reads/writes within quota | Browser | ✅ works |
 | OPFS over quota | Browser | ❌ `QuotaExceededError`; check `navigator.storage.estimate()` |
 | HTTP-backed resources without CORS allow-list | Browser | ❌ blocked; use PKCE, presigned URLs, or a same-origin proxy |

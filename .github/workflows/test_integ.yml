@@ -32,6 +32,7 @@ jobs:
       database: ${{ steps.filter.outputs.database }}
       data: ${{ steps.filter.outputs.data }}
       ssh: ${{ steps.filter.outputs.ssh }}
+      fuse: ${{ steps.filter.outputs.fuse }}
     steps:
       - uses: dorny/paths-filter@v3
         id: filter
@@ -90,6 +91,18 @@ jobs:
               - 'typescript/packages/node/src/commands/builtin/ssh/**'
               - 'typescript/packages/node/src/resource/ssh/**'
               - 'typescript/packages/node/src/ops/ssh/**'
+              - '.github/workflows/test_integ.yml'
+            fuse:
+              - 'integ/fuse.py'
+              - 'integ/fuse.ts'
+              - 'integ/truth_fuse.txt'
+              - 'integ/check_lines.sh'
+              - 'integ/package.json'
+              - 'python/mirage/fuse/**'
+              - 'python/mirage/workspace/fuse.py'
+              - 'typescript/packages/node/src/fuse/**'
+              - 'typescript/packages/node/src/workspace/fuse.ts'
+              - 'typescript/packages/node/src/workspace.ts'
               - '.github/workflows/test_integ.yml'
 
   integ:
@@ -589,10 +602,70 @@ jobs:
           pnpm exec tsx ssh.ts > /tmp/ts-ssh.out
           diff truth.txt /tmp/ts-ssh.out
 
+  integ-fuse:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.fuse == 'true') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install libfuse (fusermount3 + libfuse2 for mfusepy, libfuse3 headers for fuse-native)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3 libfuse3-dev libfuse2t64 || \
+            sudo apt-get install -y fuse3 libfuse3-dev libfuse2
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install Python dependencies
+        working-directory: python
+        run: uv sync --all-extras --no-extra camel
+
+      - name: Run Python FUSE mount and check (real libfuse)
+        run: |
+          ./python/.venv/bin/python integ/fuse.py 2>&1 \
+            | bash integ/check_lines.sh integ/truth_fuse.txt
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.32.1
+
+      - name: Install dependencies (builds @zkochan/fuse-native against libfuse3)
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Build mirage-core
+        working-directory: typescript
+        run: pnpm --filter @struktoai/mirage-core build
+
+      - name: Build mirage-node
+        working-directory: typescript
+        run: pnpm --filter @struktoai/mirage-node build
+
+      - name: Run TypeScript FUSE mount and check (real libfuse)
+        working-directory: integ
+        run: |
+          pnpm exec tsx fuse.ts 2>&1 \
+            | bash check_lines.sh truth_fuse.txt
+
   gate:
     name: integ-gate
     runs-on: ubuntu-latest
-    needs: [changes, integ, integ-ts, integ-database, integ-database-ts, integ-data, integ-ssh, integ-ssh-ts]
+    needs: [changes, integ, integ-ts, integ-database, integ-database-ts, integ-data, integ-ssh, integ-ssh-ts, integ-fuse]
     if: always()
     steps:
       - name: Check required jobs

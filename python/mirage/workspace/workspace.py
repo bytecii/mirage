@@ -89,7 +89,7 @@ class Workspace:
         history: int | None = 100,
         session_id: str = DEFAULT_SESSION_ID,
         agent_id: str = DEFAULT_AGENT_ID,
-        fuse: bool = False,
+        fuse_mounts: dict[str, bool | str] | None = None,
         observe: BaseResource | None = None,
         observe_prefix: str = "/.sessions",
     ) -> None:
@@ -144,6 +144,7 @@ class Workspace:
                 mount_obj.command_safeguards.update(mount_safeguards)
 
         self._fuse = FuseManager()
+        self._fuse_managers: dict[str, FuseManager] = {}
         self.history: ExecutionHistory = ExecutionHistory(
             max_entries=history if history is not None else 100)
 
@@ -166,8 +167,14 @@ class Workspace:
             for rc in HISTORY_COMMANDS:
                 default.register_general(rc)
 
-        if fuse:
-            self._fuse.setup(self)
+        if fuse_mounts:
+            for prefix, target in fuse_mounts.items():
+                if not target:
+                    continue
+                manager = FuseManager()
+                point = target if isinstance(target, str) else None
+                manager.setup(self, root_prefix=prefix, mountpoint=point)
+                self._fuse_managers[prefix] = manager
 
     @property
     def ops(self) -> Ops:
@@ -246,6 +253,15 @@ class Workspace:
         return self._fuse.mountpoint
 
     @property
+    def fuse_mountpoints(self) -> dict[str, str]:
+        """Map each FUSE-exposed mount prefix to its on-disk mountpoint."""
+        return {
+            prefix: manager.mountpoint
+            for prefix, manager in self._fuse_managers.items()
+            if manager.mountpoint is not None
+        }
+
+    @property
     def _cwd(self) -> str:
         return self._session_mgr.cwd
 
@@ -281,6 +297,8 @@ class Workspace:
 
     def _close_parts(self) -> None:
         self._fuse.close()
+        for manager in self._fuse_managers.values():
+            manager.close()
         if self._closed:
             return
         self._closed = True

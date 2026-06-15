@@ -2,7 +2,6 @@ mode: WRITE
 consistency: LAZY
 default_session_id: default
 default_agent_id: default
-fuse: false
 history: 50
 
 cache:
@@ -13,6 +12,7 @@ mounts:
   /:
     resource: ram
     mode: WRITE
+    fuse: /tmp/mirage-fuse-full
   /s3:
     resource: s3
     mode: READ

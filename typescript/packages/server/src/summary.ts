@@ -77,10 +77,12 @@ export function makeDetail(entry: WorkspaceEntry, verbose = false): WorkspaceDet
     sessionId: s.sessionId,
     cwd: s.cwd,
   }))
+  const fuseMountpoints = (ws as { fuseMountpoints?: Record<string, string> }).fuseMountpoints ?? {}
   return {
     id: entry.id,
     mode: mounts[0]?.mode ?? 'read',
     createdAt: entry.createdAt,
+    fuseMountpoints,
     mounts: mountSummaries,
     sessions,
     internals: verbose ? buildInternals(ws) : null,

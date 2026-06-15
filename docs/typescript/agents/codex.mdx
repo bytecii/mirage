@@ -21,11 +21,11 @@ import { MountMode, RAMResource, Workspace } from '@struktoai/mirage-node'
 
 const ws = new Workspace(
   { '/': new RAMResource() },
-  { mode: MountMode.WRITE, fuse: true },
+  { mode: MountMode.WRITE, fuseMounts: { '/': true } },
 )
 await ws.execute('true') // wait for mount
 
-console.log(`cd ${ws.fuseMountpoint} && codex`)
+console.log(`cd ${ws.fuseMountpoints['/']} && codex`)
 // ... run codex in another terminal, then:
 await ws.close()
 ```

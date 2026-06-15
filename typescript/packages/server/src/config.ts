@@ -159,6 +159,7 @@ export interface MountBlock {
   mode?: string
   config?: Record<string, unknown>
   command_safeguards?: Record<string, Record<string, unknown>>
+  fuse?: boolean | string
 }
 
 export interface RamCacheBlock {
@@ -194,7 +195,6 @@ export interface WorkspaceConfigRaw {
   defaultSessionId?: string
   defaultAgentId?: string
   history?: number | null
-  fuse?: boolean
   cache?: RamCacheBlock | RedisCacheBlock | null
   index?: RamIndexBlock | RedisIndexBlock | null
 }
@@ -244,7 +244,7 @@ export interface WorkspaceArgs {
     consistency: ConsistencyPolicy
     sessionId: string
     agentId: string
-    fuse?: boolean
+    fuseMounts?: Record<string, boolean | string>
     historyLimit?: number
     cache?: FileCache & Resource
     index?: IndexConfig
@@ -289,10 +289,12 @@ export async function configToWorkspaceArgs(cfg: WorkspaceConfigRaw): Promise<Wo
   const wsMode = coerceMountMode(cfg.mode, MountMode.WRITE)
   const consistency = coerceConsistency(cfg.consistency)
   const resources: Record<string, [Resource, MountMode, Record<string, CommandSafeguard>]> = {}
+  const fuseMounts: Record<string, boolean | string> = {}
   for (const [prefix, block] of Object.entries(cfg.mounts)) {
     const r = await buildResource(block.resource, block.config ?? {})
     const m = coerceMountMode(block.mode, wsMode)
     resources[prefix] = [r, m, parseSafeguards(block.command_safeguards)]
+    if (block.fuse !== undefined && block.fuse !== false) fuseMounts[prefix] = block.fuse
   }
   const cache = buildCache(cfg.cache)
   const index = buildIndex(cfg.index)
@@ -303,7 +305,7 @@ export async function configToWorkspaceArgs(cfg: WorkspaceConfigRaw): Promise<Wo
       consistency,
       sessionId: cfg.defaultSessionId ?? 'default',
       agentId: cfg.defaultAgentId ?? 'default',
-      ...(cfg.fuse === true ? { fuse: true } : {}),
+      ...(Object.keys(fuseMounts).length > 0 ? { fuseMounts } : {}),
       ...(typeof cfg.history === 'number' ? { historyLimit: cfg.history } : {}),
       ...(cache !== undefined ? { cache } : {}),
       ...(index !== undefined ? { index } : {}),

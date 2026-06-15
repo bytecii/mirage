@@ -69,19 +69,48 @@ Or, if you're not using a pnpm workspace, in `package.json`:
 import { MountMode, RAMResource, Workspace } from '@struktoai/mirage-node'
 
 const ws = new Workspace(
-  { '/data/': new RAMResource() },
-  { mode: MountMode.WRITE, fuse: true },
+  { '/data': new RAMResource() },
+  { mode: MountMode.WRITE, fuseMounts: { '/data': true } },
 )
 
 await ws.execute('echo hello | tee /data/x.txt')
-console.log('mountpoint:', ws.fuseMountpoint)
+console.log('mountpoints:', ws.fuseMountpoints)
 
-// Any tool (ls, cat, external subprocess) can now see /data/x.txt under the mountpoint.
+// Any tool (ls, cat, external subprocess) can now see x.txt under the mountpoint.
 await ws.close() // auto-unmounts
 ```
 
-If `ws.fuseMountpoint` prints a `/tmp/mirage-fuse-XXXXXX` path and no error is thrown, the binding is wired up correctly.
+If `ws.fuseMountpoints` prints a `/tmp/mirage-fuse-XXXXXX` path and no error is thrown, the binding is wired up correctly.
+
+## Per-mount FUSE
+
+FUSE is configured **per mount**. Each mount whose `fuse` is set is exposed at
+its own mountpoint, showing only that mount's subtree. The value is either
+`true` (mount at a fresh temp directory) or a path string (mount there,
+creating the directory if missing):
+
+```yaml
+mode: WRITE
+mounts:
+  /data:
+    resource: ram
+    fuse: /tmp/data-repo   # explicit path
+  /s3:
+    resource: s3
+    fuse: true             # temp directory
+```
+
+Programmatically, pass `fuseMounts: { '/data': '/tmp/data-repo', '/s3': true }`.
+`ws.fuseMountpoints` returns a `{ prefix: path }` map of the live mountpoints.
 
 <Note>
   FUSE on Node has a runtime constraint worth knowing, `fs-monkey` can't patch ESM `node:fs` imports. See [TypeScript Limitations](/typescript/limitations) for details and workarounds.
 </Note>
+
+<Warning>
+  **macOS allows only one in-process FUSE mount.** macFUSE registers a
+  process-global signal source, so a second simultaneous mount in the same
+  process fails. Multiple per-mount FUSE mounts work on Linux; on macOS, enable
+  `fuse` on a single mount per workspace (or run extra mounts in separate
+  processes).
+</Warning>
