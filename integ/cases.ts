@@ -443,6 +443,10 @@ export const CASES: ReadonlyArray<readonly [string, string]> = [
   ['arch_iconv_file', 'iconv -f utf-8 -t utf-8 /data/arch/g.txt'],
   ['arch_mktemp', 'mktemp -p /data/arch | wc -l'],
 
+  // Quoted empty strings are real (empty) arguments, like bash.
+  ['echo_empty_squote', "echo a '' b"],
+  ['echo_empty_dquote', 'echo a "" b'],
+
   // ----- create at the mount root (parent resolves to "/") -----
   // Commented out pending the GNU find start-path fix: `find <dir>` does not
   // emit the start directory (mirage walks from depth 1), so root_create_mkdir
@@ -539,6 +543,16 @@ export const EXIT_CODE_CASES: ReadonlyArray<readonly [string, string]> = [
   ["sleep_infinity", "sleep Infinity"],
 ];
 
+// Invalid numeric/size/mtime arguments to find must exit 1 with a GNU-style
+// message, identically across every backend (parsed before any backend I/O).
+export const FIND_ARG_ERROR_CASES: ReadonlyArray<readonly [string, string]> = [
+  ['find_bad_maxdepth', 'find /data -maxdepth abc'],
+  ['find_bad_mindepth', 'find /data -mindepth xx'],
+  ['find_bad_size', 'find /data -size abc'],
+  ['find_empty_size', "find /data -size ''"],
+  ['find_bad_mtime', 'find /data -mtime abc'],
+];
+
 export const SLEEP_CASES: ReadonlyArray<readonly [string, string, number]> = [
   ["sleep_zero", "sleep 0", 0],
   ["sleep_fraction", "sleep 0.2", 0.2],
@@ -613,6 +627,14 @@ export async function runCases(ws: Workspace): Promise<void> {
   }
 
   for (const [name, cmd] of NOT_FOUND_CASES) {
+    const result = await ws.execute(cmd);
+    const err = new TextDecoder().decode(result.stderr).trim();
+    process.stdout.write(`=== ${name} ===\n`);
+    process.stdout.write(`exit=${result.exitCode}\n`);
+    if (err) process.stdout.write(err + "\n");
+  }
+
+  for (const [name, cmd] of FIND_ARG_ERROR_CASES) {
     const result = await ws.execute(cmd);
     const err = new TextDecoder().decode(result.stderr).trim();
     process.stdout.write(`=== ${name} ===\n`);
