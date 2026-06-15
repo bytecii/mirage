@@ -217,3 +217,21 @@ def test_load_events_empty_snapshot_still_clears():
     _log_command(obs, "old", "s1", 1.0)
     asyncio.run(obs.load_events([]))
     assert asyncio.run(obs.events()) == []
+
+
+def test_load_events_skips_foreign_format_entries():
+    obs = Observer()
+    foreign = {
+        "agent": "default",
+        "command": "cat /a | wc -l",
+        "stdout": b"5\n",
+        "tree": {
+            "command": "cat /a | wc -l",
+            "children": []
+        },
+        "session_id": "default",
+    }
+    native = {"type": EVENT_COMMAND, "session": "s1", "command": "echo hi"}
+    asyncio.run(obs.load_events([foreign, native]))
+    events = asyncio.run(obs.command_events())
+    assert [e["command"] for e in events] == ["echo hi"]

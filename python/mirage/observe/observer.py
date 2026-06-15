@@ -17,7 +17,7 @@ import time
 
 from mirage.io.types import IOResult
 from mirage.observe.log_entry import (EVENT_CLEAR, EVENT_COMMAND, EVENT_DELETE,
-                                      STDOUT_TRUNCATE, LogEntry)
+                                      EVENT_OP, STDOUT_TRUNCATE, LogEntry)
 from mirage.observe.record import OpRecord
 from mirage.observe.store import ObserverStore, RAMObserverStore
 from mirage.utils.dates import utc_date_folder
@@ -251,13 +251,23 @@ class Observer:
         preserved, which the views never depend on (they filter by
         the session field).
 
+        Foreign-format entries (e.g. the TypeScript snapshot's
+        ExecutionRecord history, which has no ``type`` field and may
+        carry a non-JSON ``stdout``) are skipped: the views filter by
+        ``type`` so they are unusable here anyway, and keeping them
+        would break re-serialization. The TS loader skips Python's
+        entries symmetrically until the history port lands.
+
         Args:
             events (list[dict]): LogEntry dicts from StateKey.HISTORY.
         """
         await self._store.clear()
         day = utc_date_folder()
+        known = (EVENT_COMMAND, EVENT_CLEAR, EVENT_DELETE, EVENT_OP)
         by_session: dict[str, list[str]] = {}
         for e in events:
+            if e.get("type") not in known:
+                continue
             session = e.get("session", "default")
             by_session.setdefault(session, []).append(
                 json.dumps(e, separators=(",", ":")))
