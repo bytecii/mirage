@@ -12,19 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { readFileSync } from 'node:fs'
 import { defineConfig } from 'tsup'
-
-const { version } = JSON.parse(
-  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
-) as { version: string }
 
 export default defineConfig({
   entry: ['src/index.ts', 'src/bin/mirage.ts'],
   format: ['esm'],
-  define: {
-    __CLI_VERSION__: JSON.stringify(version),
-  },
   dts: {
     compilerOptions: {
       ignoreDeprecations: '6.0',
