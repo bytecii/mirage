@@ -15,7 +15,9 @@
 import {
   normMountPrefix,
   resourceStateRequiresOverride,
+  toStateDict,
   type Workspace as CoreWorkspace,
+  type WorkspaceStateDict,
 } from '@struktoai/mirage-core'
 import { buildResource, Workspace, type Resource } from '@struktoai/mirage-node'
 
@@ -42,7 +44,7 @@ export async function buildOverrideResources(
 
 function existingRedactedResources(
   src: CoreWorkspace,
-  state: Awaited<ReturnType<CoreWorkspace['toStateDict']>>,
+  state: WorkspaceStateDict,
   skip: Set<string>,
 ): Record<string, Resource> {
   const prefixToResource: Record<string, Resource> = {}
@@ -54,7 +56,7 @@ function existingRedactedResources(
     const prefix = normMountPrefix(m.prefix)
     if (skip.has(prefix)) continue
     const resource = prefixToResource[prefix]
-    if (resource !== undefined && resourceStateRequiresOverride(m.resourceState)) {
+    if (resource !== undefined && resourceStateRequiresOverride(m.resource_state)) {
       out[prefix] = resource
     }
   }
@@ -66,7 +68,7 @@ export async function cloneWorkspaceWithOverride(
   override: OverrideShape | null,
 ): Promise<Workspace> {
   const overrideResources = await buildOverrideResources(override)
-  const state = await src.toStateDict()
+  const state = await toStateDict(src)
   const existing = existingRedactedResources(src, state, new Set(Object.keys(overrideResources)))
   const merged = { ...existing, ...overrideResources }
   return Workspace.fromState(state, {}, merged)

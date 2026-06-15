@@ -12,143 +12,260 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { CacheEntry } from '../../cache/file/entry.ts'
-import type { RAMFileCacheStore } from '../../cache/file/ram.ts'
+import { CacheEntry } from '../../cache/file/entry.ts'
+import { RAMFileCacheStore } from '../../cache/file/ram.ts'
 import type { Resource } from '../../resource/base.ts'
-import type { RAMResourceState } from '../../resource/ram/ram.ts'
+import { RAMResource, type RAMResourceState } from '../../resource/ram/ram.ts'
 import { resourceStateRequiresOverride } from '../../resource/secrets.ts'
-import { ConsistencyPolicy, ResourceName, type MountMode } from '../../types.ts'
+import { Job, JobStatus } from '../../shell/job_table.ts'
+import { ConsistencyPolicy, MountMode } from '../../types.ts'
+import { ExecutionNode, ExecutionRecord } from '../types.ts'
+import { VERSION } from '../../version.ts'
+import type { Workspace } from '../workspace.ts'
 import type { MountArgs } from './config.ts'
-import { CacheKey, MountKey, ResourceStateKey, StateKey } from './keys.ts'
+import { captureFingerprints, liveOnlyMountPrefixes } from './drift.ts'
+import type {
+  CacheEntrySnapshot,
+  ExecutionNodeSnapshot,
+  ExecutionRecordSnapshot,
+  FingerprintEntrySnapshot,
+  JobSnapshot,
+  MountSnapshot,
+  ResourceState,
+  SessionSnapshot,
+  WorkspaceStateDict,
+} from './types.ts'
 import { FORMAT_VERSION, normMountPrefix } from './utils.ts'
 
-type AnyDict = Record<string, unknown>
+const VALID_MODES: readonly string[] = [MountMode.READ, MountMode.WRITE, MountMode.EXEC]
 
-const MIRAGE_VERSION = 'unknown'
-
-interface WorkspaceLike {
-  readonly observer: { readonly prefix: string } | null
-  readonly cache: RAMFileCacheStore
-  readonly records: unknown
-  listMounts(): { prefix: string; mode: MountMode; resource: Resource }[]
-  snapshotSessions(): AnyDict[]
-  snapshotDefaultSessionId(): string
-  snapshotDefaultAgentId(): string
-  snapshotCurrentAgentId(): string
-  snapshotCacheMaxDrainBytes(): number | null
-  snapshotHistory(): AnyDict[] | null
-  snapshotJobs(): AnyDict[]
+function nodeToSnapshot(n: ExecutionNode): ExecutionNodeSnapshot {
+  return {
+    command: n.command,
+    op: n.op,
+    stderr: n.stderr,
+    exit_code: n.exitCode,
+    children: n.children.map((c) => nodeToSnapshot(c)),
+  }
 }
 
-export function toStateDict(ws: WorkspaceLike): AnyDict {
-  const autoPrefixes = new Set(['/dev/'])
-  if (ws.observer !== null) autoPrefixes.add(normMountPrefix(ws.observer.prefix))
+function nodeFromSnapshot(s: ExecutionNodeSnapshot): ExecutionNode {
+  return new ExecutionNode({
+    command: s.command,
+    op: s.op,
+    stderr: s.stderr,
+    exitCode: s.exit_code,
+    children: s.children.map((c) => nodeFromSnapshot(c)),
+  })
+}
 
-  const mountsState: AnyDict[] = []
-  let idx = 0
-  for (const m of ws.listMounts()) {
-    if (autoPrefixes.has(m.prefix)) continue
-    const resource = m.resource as { getState?: () => RAMResourceState; kind: string }
-    const resState = resource.getState !== undefined ? resource.getState() : null
-    mountsState.push({
-      [MountKey.INDEX]: idx,
-      [MountKey.PREFIX]: m.prefix,
-      [MountKey.MODE]: m.mode,
-      [MountKey.CONSISTENCY]: ConsistencyPolicy.LAZY,
-      [MountKey.RESOURCE_CLASS]: resource.kind,
-      [MountKey.RESOURCE_STATE]: resState,
-    })
-    idx += 1
-  }
-
-  const cache = ws.cache
-  const cacheEntries: AnyDict[] = cache.snapshotEntries().map(({ key, entry }) => ({
-    [CacheKey.KEY]: key,
-    [CacheKey.DATA]: cache.store.files.get(key) ?? new Uint8Array(0),
-    [CacheKey.FINGERPRINT]: entry.fingerprint,
-    [CacheKey.TTL]: entry.ttl,
-    [CacheKey.CACHED_AT]: entry.cachedAt,
-    [CacheKey.SIZE]: entry.size,
-  }))
-
+function recordToSnapshot(r: ExecutionRecord): ExecutionRecordSnapshot {
   return {
-    [StateKey.VERSION]: FORMAT_VERSION,
-    [StateKey.MIRAGE_VERSION]: MIRAGE_VERSION,
-    [StateKey.MOUNTS]: mountsState,
-    [StateKey.SESSIONS]: ws.snapshotSessions(),
-    [StateKey.DEFAULT_SESSION_ID]: ws.snapshotDefaultSessionId(),
-    [StateKey.DEFAULT_AGENT_ID]: ws.snapshotDefaultAgentId(),
-    [StateKey.CURRENT_AGENT_ID]: ws.snapshotCurrentAgentId(),
-    [StateKey.CACHE]: {
-      [CacheKey.LIMIT]: cache.cacheLimit,
-      [CacheKey.MAX_DRAIN_BYTES]: ws.snapshotCacheMaxDrainBytes(),
-      [CacheKey.ENTRIES]: cacheEntries,
+    agent: r.agent,
+    command: r.command,
+    stdout: r.stdout,
+    stdin: r.stdin,
+    exit_code: r.exitCode,
+    tree: nodeToSnapshot(r.tree),
+    timestamp: r.timestamp,
+    session_id: r.sessionId,
+  }
+}
+
+function recordFromSnapshot(s: ExecutionRecordSnapshot): ExecutionRecord {
+  return new ExecutionRecord({
+    agent: s.agent,
+    command: s.command,
+    stdout: s.stdout,
+    stdin: s.stdin,
+    exitCode: s.exit_code,
+    tree: nodeFromSnapshot(s.tree),
+    timestamp: s.timestamp,
+    sessionId: s.session_id,
+  })
+}
+
+export async function toStateDict(ws: Workspace): Promise<WorkspaceStateDict> {
+  const observerPrefix = normMountPrefix(ws.observer.prefix)
+  const skip = new Set([observerPrefix, '/.sessions/', '/dev/'])
+  const mounts = [...ws.registry.allMounts()].filter((m) => !skip.has(m.prefix))
+  const mountSnapshots: MountSnapshot[] = []
+  for (let i = 0; i < mounts.length; i++) {
+    const m = mounts[i]
+    if (m === undefined) continue
+    const resource = m.resource as unknown as {
+      kind: string
+      getState: () => ResourceState | Promise<ResourceState>
+    }
+    const state = await Promise.resolve(resource.getState())
+    mountSnapshots.push({
+      index: i,
+      prefix: m.prefix,
+      mode: m.mode,
+      consistency: ConsistencyPolicy.LAZY,
+      resource_class: resource.kind,
+      resource_state: state,
+    })
+  }
+  const ramCache = ws.cache instanceof RAMFileCacheStore ? ws.cache : null
+  const cacheEntries: CacheEntrySnapshot[] =
+    ramCache !== null
+      ? ramCache.snapshotEntries().map(({ key, entry }) => ({
+          key,
+          data: ramCache.store.files.get(key) ?? new Uint8Array(),
+          fingerprint: entry.fingerprint,
+          ttl: entry.ttl,
+          cached_at: entry.cachedAt,
+          size: entry.size,
+        }))
+      : []
+  const sessions: SessionSnapshot[] = ws.sessionManager.list().map((s) => ({
+    session_id: s.sessionId,
+    cwd: s.cwd,
+    env: s.env,
+  }))
+  const jobs: JobSnapshot[] = ws.jobTable
+    .listJobs()
+    .filter((j) => j.status !== JobStatus.RUNNING)
+    .map((j) => ({
+      id: j.id,
+      command: j.command,
+      cwd: j.cwd,
+      status: j.status,
+      stdout: j.stdout,
+      stderr: j.stderr,
+      exit_code: j.exitCode,
+      created_at: j.createdAt,
+      agent: j.agent,
+      session_id: j.sessionId,
+    }))
+  const historyRecords = ws.history.entries().map((r) => recordToSnapshot(r))
+  const fingerprints: FingerprintEntrySnapshot[] = captureFingerprints(ws.records, ws.registry)
+  const liveOnly = liveOnlyMountPrefixes(ws.registry)
+  return {
+    version: FORMAT_VERSION,
+    mirage_version: VERSION,
+    default_session_id: ws.sessionManager.defaultId,
+    default_agent_id: ws.agentId,
+    current_agent_id: ws.agentId,
+    sessions,
+    mounts: mountSnapshots,
+    cache: {
+      limit: ws.cache.cacheLimit,
+      max_drain_bytes: ramCache !== null ? ramCache.maxDrainBytes : null,
+      entries: cacheEntries,
     },
-    [StateKey.HISTORY]: ws.snapshotHistory(),
-    [StateKey.JOBS]: ws.snapshotJobs(),
+    history: historyRecords,
+    jobs,
+    fingerprints,
+    live_only_mounts: liveOnly,
   }
 }
 
 export function buildMountArgs(
-  state: AnyDict,
-  resources?: Record<string, Resource> | null,
-  constructRam: () => Resource = () => {
-    throw new Error('RAM constructor not provided')
-  },
+  state: WorkspaceStateDict,
+  overrides: Record<string, Resource> = {},
 ): MountArgs {
-  const savedVersion = state[StateKey.VERSION] as number | undefined
-  if (savedVersion !== undefined && savedVersion < FORMAT_VERSION) {
+  if (state.version < FORMAT_VERSION) {
     throw new Error(
-      `snapshot format v${String(savedVersion)} not supported (loader expects v${String(FORMAT_VERSION)})`,
+      `snapshot format v${String(state.version)} not supported ` +
+        `(loader expects v${String(FORMAT_VERSION)})`,
     )
   }
-  const overrides: Record<string, Resource> = {}
-  for (const [k, v] of Object.entries(resources ?? {})) overrides[normMountPrefix(k)] = v
-
-  const mounts = (state[StateKey.MOUNTS] as AnyDict[] | undefined) ?? []
-  const missing: string[] = []
-  for (const m of mounts) {
-    const resState = (m[MountKey.RESOURCE_STATE] as AnyDict | undefined) ?? {}
-    if (
-      resourceStateRequiresOverride(resState) &&
-      !(normMountPrefix(m[MountKey.PREFIX] as string) in overrides)
-    ) {
-      missing.push(m[MountKey.PREFIX] as string)
-    }
-  }
+  const missing = state.mounts
+    .filter(
+      (m) => overrides[m.prefix] === undefined && resourceStateRequiresOverride(m.resource_state),
+    )
+    .map((m) => m.prefix)
   if (missing.length > 0) {
-    throw new Error(`Workspace.load: resources= must include overrides for: ${missing.join(', ')}`)
+    throw new Error(
+      `Workspace.load: resources= must include overrides for: ${missing.join(', ')}. ` +
+        `These mounts were saved with redacted creds or transient connection state ` +
+        `and need fresh resources.`,
+    )
   }
-
   const mountArgs: Record<string, [Resource, MountMode]> = {}
-  for (const m of mounts) {
-    const prefix = normMountPrefix(m[MountKey.PREFIX] as string)
-    const resource = prefix in overrides ? overrides[prefix] : constructResource(m, constructRam)
-    if (resource === undefined) continue
-    mountArgs[m[MountKey.PREFIX] as string] = [resource, m[MountKey.MODE] as MountMode]
+  for (const m of state.mounts) {
+    if (!VALID_MODES.includes(m.mode)) {
+      throw new Error(`Workspace.fromState: mount '${m.prefix}' has invalid mode '${m.mode}'`)
+    }
+    mountArgs[m.prefix] = [overrides[m.prefix] ?? new RAMResource(), m.mode as MountMode]
   }
-
   return {
     mountArgs,
     consistency: ConsistencyPolicy.LAZY,
-    defaultSessionId: (state[StateKey.DEFAULT_SESSION_ID] as string | undefined) ?? 'default',
-    defaultAgentId: (state[StateKey.DEFAULT_AGENT_ID] as string | undefined) ?? 'default',
+    defaultSessionId: state.default_session_id,
+    defaultAgentId: state.default_agent_id,
   }
 }
 
-function constructResource(mount: AnyDict, constructRam: () => Resource): Resource | undefined {
-  const ps = (mount[MountKey.RESOURCE_STATE] as AnyDict | undefined) ?? {}
-  const ptype = ps[ResourceStateKey.TYPE] as string
-  if (ptype === ResourceName.RAM) return constructRam()
-  return undefined
+export async function applyStateDict(ws: Workspace, state: WorkspaceStateDict): Promise<void> {
+  for (const m of state.mounts) {
+    if (resourceStateRequiresOverride(m.resource_state)) continue
+    const mount = ws.registry.mountFor(m.prefix)
+    if (mount === null) continue
+    const resource = mount.resource as unknown as {
+      loadState: (state: ResourceState) => void | Promise<void>
+    }
+    await Promise.resolve(resource.loadState(m.resource_state as RAMResourceState))
+  }
+  restoreSessions(ws, state)
+  // current_agent_id is not restored separately: TS models a single
+  // readonly agentId, set to default_agent_id at construction (== current).
+  restoreCache(ws, state)
+  await restoreHistory(ws, state)
+  restoreJobs(ws, state)
 }
 
-export interface ApplyStateCallbacks {
-  loadMountState: (prefix: string, state: AnyDict) => void
-  loadCacheEntry: (key: string, data: Uint8Array, entry: CacheEntry) => void
-  restoreSession: (sessionData: AnyDict) => void
-  restoreHistory: (records: AnyDict[]) => void
-  restoreJob: (jobData: AnyDict) => void
-  setCurrentAgentId: (id: string) => void
-  setCacheMaxDrainBytes: (n: number | null) => void
+function restoreSessions(ws: Workspace, state: WorkspaceStateDict): void {
+  for (const s of state.sessions) {
+    const exists = ws.sessionManager.list().some((x) => x.sessionId === s.session_id)
+    const session = exists
+      ? ws.sessionManager.get(s.session_id)
+      : ws.sessionManager.create(s.session_id)
+    session.cwd = s.cwd
+    session.env = s.env
+  }
+}
+
+function restoreCache(ws: Workspace, state: WorkspaceStateDict): void {
+  if (!(ws.cache instanceof RAMFileCacheStore)) return
+  for (const e of state.cache.entries) {
+    ws.cache.loadEntry(
+      e.key,
+      e.data,
+      new CacheEntry({
+        size: e.size,
+        cachedAt: e.cached_at,
+        fingerprint: e.fingerprint,
+        ttl: e.ttl,
+      }),
+    )
+  }
+}
+
+async function restoreHistory(ws: Workspace, state: WorkspaceStateDict): Promise<void> {
+  ws.history.clear()
+  for (const r of state.history) {
+    await ws.history.append(recordFromSnapshot(r))
+  }
+}
+
+function restoreJobs(ws: Workspace, state: WorkspaceStateDict): void {
+  for (const j of state.jobs) {
+    ws.jobTable.loadJob(
+      new Job({
+        id: j.id,
+        command: j.command,
+        cwd: j.cwd,
+        agent: j.agent,
+        sessionId: j.session_id,
+        createdAt: j.created_at,
+        status: j.status as JobStatus,
+        stdout: j.stdout,
+        stderr: j.stderr,
+        exitCode: j.exit_code,
+      }),
+    )
+  }
 }

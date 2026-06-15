@@ -94,8 +94,8 @@ describe('captureFingerprints', () => {
     const records = [makeRecord('/s3/a', 'fp-a'), makeRecord('/s3/b', 'fp-b', 'rev-b')]
     const entries = captureFingerprints(records, registry)
     expect(entries).toEqual([
-      { path: '/s3/a', mountPrefix: '/s3/', fingerprint: 'fp-a' },
-      { path: '/s3/b', mountPrefix: '/s3/', fingerprint: 'fp-b', revision: 'rev-b' },
+      { path: '/s3/a', mount_prefix: '/s3/', fingerprint: 'fp-a' },
+      { path: '/s3/b', mount_prefix: '/s3/', fingerprint: 'fp-b', revision: 'rev-b' },
     ])
   })
 

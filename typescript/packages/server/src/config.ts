@@ -17,6 +17,7 @@ import { parse as parseYaml } from 'yaml'
 import {
   buildResource,
   CommandSafeguard,
+  ConsistencyPolicy,
   MountMode,
   OnExceed,
   RAMFileCacheStore,
@@ -36,6 +37,15 @@ function coerceMountMode(value: string | undefined, fallback: MountMode): MountM
   return lower as MountMode
 }
 
+const VALID_CONSISTENCY = new Set<string>([ConsistencyPolicy.LAZY, ConsistencyPolicy.ALWAYS])
+
+function coerceConsistency(value: string | undefined): ConsistencyPolicy {
+  if (value === undefined) return ConsistencyPolicy.LAZY
+  const lower = value.toLowerCase()
+  if (!VALID_CONSISTENCY.has(lower)) throw new Error(`invalid consistency: ${value}`)
+  return lower as ConsistencyPolicy
+}
+
 const VALID_ON_EXCEED = new Set<string>([OnExceed.ERROR, OnExceed.TRUNCATE])
 
 function coerceOnExceed(value: string): OnExceed {
@@ -45,11 +55,52 @@ function coerceOnExceed(value: string): OnExceed {
   return value.toLowerCase() as OnExceed
 }
 
+function snakeToCamel(key: string): string {
+  let out = ''
+  let upper = false
+  for (const ch of key) {
+    if (ch === '_') {
+      upper = true
+      continue
+    }
+    out += upper ? ch.toUpperCase() : ch
+    upper = false
+  }
+  return out
+}
+
+function camelizeKeys(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(obj)) out[snakeToCamel(k)] = v
+  return out
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+}
+
+// Workspace YAML uses Python's snake_case keys (default_session_id, the
+// cache/index key_prefix/max_drain_bytes, ...). TS code stays camelCase, so
+// normalize at the boundary: camelize the top-level keys plus the cache and
+// index blocks. Mounts are left untouched on purpose, their `config:` blocks
+// carry resource credentials whose snake_case keys (aws_access_key_id, ...)
+// are consumed downstream as-is, and command_safeguards is camelized later.
+function normalizeConfigKeys(raw: Record<string, unknown>): Record<string, unknown> {
+  const out = camelizeKeys(raw)
+  if (isPlainObject(out.cache)) out.cache = camelizeKeys(out.cache)
+  if (isPlainObject(out.index)) out.index = camelizeKeys(out.index)
+  return out
+}
+
+// Workspace YAML uses Python's snake_case keys (command_safeguards, max_lines,
+// on_exceed, ...). The in-memory config stays camelCase, so normalize each
+// block's keys at the boundary before constructing the safeguard.
 function parseSafeguards(
-  raw: Record<string, RawSafeguardBlock> | undefined,
+  raw: Record<string, Record<string, unknown>> | undefined,
 ): Record<string, CommandSafeguard> {
   const out: Record<string, CommandSafeguard> = {}
-  for (const [cmd, block] of Object.entries(raw ?? {})) {
+  for (const [cmd, rawBlock] of Object.entries(raw ?? {})) {
+    const block = camelizeKeys(rawBlock) as RawSafeguardBlock
     out[cmd] = new CommandSafeguard({
       ...(block.maxBytes !== undefined ? { maxBytes: block.maxBytes } : {}),
       ...(block.maxLines !== undefined ? { maxLines: block.maxLines } : {}),
@@ -107,7 +158,7 @@ export interface MountBlock {
   resource: string
   mode?: string
   config?: Record<string, unknown>
-  commandSafeguards?: Record<string, RawSafeguardBlock>
+  command_safeguards?: Record<string, Record<string, unknown>>
 }
 
 export interface RamCacheBlock {
@@ -173,7 +224,8 @@ export function loadWorkspaceConfig(
   }
   const useEnv = env ?? readProcessEnv()
   const interpolated = interpolateEnv(raw, useEnv)
-  const mounts = interpolated.mounts
+  const normalized = normalizeConfigKeys(interpolated)
+  const mounts = normalized.mounts
   if (
     mounts === undefined ||
     typeof mounts !== 'object' ||
@@ -182,15 +234,18 @@ export function loadWorkspaceConfig(
   ) {
     throw new Error('config requires a `mounts` mapping')
   }
-  return interpolated as unknown as WorkspaceConfigRaw
+  return normalized as unknown as WorkspaceConfigRaw
 }
 
 export interface WorkspaceArgs {
   resources: Record<string, [Resource, MountMode, Record<string, CommandSafeguard>]>
   options: {
     mode: MountMode
+    consistency: ConsistencyPolicy
     sessionId: string
     agentId: string
+    fuse?: boolean
+    historyLimit?: number
     cache?: FileCache & Resource
     index?: IndexConfig
   }
@@ -232,11 +287,12 @@ function buildIndex(
 
 export async function configToWorkspaceArgs(cfg: WorkspaceConfigRaw): Promise<WorkspaceArgs> {
   const wsMode = coerceMountMode(cfg.mode, MountMode.WRITE)
+  const consistency = coerceConsistency(cfg.consistency)
   const resources: Record<string, [Resource, MountMode, Record<string, CommandSafeguard>]> = {}
   for (const [prefix, block] of Object.entries(cfg.mounts)) {
     const r = await buildResource(block.resource, block.config ?? {})
     const m = coerceMountMode(block.mode, wsMode)
-    resources[prefix] = [r, m, parseSafeguards(block.commandSafeguards)]
+    resources[prefix] = [r, m, parseSafeguards(block.command_safeguards)]
   }
   const cache = buildCache(cfg.cache)
   const index = buildIndex(cfg.index)
@@ -244,8 +300,11 @@ export async function configToWorkspaceArgs(cfg: WorkspaceConfigRaw): Promise<Wo
     resources,
     options: {
       mode: wsMode,
+      consistency,
       sessionId: cfg.defaultSessionId ?? 'default',
       agentId: cfg.defaultAgentId ?? 'default',
+      ...(cfg.fuse === true ? { fuse: true } : {}),
+      ...(typeof cfg.history === 'number' ? { historyLimit: cfg.history } : {}),
       ...(cache !== undefined ? { cache } : {}),
       ...(index !== undefined ? { index } : {}),
     },

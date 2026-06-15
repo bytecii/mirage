@@ -34,6 +34,9 @@ jobs:
             hit:
               - 'python/**'
               - 'typescript/**'
+              - 'integ/cross.sh'
+              - 'integ/cross.yaml'
+              - 'integ/parity.sh'
               - '.github/workflows/test_cli.yml'
 
   python:
@@ -186,6 +189,38 @@ jobs:
             $MIRAGE execute -w sgerr -c 'cat /f.txt'
           $MIRAGE workspace delete sg
           $MIRAGE workspace delete sgerr
+
+          echo
+          echo "--- top-level snake_case config keys"
+          cat > /tmp/cfgkeys.yaml <<'YAML'
+          mounts:
+            /:
+              resource: ram
+              mode: WRITE
+          default_session_id: mysess
+          default_agent_id: myagent
+          history: 5
+          cache:
+            type: ram
+            limit: 256MB
+            max_drain_bytes: 1048576
+          index:
+            type: ram
+            ttl: 600
+          YAML
+          $MIRAGE workspace delete cfgkeys > /dev/null 2>&1 || true
+          sid=$($MIRAGE workspace create /tmp/cfgkeys.yaml --id cfgkeys | jq -r '.sessions[0].sessionId // .sessions[0].session_id')
+          echo "  default_session_id (snake) => $sid (expected mysess)"
+          if [ "$sid" != "mysess" ]; then
+            echo "FAIL: snake_case top-level keys not applied"
+            fail=1
+          else
+            echo "PASS"
+          fi
+          $MIRAGE execute -w cfgkeys -c "printf 'x\ny\n' > /f.txt" > /dev/null
+          check "ops work with snake_case cache/index configured => exit 0" 0 0 \
+            $MIRAGE execute -w cfgkeys -c 'cat /f.txt'
+          $MIRAGE workspace delete cfgkeys
 
           curl_check() {
             local desc="$1"
@@ -398,6 +433,83 @@ jobs:
             fail=1
           fi
 
+          echo
+          echo "--- per-mount command safeguards"
+          cat > /tmp/sg.yaml <<'YAML'
+          mounts:
+            /:
+              resource: ram
+              mode: WRITE
+              command_safeguards:
+                cat:
+                  max_lines: 2
+                  on_exceed: truncate
+          YAML
+          cat > /tmp/sgerr.yaml <<'YAML'
+          mounts:
+            /:
+              resource: ram
+              mode: WRITE
+              command_safeguards:
+                cat:
+                  max_lines: 2
+                  on_exceed: error
+          YAML
+          $MIRAGE workspace delete sg > /dev/null 2>&1 || true
+          $MIRAGE workspace delete sgerr > /dev/null 2>&1 || true
+          $MIRAGE workspace create /tmp/sg.yaml --id sg
+          $MIRAGE workspace create /tmp/sgerr.yaml --id sgerr
+          $MIRAGE execute -w sg -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
+          $MIRAGE execute -w sgerr -c "printf '1\n2\n3\n4\n5\n' > /f.txt" > /dev/null
+
+          check "cat over max_lines, on_exceed=truncate => exit 0" 0 0 \
+            $MIRAGE execute -w sg -c 'cat /f.txt'
+          echo "+ verify truncated to 2 lines"
+          lines=$($MIRAGE execute -w sg -c 'cat /f.txt' | jq -r '.stdout' | grep -c .)
+          echo "  truncated stdout lines: $lines (expected 2)"
+          if [ "$lines" != "2" ]; then
+            echo "FAIL: truncate did not cap to 2 lines"
+            fail=1
+          else
+            echo "PASS"
+          fi
+          check "cat over max_lines, on_exceed=error => exit 1" 1 1 \
+            $MIRAGE execute -w sgerr -c 'cat /f.txt'
+          $MIRAGE workspace delete sg
+          $MIRAGE workspace delete sgerr
+
+          echo
+          echo "--- top-level snake_case config keys"
+          cat > /tmp/cfgkeys.yaml <<'YAML'
+          mounts:
+            /:
+              resource: ram
+              mode: WRITE
+          default_session_id: mysess
+          default_agent_id: myagent
+          history: 5
+          cache:
+            type: ram
+            limit: 256MB
+            max_drain_bytes: 1048576
+          index:
+            type: ram
+            ttl: 600
+          YAML
+          $MIRAGE workspace delete cfgkeys > /dev/null 2>&1 || true
+          sid=$($MIRAGE workspace create /tmp/cfgkeys.yaml --id cfgkeys | jq -r '.sessions[0].sessionId // .sessions[0].session_id')
+          echo "  default_session_id (snake) => $sid (expected mysess)"
+          if [ "$sid" != "mysess" ]; then
+            echo "FAIL: snake_case top-level keys not applied"
+            fail=1
+          else
+            echo "PASS"
+          fi
+          $MIRAGE execute -w cfgkeys -c "printf 'x\ny\n' > /f.txt" > /dev/null
+          check "ops work with snake_case cache/index configured => exit 0" 0 0 \
+            $MIRAGE execute -w cfgkeys -c 'cat /f.txt'
+          $MIRAGE workspace delete cfgkeys
+
           curl_check() {
             local desc="$1"
             local expected="$2"
@@ -491,10 +603,106 @@ jobs:
             exit 1
           fi
 
+  cross:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.hit == 'true') }}
+    name: Cross-language snapshot interop
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      REDIS_URL: redis://localhost:6379/0
+      S3_BUCKET: mirage-cross
+      S3_ENDPOINT: http://localhost:9000
+      S3_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio123
+      CROSS_DISK_ROOT: /tmp/mirage-cross-disk
+      CROSS_REDIS_PREFIX: mirage-cross/
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install Python dependencies
+        working-directory: python
+        run: uv sync --all-extras --no-extra camel
+
+      - name: Install mirage package
+        working-directory: python
+        run: uv pip install .
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.32.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install TypeScript dependencies
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Build TypeScript packages
+        working-directory: typescript
+        run: pnpm -r build
+
+      - name: Start MinIO
+        run: |
+          for i in $(seq 1 5); do
+            docker pull minio/minio:latest && break
+            echo "docker pull failed (attempt $i), retrying"; sleep 10
+          done
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minio -e MINIO_ROOT_PASSWORD=minio123 \
+            minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:9000/minio/health/live && break
+            sleep 1
+          done
+
+      - name: Create MinIO bucket
+        run: |
+          curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /tmp/mc
+          chmod +x /tmp/mc
+          /tmp/mc alias set local http://localhost:9000 minio minio123
+          /tmp/mc mb local/mirage-cross || true
+
+      - name: Run cross-language snapshot interop (both directions)
+        run: |
+          bash integ/cross.sh \
+            "python/.venv/bin/mirage" \
+            "node typescript/packages/cli/dist/bin/mirage.js"
+
+      - name: Run CLI feature parity (subshell, sessions, versioning, fuse)
+        run: |
+          bash integ/parity.sh \
+            "python/.venv/bin/mirage" \
+            "node typescript/packages/cli/dist/bin/mirage.js"
+
   gate:
     name: cli-gate
     runs-on: ubuntu-latest
-    needs: [changes, python, typescript]
+    needs: [changes, python, typescript, cross]
     if: always()
     steps:
       - name: Check required jobs

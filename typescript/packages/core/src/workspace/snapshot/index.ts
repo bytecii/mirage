@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+export { snapshot } from './api.ts'
 export type { MountArgs } from './config.ts'
 export {
   CacheKey,
@@ -24,8 +25,20 @@ export {
   StateKey,
 } from './keys.ts'
 export { resolveManifest, splitManifestAndBlobs } from './manifest.ts'
-export { buildMountArgs, toStateDict } from './state.ts'
-export type { ApplyStateCallbacks } from './state.ts'
+export { applyStateDict, buildMountArgs, toStateDict } from './state.ts'
 export type { CompressMode } from './tar_io.ts'
 export { readSnapshotTar, writeSnapshotTar } from './tar_io.ts'
+export type {
+  CacheEntrySnapshot,
+  CacheSnapshot,
+  ExecutionNodeSnapshot,
+  ExecutionRecordSnapshot,
+  FingerprintEntrySnapshot,
+  JobSnapshot,
+  MountSnapshot,
+  ResourceState,
+  ResourceStateBase,
+  SessionSnapshot,
+  WorkspaceStateDict,
+} from './types.ts'
 export { BLOB_REF_KEY, FORMAT_VERSION, isSafeBlobPath, normMountPrefix } from './utils.ts'

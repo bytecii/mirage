@@ -12,10 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { Workspace as CoreWorkspace } from '@struktoai/mirage-core'
-import { lstripSlash, stripSlash } from '@struktoai/mirage-core'
+import { lstripSlash, stripSlash, type WorkspaceStateDict } from '@struktoai/mirage-core'
 
-export type WorkspaceStateDict = Awaited<ReturnType<CoreWorkspace['toStateDict']>>
+export type { WorkspaceStateDict }
 
 type AnyDict = Record<string, unknown>
 
@@ -73,7 +72,7 @@ export function treeInputsFromState(state: WorkspaceStateDict): TreeInputs {
   const mountsMeta: AnyDict[] = []
   for (const mount of state.mounts as unknown as AnyDict[]) {
     const prefix = mount.prefix as string
-    const resourceState = { ...(mount.resourceState as AnyDict) }
+    const resourceState = { ...(mount.resource_state as AnyDict) }
     const files = (resourceState.files as Record<string, Uint8Array> | undefined) ?? {}
     delete resourceState.files
     for (const [rel, data] of Object.entries(files)) entries[treePath(prefix, rel)] = data
@@ -81,7 +80,7 @@ export function treeInputsFromState(state: WorkspaceStateDict): TreeInputs {
       index: mount.index,
       prefix,
       mode: mount.mode,
-      resourceClass: mount.resourceClass,
+      resourceClass: mount.resource_class,
       resourceState,
     })
   }
@@ -95,7 +94,7 @@ export function treeInputsFromState(state: WorkspaceStateDict): TreeInputs {
       key: entry.key,
       fingerprint: entry.fingerprint ?? null,
       ttl: entry.ttl ?? null,
-      cachedAt: entry.cachedAt ?? 0,
+      cachedAt: entry.cached_at ?? 0,
       size: entry.size ?? 0,
       ref,
     })
@@ -106,7 +105,7 @@ export function treeInputsFromState(state: WorkspaceStateDict): TreeInputs {
     mounts: mountsMeta,
     cache: { limit: cache.limit, entries: cacheMeta },
     fingerprints: (state.fingerprints as unknown[] | undefined) ?? [],
-    liveOnlyMounts: state.liveOnlyMounts ?? [],
+    liveOnlyMounts: state.live_only_mounts ?? [],
   }
   return { entries, meta }
 }
@@ -130,8 +129,8 @@ export function toState(
       index: mount.index,
       prefix,
       mode: mount.mode,
-      resourceClass: mount.resourceClass,
-      resourceState,
+      resource_class: mount.resourceClass,
+      resource_state: resourceState,
     })
   }
 
@@ -140,7 +139,7 @@ export function toState(
     data: entries[c.ref as string],
     fingerprint: c.fingerprint ?? null,
     ttl: c.ttl ?? null,
-    cachedAt: c.cachedAt ?? 0,
+    cached_at: c.cachedAt ?? 0,
     size: c.size ?? 0,
   }))
 
@@ -148,8 +147,10 @@ export function toState(
     version: meta.version,
     mounts,
     cache: { limit: meta.cache.limit, entries: cacheEntries },
+    sessions: [],
     history: [],
+    jobs: [],
     fingerprints: meta.fingerprints,
-    liveOnlyMounts: meta.liveOnlyMounts,
+    live_only_mounts: meta.liveOnlyMounts,
   } as unknown as WorkspaceStateDict
 }

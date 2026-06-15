@@ -44,7 +44,7 @@ export class ContentDriftError extends Error {
 
 export interface FingerprintEntry {
   path: string
-  mountPrefix: string
+  mount_prefix: string
   fingerprint?: string | null
   revision?: string | null
 }
@@ -81,7 +81,7 @@ export function captureFingerprints(
     const mount = registry.mountFor(rec.path)
     if (mount === null) continue
     if (mount.resource.supportsSnapshot !== true) continue
-    const entry: FingerprintEntry = { path: rec.path, mountPrefix: mount.prefix }
+    const entry: FingerprintEntry = { path: rec.path, mount_prefix: mount.prefix }
     if (rec.fingerprint !== null) entry.fingerprint = rec.fingerprint
     if (rec.revision !== null) entry.revision = rec.revision
     out.push(entry)

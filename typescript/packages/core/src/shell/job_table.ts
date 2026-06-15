@@ -29,8 +29,9 @@ export type JobTaskResult = [ByteSource | null, IOResult, ExecutionNode]
 export class Job {
   readonly id: number
   readonly command: string
-  readonly task: Promise<JobTaskResult>
-  readonly abort: AbortController
+  // null for jobs restored from a snapshot (already finished, no live task).
+  readonly task: Promise<JobTaskResult> | null
+  readonly abort: AbortController | null
   readonly cwd: string
   readonly agent: string
   readonly sessionId: string
@@ -46,20 +47,29 @@ export class Job {
   constructor(init: {
     id: number
     command: string
-    task: Promise<JobTaskResult>
-    abort: AbortController
+    task?: Promise<JobTaskResult> | null
+    abort?: AbortController | null
     cwd: string
     agent?: string
     sessionId?: string
+    createdAt?: number
+    status?: JobStatus
+    stdout?: Uint8Array
+    stderr?: Uint8Array
+    exitCode?: number
   }) {
     this.id = init.id
     this.command = init.command
-    this.task = init.task
-    this.abort = init.abort
+    this.task = init.task ?? null
+    this.abort = init.abort ?? null
     this.cwd = init.cwd
     this.agent = init.agent ?? 'unknown'
     this.sessionId = init.sessionId ?? DEFAULT_SESSION_ID
-    this.createdAt = Date.now() / 1000
+    this.createdAt = init.createdAt ?? Date.now() / 1000
+    if (init.status !== undefined) this.status = init.status
+    if (init.stdout !== undefined) this.stdout = init.stdout
+    if (init.stderr !== undefined) this.stderr = init.stderr
+    if (init.exitCode !== undefined) this.exitCode = init.exitCode
   }
 }
 
@@ -81,6 +91,11 @@ export class JobTable {
     return job
   }
 
+  loadJob(job: Job): void {
+    this.jobs.set(job.id, job)
+    if (job.id >= this.nextId) this.nextId = job.id + 1
+  }
+
   get(jobId: number): Job | null {
     return this.jobs.get(jobId) ?? null
   }
@@ -96,7 +111,7 @@ export class JobTable {
   kill(jobId: number): boolean {
     const job = this.jobs.get(jobId)
     if (job === undefined) return false
-    job.abort.abort()
+    job.abort?.abort()
     job.status = JobStatus.KILLED
     job.exitCode = 137
     job.stderr = new TextEncoder().encode('Killed')
@@ -109,6 +124,7 @@ export class JobTable {
       throw new Error(`unknown job: ${jobId.toString()}`)
     }
     if (job.status !== JobStatus.RUNNING) return job
+    if (job.task === null) return job
     try {
       const [stdout, ioResult, execNode] = await job.task
       job.stdout = stdout instanceof Uint8Array ? stdout : new Uint8Array()

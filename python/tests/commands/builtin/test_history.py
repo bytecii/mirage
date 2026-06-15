@@ -22,15 +22,6 @@ def ws():
     return Workspace({"/ram": RAMResource()}, mode=MountMode.WRITE)
 
 
-@pytest.fixture
-def ws_no_history():
-    return Workspace(
-        {"/ram": RAMResource()},
-        mode=MountMode.WRITE,
-        history=None,
-    )
-
-
 @pytest.mark.asyncio
 async def test_history_lists_recent_commands(ws):
     await ws.execute("echo hello")
@@ -65,14 +56,6 @@ async def test_history_dash_c_clears(ws):
     lines = [line for line in out.strip().split("\n") if line.strip()]
     assert len(lines) == 1
     assert "history" in lines[-1]
-
-
-@pytest.mark.asyncio
-async def test_history_disabled_workspace_command_not_found(ws_no_history):
-    io = await ws_no_history.execute("history")
-    assert io.exit_code == 127
-    err = (io.stderr or b"").decode()
-    assert "not found" in err or "command not found" in err
 
 
 @pytest.mark.asyncio

@@ -16,16 +16,14 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import {
   createShellParser,
-  ExecuteResult,
   type ExecuteOptions,
+  type ExecuteResult,
   type ProvisionResult,
   type Resource,
-  resolveSafeguard,
   type ShellParser,
   Workspace as CoreWorkspace,
   type WorkspaceOptions,
 } from '@struktoai/mirage-core'
-import { nativeExec, type NativeExecOptions } from './native.ts'
 import { FuseManager } from './workspace/fuse.ts'
 
 const requireCjs = createRequire(import.meta.url)
@@ -45,11 +43,9 @@ function loadShellParser(): Promise<ShellParser> {
 
 export interface NodeWorkspaceOptions extends WorkspaceOptions {
   fuse?: boolean
-  native?: boolean
 }
 
 export class Workspace extends CoreWorkspace {
-  private readonly defaultNative: boolean
   private readonly autoFuseManager: FuseManager | null
   private fuseSetupPromise: Promise<void> | null = null
 
@@ -58,14 +54,29 @@ export class Workspace extends CoreWorkspace {
       ...options,
       shellParserFactory: options.shellParserFactory ?? loadShellParser,
     })
-    this.defaultNative = options.native ?? false
     this.autoFuseManager = options.fuse === true ? new FuseManager() : null
     if (this.autoFuseManager !== null) {
       // Kick off mount eagerly; await inside execute() / close() so callers
       // don't need to await the constructor. Python mirrors this: fuse=True
       // runs setup() during __init__ and __enter__ just returns self.
+      //
+      // A failed auto-mount (e.g. libfuse absent on the host) degrades to an
+      // unmounted but fully usable workspace, mirroring Python: there the mount
+      // runs on a daemon thread so its failure never reaches the main process.
+      // On Node's single event loop we must swallow it here, otherwise the
+      // unhandled rejection would terminate the process under Node's default
+      // unhandled-rejection policy.
       const fm = this.autoFuseManager
-      this.fuseSetupPromise = fm.setup(this).then(() => undefined)
+      this.fuseSetupPromise = fm.setup(this).then(
+        () => undefined,
+        (err: unknown) => {
+          process.stderr.write(
+            `mirage: FUSE auto-mount failed, continuing without it: ${
+              err instanceof Error ? err.message : String(err)
+            }\n`,
+          )
+        },
+      )
     }
   }
 
@@ -93,46 +104,6 @@ export class Workspace extends CoreWorkspace {
     options: ExecuteOptions = {},
   ): Promise<ExecuteResult | ProvisionResult> {
     await this.ensureFuseReady()
-    const useNative = options.native ?? this.defaultNative
-    if (useNative) {
-      const mp = this.fuseMountpoint
-      if (mp === null) {
-        console.warn(
-          'native=true requires FUSE. Install macFUSE (macOS) or libfuse (Linux) ' +
-            'and set ws.setFuseMountpoint(). Falling back to virtual mode.',
-        )
-      } else if (this.ownsFuseMount) {
-        // TODO(fuse-native-deadlock): Node is single-threaded — @zkochan/fuse-native's
-        // napi callbacks share the same event loop as child_process.spawn. Running
-        // nativeExec against a mount we own in this process deadlocks. Python avoids
-        // this via a daemon threading.Thread for FUSE. Fix options: (a) run FUSE in
-        // a worker_thread, (b) spawn a helper process to host the mount. Until then,
-        // raise with a pointer to the workarounds instead of hanging the process.
-        throw new Error(
-          'native=true with a same-process FUSE mount would deadlock ' +
-            '(Node single event loop). Workarounds:\n' +
-            '  1. Mount FUSE in a helper process; call nativeExec from this process.\n' +
-            '  2. Point nativeExec at a mountpoint created by another tool ' +
-            '(then call ws.setFuseMountpoint(path) without using FuseManager).\n' +
-            '  3. Use execute() without native=true (virtual executor is in-process safe).\n' +
-            'See https://mirage.dev/typescript/limitations for details.',
-        )
-      } else {
-        const trimmed = command.trim()
-        const nativeName = trimmed !== '' ? trimmed.split(/\s+/)[0] : undefined
-        const resolved = nativeName !== undefined ? resolveSafeguard(nativeName) : null
-        const nativeTimeout =
-          resolved !== null && resolved.timeoutSeconds !== null && resolved.timeoutSeconds > 0
-            ? resolved.timeoutSeconds
-            : null
-        const opts: NativeExecOptions = { cwd: mp }
-        if (options.signal !== undefined) opts.signal = options.signal
-        if (nativeTimeout !== null) opts.timeoutMs = nativeTimeout * 1000
-        if (nativeName !== undefined) opts.name = nativeName
-        const { stdout, stderr, exitCode } = await nativeExec(command, opts)
-        return new ExecuteResult(stdout, stderr, exitCode)
-      }
-    }
     return super.execute(command, options)
   }
 

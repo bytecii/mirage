@@ -55,6 +55,8 @@ export function splitManifestAndBlobs(state: AnyDict): [AnyDict, Record<string, 
       [CacheKey.ENTRIES]: [],
     },
     [StateKey.JOBS]: [],
+    [StateKey.FINGERPRINTS]: state[StateKey.FINGERPRINTS] ?? [],
+    [StateKey.LIVE_ONLY_MOUNTS]: state[StateKey.LIVE_ONLY_MOUNTS] ?? [],
   }
 
   for (const m of mounts) {
@@ -110,6 +112,13 @@ function mountToManifest(mount: AnyDict, a: BlobAllocator): AnyDict {
       newFiles[rel] = { [BLOB_REF_KEY]: tarPath }
     }
     ps[ResourceStateKey.FILES] = newFiles
+  } else if (ptype === ResourceName.REDIS) {
+    ps[ResourceStateKey.FILES] = stashBlobs(
+      files,
+      a,
+      `_redis${String(idx)}`,
+      `mounts/${String(idx)}/data`,
+    )
   }
   const out: AnyDict = {}
   for (const [k, v] of Object.entries(mount)) {

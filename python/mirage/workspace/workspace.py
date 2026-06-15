@@ -56,7 +56,6 @@ from mirage.workspace.file_prompt import build_file_prompt
 from mirage.workspace.fuse import FuseManager
 from mirage.workspace.history import ExecutionHistory
 from mirage.workspace.mount import Mount, MountRegistry
-from mirage.workspace.native import native_exec
 from mirage.workspace.node import provision_node, run_command_tree
 from mirage.workspace.session import (Session, SessionManager,
                                       reset_current_session,
@@ -88,11 +87,9 @@ class Workspace:
         mode: MountMode = MountMode.READ,
         consistency: ConsistencyPolicy = ConsistencyPolicy.LAZY,
         history: int | None = 100,
-        history_path: str | None = None,
         session_id: str = DEFAULT_SESSION_ID,
         agent_id: str = DEFAULT_AGENT_ID,
         fuse: bool = False,
-        native: bool = False,
         observe: BaseResource | None = None,
         observe_prefix: str = "/.sessions",
     ) -> None:
@@ -147,11 +144,8 @@ class Workspace:
                 mount_obj.command_safeguards.update(mount_safeguards)
 
         self._fuse = FuseManager()
-        self._native = native
-        self.history: ExecutionHistory | None = (ExecutionHistory(
-            max_entries=history,
-            persist_path=history_path,
-        ) if history is not None else None)
+        self.history: ExecutionHistory = ExecutionHistory(
+            max_entries=history if history is not None else 100)
 
         observe_resource = (observe if observe is not None else RAMResource())
         self.observer = Observer(resource=observe_resource,
@@ -164,14 +158,13 @@ class Workspace:
                         agent_id=agent_id,
                         session_id=session_id)
 
-        if self.history is not None:
-            for m in self._registry.mounts():
-                for rc in HISTORY_COMMANDS:
-                    m.register_general(rc)
-            default = self._registry.default_mount
-            if default is not None:
-                for rc in HISTORY_COMMANDS:
-                    default.register_general(rc)
+        for m in self._registry.mounts():
+            for rc in HISTORY_COMMANDS:
+                m.register_general(rc)
+        default = self._registry.default_mount
+        if default is not None:
+            for rc in HISTORY_COMMANDS:
+                default.register_general(rc)
 
         if fuse:
             self._fuse.setup(self)
@@ -571,7 +564,7 @@ class Workspace:
             for rec in exec_node.records:
                 await self.observer.log_op(rec, agent_id, session_id,
                                            session_cwd)
-        if self.history is not None and not provision:
+        if not provision:
             stdin_bytes = stdin if isinstance(stdin, bytes) else None
             exec_record = ExecutionRecord(
                 agent=agent_id,
@@ -594,11 +587,10 @@ class Workspace:
     async def execute(
         self,
         command: str,
-        session_id: str = DEFAULT_SESSION_ID,
+        session_id: str | None = None,
         stdin: AsyncIterator[bytes] | bytes | None = None,
         provision: bool = False,
         agent_id: str = DEFAULT_AGENT_ID,
-        native: bool | None = None,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         cancel: asyncio.Event | None = None,
@@ -611,7 +603,6 @@ class Workspace:
             stdin: Optional stdin payload (bytes or async byte iterator).
             provision: If True, return a ProvisionResult instead of running.
             agent_id: Agent identifier for observability and history.
-            native: Force native FUSE execution; defaults to workspace setting.
             cwd: Per-call working directory override. When provided, the
                 command runs in an ephemeral session clone (bash subshell
                 semantics): the persistent session's cwd is unchanged and
@@ -629,28 +620,9 @@ class Workspace:
             raise MirageAbortError()
         if self._drift_check_pending:
             await self._run_pending_drift_check()
-        use_native = native if native is not None else self._native
-        if use_native:
-            if not self._fuse.mountpoint:
-                logger.warning(
-                    "native=True requires FUSE. Install macFUSE (macOS) "
-                    "or libfuse (Linux). Falling back to virtual mode.")
-            else:
-                native_name = command.strip().split()[0] if command.strip(
-                ) else None
-                resolved = (resolve_safeguard(native_name)
-                            if native_name else None)
-                native_timeout = (resolved.timeout_seconds
-                                  if resolved is not None else None)
-                if native_timeout is not None and native_timeout <= 0:
-                    native_timeout = None
-                stdout, stderr, code = await native_exec(
-                    command,
-                    cwd=self._fuse.mountpoint,
-                    timeout=native_timeout,
-                    name=native_name)
-                return IOResult(exit_code=code, stderr=stderr, stdout=stdout)
 
+        if session_id is None:
+            session_id = self._session_mgr.default_id
         session = self._session_mgr.get(session_id)
         use_override = cwd is not None or env is not None
         if use_override:

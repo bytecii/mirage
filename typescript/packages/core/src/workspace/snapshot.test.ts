@@ -18,10 +18,15 @@ import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { IOResult } from '../io/types.ts'
 import { OpsRegistry } from '../ops/registry.ts'
 import { RAMResource } from '../resource/ram/ram.ts'
+import { type JobTaskResult } from '../shell/job_table.ts'
 import { createShellParser, type ShellParser } from '../shell/parse.ts'
 import { MountMode } from '../types.ts'
+import { VERSION } from '../version.ts'
+import { applyStateDict, toStateDict } from './snapshot/state.ts'
+import { ExecutionNode } from './types.ts'
 import { Workspace } from './workspace.ts'
 
 const require = createRequire(import.meta.url)
@@ -47,13 +52,13 @@ function buildWorkspace(): Workspace {
   return new Workspace({ '/data': ram }, { mode: MountMode.WRITE, ops, shellParser: parser })
 }
 
-describe('Workspace.toStateDict / restore', () => {
+describe('toStateDict / applyStateDict', () => {
   it('roundtrips file content via snapshot + restore', async () => {
     const ws = buildWorkspace()
     await ws.execute('echo "hello" | tee /data/x.txt')
-    const state = await ws.toStateDict()
+    const state = await toStateDict(ws)
     const ws2 = buildWorkspace()
-    await ws2.restore(state)
+    await applyStateDict(ws2, state)
     const r = await ws2.execute('cat /data/x.txt')
     expect(new TextDecoder().decode(r.stdout)).toBe('hello\n')
     await ws.close()
@@ -88,10 +93,10 @@ describe('Workspace.toStateDict / restore', () => {
     const ws = new Workspace({ '/data': ram }, { mode: MountMode.WRITE, ops, shellParser: parser })
     await ws.execute('echo "cached" | tee /data/x.txt > /dev/null')
     await ws.execute('cat /data/x.txt > /dev/null')
-    const state = await ws.toStateDict()
+    const state = await toStateDict(ws)
     expect(state.cache.entries.length).toBeGreaterThan(0)
     for (const m of state.mounts) {
-      Object.assign(m.resourceState, { config: { token: '<REDACTED>' } })
+      Object.assign(m.resource_state, { config: { token: '<REDACTED>' } })
     }
 
     const overrides: Record<string, RAMResource> = {}
@@ -114,7 +119,7 @@ describe('Workspace.toStateDict / restore', () => {
   it('skips the .sessions/ observer mount from the snapshot', async () => {
     const ws = buildWorkspace()
     await ws.execute('echo "hi" | tee /data/x.txt')
-    const state = await ws.toStateDict()
+    const state = await toStateDict(ws)
     for (const m of state.mounts) {
       expect(m.prefix).not.toBe('/.sessions/')
     }
@@ -141,15 +146,16 @@ describe('Workspace.snapshot / Workspace.load', () => {
     await loaded.close()
   })
 
-  it('rejects snapshots with unsupported format version', async () => {
+  it('rejects snapshots with an older unsupported format version', async () => {
     const ws = buildWorkspace()
-    const path = join(tempDir, 'bad.json')
-    await ws.snapshot(path)
-    const { readFileSync: rfs, writeFileSync } = await import('node:fs')
-    const content = rfs(path, 'utf-8').replace('"version": 2', '"version": 999')
-    writeFileSync(path, content)
+    const state = await toStateDict(ws)
+    state.version = 1
     await expect(
-      Workspace.load(path, { mode: MountMode.WRITE, ops: new OpsRegistry(), shellParser: parser }),
+      Workspace.fromState(state, {
+        mode: MountMode.WRITE,
+        ops: new OpsRegistry(),
+        shellParser: parser,
+      }),
     ).rejects.toThrow(/snapshot format/)
     await ws.close()
   })
@@ -240,5 +246,125 @@ describe('Workspace.snapshot / load — per-mount mode preservation', () => {
     const buf = readFileSync(tmp)
     const restored = await Workspace.load(buf)
     expect(restored.registry.allMounts().length).toBeGreaterThan(0)
+  })
+})
+
+// Mirrors Python apply_state_dict: sessions (cwd/env) and finished jobs
+// survive the toStateDict → fromState round trip, not just mounts/cache/history.
+describe('Workspace.fromState — sessions and finished jobs', () => {
+  it('restores default + non-default session cwd/env and a completed job', async () => {
+    const ws = buildWorkspace()
+    await ws.execute('cd /data')
+    await ws.execute('export FOO=bar')
+    const worker = ws.sessionManager.create('worker')
+    worker.cwd = '/data'
+    worker.env = { ROLE: 'bg' }
+    ws.jobTable.submit({
+      command: 'sleep 0',
+      task: Promise.resolve([null, new IOResult(), new ExecutionNode()] as JobTaskResult),
+      abort: new AbortController(),
+      cwd: '/data',
+      sessionId: 'worker',
+    })
+    await ws.jobTable.waitAll()
+
+    const state = await toStateDict(ws)
+    const workerSnap = state.sessions.find((s) => s.session_id === 'worker')
+    expect(workerSnap?.cwd).toBe('/data')
+    expect(workerSnap?.env).toEqual({ ROLE: 'bg' })
+    expect(state.jobs.length).toBe(1)
+    expect(state.jobs[0]?.command).toBe('sleep 0')
+    expect(state.jobs[0]?.status).toBe('completed')
+
+    const ws2 = await Workspace.fromState(state, {
+      mode: MountMode.WRITE,
+      ops: new OpsRegistry(),
+      shellParser: parser,
+    })
+    const def = ws2.sessionManager.get(ws2.sessionManager.defaultId)
+    expect(def.cwd).toBe('/data')
+    expect(def.env.FOO).toBe('bar')
+    const w2 = ws2.sessionManager.get('worker')
+    expect(w2.cwd).toBe('/data')
+    expect(w2.env).toEqual({ ROLE: 'bg' })
+    const jobs2 = ws2.jobTable.listJobs()
+    expect(jobs2.length).toBe(1)
+    expect(jobs2[0]?.command).toBe('sleep 0')
+    expect(jobs2[0]?.status).toBe('completed')
+    expect(jobs2[0]?.cwd).toBe('/data')
+    expect(jobs2[0]?.sessionId).toBe('worker')
+
+    await ws.close()
+    await ws2.close()
+  })
+
+  it('preserves a non-default default session id and agent id', async () => {
+    const ram = new RAMResource()
+    const ops = new OpsRegistry()
+    ops.registerResource(ram)
+    const ws = new Workspace(
+      { '/data': ram },
+      { mode: MountMode.WRITE, ops, shellParser: parser, sessionId: 'main', agentId: 'agent-7' },
+    )
+    await ws.execute('cd /data')
+    await ws.execute('export FOO=bar')
+
+    const state = await toStateDict(ws)
+    expect(state.default_session_id).toBe('main')
+    expect(state.default_agent_id).toBe('agent-7')
+
+    const ws2 = await Workspace.fromState(state, {
+      mode: MountMode.WRITE,
+      ops: new OpsRegistry(),
+      shellParser: parser,
+    })
+    expect(ws2.sessionManager.defaultId).toBe('main')
+    const def = ws2.sessionManager.get('main')
+    expect(def.cwd).toBe('/data')
+    expect(def.env.FOO).toBe('bar')
+    expect(ws2.agentId).toBe('agent-7')
+
+    await ws.close()
+    await ws2.close()
+  })
+
+  it('records the real package version in mirage_version', async () => {
+    const ws = buildWorkspace()
+    const state = await toStateDict(ws)
+    expect(state.mirage_version).toBe(VERSION)
+    expect(state.mirage_version).not.toBe('unknown')
+    expect(state.mirage_version).toMatch(/\d+\.\d+\.\d+/)
+    await ws.close()
+  })
+
+  it('aggregates every redacted mount missing an override into one error', async () => {
+    const ops = new OpsRegistry()
+    const ramA = new RAMResource()
+    const ramB = new RAMResource()
+    ops.registerResource(ramA)
+    ops.registerResource(ramB)
+    const ws = new Workspace(
+      { '/a': ramA, '/b': ramB },
+      { mode: MountMode.WRITE, ops, shellParser: parser },
+    )
+    const state = await toStateDict(ws)
+    for (const m of state.mounts) {
+      Object.assign(m.resource_state, { config: { token: '<REDACTED>' } })
+    }
+    let err: Error | null = null
+    try {
+      await Workspace.fromState(state, {
+        mode: MountMode.WRITE,
+        ops: new OpsRegistry(),
+        shellParser: parser,
+      })
+    } catch (e) {
+      err = e as Error
+    }
+    expect(err).not.toBeNull()
+    expect(err?.message).toContain('must include overrides for')
+    expect(err?.message).toContain('/a/')
+    expect(err?.message).toContain('/b/')
+    await ws.close()
   })
 })

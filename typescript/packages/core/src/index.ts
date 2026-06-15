@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-export const VERSION = '0.0.0'
+export { VERSION } from './version.ts'
 export {
   CommandSafeguard,
   type CommandSafeguardInit,
@@ -36,6 +36,17 @@ export {
   type FingerprintEntry,
   liveOnlyMountPrefixes,
 } from './workspace/snapshot/drift.ts'
+export { applyStateDict, buildMountArgs, toStateDict } from './workspace/snapshot/state.ts'
+export type {
+  CacheEntrySnapshot,
+  ExecutionRecordSnapshot,
+  FingerprintEntrySnapshot,
+  JobSnapshot,
+  MountSnapshot,
+  ResourceState,
+  SessionSnapshot,
+  WorkspaceStateDict,
+} from './workspace/snapshot/types.ts'
 export { BaseResource, type FindOptions, type Resource, throwUnsupported } from './resource/base.ts'
 export {
   hasRedactedSecret,

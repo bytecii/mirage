@@ -29,7 +29,7 @@ from mirage.resource.gcs import GCSConfig, GCSResource
 from mirage.resource.minio import MinIOConfig, MinIOResource
 from mirage.resource.s3 import S3Config, S3Resource
 from mirage.resource.seaweedfs import SeaweedFSConfig, SeaweedFSResource
-from mirage.types import CommandSafeguard
+from mirage.types import CommandSafeguard, ConsistencyPolicy
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 SEED_OBJECTS = [
@@ -168,7 +168,9 @@ def _seed(endpoint: str) -> None:
                               Body=(DATA_DIR / obj).read_bytes())
 
 
-def _build_workspace(endpoint: str) -> Workspace:
+def _build_workspace(
+        endpoint: str,
+        consistency: ConsistencyPolicy = ConsistencyPolicy.LAZY) -> Workspace:
     s3 = S3Resource(
         S3Config(bucket=S3_BUCKET,
                  region="us-east-1",
@@ -204,7 +206,8 @@ def _build_workspace(endpoint: str) -> Workspace:
             "/minio/": minio,
             "/seaweedfs/": seaweedfs
         },
-        mode=MountMode.READ)
+        mode=MountMode.READ,
+        consistency=consistency)
 
 
 async def _run(ws: Workspace, name: str, cmd: str) -> None:
@@ -258,6 +261,29 @@ async def _measure_calls(endpoint: str, name: str, cmd: str) -> None:
     print(f"ListObjectsV2={lists} HeadObject={heads}")
 
 
+# Cache consistency: read once (caches v1), mutate the object out-of-band via
+# the raw SDK (new ETag), then read again. ALWAYS stats the backend and evicts
+# the stale cache entry on every read so the second read returns v2; LAZY keeps
+# serving the cached v1. A fresh single-purpose key is used and only cat
+# (no ls) touches it, so stat hits HeadObject and carries the ETag fingerprint.
+async def _run_consistency(endpoint: str) -> None:
+    client = boto3.client("s3", endpoint_url=endpoint, **CREDS)
+    key = "data/consistency.txt"
+    for policy, label in ((ConsistencyPolicy.ALWAYS, "always"),
+                          (ConsistencyPolicy.LAZY, "lazy")):
+        client.put_object(Bucket=S3_BUCKET, Key=key, Body=b"v1")
+        ws = _build_workspace(endpoint, consistency=policy)
+        first = await (
+            await ws.execute("cat /s3/data/consistency.txt")).stdout_str()
+        print(f"=== consistency:{label}:first ===")
+        print(first, end="" if first.endswith("\n") else "\n")
+        client.put_object(Bucket=S3_BUCKET, Key=key, Body=b"v2")
+        second = await (
+            await ws.execute("cat /s3/data/consistency.txt")).stdout_str()
+        print(f"=== consistency:{label}:second ===")
+        print(second, end="" if second.endswith("\n") else "\n")
+
+
 async def main() -> None:
     logging.getLogger("werkzeug").setLevel(logging.ERROR)
     server = ThreadedMotoServer(ip_address="127.0.0.1", port=0, verbose=False)
@@ -300,6 +326,7 @@ async def main() -> None:
             else:
                 _safeguard.DEFAULT_COMMAND_SAFEGUARDS["sleep"] = prev_sleep
         await run_not_found(ws, MOUNTS[0])
+        await _run_consistency(endpoint)
     finally:
         server.stop()
 

@@ -13,7 +13,6 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { NOOPAccessor } from '../accessor/base.ts'
-import { CacheEntry } from '../cache/file/entry.ts'
 import type { FileCache } from '../cache/file/mixin.ts'
 import type { IndexConfig } from '../cache/index/config.ts'
 import { RAMFileCacheStore } from '../cache/file/ram.ts'
@@ -25,7 +24,7 @@ import type { OpRecord } from '../observe/record.ts'
 import { type OpKwargs, OpsRegistry } from '../ops/registry.ts'
 import { assertMountAllowed, runWithSession } from '../runtime/session_context.ts'
 import type { Resource } from '../resource/base.ts'
-import { RAMResource, type RAMResourceState } from '../resource/ram/ram.ts'
+import { RAMResource } from '../resource/ram/ram.ts'
 import { resourceStateRequiresOverride } from '../resource/secrets.ts'
 import { GENERAL_COMMANDS, HISTORY_COMMANDS } from '../commands/builtin/general/index.ts'
 import {
@@ -36,24 +35,15 @@ import {
 import { resolveSafeguard } from '../commands/safeguard.ts'
 import { JobTable } from '../shell/job_table.ts'
 import { findSyntaxError, type ShellParser } from '../shell/parse.ts'
-import {
-  decodeSnapshot,
-  encodeSnapshot,
-  loadSnapshotFromFile,
-  saveSnapshotToFile,
-} from '../snapshot/persist.ts'
-import {
-  type ExecutionNodeSnapshot,
-  type ExecutionRecordSnapshot,
-  type FingerprintEntrySnapshot,
-  type MountSnapshot,
-  type ResourceState,
-  type WorkspaceStateDict,
-} from '../snapshot/state.ts'
-import { captureFingerprints, checkDrift, liveOnlyMountPrefixes } from './snapshot/drift.ts'
-import { FORMAT_VERSION } from './snapshot/utils.ts'
+import { snapshot as writeSnapshot } from './snapshot/api.ts'
+import { checkDrift } from './snapshot/drift.ts'
+import { readFileBytes } from './snapshot/fs.ts'
+import { applyStateDict, buildMountArgs, toStateDict } from './snapshot/state.ts'
+import { readSnapshotTar } from './snapshot/tar_io.ts'
+import type { WorkspaceStateDict } from './snapshot/types.ts'
 import {
   type CommandSafeguard,
+  ConsistencyPolicy,
   DEFAULT_AGENT_ID,
   DriftPolicy,
   FileType,
@@ -85,57 +75,10 @@ import { stripSlash } from '../utils/slash.ts'
 
 const NOOP_ACCESSOR_INSTANCE = new NOOPAccessor()
 
-function nodeToSnapshot(n: ExecutionNode): ExecutionNodeSnapshot {
-  return {
-    command: n.command,
-    op: n.op,
-    stderr: n.stderr,
-    exitCode: n.exitCode,
-    children: n.children.map((c) => nodeToSnapshot(c)),
-  }
-}
-
-function nodeFromSnapshot(s: ExecutionNodeSnapshot): ExecutionNode {
-  return new ExecutionNode({
-    command: s.command,
-    op: s.op,
-    stderr: s.stderr,
-    exitCode: s.exitCode,
-    children: s.children.map((c) => nodeFromSnapshot(c)),
-  })
-}
-
-function recordToSnapshot(r: ExecutionRecord): ExecutionRecordSnapshot {
-  return {
-    agent: r.agent,
-    command: r.command,
-    stdout: r.stdout,
-    stdin: r.stdin,
-    exitCode: r.exitCode,
-    tree: nodeToSnapshot(r.tree),
-    timestamp: r.timestamp,
-    sessionId: r.sessionId,
-  }
-}
-
-function recordFromSnapshot(s: ExecutionRecordSnapshot): ExecutionRecord {
-  return new ExecutionRecord({
-    agent: s.agent,
-    command: s.command,
-    stdout: s.stdout,
-    stdin: s.stdin,
-    exitCode: s.exitCode,
-    tree: nodeFromSnapshot(s.tree),
-    timestamp: s.timestamp,
-    sessionId: s.sessionId,
-  })
-}
-
-const VALID_MODES: readonly string[] = [MountMode.READ, MountMode.WRITE, MountMode.EXEC]
-
 export interface WorkspaceOptions {
   mode?: MountMode
   modeOverrides?: Record<string, MountMode>
+  consistency?: ConsistencyPolicy
   commandSafeguards?: Record<string, Record<string, CommandSafeguard>>
   /**
    * Behaviour for the post-load drift check on fingerprinted reads. Only
@@ -154,6 +97,7 @@ export interface WorkspaceOptions {
   shellParserFactory?: () => Promise<ShellParser>
   agentId?: string
   sessionId?: string
+  historyLimit?: number
   cacheLimit?: string | number
   cache?: FileCache & Resource
   index?: IndexConfig
@@ -191,7 +135,6 @@ export interface ExecuteOptions {
   provision?: boolean
   sessionId?: string
   agentId?: string
-  native?: boolean
   /**
    * Abort the in-progress execution. Observed cooperatively at recursion
    * boundaries between LIST/PIPELINE/loop iterations and inside `sleep`.
@@ -233,10 +176,10 @@ export class Workspace {
   private readonly opened = new Set<Resource>()
   private readonly openOrder: Resource[] = []
   readonly jobTable = new JobTable()
-  private readonly agentId: string
+  readonly agentId: string
   readonly cache: FileCache & Resource
   private readonly dispatcher: Dispatcher
-  readonly history: ExecutionHistory = new ExecutionHistory()
+  readonly history: ExecutionHistory
   readonly observer: Observer
   readonly records: OpRecord[] = []
   readonly fs: WorkspaceFS
@@ -275,6 +218,8 @@ export class Workspace {
       ...(options.modeOverrides ?? {}),
       [observerPrefix]: MountMode.READ,
     })
+    const consistency = options.consistency ?? ConsistencyPolicy.LAZY
+    this.registry.setConsistency(consistency)
     if (options.index !== undefined) {
       for (const resource of Object.values(resources)) {
         resource.setIndex?.(options.index)
@@ -291,9 +236,16 @@ export class Workspace {
       workspaceBridge: this.buildWorkspaceBridge(),
     })
     this.closers.push(() => this.pythonRuntime.close())
+    this.history = new ExecutionHistory(
+      options.historyLimit !== undefined ? { maxEntries: options.historyLimit } : {},
+    )
     this.cache = options.cache ?? new RAMFileCacheStore({ limit: options.cacheLimit ?? '512MB' })
-    this.dispatcher = new Dispatcher(this.registry, this.cache, this.opsRegistry, (p) =>
-      this.resolve(p),
+    this.dispatcher = new Dispatcher(
+      this.registry,
+      this.cache,
+      this.opsRegistry,
+      (p) => this.resolve(p),
+      consistency,
     )
     const defaultMount = this.registry.setDefaultMount(this.cache)
     for (const resource of [...Object.values(withObserver), this.cache]) {
@@ -599,7 +551,7 @@ export class Workspace {
       }
     }
     this.driftCheckPending = this.pendingDrift.length > 0
-    const liveOnly = state.liveOnlyMounts ?? []
+    const liveOnly = state.live_only_mounts ?? []
     if (liveOnly.length > 0) {
       console.warn(
         `Workspace.load: ${String(liveOnly.length)} mount(s) opt out of snapshot replay; ` +
@@ -877,90 +829,8 @@ export class Workspace {
     return handlePythonRepl(code, sessionId, { runtime: this.pythonRuntime })
   }
 
-  async toStateDict(): Promise<WorkspaceStateDict> {
-    const observerPrefix = normalizePrefix(this.observer.prefix)
-    const skip = new Set([observerPrefix, '/.sessions/', '/dev/'])
-    const mounts = [...this.registry.allMounts()].filter((m) => !skip.has(m.prefix))
-    const mountSnapshots: MountSnapshot[] = []
-    for (let i = 0; i < mounts.length; i++) {
-      const m = mounts[i]
-      if (m === undefined) continue
-      const resource = m.resource as unknown as {
-        kind: string
-        getState: () => ResourceState | Promise<ResourceState>
-      }
-      const state = await Promise.resolve(resource.getState())
-      mountSnapshots.push({
-        index: i,
-        prefix: m.prefix,
-        mode: m.mode,
-        resourceClass: resource.kind,
-        resourceState: state,
-      })
-    }
-    const ramCache = this.cache instanceof RAMFileCacheStore ? this.cache : null
-    const cacheEntries =
-      ramCache !== null
-        ? ramCache.snapshotEntries().map(({ key, entry }) => ({
-            key,
-            data: ramCache.store.files.get(key) ?? new Uint8Array(),
-            fingerprint: entry.fingerprint,
-            ttl: entry.ttl,
-            cachedAt: entry.cachedAt,
-            size: entry.size,
-          }))
-        : []
-    const historyRecords = this.history.entries().map((r) => recordToSnapshot(r))
-    const fingerprints: FingerprintEntrySnapshot[] = captureFingerprints(
-      this.records,
-      this.registry,
-    )
-    const liveOnly = liveOnlyMountPrefixes(this.registry)
-    return {
-      version: FORMAT_VERSION,
-      mounts: mountSnapshots,
-      cache: { limit: this.cache.cacheLimit, entries: cacheEntries },
-      history: historyRecords,
-      fingerprints,
-      liveOnlyMounts: liveOnly,
-    }
-  }
-
-  async restore(state: WorkspaceStateDict): Promise<void> {
-    for (const m of state.mounts) {
-      if (resourceStateRequiresOverride(m.resourceState)) continue
-      const mount = this.registry.mountFor(m.prefix)
-      if (mount === null) continue
-      const resource = mount.resource as unknown as {
-        loadState: (state: ResourceState) => void | Promise<void>
-      }
-      await Promise.resolve(resource.loadState(m.resourceState as RAMResourceState))
-    }
-    if (this.cache instanceof RAMFileCacheStore) {
-      for (const e of state.cache.entries) {
-        this.cache.loadEntry(
-          e.key,
-          e.data,
-          new CacheEntry({
-            size: e.size,
-            cachedAt: e.cachedAt,
-            fingerprint: e.fingerprint,
-            ttl: e.ttl,
-          }),
-        )
-      }
-    }
-    this.history.clear()
-    for (const r of state.history) {
-      await this.history.append(recordFromSnapshot(r))
-    }
-  }
-
   async snapshot(target: string): Promise<number> {
-    const state = await this.toStateDict()
-    saveSnapshotToFile(state, target)
-    const bytes = encodeSnapshot(state)
-    return bytes.byteLength
+    return writeSnapshot(this, target)
   }
 
   static async load<T extends typeof Workspace>(
@@ -969,7 +839,8 @@ export class Workspace {
     options: WorkspaceOptions = {},
     overrides: Record<string, Resource> = {},
   ): Promise<InstanceType<T>> {
-    const state = typeof source === 'string' ? loadSnapshotFromFile(source) : decodeSnapshot(source)
+    const bytes = typeof source === 'string' ? readFileBytes(source) : source
+    const state = (await readSnapshotTar(bytes)) as WorkspaceStateDict
     return this.fromState(state, options, overrides)
   }
 
@@ -979,48 +850,41 @@ export class Workspace {
     options: WorkspaceOptions = {},
     overrides: Record<string, Resource> = {},
   ): Promise<InstanceType<T>> {
+    const ws = await this._fromState(state, options, overrides)
+    ws.installDriftState(state, options.driftPolicy ?? DriftPolicy.STRICT)
+    return ws
+  }
+
+  protected static async _fromState<T extends typeof Workspace>(
+    this: T,
+    state: WorkspaceStateDict,
+    options: WorkspaceOptions = {},
+    overrides: Record<string, Resource> = {},
+  ): Promise<InstanceType<T>> {
+    const args = buildMountArgs(state, overrides)
     const resources: Record<string, Resource> = {}
-    const needsRestore: MountSnapshot[] = []
-    for (const m of state.mounts) {
-      if (resourceStateRequiresOverride(m.resourceState)) {
-        const override = overrides[m.prefix]
-        if (override === undefined) {
-          throw new Error(
-            `Workspace.fromState: resource for mount '${m.prefix}' has redacted secrets; pass it via overrides['${m.prefix}']`,
-          )
-        }
-        resources[m.prefix] = override
-      } else {
-        const r = new RAMResource()
-        r.loadState(m.resourceState as RAMResourceState)
-        resources[m.prefix] = r
-        needsRestore.push(m)
-      }
-    }
     const snapshotModes: Record<string, MountMode> = {}
-    for (const m of state.mounts) {
-      if (!VALID_MODES.includes(m.mode)) {
-        throw new Error(`Workspace.fromState: mount '${m.prefix}' has invalid mode '${m.mode}'`)
-      }
-      snapshotModes[m.prefix] = m.mode as MountMode
+    for (const [prefix, [resource, mode]] of Object.entries(args.mountArgs)) {
+      resources[prefix] = resource
+      snapshotModes[prefix] = mode
     }
     const mergedOptions: WorkspaceOptions = {
+      sessionId: args.defaultSessionId,
+      agentId: args.defaultAgentId,
       ...options,
       modeOverrides: { ...(options.modeOverrides ?? {}), ...snapshotModes },
     }
     const ws = new this(resources, mergedOptions) as InstanceType<T>
-    await ws.restore({ ...state, mounts: needsRestore })
-    ws.installDriftState(state, options.driftPolicy ?? DriftPolicy.STRICT)
+    await applyStateDict(ws, state)
     return ws
   }
 
   async copy(options: WorkspaceOptions = {}): Promise<this> {
     // Mirrors Python's Workspace.copy(): remote-backed resources (Redis, S3,
     // GDrive — with redacted config) are reused; local resources (RAM, Disk)
-    // are reconstructed from snapshot state.
-    const state = await this.toStateDict()
-    const bytes = encodeSnapshot(state)
-    const cloned = decodeSnapshot(bytes)
+    // are reconstructed from snapshot state. Uses _fromState directly (no tar
+    // round-trip, no drift install) like Python's `type(self)._from_state`.
+    const state = await toStateDict(this)
     const opts: WorkspaceOptions = {
       mode: options.mode ?? MountMode.WRITE,
       agentId: options.agentId ?? this.agentId,
@@ -1030,14 +894,14 @@ export class Workspace {
     if (parser !== null) opts.shellParser = parser
     const overrides: Record<string, Resource> = {}
     for (const mount of this.registry.allMounts()) {
-      for (const snap of cloned.mounts) {
-        if (snap.prefix === mount.prefix && resourceStateRequiresOverride(snap.resourceState)) {
+      for (const snap of state.mounts) {
+        if (snap.prefix === mount.prefix && resourceStateRequiresOverride(snap.resource_state)) {
           overrides[mount.prefix] = mount.resource
         }
       }
     }
     const Ctor = this.constructor as typeof Workspace
-    return (await Ctor.fromState(cloned, opts, overrides)) as this
+    return (await Ctor._fromState(state, opts, overrides)) as this
   }
 
   async close(): Promise<void> {
@@ -1068,9 +932,4 @@ export class Workspace {
     this.opened.clear()
     this.openOrder.length = 0
   }
-}
-
-function normalizePrefix(prefix: string): string {
-  const s = stripSlash(prefix)
-  return s === '' ? '/' : `/${s}/`
 }

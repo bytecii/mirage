@@ -23,6 +23,8 @@ export const StateKey = Object.freeze({
   CACHE: 'cache',
   HISTORY: 'history',
   JOBS: 'jobs',
+  FINGERPRINTS: 'fingerprints',
+  LIVE_ONLY_MOUNTS: 'live_only_mounts',
 } as const)
 
 export const MountKey = Object.freeze({

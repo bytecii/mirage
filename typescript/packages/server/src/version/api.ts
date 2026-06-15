@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { Workspace as CoreWorkspace } from '@struktoai/mirage-core'
+import { applyStateDict, type Workspace as CoreWorkspace } from '@struktoai/mirage-core'
 import { NoSuchBranchError } from './errors.ts'
 import {
   blobToMeta,
@@ -154,5 +154,5 @@ export async function checkout(store: VersionStore, ws: CoreWorkspace, ref: stri
   const { entries, meta } = await readVersion(store, version)
   const cache = ws.cache as { clear?: () => Promise<void> }
   if (typeof cache.clear === 'function') await cache.clear()
-  await ws.restore(toState(entries, meta))
+  await applyStateDict(ws, toState(entries, meta))
 }

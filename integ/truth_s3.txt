@@ -617,3 +617,11 @@ stat: /s3/__nf_missing__.txt: No such file or directory
 === nf_grep ===
 exit=1
 grep: /s3/__nf_missing__.txt: No such file or directory
+=== consistency:always:first ===
+v1
+=== consistency:always:second ===
+v2
+=== consistency:lazy:first ===
+v1
+=== consistency:lazy:second ===
+v1

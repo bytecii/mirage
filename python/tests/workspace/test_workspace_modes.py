@@ -21,11 +21,4 @@ from mirage.workspace import Workspace
 def test_workspace_default_no_fuse():
     ws = Workspace(resources={"/data": RAMResource()})
     assert ws.fuse_mountpoint is None
-    assert ws._native is False
-    asyncio.run(ws.close())
-
-
-def test_workspace_native_flag():
-    ws = Workspace(resources={"/data": RAMResource()}, native=True)
-    assert ws._native is True
     asyncio.run(ws.close())

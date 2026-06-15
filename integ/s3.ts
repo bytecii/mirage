@@ -27,6 +27,7 @@ import {
   SeaweedFSResource,
   Workspace,
 } from "@struktoai/mirage-node";
+import { ConsistencyPolicy } from "@struktoai/mirage-core";
 import { runNotFound } from "./cases.ts";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -264,6 +265,61 @@ async function measureCalls(name: string, cmd: string): Promise<void> {
   await ws.close();
 }
 
+// Cache consistency: read once (caches v1), mutate the object out-of-band via
+// the raw SDK (new ETag), then read again. ALWAYS stats the backend and evicts
+// the stale cache entry on every read so the second read returns v2; LAZY keeps
+// serving the cached v1. A fresh single-purpose key is used and only cat (no ls)
+// touches it, so stat hits HeadObject and carries the ETag fingerprint.
+async function runConsistency(): Promise<void> {
+  const client = sdkClient();
+  const key = "data/consistency.txt";
+  const enc = new TextEncoder();
+  const policies: ReadonlyArray<readonly [ConsistencyPolicy, string]> = [
+    [ConsistencyPolicy.ALWAYS, "always"],
+    [ConsistencyPolicy.LAZY, "lazy"],
+  ];
+  try {
+    for (const [policy, label] of policies) {
+      await client.send(
+        new PutObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: key,
+          Body: enc.encode("v1"),
+        }),
+      );
+      const ws = new Workspace(
+        {
+          "/s3": new S3Resource({
+            bucket: S3_BUCKET,
+            region: REGION,
+            endpoint: ENDPOINT,
+            accessKeyId: ACCESS,
+            secretAccessKey: SECRET,
+            forcePathStyle: true,
+          }),
+        },
+        { mode: MountMode.READ, consistency: policy },
+      );
+      const first = await ws.execute("cat /s3/data/consistency.txt");
+      process.stdout.write(`=== consistency:${label}:first ===\n`);
+      process.stdout.write(DEC.decode(first.stdout) + "\n");
+      await client.send(
+        new PutObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: key,
+          Body: enc.encode("v2"),
+        }),
+      );
+      const second = await ws.execute("cat /s3/data/consistency.txt");
+      process.stdout.write(`=== consistency:${label}:second ===\n`);
+      process.stdout.write(DEC.decode(second.stdout) + "\n");
+      await ws.close();
+    }
+  } finally {
+    client.destroy();
+  }
+}
+
 async function main(): Promise<void> {
   await seed();
   const ws = buildWorkspace();
@@ -308,6 +364,7 @@ async function main(): Promise<void> {
       else DEFAULT_COMMAND_SAFEGUARDS.sleep = prevSleep;
     }
     await runNotFound(ws, "/s3");
+    await runConsistency();
   } finally {
     await ws.close();
   }

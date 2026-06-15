@@ -270,6 +270,19 @@ async def test_agent_pattern_parallel_tool_calls_each_with_own_options():
 
 
 @pytest.mark.asyncio
+async def test_execute_uses_custom_default_session_id():
+    resource = RAMResource()
+    resource._store.dirs.add("/")
+    ws = Workspace({"/ram/": resource},
+                   mode=MountMode.WRITE,
+                   session_id="mysess")
+    r = await ws.execute("echo hi > /ram/f.txt")
+    assert r.exit_code == 0
+    r2 = await ws.execute("cat /ram/f.txt")
+    assert (await r2.stdout_str()).strip() == "hi"
+
+
+@pytest.mark.asyncio
 async def test_agent_pattern_one_aborts_while_siblings_complete():
     ws = _make_ws()
     settled = await asyncio.gather(

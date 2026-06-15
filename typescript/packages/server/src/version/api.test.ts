@@ -15,6 +15,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { toStateDict } from '@struktoai/mirage-core'
 import { MountMode, RAMResource, Workspace } from '@struktoai/mirage-node'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
@@ -51,9 +52,9 @@ describe('version api', () => {
     const ws = newWs()
     const store = await openStore()
     await ws.execute('echo one > /m/a.txt')
-    await commitState(store, await ws.toStateDict(), 'main', 'first')
+    await commitState(store, await toStateDict(ws), 'main', 'first')
     await ws.execute('echo two > /m/a.txt')
-    await commitState(store, await ws.toStateDict(), 'main', 'second')
+    await commitState(store, await toStateDict(ws), 'main', 'second')
     expect((await versionLog(store, 'main')).map((e) => e.message)).toEqual(['second', 'first'])
   })
 
@@ -61,10 +62,10 @@ describe('version api', () => {
     const ws = newWs()
     const store = await openStore()
     await ws.execute('echo one > /m/a.txt')
-    const c1 = await commitState(store, await ws.toStateDict(), 'main', 'first')
+    const c1 = await commitState(store, await toStateDict(ws), 'main', 'first')
     await ws.execute('echo two > /m/a.txt')
     await ws.execute('echo new > /m/b.txt')
-    const c2 = await commitState(store, await ws.toStateDict(), 'main', 'second')
+    const c2 = await commitState(store, await toStateDict(ws), 'main', 'second')
     const diff = await versionDiff(store, c1, c2)
     expect(diff.modified).toEqual(['m/a.txt'])
     expect(diff.added).toEqual(['m/b.txt'])
@@ -74,9 +75,9 @@ describe('version api', () => {
     const ws = newWs()
     const store = await openStore()
     await ws.execute('echo one > /m/a.txt')
-    const c1 = await commitState(store, await ws.toStateDict(), 'main', 'first')
+    const c1 = await commitState(store, await toStateDict(ws), 'main', 'first')
     await ws.execute('echo two > /m/a.txt')
-    const diff = await diffLiveVsRef(store, await ws.toStateDict(), c1)
+    const diff = await diffLiveVsRef(store, await toStateDict(ws), c1)
     expect(diff.modified).toEqual(['m/a.txt'])
   })
 
@@ -84,7 +85,7 @@ describe('version api', () => {
     const ws = newWs()
     const store = await openStore()
     await ws.execute('echo one > /m/a.txt')
-    const st = await statusState(store, await ws.toStateDict(), 'main')
+    const st = await statusState(store, await toStateDict(ws), 'main')
     expect(st).toEqual({ added: ['m/a.txt'], modified: [], deleted: [] })
   })
 
@@ -92,8 +93,8 @@ describe('version api', () => {
     const ws = newWs()
     const store = await openStore()
     await ws.execute('echo one > /m/a.txt')
-    await commitState(store, await ws.toStateDict(), 'main', 'first')
-    await expect(commitState(store, await ws.toStateDict(), 'exp', 'oops')).rejects.toThrow(
+    await commitState(store, await toStateDict(ws), 'main', 'first')
+    await expect(commitState(store, await toStateDict(ws), 'exp', 'oops')).rejects.toThrow(
       NoSuchBranchError,
     )
   })
@@ -102,10 +103,10 @@ describe('version api', () => {
     const ws = newWs()
     const store = await openStore()
     await ws.execute('echo one > /m/a.txt')
-    const mainHead = await commitState(store, await ws.toStateDict(), 'main', 'first')
+    const mainHead = await commitState(store, await toStateDict(ws), 'main', 'first')
     await createBranch(store, 'exp', 'main')
     await ws.execute('echo two > /m/a.txt')
-    const expHead = await commitState(store, await ws.toStateDict(), 'exp', 'on exp')
+    const expHead = await commitState(store, await toStateDict(ws), 'exp', 'on exp')
     expect((await store.readCommit(expHead)).parents).toEqual([mainHead])
     expect(await store.head('main')).toBe(mainHead)
   })
@@ -114,12 +115,12 @@ describe('version api', () => {
     const ws = newWs()
     const store = await openStore()
     await ws.execute('echo original > /m/a.txt')
-    const c1 = await commitState(store, await ws.toStateDict(), 'main', 'first')
+    const c1 = await commitState(store, await toStateDict(ws), 'main', 'first')
     await ws.execute('echo mutated > /m/a.txt')
     await checkout(store, ws, c1)
     const r = await ws.execute('cat /m/a.txt')
     expect(new TextDecoder().decode(r.stdout)).toBe('original\n')
-    expect(await statusState(store, await ws.toStateDict(), 'main')).toEqual({
+    expect(await statusState(store, await toStateDict(ws), 'main')).toEqual({
       added: [],
       modified: [],
       deleted: [],

@@ -14,6 +14,7 @@
 
 import type { FastifyInstance } from 'fastify'
 import { Errors } from 'isomorphic-git'
+import { toStateDict } from '@struktoai/mirage-core'
 import { Workspace } from '@struktoai/mirage-node'
 import { cloneWorkspaceWithOverride } from '../clone.ts'
 import type { WorkspaceRegistry } from '../registry.ts'
@@ -84,7 +85,7 @@ export function registerVersionsRoutes(app: FastifyInstance, deps: VersionRoutes
       if (!deps.registry.has(id)) return reply.status(404).send({ detail: 'workspace not found' })
       const branch = req.body.branch ?? 'main'
       const message = req.body.message ?? ''
-      const state = await deps.registry.get(id).runner.ws.toStateDict()
+      const state = await toStateDict(deps.registry.get(id).runner.ws)
       const store = await openStore(id)
       try {
         const version = await commitState(store, state, branch, message)
@@ -142,7 +143,7 @@ export function registerVersionsRoutes(app: FastifyInstance, deps: VersionRoutes
         if (a !== undefined && b !== undefined) {
           return await versionDiff(store, await resolveRef(store, a), await resolveRef(store, b))
         }
-        const state = await deps.registry.get(id).runner.ws.toStateDict()
+        const state = await toStateDict(deps.registry.get(id).runner.ws)
         if (a !== undefined) return await diffLiveVsRef(store, state, a)
         return await statusState(store, state, branch)
       } catch (e) {

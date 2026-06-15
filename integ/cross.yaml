@@ -1,0 +1,45 @@
+mode: WRITE
+consistency: LAZY
+
+# Snake_case top-level keys must parse + apply identically in both CLIs.
+default_session_id: crosssess
+default_agent_id: crossagent
+history: 50
+cache:
+  type: ram
+  limit: 256MB
+  max_drain_bytes: 1048576
+index:
+  type: ram
+  ttl: 600
+
+mounts:
+  /ram:
+    resource: ram
+
+  /disk:
+    resource: disk
+    config:
+      root: ${CROSS_DISK_ROOT}
+
+  /redis:
+    resource: redis
+    config:
+      url: ${REDIS_URL}
+      key_prefix: ${CROSS_REDIS_PREFIX}
+
+  /minio:
+    resource: minio
+    config:
+      bucket: ${S3_BUCKET}
+      endpoint_url: ${S3_ENDPOINT}
+      access_key_id: ${AWS_ACCESS_KEY_ID}
+      secret_access_key: ${AWS_SECRET_ACCESS_KEY}
+
+  # Snake_case command_safeguards must parse + apply identically in both CLIs.
+  /guard:
+    resource: ram
+    command_safeguards:
+      cat:
+        max_lines: 2
+        on_exceed: truncate
