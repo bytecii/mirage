@@ -27,8 +27,11 @@ function resolveVersion(): string {
   let dir = dirname(fileURLToPath(import.meta.url))
   for (let i = 0; i < 6; i++) {
     try {
-      const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
-      if (pkg.name === '@struktoai/mirage-cli') return pkg.version
+      const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
+        name?: string
+        version?: string
+      }
+      if (pkg.name === '@struktoai/mirage-cli' && pkg.version) return pkg.version
     } catch {
       // package.json absent at this level: keep walking up to the package root
     }
