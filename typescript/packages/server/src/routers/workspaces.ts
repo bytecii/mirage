@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { mkdirSync, readFileSync, statSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, resolve, sep } from 'node:path'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { CommandSafeguard, MountMode } from '@struktoai/mirage-node'
 import { Workspace, type Resource } from '@struktoai/mirage-node'
@@ -26,7 +26,6 @@ import {
   type WorkspaceConfigRaw,
 } from '../config.ts'
 import { makeBrief, makeDetail } from '../summary.ts'
-import { PathOutsideRootError, resolveWithinRoot } from '../paths.ts'
 
 export interface WorkspaceRoutesDeps {
   registry: WorkspaceRegistry
@@ -131,14 +130,12 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       if (typeof path !== 'string' || path === '') {
         return reply.status(400).send({ detail: 'path is required' })
       }
-      let safePath: string
-      try {
-        safePath = resolveWithinRoot(deps.snapshotRoot, path)
-      } catch (e) {
-        if (e instanceof PathOutsideRootError) {
-          return reply.status(400).send({ detail: e.message })
-        }
-        throw e
+      // Confinement is inlined (not via a helper) so the static analyzer sees
+      // the startsWith barrier dominate the fs sink below.
+      const snapshotRoot = resolve(deps.snapshotRoot)
+      const safePath = resolve(snapshotRoot, path)
+      if (!safePath.startsWith(snapshotRoot + sep)) {
+        return reply.status(400).send({ detail: 'path escapes the configured root' })
       }
       if (workspaceId !== undefined && deps.registry.has(workspaceId)) {
         return reply.status(409).send({ detail: `workspace id already exists: ${workspaceId}` })
@@ -219,14 +216,12 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       if (typeof path !== 'string' || path === '') {
         return reply.status(400).send({ detail: 'path is required' })
       }
-      let safePath: string
-      try {
-        safePath = resolveWithinRoot(deps.snapshotRoot, path)
-      } catch (e) {
-        if (e instanceof PathOutsideRootError) {
-          return reply.status(400).send({ detail: e.message })
-        }
-        throw e
+      // Confinement is inlined (not via a helper) so the static analyzer sees
+      // the startsWith barrier dominate the fs sink below.
+      const snapshotRoot = resolve(deps.snapshotRoot)
+      const safePath = resolve(snapshotRoot, path)
+      if (!safePath.startsWith(snapshotRoot + sep)) {
+        return reply.status(400).send({ detail: 'path escapes the configured root' })
       }
       mkdirSync(dirname(safePath), { recursive: true })
       await deps.registry.get(id).runner.ws.snapshot(safePath)
