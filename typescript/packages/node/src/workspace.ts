@@ -59,8 +59,24 @@ export class Workspace extends CoreWorkspace {
       // Kick off mount eagerly; await inside execute() / close() so callers
       // don't need to await the constructor. Python mirrors this: fuse=True
       // runs setup() during __init__ and __enter__ just returns self.
+      //
+      // A failed auto-mount (e.g. libfuse absent on the host) degrades to an
+      // unmounted but fully usable workspace, mirroring Python: there the mount
+      // runs on a daemon thread so its failure never reaches the main process.
+      // On Node's single event loop we must swallow it here, otherwise the
+      // unhandled rejection would terminate the process under Node's default
+      // unhandled-rejection policy.
       const fm = this.autoFuseManager
-      this.fuseSetupPromise = fm.setup(this).then(() => undefined)
+      this.fuseSetupPromise = fm.setup(this).then(
+        () => undefined,
+        (err: unknown) => {
+          process.stderr.write(
+            `mirage: FUSE auto-mount failed, continuing without it: ${
+              err instanceof Error ? err.message : String(err)
+            }\n`,
+          )
+        },
+      )
     }
   }
 
