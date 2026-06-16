@@ -24,6 +24,7 @@ class MongoDBResource(BaseResource):
 
     name: str = ResourceName.MONGODB
     is_remote: bool = True
+    cacheable: bool = False
     PROMPT: str = PROMPT
 
     def __init__(self, config: MongoDBConfig) -> None:

@@ -257,7 +257,7 @@ class MountRegistry:
         if (default is not None and path_scopes and resolved is not None
                 and not resolved.write
                 and isinstance(default.resource, FileCacheMixin)
-                and mount.resource.is_remote is True):
+                and mount.resource.caches_reads):
             keys = [p.original for p in path_scopes]
             if self._consistency == ConsistencyPolicy.ALWAYS:
                 await self._evict_stale(mount, default.resource, path_scopes)

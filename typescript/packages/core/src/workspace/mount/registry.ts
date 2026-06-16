@@ -14,7 +14,7 @@
 
 import type { FileCache } from '../../cache/file/mixin.ts'
 import { GENERAL_COMMANDS } from '../../commands/builtin/general/index.ts'
-import type { Resource } from '../../resource/base.ts'
+import { cachesReads, type Resource } from '../../resource/base.ts'
 import { DevResource } from '../../resource/dev/dev.ts'
 import { ConsistencyPolicy, MountMode, PathSpec } from '../../types.ts'
 import { Mount } from './mount.ts'
@@ -310,7 +310,7 @@ export class MountRegistry {
       defaultMount !== null &&
       pathScopes.length > 0 &&
       isFileCache(defaultMount.resource) &&
-      mount.resource.isRemote === true
+      cachesReads(mount.resource)
     ) {
       const baseCmd = mount.resolveCommand(cmdName)
       if (!baseCmd?.write) {

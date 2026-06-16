@@ -47,7 +47,7 @@ class Dispatcher:
                        **kwargs: Any) -> tuple[Any, IOResult]:
         mount = self._registry.mount_for(path.original)
         assert_mount_allowed(mount.prefix)
-        cacheable = mount.resource.is_remote is True
+        cacheable = mount.resource.caches_reads
 
         if cacheable and op in _DISPATCH_READ_OPS:
             cached = await self._cache.get(path.original)
@@ -94,7 +94,7 @@ class Dispatcher:
             mount = self._registry.mount_for(path)
         except ValueError:
             return False
-        return mount.resource.is_remote is True
+        return mount.resource.caches_reads
 
     async def invalidate_after_write_by_path(self, path: str) -> None:
         """Drop file-cache + stale parent index after a write to `path`.
@@ -116,7 +116,7 @@ class Dispatcher:
         await self.invalidate_after_write(mount, path)
 
     async def invalidate_after_write(self, mount: Mount, path: str) -> None:
-        if mount.resource.is_remote is True:
+        if mount.resource.caches_reads:
             await self._cache.remove(path)
         idx = getattr(mount.resource, "index", None)
         if idx is not None:
