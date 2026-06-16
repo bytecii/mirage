@@ -12,26 +12,16 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { defineConfig } from 'tsup'
+import type { ExecuteResult } from '@struktoai/mirage-core'
 
-export default defineConfig({
-  entry: [
-    'src/index.ts',
-    'src/openai/index.ts',
-    'src/langchain/index.ts',
-    'src/pi/index.ts',
-    'src/vercel/index.ts',
-    'src/mastra/index.ts',
-    'src/opencode/index.ts',
-    'src/claude-agent-sdk/index.ts',
-  ],
-  format: ['esm'],
-  dts: {
-    compilerOptions: {
-      ignoreDeprecations: '6.0',
-    },
-  },
-  sourcemap: true,
-  clean: true,
-  target: 'es2022',
-})
+export function decode(value: Uint8Array | null | undefined): string {
+  if (value === null || value === undefined) return ''
+  return new TextDecoder('utf-8').decode(value)
+}
+
+export function ioToStr(io: ExecuteResult): string {
+  const stdout = io.stdoutText
+  const stderr = io.stderrText
+  if (stderr) return stdout ? `${stdout}\n${stderr}` : stderr
+  return stdout
+}

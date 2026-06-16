@@ -14,18 +14,13 @@
 
 from pydantic_ai_backends.types import ExecuteResponse, FileInfo, GrepMatch
 
+from mirage.agents.io_text import decode
 from mirage.io.types import IOResult
 
 
-def _decode(value: bytes | None) -> str:
-    if value is None:
-        return ""
-    return value.decode("utf-8", errors="replace")
-
-
 def io_to_execute_response(io: IOResult) -> ExecuteResponse:
-    stdout = _decode(io.stdout)
-    stderr = _decode(io.stderr)
+    stdout = decode(io.stdout)
+    stderr = decode(io.stderr)
     output = stdout
     if stderr:
         output = f"{stdout}\n{stderr}" if stdout else stderr
@@ -33,7 +28,7 @@ def io_to_execute_response(io: IOResult) -> ExecuteResponse:
 
 
 def io_to_grep_matches(io: IOResult) -> list[GrepMatch]:
-    stdout = _decode(io.stdout).strip()
+    stdout = decode(io.stdout).strip()
     if not stdout:
         return []
     matches: list[GrepMatch] = []
@@ -50,7 +45,7 @@ def io_to_grep_matches(io: IOResult) -> list[GrepMatch]:
 
 
 def io_to_file_infos(io: IOResult) -> list[FileInfo]:
-    stdout = _decode(io.stdout).strip()
+    stdout = decode(io.stdout).strip()
     if not stdout:
         return []
     infos: list[FileInfo] = []

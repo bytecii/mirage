@@ -12,26 +12,19 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { defineConfig } from 'tsup'
+import type { Workspace } from '@struktoai/mirage-core'
+import type { Options } from '@anthropic-ai/claude-agent-sdk'
+import { buildSystemPrompt } from '../prompt.ts'
+import { MirageServer } from './server.ts'
 
-export default defineConfig({
-  entry: [
-    'src/index.ts',
-    'src/openai/index.ts',
-    'src/langchain/index.ts',
-    'src/pi/index.ts',
-    'src/vercel/index.ts',
-    'src/mastra/index.ts',
-    'src/opencode/index.ts',
-    'src/claude-agent-sdk/index.ts',
-  ],
-  format: ['esm'],
-  dts: {
-    compilerOptions: {
-      ignoreDeprecations: '6.0',
-    },
-  },
-  sourcemap: true,
-  clean: true,
-  target: 'es2022',
-})
+export interface BuildOptionsOptions {
+  systemPrompt?: string
+}
+
+export function buildOptions(workspace: Workspace, opts: BuildOptionsOptions = {}): Options {
+  return {
+    mcpServers: { mirage: MirageServer(workspace) },
+    allowedTools: ['mcp__mirage__*'],
+    systemPrompt: opts.systemPrompt ?? buildSystemPrompt({ workspace }),
+  }
+}

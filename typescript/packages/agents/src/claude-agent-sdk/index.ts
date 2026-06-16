@@ -12,26 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { defineConfig } from 'tsup'
-
-export default defineConfig({
-  entry: [
-    'src/index.ts',
-    'src/openai/index.ts',
-    'src/langchain/index.ts',
-    'src/pi/index.ts',
-    'src/vercel/index.ts',
-    'src/mastra/index.ts',
-    'src/opencode/index.ts',
-    'src/claude-agent-sdk/index.ts',
-  ],
-  format: ['esm'],
-  dts: {
-    compilerOptions: {
-      ignoreDeprecations: '6.0',
-    },
-  },
-  sourcemap: true,
-  clean: true,
-  target: 'es2022',
-})
+export { MirageServer } from './server.ts'
+export { buildOptions, type BuildOptionsOptions } from './options.ts'
+export { MIRAGE_SYSTEM_PROMPT, buildSystemPrompt } from '../prompt.ts'
+export {
+  EDIT_DESCRIPTION,
+  EXECUTE_DESCRIPTION,
+  GREP_DESCRIPTION,
+  LS_DESCRIPTION,
+  READ_DESCRIPTION,
+  WRITE_DESCRIPTION,
+} from './descriptions.ts'

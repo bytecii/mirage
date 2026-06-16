@@ -21,23 +21,9 @@ except ImportError as exc:
         "`agno` not installed. Install with: pip install 'mirage-ai[agno]'"
     ) from exc
 
+from mirage.agents.io_text import io_to_str
 from mirage.bridge.sync import run_async_from_sync
-from mirage.io.types import IOResult
 from mirage.workspace.workspace import Workspace
-
-
-def _decode(value: bytes | None) -> str:
-    if value is None:
-        return ""
-    return value.decode("utf-8", errors="replace")
-
-
-def _io_to_str(io: IOResult) -> str:
-    stdout = _decode(io.stdout if isinstance(io.stdout, bytes) else None)
-    stderr = _decode(io.stderr if isinstance(io.stderr, bytes) else None)
-    if stderr:
-        return f"{stdout}\n{stderr}" if stdout else stderr
-    return stdout
 
 
 class MirageToolkit(Toolkit):
@@ -82,7 +68,7 @@ class MirageToolkit(Toolkit):
 
     async def aexecute(self, command: str) -> str:
         io = await self._ws.execute(command)
-        return _io_to_str(io)
+        return io_to_str(io)
 
     # -- read --------------------------------------------------------------
 
@@ -96,7 +82,7 @@ class MirageToolkit(Toolkit):
 
     async def aread(self, path: str) -> str:
         io = await self._ws.execute(f"cat {shlex.quote(path)}")
-        return _io_to_str(io)
+        return io_to_str(io)
 
     # -- write -------------------------------------------------------------
 
@@ -112,7 +98,7 @@ class MirageToolkit(Toolkit):
     async def awrite(self, path: str, content: str) -> str:
         io = await self._ws.execute(f"tee {shlex.quote(path)}",
                                     stdin=content.encode("utf-8"))
-        return _io_to_str(io)
+        return io_to_str(io)
 
     # -- ls ------------------------------------------------------------------
 
@@ -126,7 +112,7 @@ class MirageToolkit(Toolkit):
 
     async def als(self, path: str = "/") -> str:
         io = await self._ws.execute(f"ls {shlex.quote(path)}")
-        return _io_to_str(io)
+        return io_to_str(io)
 
     # -- grep ---------------------------------------------------------------
 
@@ -144,4 +130,4 @@ class MirageToolkit(Toolkit):
     async def agrep(self, pattern: str, path: str) -> str:
         io = await self._ws.execute(
             f"grep -r {shlex.quote(pattern)} {shlex.quote(path)}")
-        return _io_to_str(io)
+        return io_to_str(io)

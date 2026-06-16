@@ -227,6 +227,7 @@
               "python/agents/camel",
               "python/agents/agno",
               "python/agents/claude-code",
+              "python/agents/claude-agent-sdk",
               "python/agents/codex"
             ]
           },
@@ -384,6 +385,7 @@
               "typescript/agents/mastra",
               "typescript/agents/opencode",
               "typescript/agents/claude-code",
+              "typescript/agents/claude-agent-sdk",
               "typescript/agents/codex"
             ]
           },

@@ -12,24 +12,14 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.agents.io_text import io_to_str
-from mirage.workspace.workspace import Workspace
+from mirage.agents.claude_agent_sdk.options import build_options
+from mirage.agents.claude_agent_sdk.prompt import (MIRAGE_SYSTEM_PROMPT,
+                                                   build_system_prompt)
+from mirage.agents.claude_agent_sdk.server import MirageServer
 
-
-class MirageShellExecutor:
-    """ShellTool executor backed by a Mirage Workspace.
-
-    Args:
-        workspace (Workspace): The workspace to execute commands in.
-    """
-
-    def __init__(self, workspace: Workspace) -> None:
-        self._ws = workspace
-
-    async def __call__(self, request) -> str:
-        commands = request.data.action.commands
-        outputs: list[str] = []
-        for cmd in commands:
-            io = await self._ws.execute(cmd)
-            outputs.append(io_to_str(io))
-        return "\n".join(outputs)
+__all__ = [
+    "MirageServer",
+    "build_options",
+    "MIRAGE_SYSTEM_PROMPT",
+    "build_system_prompt",
+]

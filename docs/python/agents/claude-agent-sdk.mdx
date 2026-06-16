@@ -1,0 +1,72 @@
+---
+title: Claude Agent SDK
+description: Run Anthropic's Claude Agent SDK against a Mirage workspace via an in-process MCP server exposing execute, read, write, edit, ls, and grep tools.
+icon: /images/claude-logo.svg
+---
+
+The [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/) builds agents on Claude. Mirage exposes any `Workspace` to the SDK as an in-process MCP server, so every file and shell operation the agent runs is routed through Mirage instead of the host filesystem.
+
+This is distinct from [Claude Code](/python/agents/claude-code), which points the `claude` CLI at a [FUSE](/python/setup/fuse) mountpoint. Use this SDK integration when you build your own agent with `claude_agent_sdk.query()` and want Mirage tools rather than the built-in file tools.
+
+## Install
+
+```bash
+uv add 'mirage-ai[claude-agent-sdk]'
+```
+
+## Usage
+
+`build_options` wires a workspace into a ready-to-use `ClaudeAgentOptions`: it registers the Mirage MCP server, restricts the agent to Mirage's tools, and injects a system prompt describing the mounted paths.
+
+```python
+from claude_agent_sdk import query
+
+from mirage import Workspace
+from mirage.agents.claude_agent_sdk import build_options
+from mirage.resource.s3 import S3Config, S3Resource
+
+ws = Workspace({"/s3": S3Resource(S3Config(bucket="my-bucket"))})
+
+async for msg in query(
+    prompt="cat /s3/data.csv | grep error",
+    options=build_options(ws),
+):
+    print(msg)
+```
+
+## Composing with other MCP servers
+
+Use `MirageServer` directly to combine Mirage with other servers:
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions
+
+from mirage.agents.claude_agent_sdk import MirageServer, build_system_prompt
+
+options = ClaudeAgentOptions(
+    mcp_servers={"mirage": MirageServer(ws), "github": github_server},
+    allowed_tools=["mcp__mirage__*", "mcp__github__*"],
+    tools=[],
+    system_prompt=build_system_prompt(workspace=ws),
+)
+```
+
+## Tools
+
+| Tool | Maps to |
+| --- | --- |
+| `execute_command` | `Workspace.execute()`, the full shell pipeline (cat, grep, find, pipe, ...). |
+| `read` | Line-paginated file read with `offset` and `limit`. |
+| `write` | Create a new file (fails if it already exists). |
+| `edit` | Replace a string in an existing file. |
+| `ls` | List a directory. |
+| `grep` | Recursive `grep -rn` over the workspace. |
+
+## Exports
+
+| Symbol | Purpose |
+| --- | --- |
+| `MirageServer` | In-process MCP server exposing the Mirage tools; pass to `ClaudeAgentOptions(mcp_servers=...)`. |
+| `build_options` | Returns a ready-to-use `ClaudeAgentOptions` backed by a workspace. |
+| `build_system_prompt` | Generates a system prompt that describes mounted paths to the model. |
+| `MIRAGE_SYSTEM_PROMPT` | The default system prompt template. |
