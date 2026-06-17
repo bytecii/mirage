@@ -281,15 +281,36 @@ def _execute_program(text: str,
                 repl = cmd["replacement"]
                 eflags = cmd["expr_flags"]
                 re_flags = re.IGNORECASE if "i" in eflags else 0
-                count = 0 if "g" in eflags else 1
-                new_pattern = re.sub(pat,
-                                     partial(_apply_repl, repl=repl),
-                                     pattern,
-                                     flags=re_flags,
-                                     count=count)
-                if new_pattern != pattern:
+                # `nth` is the 1-based occurrence the substitution starts at
+                # (GNU sed's numeric s///N flag, default 1). Without `g` only
+                # that occurrence is replaced; with `g` that one and every
+                # later one are. Count matches and decide per match so both
+                # `N` and `Ng` work.
+                digits = re.search(r"\d+", eflags)
+                nth = int(digits.group()) if digits else 1
+                global_ = "g" in eflags
+                counter = [0]
+
+                # Defaults bind the per-command values early (the closure is
+                # defined inside the command loop and used immediately).
+                def _repl(m: "re.Match[str]",
+                          _repl_s: str = repl,
+                          _nth: int = nth,
+                          _global: bool = global_,
+                          _counter: list = counter) -> str:
+                    _counter[0] += 1
+                    hit = (_counter[0] >= _nth if _global
+                           else _counter[0] == _nth)
+                    return _apply_repl(m, repl=_repl_s) if hit else m.group(0)
+
+                new_pattern = re.sub(pat, _repl, pattern, flags=re_flags)
+                changed = new_pattern != pattern
+                if changed:
                     substituted = True
                 pattern = new_pattern
+                # s///p prints the pattern space when a substitution was made.
+                if changed and "p" in eflags:
+                    output.append(pattern)
             elif c == "d":
                 delete = True
                 break

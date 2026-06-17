@@ -199,9 +199,8 @@ function regexReplace(
   repl: string,
   ignoreCase: boolean,
   global: boolean,
+  count = 1,
 ): string {
-  const flags = (ignoreCase ? 'i' : '') + (global ? 'g' : '')
-  const re = new RegExp(pat, flags)
   // POSIX sed line semantics: `^`/`$` anchor to the line content, not the
   // line-separator newline that splitLinesKeepEnds preserves. JS `$` (without
   // the `m` flag) only matches the absolute end of input, so an anchored
@@ -211,7 +210,20 @@ function regexReplace(
   // sed (whose pattern space excludes the trailing newline). See issue #326.
   const hasNewline = text.endsWith('\n')
   const body = hasNewline ? text.slice(0, -1) : text
-  const out = body.replace(re, translateReplacement(repl))
+  // `count` is the 1-based occurrence the substitution starts at (GNU sed's
+  // numeric `s///N` flag, default 1). Without `g` only that single occurrence
+  // is replaced; with `g` that occurrence and every later one are. Iterate all
+  // matches and decide per match so `N` and `Ng` both work.
+  const baseFlags = ignoreCase ? 'i' : ''
+  const scan = new RegExp(pat, baseFlags + 'g')
+  const single = new RegExp(pat, baseFlags)
+  const jsRepl = translateReplacement(repl)
+  let n = 0
+  const out = body.replace(scan, (m: string) => {
+    n += 1
+    const hit = global ? n >= count : n === count
+    return hit ? m.replace(single, jsRepl) : m
+  })
   return hasNewline ? out + '\n' : out
 }
 
@@ -303,9 +315,14 @@ export function executeProgram(text: string, commands: SedCommand[], suppress = 
         const pat = cmd.pattern ?? ''
         const repl = cmd.replacement ?? ''
         const ef = cmd.exprFlags ?? ''
-        const newPattern = regexReplace(pattern, pat, repl, ef.includes('i'), ef.includes('g'))
-        if (newPattern !== pattern) substituted = true
+        const countMatch = /[0-9]+/.exec(ef)
+        const count = countMatch ? Number.parseInt(countMatch[0], 10) : 1
+        const newPattern = regexReplace(pattern, pat, repl, ef.includes('i'), ef.includes('g'), count)
+        const changed = newPattern !== pattern
+        if (changed) substituted = true
         pattern = newPattern
+        // `s///p` prints the pattern space when a substitution was made.
+        if (changed && ef.includes('p')) output.push(pattern)
       } else if (c === 'd') {
         deleteFlag = true
         break

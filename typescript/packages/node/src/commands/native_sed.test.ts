@@ -265,6 +265,45 @@ describe.each(NATIVE_BACKENDS)('native sed (%s backend)', (kind) => {
     }
   })
 
+  it('sed s/// numeric count replaces Nth match, matches native', async () => {
+    const env = makeEnv(kind)
+    try {
+      const data = ENC.encode('oooo\n')
+      const m = await env.mirage("sed 's/o/O/2'", data)
+      const n = await env.native("sed 's/o/O/2'", data)
+      expect(m).toBe(n)
+      expect(m).toBe('oOoo\n')
+    } finally {
+      await env.cleanup()
+    }
+  })
+
+  it('sed s///p prints substituted line, matches native', async () => {
+    const env = makeEnv(kind)
+    try {
+      const data = ENC.encode('hi\nbye\n')
+      const m = await env.mirage("sed 's/hi/HI/p'", data)
+      const n = await env.native("sed 's/hi/HI/p'", data)
+      expect(m).toBe(n)
+      expect(m).toBe('HI\nHI\nbye\n')
+    } finally {
+      await env.cleanup()
+    }
+  })
+
+  it('sed -n s///p prints only substituted lines, matches native', async () => {
+    const env = makeEnv(kind)
+    try {
+      const data = ENC.encode('hi\nbye\n')
+      const m = await env.mirage("sed -n 's/hi/HI/p'", data)
+      const n = await env.native("sed -n 's/hi/HI/p'", data)
+      expect(m).toBe(n)
+      expect(m).toBe('HI\n')
+    } finally {
+      await env.cleanup()
+    }
+  })
+
   it('sed -i edits file in place', async () => {
     const env = makeEnv(kind)
     try {

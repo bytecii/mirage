@@ -110,3 +110,21 @@ def test_sed_e(env):
     data = b"hello world\n"
     result = env.mirage("sed -e s/hello/bye/", stdin=data)
     assert "bye" in result
+
+
+def test_sed_numeric_count(env):
+    data = b"oooo\n"
+    assert env.mirage("sed 's/o/O/2'", stdin=data) == env.native(
+        "sed 's/o/O/2'", stdin=data)
+
+
+def test_sed_p_flag(env):
+    data = b"hi\nbye\n"
+    assert env.mirage("sed 's/hi/HI/p'", stdin=data) == env.native(
+        "sed 's/hi/HI/p'", stdin=data)
+
+
+def test_sed_n_p_flag(env):
+    data = b"hi\nbye\n"
+    assert env.mirage("sed -n 's/hi/HI/p'", stdin=data) == env.native(
+        "sed -n 's/hi/HI/p'", stdin=data)

@@ -265,6 +265,7 @@ a.txt
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/oooo.txt
 /data/patterns.txt
 /data/patterns2.txt
 /data/prefix_dup.txt
@@ -299,6 +300,7 @@ a.txt
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/oooo.txt
 /data/patterns.txt
 /data/patterns2.txt
 /data/prefix_dup.txt
@@ -333,6 +335,7 @@ multi.txt
 no_nl.txt
 numbers.txt
 one_byte.txt
+oooo.txt
 patterns.txt
 patterns2.txt
 prefix_dup.txt
@@ -366,6 +369,7 @@ multi.txt
 no_nl.txt
 numbers.txt
 one_byte.txt
+oooo.txt
 patterns.txt
 patterns2.txt
 prefix_dup.txt
@@ -481,6 +485,7 @@ baz
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/oooo.txt
 /data/patterns.txt
 /data/patterns2.txt
 /data/prefix_dup.txt
@@ -513,6 +518,7 @@ baz
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/oooo.txt
 /data/patterns.txt
 /data/patterns2.txt
 /data/prefix_dup.txt
@@ -542,6 +548,7 @@ baz
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/oooo.txt
 /data/patterns.txt
 /data/patterns2.txt
 /data/prefix_dup.txt
@@ -602,7 +609,7 @@ world
       2 b
       1 c
 === find_pipe_wc ===
-28
+29
 === jq_pipe_wc ===
 3
 === cat_tr_sort ===
@@ -699,6 +706,7 @@ world
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/oooo.txt
 /data/patterns.txt
 /data/patterns2.txt
 /data/prefix_dup.txt
@@ -730,6 +738,7 @@ world
 /data/mixed.txt
 /data/no_nl.txt
 /data/numbers.txt
+/data/oooo.txt
 /data/patterns.txt
 /data/prefix_dup.txt
 /data/repeats.txt
@@ -761,6 +770,7 @@ world
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/oooo.txt
 /data/patterns.txt
 /data/patterns2.txt
 /data/prefix_dup.txt
@@ -881,9 +891,9 @@ foo
 === sed_print_only ===
 world
 === sed_replace_n ===
-hellO
-wOrld
-fOo
+hello
+world
+foO
 bar
 baz
 === sed_delete_pattern ===
@@ -926,6 +936,15 @@ foo bar
 Oo
 Oo
 Oo
+=== sed_count_nth ===
+oOoo
+oOoo
+=== sed_count_nth_g ===
+oOOO
+oOOO
+=== sed_sub_p ===
+Oooo
+Oooo
 === tr_squeeze ===
 abc
 === tr_complement ===
@@ -1137,6 +1156,7 @@ baz,
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/oooo.txt
 /data/patterns.txt
 /data/patterns2.txt
 /data/prefix_dup.txt
@@ -1177,6 +1197,7 @@ baz,
 /data/no_nl.txt
 /data/numbers.txt
 /data/one_byte.txt
+/data/oooo.txt
 /data/patterns.txt
 /data/patterns2.txt
 /data/prefix_dup.txt
@@ -1230,7 +1251,7 @@ baz,
 === du_file ===
 24	/data/a.txt
 === du_dir ===
-678	/data
+688	/data
 === du_h ===
 24B	/data/a.txt
 === tree ===
@@ -1595,8 +1616,8 @@ disptree/d
 disptree/d/y.txt
 disptree/x.txt
 === history_last_two ===
-429  (cd /data && ls -R disptree)
-430  (cd /data && find disptree)
+434  (cd /data && ls -R disptree)
+435  (cd /data && find disptree)
 === bash_history_tail ===
 (cd /data && ls -R disptree)
 (cd /data && find disptree)

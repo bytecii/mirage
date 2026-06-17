@@ -147,3 +147,43 @@ async def test_sed_no_paths_no_stdin_raises():
     rb, wb, _ = _make_backend({})
     with pytest.raises(ValueError, match="usage"):
         await sed([], "s/a/b/", read_bytes=rb, write_bytes=wb)
+
+
+@pytest.mark.asyncio
+async def test_sed_numeric_count_replaces_nth_occurrence():
+    rb, wb, _ = _make_backend({})
+    output, _ = await sed([], "s/o/O/2", read_bytes=rb, write_bytes=wb,
+                          stdin=b"oooo\n")
+    assert output == b"oOoo\n"
+
+
+@pytest.mark.asyncio
+async def test_sed_numeric_count_with_g_replaces_nth_onward():
+    rb, wb, _ = _make_backend({})
+    output, _ = await sed([], "s/o/O/2g", read_bytes=rb, write_bytes=wb,
+                          stdin=b"oooo\n")
+    assert output == b"oOOO\n"
+
+
+@pytest.mark.asyncio
+async def test_sed_count_is_per_line():
+    rb, wb, _ = _make_backend({})
+    output, _ = await sed([], "s/o/O/2", read_bytes=rb, write_bytes=wb,
+                          stdin=b"oo\noo\n")
+    assert output == b"oO\noO\n"
+
+
+@pytest.mark.asyncio
+async def test_sed_p_flag_prints_substituted_line_twice():
+    rb, wb, _ = _make_backend({})
+    output, _ = await sed([], "s/hi/HI/p", read_bytes=rb, write_bytes=wb,
+                          stdin=b"hi\nbye\n")
+    assert output == b"HI\nHI\nbye\n"
+
+
+@pytest.mark.asyncio
+async def test_sed_p_flag_under_suppress_prints_only_substituted():
+    rb, wb, _ = _make_backend({})
+    output, _ = await sed([], "s/hi/HI/p", read_bytes=rb, write_bytes=wb,
+                          stdin=b"hi\nbye\n", suppress=True)
+    assert output == b"HI\n"

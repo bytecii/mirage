@@ -54,3 +54,36 @@ describe('sed line anchors (^ and $)', () => {
     expect(sed('/^[0-9]*$/d', '12\nab\n34\n')).toBe('ab\n')
   })
 })
+
+describe('sed s/// flags', () => {
+  it('numeric count replaces only the Nth occurrence', () => {
+    expect(sed('s/o/O/2', 'oooo\n')).toBe('oOoo\n')
+    expect(sed('s/o/O/3', 'oooo\n')).toBe('ooOo\n')
+  })
+
+  it('numeric count with g replaces the Nth and all later occurrences', () => {
+    expect(sed('s/o/O/2g', 'oooo\n')).toBe('oOOO\n')
+  })
+
+  it('count is per line', () => {
+    expect(sed('s/o/O/2', 'oo\noo\n')).toBe('oO\noO\n')
+  })
+
+  it('no count, no g replaces first; g replaces all', () => {
+    expect(sed('s/o/O/', 'oooo\n')).toBe('Oooo\n')
+    expect(sed('s/o/O/g', 'oooo\n')).toBe('OOOO\n')
+  })
+
+  it('p flag prints the pattern space when a substitution is made', () => {
+    // without -n the line is emitted twice on a match, once via p
+    expect(sed('s/hi/HI/p', 'hi\nbye\n')).toBe('HI\nHI\nbye\n')
+  })
+
+  it('p flag under -n prints only substituted lines', () => {
+    expect(sed('s/hi/HI/p', 'hi\nbye\n', true)).toBe('HI\n')
+  })
+
+  it('count combines with case-insensitive flag', () => {
+    expect(sed('s/o/X/2i', 'oOoO\n')).toBe('oXoO\n')
+  })
+})

@@ -82,6 +82,8 @@ SEED_FILES = {
     "#123\nls\n#456\nfoo bar\n",
     "/data/multi.txt":
     "oo\noo\noo\n",
+    "/data/oooo.txt":
+    "oooo\noooo\n",
     # dedicated clean subtree for traversal-display cases (no other case
     # writes under it, so listings/walks are deterministic)
     "/data/disptree/x.txt":
@@ -344,6 +346,11 @@ CASES: list[tuple[str, str]] = [
     # Non-global s/// replaces the first match on *each* line, not just the
     # first match in the whole file.
     ("sed_firstmatch_file", "sed 's/o/O/' /data/multi.txt"),
+    # s/// numeric count (Nth occurrence) and Nth-onward (Ng), per line.
+    ("sed_count_nth", "sed 's/o/O/2' /data/oooo.txt"),
+    ("sed_count_nth_g", "sed 's/o/O/2g' /data/oooo.txt"),
+    # s///p prints the pattern space on substitution (here with -n).
+    ("sed_sub_p", "cat /data/oooo.txt | sed -n 's/o/O/p'"),
 
     # ----- tr advanced -----
     ("tr_squeeze", "echo aaabbbccc | tr -s a-z"),
