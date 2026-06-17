@@ -75,6 +75,7 @@ class FuseManager:
                 pass
         self._mountpoint = None
         self._owns_mountpoint = False
+        self._auto = False
 
     def close(self) -> None:
         if self._mountpoint and self._auto:
