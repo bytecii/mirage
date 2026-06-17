@@ -22,7 +22,7 @@ import { JWTVerificationError, verifyJwt } from './jwt.ts'
 const BEARER_PREFIX = 'Bearer '
 const HEALTH_PATHS = new Set(['/v1/health'])
 const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/
-const AUTH_RATE_LIMIT_POINTS = 600
+const AUTH_RATE_LIMIT_POINTS = 2000
 const AUTH_RATE_LIMIT_WINDOW_SECONDS = 60
 
 function constantTimeEqual(a: string, b: string): boolean {
