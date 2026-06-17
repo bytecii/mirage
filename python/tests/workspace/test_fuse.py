@@ -12,6 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import subprocess
+import tempfile
+
+import pytest
+
 from mirage.workspace.fuse import FuseManager
 
 
@@ -35,4 +40,39 @@ class TestFuseManager:
     def test_close_without_mountpoint_does_nothing(self):
         fm = FuseManager()
         fm.close()
+        assert fm.mountpoint is None
+
+    def test_close_keeps_caller_owned_mountpoint(self, monkeypatch, tmp_path):
+        # Regression: explicit mountpoints are caller-owned deployment paths.
+        # close() should unmount FUSE, not remove the directory given by the
+        # caller.
+        fuse_mount = pytest.importorskip("mirage.fuse.mount")
+        monkeypatch.setattr(fuse_mount, "mount_background",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: None)
+
+        fm = FuseManager()
+        fm.setup(object(), mountpoint=str(tmp_path))
+        fm.close()
+
+        assert tmp_path.exists()
+        assert fm.mountpoint is None
+
+    def test_close_removes_generated_mountpoint(self, monkeypatch, tmp_path):
+        # Generated temp mountpoints are Mirage-owned, so close() removes the
+        # directory it created with an empty-directory rmdir.
+        fuse_mount = pytest.importorskip("mirage.fuse.mount")
+        generated = tmp_path / "mirage-generated"
+        generated.mkdir()
+        monkeypatch.setattr(fuse_mount, "mount_background",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(tempfile, "mkdtemp",
+                            lambda *_args, **_kwargs: str(generated))
+
+        fm = FuseManager()
+        fm.setup(object())
+        fm.close()
+
+        assert not generated.exists()
         assert fm.mountpoint is None

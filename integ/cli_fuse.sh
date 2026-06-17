@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # CLI end-to-end FUSE parity. Drives the daemon-backed CLI to create a workspace
-# with TWO per-mount FUSE subtrees pinned to known OS paths, writes content
-# through the VFS, then reads it back THROUGH the kernel mountpoints. The daemon
-# hosts the mounts in its own process, so the reading shell never deadlocks.
-# Proves the CLI really mounts each subtree at its own path on both languages.
+# with TWO per-mount FUSE subtrees pinned to known OS paths plus ONE generated
+# mount (fuse: true), writes content through the VFS, then reads it back THROUGH
+# the kernel mountpoints. The daemon hosts the mounts in its own process, so the
+# reading shell never deadlocks. Proves the CLI really mounts each subtree on
+# both languages, and that close() cleanup is ownership-aware: caller-owned
+# (pinned) mountpoint directories survive unmount, while generated temp
+# directories are removed with an empty-dir rmdir.
 # Requires libfuse + /dev/fuse, so it runs only in the fuse CI job.
 #
 # Usage: cli_fuse.sh "<py-cli>" "<ts-cli>"
@@ -34,6 +37,9 @@ mounts:
   /logs:
     resource: ram
     fuse: $lmnt
+  /auto:
+    resource: ram
+    fuse: true
 YML
 
   $cli daemon stop >/dev/null 2>&1 </dev/null || true
@@ -53,23 +59,47 @@ YML
     sleep 0.2
   done
 
-  local detail data_mp logs_mp
+  local detail data_mp logs_mp auto_mp
   detail="$($cli workspace get cf </dev/null)"
   data_mp="$(printf '%s' "$detail" | points | jq -r '."/data" // empty')"
   logs_mp="$(printf '%s' "$detail" | points | jq -r '."/logs" // empty')"
+  auto_mp="$(printf '%s' "$detail" | points | jq -r '."/auto" // empty')"
+
+  # The generated mount got a temp mountpoint Mirage picked; exercise it through
+  # the kernel the same way as the pinned mounts.
+  $cli execute -w cf -c 'echo gamma > /auto/c.txt' </dev/null >/dev/null
+  for i in $(seq 1 50); do
+    [ -n "$auto_mp" ] && [ -f "$auto_mp/c.txt" ] && break
+    sleep 0.2
+  done
 
   echo "data_cat=$(cat "$dmnt/a.txt" 2>/dev/null)"
   echo "logs_cat=$(cat "$lmnt/b.txt" 2>/dev/null)"
+  echo "auto_cat=$(cat "$auto_mp/c.txt" 2>/dev/null)"
   echo "logs_size=$(wc -c < "$lmnt/b.txt" 2>/dev/null | tr -d ' ')"
   echo "mount_keys=$(printf '%s' "$detail" | points | jq -r 'keys | sort | join(",")')"
   echo "data_pinned=$([ "$data_mp" == "$dmnt" ] && echo yes || echo no)"
   echo "logs_pinned=$([ "$logs_mp" == "$lmnt" ] && echo yes || echo no)"
+  echo "auto_generated=$([ -n "$auto_mp" ] && [ "$auto_mp" != "$dmnt" ] && [ "$auto_mp" != "$lmnt" ] && echo yes || echo no)"
   echo "distinct=$([ -n "$data_mp" ] && [ "$data_mp" != "$logs_mp" ] && echo yes || echo no)"
 
+  # Deleting the workspace runs the daemon-side close() for every mount. Cleanup
+  # must keep caller-owned (pinned) directories and remove only the generated
+  # temp directory. Wait for the generated dir to disappear, then assert.
   $cli workspace delete cf >/dev/null 2>&1 </dev/null || true
+  for i in $(seq 1 25); do
+    [ -n "$auto_mp" ] && [ ! -d "$auto_mp" ] && break
+    sleep 0.2
+  done
+  echo "data_dir_survives=$([ -d "$dmnt" ] && echo yes || echo no)"
+  echo "logs_dir_survives=$([ -d "$lmnt" ] && echo yes || echo no)"
+  echo "gen_dir_removed=$([ -n "$auto_mp" ] && [ ! -d "$auto_mp" ] && echo yes || echo no)"
+
   $cli daemon stop >/dev/null 2>&1 </dev/null || true
   fusermount -u "$dmnt" 2>/dev/null || umount "$dmnt" 2>/dev/null || true
   fusermount -u "$lmnt" 2>/dev/null || umount "$lmnt" 2>/dev/null || true
+  [ -n "$auto_mp" ] && { fusermount -u "$auto_mp" 2>/dev/null || umount "$auto_mp" 2>/dev/null || true; }
+  rm -rf "$dmnt" "$lmnt" ${auto_mp:+"$auto_mp"}
 }
 
 echo "===== probing Python CLI ====="
@@ -105,11 +135,16 @@ expect() {
 }
 expect "data_cat" "alpha"
 expect "logs_cat" "beta"
+expect "auto_cat" "gamma"
 expect "logs_size" "5"
-expect "mount_keys" "/data,/logs"
+expect "mount_keys" "/auto,/data,/logs"
 expect "data_pinned" "yes"
 expect "logs_pinned" "yes"
+expect "auto_generated" "yes"
 expect "distinct" "yes"
+expect "data_dir_survives" "yes"
+expect "logs_dir_survives" "yes"
+expect "gen_dir_removed" "yes"
 
 if [ "$fail" != "0" ]; then
   echo
@@ -122,4 +157,4 @@ if [ "$fail" != "0" ]; then
   exit 1
 fi
 echo
-echo "CLI FUSE parity OK (two pinned per-mount FUSE subtrees read through the kernel; py == ts)."
+echo "CLI FUSE parity OK (two pinned + one generated FUSE subtree read through the kernel; ownership-aware cleanup; py == ts)."
