@@ -18,7 +18,7 @@ import pytest
 
 from mirage.core.mongodb._client import (get_index_stats, get_indexes,
                                          get_validator, is_view,
-                                         iter_documents)
+                                         iter_documents, iter_inserts)
 
 
 class _AsyncIter:
@@ -100,7 +100,7 @@ def _build_indexes_client(spec, indexes):
     idx_cursor = MagicMock()
     idx_cursor.__aiter__ = lambda self: _AsyncIter(indexes).__aiter__()
     col = MagicMock()
-    col.list_indexes = MagicMock(return_value=idx_cursor)
+    col.list_indexes = AsyncMock(return_value=idx_cursor)
     db = MagicMock()
     db.list_collections = AsyncMock(return_value=spec_cursor)
     db.__getitem__.return_value = col
@@ -153,7 +153,7 @@ async def test_get_indexes_returns_indexes_for_collection():
     out = await get_indexes(client, "db1", "coll1")
     assert out == indexes
     db.list_collections.assert_awaited_once_with(filter={"name": "coll1"})
-    col.list_indexes.assert_called_once_with()
+    col.list_indexes.assert_awaited_once_with()
 
 
 def _build_validator_client(spec):
@@ -203,7 +203,7 @@ def _build_indexstats_client(rows):
     cursor = MagicMock()
     cursor.__aiter__ = lambda self: _AsyncIter(rows).__aiter__()
     col = MagicMock()
-    col.aggregate = MagicMock(return_value=cursor)
+    col.aggregate = AsyncMock(return_value=cursor)
     db = MagicMock()
     db.__getitem__.return_value = col
     client = MagicMock()
@@ -233,7 +233,7 @@ async def test_get_index_stats_returns_map_keyed_by_name():
     out = await get_index_stats(client, "db1", "coll1")
     assert out["title_text"] == {"ops": 5678, "since": "2026-02-01"}
     assert out["_id_"] == {"ops": 1234, "since": "2026-01-01"}
-    col.aggregate.assert_called_once_with([{"$indexStats": {}}])
+    col.aggregate.assert_awaited_once_with([{"$indexStats": {}}])
 
 
 @pytest.mark.asyncio
@@ -256,3 +256,85 @@ async def test_get_indexes_returns_empty_for_view_without_listing():
     assert out == []
     db.list_collections.assert_awaited_once_with(filter={"name": "myview"})
     col.list_indexes.assert_not_called()
+
+
+class _AsyncChangeStream:
+
+    def __init__(self, changes):
+        self._iter = _AsyncIter(changes)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def __aiter__(self):
+        return self._iter
+
+
+def _build_watch_client(changes):
+    stream = _AsyncChangeStream(changes)
+    col = MagicMock()
+    col.watch = AsyncMock(return_value=stream)
+    db = MagicMock()
+    db.__getitem__.return_value = col
+    client = MagicMock()
+    client.__getitem__.return_value = db
+    return client, col
+
+
+@pytest.mark.asyncio
+async def test_iter_inserts_yields_full_documents():
+    changes = [
+        {
+            "operationType": "insert",
+            "fullDocument": {
+                "_id": 1,
+                "v": "a"
+            }
+        },
+        {
+            "operationType": "insert",
+            "fullDocument": {
+                "_id": 2,
+                "v": "b"
+            }
+        },
+    ]
+    client, col = _build_watch_client(changes)
+    out = []
+    async for doc in iter_inserts(client, "db1", "coll1"):
+        out.append(doc)
+    assert out == [{"_id": 1, "v": "a"}, {"_id": 2, "v": "b"}]
+    col.watch.assert_awaited_once_with([{
+        "$match": {
+            "operationType": "insert"
+        }
+    }])
+
+
+@pytest.mark.asyncio
+async def test_iter_inserts_skips_changes_without_full_document():
+    changes = [
+        {
+            "operationType": "insert",
+            "fullDocument": {
+                "_id": 1
+            }
+        },
+        {
+            "operationType": "drop"
+        },
+        {
+            "operationType": "insert",
+            "fullDocument": {
+                "_id": 2
+            }
+        },
+    ]
+    client, _ = _build_watch_client(changes)
+    out = []
+    async for doc in iter_inserts(client, "db1", "coll1"):
+        out.append(doc)
+    assert out == [{"_id": 1}, {"_id": 2}]

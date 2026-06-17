@@ -19,7 +19,7 @@ import { IOResult } from '../io/types.ts'
 import { runWithRevisions } from '../observe/context.ts'
 import type { OpsRegistry } from '../ops/registry.ts'
 import { type OpKwargs } from '../ops/registry.ts'
-import type { Resource } from '../resource/base.ts'
+import { cachesReads, type Resource } from '../resource/base.ts'
 import { ConsistencyPolicy, MountMode, type PathSpec } from '../types.ts'
 import type { DispatchFn } from './executor/cross_mount.ts'
 import type { MountRegistry } from './mount/registry.ts'
@@ -60,7 +60,7 @@ export class Dispatcher {
 
   dispatch: DispatchFn = async (opName, path, args, kwargs) => {
     const [resource, scope, mode] = await this.resolveFn(path.original)
-    const cacheable = resource.isRemote === true
+    const cacheable = cachesReads(resource)
     if (cacheable && DISPATCH_READ_OPS.has(opName)) {
       let cached = await this.cache.get(path.original)
       if (
@@ -112,7 +112,7 @@ export class Dispatcher {
   async invalidateAfterWriteByPath(path: string): Promise<void> {
     const mount = this.registry.mountFor(path)
     if (mount === null) return
-    if (mount.resource.isRemote === true) {
+    if (cachesReads(mount.resource)) {
       await this.cache.remove(path)
     }
     const idx = mount.resource.index

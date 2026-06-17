@@ -320,9 +320,11 @@ export async function handleCommand(
     return [stdout, io, exec]
   } catch (err) {
     const strerror = gnuStrerror((err as { code?: string }).code)
+    const vpath = errorVirtualPath(err)
+    const display = paths.find((p) => p.original === vpath)?.display ?? vpath
     const line =
       strerror !== null
-        ? `${cmdName}: ${errorVirtualPath(err)}: ${strerror}\n`
+        ? `${cmdName}: ${display}: ${strerror}\n`
         : `${cmdName}: ${err instanceof Error ? err.message : String(err)}\n`
     const errBytes = new TextEncoder().encode(line)
     return [

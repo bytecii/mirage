@@ -94,23 +94,23 @@ export async function wcGeneric(
       const byteCount = data.byteLength
       if (LFlag) {
         const maxLen = text.split(/\r?\n/).reduce((m, l) => Math.max(m, l.length), 0)
-        rows.push({ values: [maxLen], label: p.original })
+        rows.push({ values: [maxLen], label: p.display })
         totalMax = Math.max(totalMax, maxLen)
       } else if (lFlag) {
-        rows.push({ values: [lineCount], label: p.original })
+        rows.push({ values: [lineCount], label: p.display })
         totalLines += lineCount
       } else if (wFlag) {
-        rows.push({ values: [wordCount], label: p.original })
+        rows.push({ values: [wordCount], label: p.display })
         totalWords += wordCount
       } else if (cFlag) {
-        rows.push({ values: [byteCount], label: p.original })
+        rows.push({ values: [byteCount], label: p.display })
         totalBytes += byteCount
       } else if (mFlag) {
         const charCount = text.length
-        rows.push({ values: [charCount], label: p.original })
+        rows.push({ values: [charCount], label: p.display })
         totalBytes += charCount
       } else {
-        rows.push({ values: [lineCount, wordCount, byteCount], label: p.original })
+        rows.push({ values: [lineCount, wordCount, byteCount], label: p.display })
         totalLines += lineCount
         totalWords += wordCount
         totalBytes += byteCount

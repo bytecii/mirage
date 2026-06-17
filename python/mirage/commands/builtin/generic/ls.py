@@ -7,6 +7,7 @@ from mirage.commands.builtin.utils.output import (format_optional_records,
 from mirage.io.types import IOResult
 from mirage.types import FileStat, FileType, LsSortBy, PathSpec
 from mirage.utils.errors import fs_strerror
+from mirage.utils.path import rebase_one
 
 
 def get_extension(name: str) -> str | None:
@@ -57,7 +58,7 @@ async def walk(
             return [await stat(path, index)], warnings
         except (FileNotFoundError, ValueError) as exc:
             detail = fs_strerror(exc) or exc
-            warnings.append(f"ls: cannot access '{path.original}': {detail}")
+            warnings.append(f"ls: cannot access '{path.display}': {detail}")
             return [], warnings
 
     try:
@@ -67,7 +68,7 @@ async def walk(
         if file_entry is not None:
             return [file_entry], warnings
         warnings.append(
-            f"ls: cannot access '{path.original}': {fs_strerror(exc) or exc}")
+            f"ls: cannot access '{path.display}': {fs_strerror(exc) or exc}")
         return [], warnings
 
     if not entries:
@@ -218,7 +219,8 @@ async def ls(
             for g_idx, (dir_spec, entries) in enumerate(groups):
                 if p_idx > 0 or g_idx > 0:
                     results.append("")
-                results.append(f"{dir_spec.original}:")
+                header = rebase_one(dir_spec.original, p.original, p.display)
+                results.append(f"{header}:")
                 _render_group(results,
                               entries,
                               long=long,

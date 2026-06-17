@@ -12,22 +12,35 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from mirage.types import PathSpec
 from mirage.utils.errors import fs_strerror
 
 
-def format_fs_error(cmd_name: str, exc: OSError) -> bytes:
+def format_fs_error(cmd_name: str,
+                    exc: OSError,
+                    paths: list[PathSpec] | None = None) -> bytes:
     """Format a filesystem OSError as a GNU coreutils stderr line.
 
     Produces ``<cmd>: <path>: <strerror>`` so output is byte-identical with
     the TypeScript executor. The path is the bare path carried by the
     exception (``exc.filename`` when set, else ``str(exc)``); backends raise
-    with the full user-typed path (``PathSpec.original``).
+    with the resolved absolute path (``PathSpec.original``). When ``paths`` is
+    supplied, the absolute path is rewritten to the as-typed form
+    (``PathSpec.display``) so a relative argument is reported as typed, like
+    GNU.
 
     Args:
         cmd_name (str): Command name for the ``<cmd>:`` prefix.
         exc (OSError): The filesystem error.
+        paths (list[PathSpec] | None): Command operands, used to map the
+            resolved path back to the as-typed form.
     """
     path = exc.filename or str(exc)
+    if paths:
+        for p in paths:
+            if p.original == path:
+                path = p.display
+                break
     strerror = fs_strerror(exc)
     if strerror is not None:
         return f"{cmd_name}: {path}: {strerror}\n".encode()

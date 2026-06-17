@@ -193,6 +193,8 @@ export async function handleSubshell(
   const savedReadonly = new Set(session.readonlyVars)
   const savedArrays: Record<string, string[]> = {}
   for (const [k, v] of Object.entries(session.arrays)) savedArrays[k] = [...v]
+  const savedFunctions = { ...session.functions }
+  const savedPositional = [...session.positionalArgs]
   try {
     const allStdout: ByteSource[] = []
     let mergedIo = new IOResult()
@@ -222,6 +224,8 @@ export async function handleSubshell(
     session.shellOptions = savedOptions
     session.readonlyVars = savedReadonly
     session.arrays = savedArrays
+    session.functions = savedFunctions
+    session.positionalArgs = savedPositional
   }
 }
 

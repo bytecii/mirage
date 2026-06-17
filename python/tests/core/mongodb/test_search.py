@@ -40,7 +40,7 @@ def _agg_iter(items):
 
 def _build_search_client(sampled_docs, matched_docs):
     col = MagicMock()
-    col.aggregate = MagicMock(return_value=_agg_iter(sampled_docs))
+    col.aggregate = AsyncMock(return_value=_agg_iter(sampled_docs))
     cursor = MagicMock()
     cursor.limit = MagicMock(return_value=cursor)
     cursor.to_list = AsyncMock(return_value=matched_docs)

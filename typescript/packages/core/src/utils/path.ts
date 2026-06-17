@@ -12,10 +12,29 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { stripSlash } from './slash.ts'
+import { rstripSlash, stripSlash } from './slash.ts'
 
 export function norm(path: string): string {
   return `/${stripSlash(path)}`
+}
+
+export function expandTilde(word: string, home: string): string {
+  if (word === '~') return home
+  if (word.startsWith('~/')) return rstripSlash(home) + word.slice(1)
+  return word
+}
+
+export function rebaseDisplay(paths: string[], original: string, display: string | null): string[] {
+  if (display === null || display === original) return paths
+  return paths.map((p) => rebaseOne(p, original, display))
+}
+
+export function rebaseOne(path: string, original: string, display: string | null): string {
+  if (display === null || display === original) return path
+  const base = rstripSlash(original)
+  if (path === base) return display
+  if (path.startsWith(base + '/')) return rstripSlash(display) + path.slice(base.length)
+  return path
 }
 
 export function parent(path: string): string {

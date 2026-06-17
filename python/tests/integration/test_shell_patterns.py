@@ -213,6 +213,32 @@ def test_subshell_variable_isolation(ws):
     assert lines == ["inner", "outer"]
 
 
+def test_subshell_function_def_no_leak(ws):
+    cmd = "(only_inner() { echo inner; }); only_inner 2>/dev/null || echo gone"
+    assert run(ws, cmd).strip() == "gone"
+
+
+def test_subshell_function_redef_isolation(ws):
+    cmd = "greet() { echo outer; }; (greet() { echo inner; }; greet); greet"
+    lines = run(ws, cmd).strip().splitlines()
+    assert lines == ["inner", "outer"]
+
+
+def test_subshell_function_inherited(ws):
+    cmd = "greet() { echo hi; }; (greet)"
+    assert run(ws, cmd).strip() == "hi"
+
+
+def test_subshell_positional_isolation(ws):
+    cmd = "set -- a b c; (set -- x); echo $# $1"
+    assert run(ws, cmd).strip() == "3 a"
+
+
+def test_subshell_positional_inherited(ws):
+    cmd = "set -- a b; (echo $1 $2)"
+    assert run(ws, cmd).strip() == "a b"
+
+
 # ---------------------------------------------------------------------------
 # Functions with pipelines
 # ---------------------------------------------------------------------------

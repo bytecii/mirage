@@ -15,7 +15,7 @@
 import asyncio
 
 from bson.json_util import RELAXED_JSON_OPTIONS, dumps
-from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import AsyncMongoClient
 
 from mirage.core.mongodb._client import get_indexes, list_collections
 from mirage.core.mongodb.types import PRIMARY_KEY, EntityKind
@@ -33,7 +33,7 @@ def _collect_string_paths(value, prefix: str, out: set[str]) -> None:
 
 async def _sampled_string_paths(col, sample_size: int = 100) -> list[str]:
     paths: set[str] = set()
-    async for doc in col.aggregate([{"$sample": {"size": sample_size}}]):
+    async for doc in await col.aggregate([{"$sample": {"size": sample_size}}]):
         _collect_string_paths(doc, "", paths)
     return sorted(paths)
 
@@ -43,7 +43,7 @@ def _has_text_index(indexes: list[dict]) -> bool:
 
 
 async def search_collection(
-    client: AsyncIOMotorClient,
+    client: AsyncMongoClient,
     database: str,
     collection: str,
     pattern: str,
@@ -71,7 +71,7 @@ async def search_collection(
 
 
 async def search_database(
-    client: AsyncIOMotorClient,
+    client: AsyncMongoClient,
     database: str,
     pattern: str,
     limit: int,

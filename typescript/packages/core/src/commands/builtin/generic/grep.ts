@@ -15,6 +15,7 @@
 import { exitOnEmpty, quietMatch } from '../../../io/stream.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
+import { rebaseDisplay } from '../../../utils/path.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import {
   compilePattern,
@@ -168,7 +169,7 @@ export async function grepGeneric(
           filesOnlyOpts(f, recursive),
           warnings,
         )
-        for (const h of hits) results.push(h)
+        for (const h of rebaseDisplay(hits, p.original, p.display)) results.push(h)
       }
       const stderr = warnings.length > 0 ? ENC.encode(warnings.join('\n') + '\n') : undefined
       if (results.length === 0)
@@ -206,14 +207,14 @@ export async function grepGeneric(
             warnings,
             false,
           )
-          for (const r of res) allResults.push(r)
+          for (const r of rebaseDisplay(res, p.original, p.display)) allResults.push(r)
         } else {
           const data = splitLinesNoTrailing(DEC.decode(await readBytesFn(p.original)))
-          const hits = grepLines(p.original, data, pat, f)
+          const hits = grepLines(p.display, data, pat, f)
           if (f.countOnly) {
-            if (hits.length > 0) allResults.push(`${p.original}:${hits[0] ?? ''}`)
+            if (hits.length > 0) allResults.push(`${p.display}:${hits[0] ?? ''}`)
           } else {
-            for (const rl of hits) allResults.push(`${p.original}:${rl}`)
+            for (const rl of hits) allResults.push(`${p.display}:${rl}`)
           }
         }
       }
@@ -239,21 +240,21 @@ export async function grepGeneric(
           s = await statFn(p.original)
         } catch (err) {
           if ((err as { code?: string }).code === 'ENOENT') {
-            multiWarnings.push(`grep: ${p.original}: No such file or directory`)
+            multiWarnings.push(`grep: ${p.display}: No such file or directory`)
             continue
           }
           throw err
         }
         if (s.type === FileType.DIRECTORY) {
-          multiWarnings.push(`grep: ${p.original}: Is a directory`)
+          multiWarnings.push(`grep: ${p.display}: Is a directory`)
           continue
         }
         const data = splitLinesNoTrailing(DEC.decode(await materialize(stream(p))))
-        const hits = grepLines(p.original, data, pat, f)
+        const hits = grepLines(p.display, data, pat, f)
         if (f.countOnly) {
-          if (hits.length > 0) allResults.push(`${p.original}:${hits[0] ?? ''}`)
+          if (hits.length > 0) allResults.push(`${p.display}:${hits[0] ?? ''}`)
         } else {
-          for (const h of hits) allResults.push(`${p.original}:${h}`)
+          for (const h of hits) allResults.push(`${p.display}:${h}`)
         }
       }
       const multiStderr =
@@ -283,7 +284,7 @@ export async function grepGeneric(
         new Uint8Array(0),
         new IOResult({
           exitCode: 1,
-          stderr: ENC.encode(`grep: ${first.original}: Is a directory\n`),
+          stderr: ENC.encode(`grep: ${first.display}: Is a directory\n`),
         }),
       ]
     }

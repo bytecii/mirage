@@ -18,6 +18,7 @@ import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { formatLsLong } from '../utils/formatting.ts'
 import { gnuStrerror } from '../../../utils/errors.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
+import { rebaseOne } from '../../../utils/path.ts'
 import { formatRecords } from '../utils/output.ts'
 
 type Readdir = (p: PathSpec) => Promise<string[]>
@@ -101,7 +102,7 @@ async function walkGrouped(
     const msg =
       gnuStrerror((err as { code?: string }).code) ??
       (err instanceof Error ? err.message : String(err))
-    warnings.push(`ls: cannot access '${dir.original}': ${msg}`)
+    warnings.push(`ls: cannot access '${dir.display}': ${msg}`)
     return
   }
   const sorted = sortStats(stats, opts.sortBy, opts.reverse)
@@ -153,7 +154,7 @@ export async function lsGeneric(
         const msg =
           gnuStrerror((err as { code?: string }).code) ??
           (err instanceof Error ? err.message : String(err))
-        warnings.push(`ls: cannot access '${p.original}': ${msg}`)
+        warnings.push(`ls: cannot access '${p.display}': ${msg}`)
       }
     }
     appendListing(collected, long, human, classify, lines)
@@ -177,7 +178,12 @@ export async function lsGeneric(
       if (group === undefined) continue
       const [dirSpec, entries] = group
       if (i > 0) lines.push('')
-      lines.push(`${dirSpec.original}:`)
+      const owner =
+        targets.find((t) => {
+          const b = rstripSlash(t.original)
+          return dirSpec.original === b || dirSpec.original.startsWith(b + '/')
+        }) ?? dirSpec
+      lines.push(`${rebaseOne(dirSpec.original, owner.original, owner.display)}:`)
       appendListing(entries, long, human, classify, lines)
     }
     const out: ByteSource = formatRecords(lines)
@@ -200,7 +206,7 @@ export async function lsGeneric(
         const msg =
           gnuStrerror((err as { code?: string }).code) ??
           (err instanceof Error ? err.message : String(err))
-        warnings.push(`ls: cannot access '${p.original}': ${msg}`)
+        warnings.push(`ls: cannot access '${p.display}': ${msg}`)
         continue
       }
     }

@@ -83,7 +83,7 @@ def _walk(value, prefix: str, counts: dict[str, dict[str, int]]) -> None:
 async def sample_field_types(col, sample_size: int = 100) -> list[dict]:
     counts: dict[str, dict[str, int]] = {}
     total = 0
-    async for doc in col.aggregate([{"$sample": {"size": sample_size}}]):
+    async for doc in await col.aggregate([{"$sample": {"size": sample_size}}]):
         total += 1
         _walk(doc, "", counts)
     if total == 0:

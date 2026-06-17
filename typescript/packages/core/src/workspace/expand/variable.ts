@@ -15,6 +15,7 @@
 import type { CallStack } from '../../shell/call_stack.ts'
 import { NodeType as NT } from '../../shell/types.ts'
 import type { Session } from '../session/session.ts'
+import { homeDir } from '../session/shell_dirs.ts'
 import { fnmatch } from '../../utils/fnmatch.ts'
 
 export interface TSNodeLike {
@@ -83,6 +84,8 @@ export function lookupVar(name: string, session: Session, callStack: CallStack |
     const localVal = callStack.getLocal(name)
     if (localVal !== null) return localVal
   }
+  if (name === 'PWD') return session.cwd
+  if (name === 'HOME') return homeDir(session)
   return env[name] ?? ''
 }
 

@@ -82,6 +82,12 @@ SEED_FILES = {
     "#123\nls\n#456\nfoo bar\n",
     "/data/multi.txt":
     "oo\noo\noo\n",
+    # dedicated clean subtree for traversal-display cases (no other case
+    # writes under it, so listings/walks are deterministic)
+    "/data/disptree/x.txt":
+    "nested\ncontent\n",
+    "/data/disptree/d/y.txt":
+    "deep\n",
 }
 
 CASES: list[tuple[str, str]] = [
@@ -542,6 +548,61 @@ CASES: list[tuple[str, str]] = [
     ("root_create_mkdir", "mkdir /data/rootdir && find /data/rootdir -type d"),
     ("root_create_basename", "basename /data/at_root.txt"),
     ("root_create_dirname", "dirname /data/at_root.txt"),
+
+    # ----- cwd / relative paths / tilde / OLDPWD (GNU cd + pwd) -----
+    # Each case is wrapped in a subshell so cwd/env changes do not leak
+    # into later cases (the suite runs on one persistent session).
+    ("cwd_pwd_root", "(pwd)"),
+    ("cwd_cd_mount_pwd", "(cd /data && pwd)"),
+    ("cwd_cd_subdir_pwd", "(cd /data/sub && pwd)"),
+    ("cwd_cd_dotdot_pwd", "(cd /data/sub && cd .. && pwd)"),
+    ("cwd_rel_cat", "(cd /data && cat a.txt)"),
+    ("cwd_rel_dot_cat", "(cd /data && cat ./a.txt)"),
+    ("cwd_rel_subdir_cat", "(cd /data && cat sub/nested.txt)"),
+    ("cwd_rel_dotdot_cat", "(cd /data/sub && cat ../a.txt)"),
+    ("cwd_echo_pwd", "(cd /data/sub && echo $PWD)"),
+    ("cwd_echo_home_default", "(echo $HOME)"),
+    ("cwd_cd_oldpwd", "(cd /data && cd /data/sub && echo $OLDPWD)"),
+    ("cwd_cd_dash", "(cd /data && cd /data/sub && cd -)"),
+    ("cwd_cd_dash_pwd",
+     "(cd /data && cd /data/sub && cd - > /dev/null && pwd)"),
+    ("cwd_home_cd_tilde", "(export HOME=/data && cd ~ && pwd)"),
+    ("cwd_home_echo", "(export HOME=/data && echo $HOME)"),
+    ("cwd_tilde_cat", "(export HOME=/data && cat ~/a.txt)"),
+    ("cwd_tilde_subdir_cat", "(export HOME=/data && cat ~/sub/nested.txt)"),
+
+    # ----- subshell isolation vs inheritance (GNU bash ( ... )) -----
+    # A subshell inherits all parent state but its mutations (vars, export,
+    # cd, functions, positional params) must not leak back to the parent.
+    ("subshell_var_isolated", "(x=1; (x=2); echo $x)"),
+    ("subshell_var_inherit", "(x=7; (echo $x))"),
+    ("subshell_export_isolated", "(export Z=9); echo [$Z]"),
+    ("subshell_func_redef", "(f(){ echo A; }; (f(){ echo B; }); f)"),
+    ("subshell_func_no_leak",
+     "(nofn(){ echo x; }); nofn 2>/dev/null || echo gone"),
+    ("subshell_positional_isolated", "(set -- a b c; (set -- x); echo $#)"),
+    ("subshell_positional_inherit", "(set -- a b; (echo $1 $2))"),
+    ("subshell_cd_no_leak", "(cd /data); pwd"),
+    ("subshell_nested_cd", "(cd /data && (cd /data/sub) && pwd)"),
+
+    # ----- relative-path display: commands echo the arg as typed (GNU),
+    # not the resolved absolute path -----
+    ("disp_wc_rel", "(cd /data && wc -l a.txt)"),
+    ("disp_wc_multi", "(cd /data && wc -l a.txt b.txt)"),
+    ("disp_wc_dotslash", "(cd /data && wc -l ./a.txt)"),
+    ("disp_wc_dotdot", "(cd /data/sub && wc -l ../a.txt)"),
+    ("disp_grep_multi", "(cd /data && grep world a.txt b.txt)"),
+    ("disp_md5_rel", "(cd /data && md5 a.txt)"),
+    ("disp_stat_name", "(cd /data && stat -c %n a.txt)"),
+    ("disp_find_subdir", "(cd /data && find sub -name nested.txt)"),
+    ("disp_head_multi", "(cd /data && head -n 1 a.txt b.txt)"),
+    ("disp_grep_files", "(cd /data && grep -l world a.txt b.txt)"),
+    # traversal commands preserve the path form relative to the root
+    ("disp_grep_r", "(cd /data && grep -r nested disptree)"),
+    ("disp_rg_r", "(cd /data && rg nested disptree)"),
+    ("disp_ls_recursive", "(cd /data && ls -R disptree)"),
+    ("disp_find_root", "(cd /data && find disptree)"),
+
     # ----- history: recorder views over whatever observer store -----
     ("history_last_two", "history 2"),
     ("bash_history_tail", "grep -v '^#' /.bash_history | tail -n 3"),
@@ -657,6 +718,9 @@ NOT_FOUND_CASES: list[tuple[str, str]] = [
     ("nf_grep", "grep x /data/missing.txt"),
     ("nf_cat_nested", "cat /data/sub/missing.txt"),
     ("nf_cat_pipe", "cat /data/missing.txt | cat"),
+    ("nf_cat_rel", "(cd /data && cat missing.txt)"),
+    ("nf_cat_rel_subdir", "(cd /data && cat sub/missing.txt)"),
+    ("nf_grep_r_rel", "(cd /data && grep -r x missing)"),
 ]
 
 # Backend-agnostic not-found probe: every backend (whatever its mount prefix)

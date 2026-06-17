@@ -20,10 +20,12 @@ import tree_sitter
 
 from mirage.shell.call_stack import CallStack
 from mirage.shell.types import NodeType as NT
+from mirage.utils.path import expand_tilde
 from mirage.workspace.expand.constants import (ARITH_DELIMITERS,
                                                ARITH_OPERATORS, SAFE_NODES)
 from mirage.workspace.expand.variable import _expand_braces, _lookup_var
 from mirage.workspace.session import Session
+from mirage.workspace.session.shell_dirs import home_dir
 
 
 def _unescape_unquoted(text: str) -> str:
@@ -100,7 +102,8 @@ async def expand_node(
     ntype = ts_node.type
 
     if ntype == NT.WORD:
-        return _unescape_unquoted(ts_node.text.decode())
+        word = _unescape_unquoted(ts_node.text.decode())
+        return expand_tilde(word, home_dir(session))
 
     if ntype == NT.NUMBER:
         return ts_node.text.decode()

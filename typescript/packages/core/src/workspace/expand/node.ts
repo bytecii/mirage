@@ -16,6 +16,8 @@ import type { CallStack } from '../../shell/call_stack.ts'
 import { NodeType as NT } from '../../shell/types.ts'
 import type { IOResult } from '../../io/types.ts'
 import type { Session } from '../session/session.ts'
+import { expandTilde } from '../../utils/path.ts'
+import { homeDir } from '../session/shell_dirs.ts'
 import { shlexSplit } from './classify.ts'
 import { ARITH_DELIMITERS, ARITH_OPERATORS } from './constants.ts'
 import { expandBraces, lookupVar, type TSNodeLike } from './variable.ts'
@@ -81,7 +83,7 @@ export async function expandNode(
 ): Promise<string> {
   const ntype = tsNode.type
 
-  if (ntype === NT.WORD) return unescapeUnquoted(tsNode.text)
+  if (ntype === NT.WORD) return expandTilde(unescapeUnquoted(tsNode.text), homeDir(session))
   if (ntype === NT.NUMBER) return tsNode.text
   if (ntype === NT.COMMAND_NAME) return tsNode.text
 

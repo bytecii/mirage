@@ -408,7 +408,7 @@ async def handle_command(
         )
     except (FileNotFoundError, NotADirectoryError, IsADirectoryError,
             FileExistsError, PermissionError) as exc:
-        err = format_fs_error(cmd_name, exc)
+        err = format_fs_error(cmd_name, exc, paths)
         return None, IOResult(exit_code=1,
                               stderr=err), ExecutionNode(command=cmd_str,
                                                          exit_code=1,

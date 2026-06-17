@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest'
 import { OpsRegistry } from '../ops/registry.ts'
 import { RAMResource } from '../resource/ram/ram.ts'
 import { MountMode } from '../types.ts'
-import { getTestParser, stdoutStr } from './fixtures/workspace_fixture.ts'
+import { getTestParser, stderrStr, stdoutStr } from './fixtures/workspace_fixture.ts'
 import { Workspace } from './workspace.ts'
 
 // Direct port of tests/workspace/test_cwd_integration.py.
@@ -167,6 +167,89 @@ describe('cwd integration (port of tests/workspace/test_cwd_integration.py)', ()
     expect((await runOut(ws, "cd /ram/Zecheng\\'s\\ Server && pwd")).trim()).toBe(
       "/ram/Zecheng's Server",
     )
+    await ws.close()
+  })
+
+  it('pwd default → /', async () => {
+    const ws = await makeWs()
+    expect((await runOut(ws, 'pwd')).trim()).toBe('/')
+    await ws.close()
+  })
+
+  it('cd /ram/subdir && echo $PWD → /ram/subdir', async () => {
+    const ws = await makeWs()
+    expect((await runOut(ws, 'cd /ram/subdir && echo $PWD')).trim()).toBe('/ram/subdir')
+    await ws.close()
+  })
+
+  it('echo $HOME default → /', async () => {
+    const ws = await makeWs()
+    expect((await runOut(ws, 'echo $HOME')).trim()).toBe('/')
+    await ws.close()
+  })
+
+  it('cd updates $OLDPWD', async () => {
+    const ws = await makeWs()
+    expect((await runOut(ws, 'cd /ram && cd /ram/subdir && echo $OLDPWD')).trim()).toBe('/ram')
+    await ws.close()
+  })
+
+  it('cd - returns to and prints previous dir', async () => {
+    const ws = await makeWs()
+    expect((await runOut(ws, 'cd /ram && cd /ram/subdir && cd -')).trim()).toBe('/ram')
+    await ws.close()
+  })
+
+  it('cd - swaps cwd', async () => {
+    const ws = await makeWs()
+    expect((await runOut(ws, 'cd /ram && cd /ram/subdir && cd - > /dev/null && pwd')).trim()).toBe(
+      '/ram',
+    )
+    await ws.close()
+  })
+
+  it('cd - without OLDPWD errors', async () => {
+    const ws = await makeWs()
+    const io = await ws.execute('cd -')
+    expect(io.exitCode).toBe(1)
+    expect(stderrStr(io)).toContain('OLDPWD not set')
+    await ws.close()
+  })
+
+  it('custom HOME: cd ~ uses $HOME', async () => {
+    const ws = await makeWs()
+    expect((await runOut(ws, 'export HOME=/ram/subdir && cd ~ && pwd')).trim()).toBe('/ram/subdir')
+    await ws.close()
+  })
+
+  it('custom HOME: echo $HOME', async () => {
+    const ws = await makeWs()
+    expect((await runOut(ws, 'export HOME=/ram/subdir && echo $HOME')).trim()).toBe('/ram/subdir')
+    await ws.close()
+  })
+
+  it('tilde expands for commands', async () => {
+    const ws = await makeWs()
+    expect(await runOut(ws, 'export HOME=/ram/subdir && cat ~/file.txt')).toBe('hello')
+    await ws.close()
+  })
+
+  it('quoted tilde is not expanded', async () => {
+    const ws = await makeWs()
+    const io = await ws.execute('export HOME=/ram/subdir && cat "~/file.txt"')
+    expect(io.exitCode).not.toBe(0)
+    await ws.close()
+  })
+
+  it('subshell does not leak $OLDPWD', async () => {
+    const ws = await makeWs()
+    expect((await runOut(ws, 'cd /ram && (cd /ram/subdir) && echo $OLDPWD')).trim()).toBe('/')
+    await ws.close()
+  })
+
+  it('subshell does not leak cwd', async () => {
+    const ws = await makeWs()
+    expect((await runOut(ws, 'cd /ram && (cd /ram/subdir) && pwd')).trim()).toBe('/ram')
     await ws.close()
   })
 })

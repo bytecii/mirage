@@ -195,6 +195,16 @@ class PathSpec:
     pattern: str | None = None
     resolved: bool = True
     prefix: str = ""
+    as_typed: str | None = None
+
+    @property
+    def display(self) -> str:
+        """The path as the user typed it, for rendering in output.
+
+        Falls back to ``original`` (the resolved absolute path) when no
+        as-typed form was recorded, e.g. for absolute arguments.
+        """
+        return self.as_typed if self.as_typed is not None else self.original
 
     @property
     def strip_prefix(self) -> str:

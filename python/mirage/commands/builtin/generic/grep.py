@@ -19,6 +19,7 @@ from mirage.commands.spec.types import FlagView
 from mirage.io.stream import exit_on_empty, quiet_match
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.path import rebase_display
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +167,7 @@ async def grep(
                     warnings=warnings,
                     read_stream_fn=None,
                 )
-                results.extend(hits)
+                results.extend(rebase_display(hits, p.original, p.display))
             stderr = format_optional_records(warnings)
             if not results:
                 return b"", IOResult(exit_code=1, stderr=stderr)
@@ -205,18 +206,19 @@ async def grep(
                         warnings=warnings,
                         read_stream_fn=None,
                     )
-                    all_results.extend(res)
+                    all_results.extend(
+                        rebase_display(res, p.original, p.display))
                 else:
                     data = split_lines(
                         (await rb(p.original)).decode(errors="replace"))
-                    hits = grep_lines(p.original, data, pat, f.invert,
+                    hits = grep_lines(p.display, data, pat, f.invert,
                                       f.line_numbers, f.count_only,
                                       f.files_only, f.only_matching,
                                       f.max_count)
                     if f.count_only and hits:
-                        all_results.append(f"{p.original}:{hits[0]}")
+                        all_results.append(f"{p.display}:{hits[0]}")
                     else:
-                        all_results.extend(f"{p.original}:{rl}" for rl in hits)
+                        all_results.extend(f"{p.display}:{rl}" for rl in hits)
             stderr = format_optional_records(warnings)
             if not all_results:
                 return b"", IOResult(exit_code=1, stderr=stderr)
@@ -236,24 +238,23 @@ async def grep(
                     s = await st(p.original)
                 except FileNotFoundError:
                     multi_warnings.append(
-                        f"grep: {p.original}: No such file or directory")
+                        f"grep: {p.display}: No such file or directory")
                     continue
                 if s.type == FileType.DIRECTORY:
-                    multi_warnings.append(
-                        f"grep: {p.original}: Is a directory")
+                    multi_warnings.append(f"grep: {p.display}: Is a directory")
                     continue
                 data = split_lines((await
                                     rb(p.original)).decode(errors="replace"))
-                hits = grep_lines(p.original, data, pat, f.invert,
+                hits = grep_lines(p.display, data, pat, f.invert,
                                   f.line_numbers, f.count_only, f.files_only,
                                   f.only_matching, f.max_count)
                 if f.count_only:
                     if hits:
-                        all_results.append(f"{p.original}:{hits[0]}")
+                        all_results.append(f"{p.display}:{hits[0]}")
                 elif f.files_only:
                     all_results.extend(hits)
                 else:
-                    all_results.extend(f"{p.original}:{r}" for r in hits)
+                    all_results.extend(f"{p.display}:{r}" for r in hits)
             stderr = format_optional_records(multi_warnings)
             if not all_results:
                 return b"", IOResult(exit_code=1, stderr=stderr)
@@ -264,7 +265,7 @@ async def grep(
 
         first_stat = await st(paths[0].original)
         if first_stat.type == FileType.DIRECTORY:
-            stderr = f"grep: {paths[0].original}: Is a directory\n".encode()
+            stderr = f"grep: {paths[0].display}: Is a directory\n".encode()
             return b"", IOResult(exit_code=1, stderr=stderr)
 
         if read_stream is not None:

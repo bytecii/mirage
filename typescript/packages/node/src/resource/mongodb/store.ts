@@ -21,6 +21,9 @@ import {
   type MongoIndexAccess,
   type MongoIterOptions,
 } from '@struktoai/mirage-core'
+import { VERSION } from '../../version.ts'
+
+const DRIVER_INFO = { name: 'Mirage', version: VERSION }
 
 interface MongoCollectionLike {
   find: (
@@ -66,7 +69,10 @@ interface MongoClientLike {
 }
 
 interface MongoModule {
-  MongoClient: new (uri: string) => MongoClientLike
+  MongoClient: new (
+    uri: string,
+    options?: { driverInfo?: { name: string; version?: string } },
+  ) => MongoClientLike
 }
 
 export class MongoDBStore implements MongoDriver {
@@ -219,7 +225,7 @@ export class MongoDBStore implements MongoDriver {
       feature: 'MongoDBResource',
       packageName: 'mongodb',
     })
-    const c = new mod.MongoClient(this.uri)
+    const c = new mod.MongoClient(this.uri, { driverInfo: DRIVER_INFO })
     await c.connect()
     return c
   }

@@ -20,6 +20,7 @@ from mirage.types import FileType, PathSpec
 from mirage.utils.path import resolve_path
 from mirage.workspace.executor.builtins.scope import _scope_path, _to_scope
 from mirage.workspace.session import Session
+from mirage.workspace.session.shell_dirs import change_dir
 from mirage.workspace.types import ExecutionNode
 
 
@@ -28,37 +29,32 @@ async def handle_cd(
     is_mount_root: Callable[[str], bool],
     path: str | PathSpec,
     session: Session,
+    print_path: bool = False,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     raw = _scope_path(path)
     resolved = resolve_path(raw, session.cwd)
-    if resolved == "/":
-        session.cwd = "/"
-        return None, IOResult(), ExecutionNode(command=f"cd {raw}",
-                                               exit_code=0)
-    scope = _to_scope(resolved)
-    s = None
-    not_found = False
-    try:
-        s, _ = await dispatch("stat", scope)
-    except FileNotFoundError:
-        not_found = True
-    except ValueError as exc:
-        err = f"cd: {raw}: {exc}\n".encode()
-        return None, IOResult(exit_code=1,
-                              stderr=err), ExecutionNode(command=f"cd {raw}",
-                                                         exit_code=1,
-                                                         stderr=err)
-    if s is None or not_found:
-        if not is_mount_root(resolved):
-            err = (f"cd: {raw}: No such file or "
-                   f"directory\n").encode()
+    if resolved != "/":
+        scope = _to_scope(resolved)
+        s = None
+        not_found = False
+        try:
+            s, _ = await dispatch("stat", scope)
+        except FileNotFoundError:
+            not_found = True
+        except ValueError as exc:
+            err = f"cd: {raw}: {exc}\n".encode()
             return None, IOResult(exit_code=1, stderr=err), ExecutionNode(
                 command=f"cd {raw}", exit_code=1, stderr=err)
-    elif s.type != FileType.DIRECTORY:
-        err = f"cd: {raw}: Not a directory\n".encode()
-        return None, IOResult(exit_code=1,
-                              stderr=err), ExecutionNode(command=f"cd {raw}",
-                                                         exit_code=1,
-                                                         stderr=err)
-    session.cwd = resolved
-    return None, IOResult(), ExecutionNode(command=f"cd {raw}", exit_code=0)
+        if s is None or not_found:
+            if not is_mount_root(resolved):
+                err = (f"cd: {raw}: No such file or "
+                       f"directory\n").encode()
+                return None, IOResult(exit_code=1, stderr=err), ExecutionNode(
+                    command=f"cd {raw}", exit_code=1, stderr=err)
+        elif s.type != FileType.DIRECTORY:
+            err = f"cd: {raw}: Not a directory\n".encode()
+            return None, IOResult(exit_code=1, stderr=err), ExecutionNode(
+                command=f"cd {raw}", exit_code=1, stderr=err)
+    change_dir(session, resolved)
+    out = (resolved + "\n").encode() if print_path else None
+    return out, IOResult(), ExecutionNode(command=f"cd {raw}", exit_code=0)

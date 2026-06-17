@@ -18,8 +18,14 @@ import { findDocuments } from '../../../core/mongodb/_client.ts'
 import { resolveGlob } from '../../../core/mongodb/glob.ts'
 import { streamAny } from '../../../core/mongodb/read.ts'
 import { detectScope } from '../../../core/mongodb/scope.ts'
-import { applyElision, elisionPaths, stringifyDoc } from '../../../core/mongodb/stream.ts'
+import {
+  applyElision,
+  elisionPaths,
+  stringifyDoc,
+  watchStream,
+} from '../../../core/mongodb/stream.ts'
 import { ScopeLevel } from '../../../core/mongodb/types.ts'
+import { IOResult } from '../../../io/types.ts'
 import { type PathSpec, ResourceName } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
@@ -74,6 +80,13 @@ async function tailCommand(
 ): Promise<CommandFnResult> {
   const resolved =
     paths.length > 0 ? await resolveGlob(accessor, paths, opts.index ?? undefined) : []
+  if (
+    opts.flags.f === true &&
+    resolved.length === 1 &&
+    detectScope(resolved[0]).level === ScopeLevel.DOCUMENTS
+  ) {
+    return [watchStream(accessor, resolved[0]), new IOResult()]
+  }
   const nRaw = typeof opts.flags.n === 'string' ? opts.flags.n : null
   const [lines, plusMode] = parseN(nRaw)
   const pushdown = typeof opts.flags.c !== 'string' && !plusMode && lines > 0

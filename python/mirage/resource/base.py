@@ -32,6 +32,7 @@ class BaseResource:
 
     name: str = "base"
     is_remote: bool = False
+    cacheable: bool = True
     accessor: Accessor = Accessor()
     _ops: dict[str, Callable[..., Any]] = {}
     PROMPT: str = ""
@@ -47,6 +48,10 @@ class BaseResource:
     # time: no fingerprint is recorded at snapshot, no drift check fires
     # at load. See docs/home/snapshot.mdx for the contract.
     SUPPORTS_SNAPSHOT: bool = False
+
+    @property
+    def caches_reads(self) -> bool:
+        return self.is_remote and self.cacheable
 
     def __init__(
         self,
