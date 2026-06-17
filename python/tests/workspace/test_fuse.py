@@ -41,6 +41,8 @@ class TestFuseManager:
         assert fm.mountpoint is None
 
     def test_close_keeps_caller_owned_mountpoint(self, monkeypatch, tmp_path):
+        # Regression: explicit mountpoints are caller-owned deployment paths.
+        # close() should unmount FUSE, not remove the directory the caller gave.
         monkeypatch.setattr(fuse_mount, "mount_background",
                             lambda *_args, **_kwargs: None)
         monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: None)

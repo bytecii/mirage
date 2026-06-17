@@ -21,12 +21,15 @@ type Signal = (typeof SIGNALS)[number]
 interface CleanupEntry {
   mountpoint: string
   handle: FuseHandle
+  // Cleanup owns only generated temp directories, never explicit mountpoints.
   ownsMountpoint: boolean
 }
 
 function removeMountpointIfOwned(entry: { mountpoint: string; ownsMountpoint: boolean }): void {
   if (!entry.ownsMountpoint) return
   try {
+    // Empty-directory cleanup only. Recursive removal is unsafe because a
+    // still-mounted FUSE path can make deletes hit the mounted backend.
     rmdirSync(entry.mountpoint)
   } catch {
     // mountpoint may still be busy, non-empty, or already gone; caller can retry
@@ -112,6 +115,8 @@ export class FuseManager {
     this.cleanupEntry = {
       mountpoint: this.handle.mountpoint,
       handle: this.handle,
+      // Preserve the ownership decision made by mount(); unmount cleanup must
+      // not infer ownership from path shape or whether the directory exists.
       ownsMountpoint: this.handle.ownsMountpoint,
     }
     CLEANUP.register(this.cleanupEntry)

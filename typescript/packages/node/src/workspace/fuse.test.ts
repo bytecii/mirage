@@ -71,6 +71,8 @@ describe('FuseManager (without a real mount)', () => {
   })
 
   it('keeps caller-owned mountpoints after close', async () => {
+    // Regression: explicit mountpoints are deployment/caller-owned paths. The
+    // manager must unmount FUSE without deleting the directory it mounted on.
     const unmount = vi.fn(() => Promise.resolve())
     mocks.mount.mockResolvedValueOnce({
       mountpoint: '/tmp/caller-owned',
@@ -89,6 +91,8 @@ describe('FuseManager (without a real mount)', () => {
   })
 
   it('removes generated mountpoints with an empty-directory rmdir', async () => {
+    // Generated temp mountpoints are Mirage-owned, but cleanup is intentionally
+    // rmdir-only so a still-mounted FUSE tree is never recursively deleted.
     const unmount = vi.fn(() => Promise.resolve())
     mocks.mount.mockResolvedValueOnce({
       mountpoint: '/tmp/generated',

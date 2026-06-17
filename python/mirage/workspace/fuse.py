@@ -25,6 +25,7 @@ class FuseManager:
         self._mountpoint: str | None = None
         self._thread: Thread | None = None
         self._auto: bool = False
+        # True only for tempfile mountpoints Mirage created and may delete.
         self._owns_mountpoint: bool = False
 
     @property
@@ -42,6 +43,9 @@ class FuseManager:
               mountpoint: str | None = None) -> None:
         from mirage.fuse.mount import mount_background
         if mountpoint:
+            # Caller/deployment-owned mountpoints may be reused across process
+            # restarts, container lifecycles, or volume mounts. Mirage should
+            # unmount them, but must not delete the directory itself.
             os.makedirs(mountpoint, exist_ok=True)
             self._mountpoint = mountpoint
             self._owns_mountpoint = False
@@ -64,6 +68,8 @@ class FuseManager:
                            capture_output=True)
         if self._owns_mountpoint:
             try:
+                # Empty-directory cleanup only. If the mount is still live or
+                # the directory has contents, leave it for the caller/admin.
                 os.rmdir(self._mountpoint)
             except OSError:
                 pass
