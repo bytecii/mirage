@@ -676,6 +676,8 @@ CASES: list[tuple[str, str]] = [
 ]
 
 EXIT_CODE_CASES: list[tuple[str, str]] = [
+    # sed rejects a zero occurrence count (GNU: "may not be zero").
+    ("sed_count_zero", "sed 's/o/O/0'"),
     ("jq_no_filter_no_input", "jq"),
     ("jq_dot_no_input", 'jq "."'),
     ("tac_no_input", "tac"),

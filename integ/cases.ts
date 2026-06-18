@@ -596,6 +596,8 @@ export const CASES: ReadonlyArray<readonly [string, string]> = [
 ];
 
 export const EXIT_CODE_CASES: ReadonlyArray<readonly [string, string]> = [
+  // sed rejects a zero occurrence count (GNU: "may not be zero").
+  ["sed_count_zero", "sed 's/o/O/0'"],
   ["jq_no_filter_no_input", "jq"],
   ["jq_dot_no_input", 'jq "."'],
   ["tac_no_input", "tac"],
