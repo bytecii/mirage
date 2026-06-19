@@ -148,7 +148,7 @@ describe.each(NATIVE_BACKENDS)('native diff (%s backend)', (kind) => {
     }
   })
 
-  it.skip('diff -r recursive (skipped: known readdir full-path bug)', async () => {
+  it('diff -r recursive', async () => {
     const env = makeEnv(kind)
     try {
       env.createFile('dir1/a.txt', ENC.encode('hello\n'))

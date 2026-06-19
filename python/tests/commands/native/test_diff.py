@@ -12,8 +12,6 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import pytest
-
 
 def test_diff_identical(env):
     env.create_file("a.txt", b"same\n")
@@ -89,7 +87,6 @@ def test_diff_e(env):
 
 
 def test_diff_r(env):
-    pytest.skip("diff -r has a known bug with readdir full paths")
     env.create_file("dir1/a.txt", b"hello\n")
     env.create_file("dir2/a.txt", b"world\n")
     result = env.mirage("diff -r /data/dir1 /data/dir2")

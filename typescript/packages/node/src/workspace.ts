@@ -25,6 +25,7 @@ import {
   type WorkspaceOptions,
 } from '@struktoai/mirage-core'
 import { FuseManager } from './workspace/fuse.ts'
+import './compression_codecs.ts'
 
 const requireCjs = createRequire(import.meta.url)
 

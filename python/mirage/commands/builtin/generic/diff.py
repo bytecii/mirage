@@ -65,9 +65,11 @@ async def _diff_recursive(
     u: bool,
     q: bool,
 ) -> bytes:
-    entries_a = sorted(await readdir_fn(accessor, paths[0], index))
-    entries_b = sorted(await readdir_fn(accessor, paths[1], index))
-    names = sorted(set(entries_a) | set(entries_b))
+    raw_a = await readdir_fn(accessor, paths[0], index)
+    raw_b = await readdir_fn(accessor, paths[1], index)
+    names_a = {entry.rstrip("/").rsplit("/", 1)[-1] for entry in raw_a}
+    names_b = {entry.rstrip("/").rsplit("/", 1)[-1] for entry in raw_b}
+    names = sorted(names_a | names_b)
     parts: list[bytes] = []
     for name in names:
         p1_str = paths[0].original.rstrip("/") + "/" + name
@@ -78,7 +80,7 @@ async def _diff_recursive(
         p2 = PathSpec(original=p2_str,
                       directory=p2_str,
                       prefix=paths[1].prefix)
-        if name in entries_a and name in entries_b:
+        if name in names_a and name in names_b:
             parts.append(await _diff_pair(accessor, p1, p2, read_bytes, i, w,
                                           b, e, u, q))
     return b"".join(parts)

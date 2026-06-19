@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { stream as ramStream } from '../../../core/ram/stream.ts'
+import { readdir as ramReaddir } from '../../../core/ram/readdir.ts'
 import type { RAMAccessor } from '../../../accessor/ram.ts'
 import { ResourceName } from '../../../types.ts'
 import { command } from '../../config.ts'
@@ -24,5 +25,10 @@ export const RAM_DIFF = command({
   resource: ResourceName.RAM,
   spec: specOf('diff'),
   fn: (accessor: RAMAccessor, paths, _texts, opts) =>
-    diffGeneric(paths, opts, (p) => ramStream(accessor, p)),
+    diffGeneric(
+      paths,
+      opts,
+      (p) => ramStream(accessor, p),
+      (p) => ramReaddir(accessor, p, opts.index ?? undefined),
+    ),
 })

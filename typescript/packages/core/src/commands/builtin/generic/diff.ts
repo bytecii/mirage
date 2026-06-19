@@ -13,12 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
-import type { PathSpec } from '../../../types.ts'
+import { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { edScript, normalDiff, unifiedDiff } from '../diff_helper.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { fatal: false })
+
+type Readdir = (p: PathSpec) => Promise<string[]>
 
 interface DiffFlags {
   i: boolean
@@ -27,6 +29,26 @@ interface DiffFlags {
   e: boolean
   q: boolean
   u: boolean
+}
+
+function entryBaseName(entry: string): string {
+  let end = entry.length
+  while (end > 0 && entry[end - 1] === '/') end--
+  const trimmed = entry.slice(0, end)
+  const slash = trimmed.lastIndexOf('/')
+  return slash >= 0 ? trimmed.slice(slash + 1) : trimmed
+}
+
+function childSpec(parent: PathSpec, name: string): PathSpec {
+  let end = parent.original.length
+  while (end > 0 && parent.original[end - 1] === '/') end--
+  const childPath = `${parent.original.slice(0, end)}/${name}`
+  return new PathSpec({
+    original: childPath,
+    directory: childPath,
+    resolved: false,
+    prefix: parent.prefix,
+  })
 }
 
 function splitLinesKeepEnds(text: string): string[] {
@@ -77,10 +99,39 @@ async function diffPair(
   return ENC.encode(result.join(''))
 }
 
+async function diffRecursive(
+  readdir: Readdir,
+  stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
+  p0: PathSpec,
+  p1: PathSpec,
+  flags: DiffFlags,
+): Promise<Uint8Array> {
+  const rawA = await readdir(p0)
+  const rawB = await readdir(p1)
+  const namesA = new Set(rawA.map(entryBaseName))
+  const namesB = new Set(rawB.map(entryBaseName))
+  const names = [...new Set([...namesA, ...namesB])].sort()
+  const parts: Uint8Array[] = []
+  for (const name of names) {
+    if (!namesA.has(name) || !namesB.has(name)) continue
+    parts.push(await diffPair(stream, childSpec(p0, name), childSpec(p1, name), flags))
+  }
+  let total = 0
+  for (const part of parts) total += part.byteLength
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const part of parts) {
+    out.set(part, offset)
+    offset += part.byteLength
+  }
+  return out
+}
+
 export async function diffGeneric(
   paths: PathSpec[],
   opts: CommandOpts,
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
+  readdir?: Readdir,
 ): Promise<CommandFnResult> {
   if (paths.length < 2) {
     return [null, new IOResult({ exitCode: 2, stderr: ENC.encode('diff: requires two paths\n') })]
@@ -96,7 +147,10 @@ export async function diffGeneric(
   const p0 = paths[0]
   const p1 = paths[1]
   if (p0 === undefined || p1 === undefined) return [null, new IOResult()]
-  const output = await diffPair(stream, p0, p1, flags)
+  const output =
+    opts.flags.r === true && readdir !== undefined
+      ? await diffRecursive(readdir, stream, p0, p1, flags)
+      : await diffPair(stream, p0, p1, flags)
   const exitCode = output.byteLength > 0 ? 1 : 0
   const out: ByteSource = output
   return [out, new IOResult({ exitCode, cache: [p0.stripPrefix, p1.stripPrefix] })]

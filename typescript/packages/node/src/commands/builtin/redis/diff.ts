@@ -14,6 +14,7 @@
 
 import { ResourceName, command, diffGeneric, specOf } from '@struktoai/mirage-core'
 import { stream as redisStream } from '../../../core/redis/stream.ts'
+import { readdir as redisReaddir } from '../../../core/redis/readdir.ts'
 import type { RedisAccessor } from '../../../accessor/redis.ts'
 
 export const REDIS_DIFF = command({
@@ -21,5 +22,10 @@ export const REDIS_DIFF = command({
   resource: ResourceName.REDIS,
   spec: specOf('diff'),
   fn: (accessor: RedisAccessor, paths, _texts, opts) =>
-    diffGeneric(paths, opts, (p) => redisStream(accessor, p)),
+    diffGeneric(
+      paths,
+      opts,
+      (p) => redisStream(accessor, p),
+      (p) => redisReaddir(accessor, p, opts.index ?? undefined),
+    ),
 })

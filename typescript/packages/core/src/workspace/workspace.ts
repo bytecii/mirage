@@ -36,6 +36,7 @@ import {
 import { resolveSafeguard } from '../commands/safeguard.ts'
 import { JobTable } from '../shell/job_table.ts'
 import { findSyntaxError, type ShellParser } from '../shell/parse.ts'
+import { ContentDriftError } from './snapshot/drift.ts'
 import { snapshot as writeSnapshot } from './snapshot/api.ts'
 import { checkDrift } from './snapshot/drift.ts'
 import { readFileBytes } from './snapshot/fs.ts'
@@ -777,7 +778,16 @@ export class Workspace {
         targetSession.lastExitCode = 124
         return new ExecuteResult(new Uint8Array(), msg, 124)
       }
-      throw err
+      // Abort (cancellation) and content drift are control-flow signals that
+      // must propagate, mirroring the Python workspace. Any other execution
+      // failure (e.g. an unsupported shell construct like the arithmetic
+      // command `(( ... ))`) is surfaced as a failed command rather than
+      // crashing the caller.
+      if (err instanceof ContentDriftError) throw err
+      if (err instanceof DOMException && err.name === 'AbortError') throw err
+      const msg = new TextEncoder().encode(`${err instanceof Error ? err.message : String(err)}\n`)
+      targetSession.lastExitCode = 1
+      return new ExecuteResult(new Uint8Array(), msg, 1)
     }
     const [[materialized, io], opRecords] = execResult
     targetSession.lastExitCode = io.exitCode

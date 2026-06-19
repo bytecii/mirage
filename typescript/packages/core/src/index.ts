@@ -335,7 +335,15 @@ export {
 } from './commands/builtin/utils/output.ts'
 export { grepFilesOnly, grepRecursive } from './commands/builtin/grep_helper.ts'
 export { interpretEscapes } from './commands/builtin/utils/escapes.ts'
-export { deflateRaw, gunzip, gzip, inflateRaw } from './utils/compress.ts'
+export {
+  deflateRaw,
+  gunzip,
+  gzip,
+  inflateRaw,
+  registerCompressionCodec,
+  getCompressionCodec,
+  type CompressionCodec,
+} from './utils/compress.ts'
 export { decodeBase64, encodeBase64 } from './utils/base64.ts'
 export { md5, md5Hex, sha256, sha256Hex } from './utils/hash.ts'
 export {

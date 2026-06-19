@@ -14,6 +14,7 @@
 
 import type { GitHubAccessor } from '../../../accessor/github.ts'
 import { resolveGlob } from '../../../core/github/glob.ts'
+import { readdir as githubReaddir } from '../../../core/github/readdir.ts'
 import { stream as githubStream } from '../../../core/github/read.ts'
 import { ResourceName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
@@ -28,7 +29,12 @@ async function diffCommand(
 ): Promise<CommandFnResult> {
   const resolved =
     paths.length > 0 ? await resolveGlob(accessor, paths, opts.index ?? undefined) : []
-  return diffGeneric(resolved, opts, (p) => githubStream(accessor, p, opts.index ?? undefined))
+  return diffGeneric(
+    resolved,
+    opts,
+    (p) => githubStream(accessor, p, opts.index ?? undefined),
+    (p) => githubReaddir(accessor, p, opts.index ?? undefined),
+  )
 }
 
 export const GITHUB_DIFF = command({

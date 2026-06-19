@@ -12,20 +12,16 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { ResourceName, command, diffGeneric, specOf } from '@struktoai/mirage-core'
-import { stream as sshStream } from '../../../core/ssh/stream.ts'
-import { readdir as sshReaddir } from '../../../core/ssh/readdir.ts'
-import type { SSHAccessor } from '../../../accessor/ssh.ts'
+import { registerCompressionCodec } from '@struktoai/mirage-core'
+import { Bzip2 } from 'compressjs'
+import { xz } from '@napi-rs/lzma'
 
-export const SSH_DIFF = command({
-  name: 'diff',
-  resource: ResourceName.SSH,
-  spec: specOf('diff'),
-  fn: (accessor: SSHAccessor, paths, _texts, opts) =>
-    diffGeneric(
-      paths,
-      opts,
-      (p) => sshStream(accessor, p),
-      (p) => sshReaddir(accessor, p, opts.index ?? undefined),
-    ),
+registerCompressionCodec('bzip2', {
+  compress: (bytes) => Promise.resolve(Uint8Array.from(Bzip2.compressFile(bytes))),
+  decompress: (bytes) => Promise.resolve(Uint8Array.from(Bzip2.decompressFile(bytes))),
+})
+
+registerCompressionCodec('xz', {
+  compress: async (bytes) => new Uint8Array(await xz.compress(Buffer.from(bytes))),
+  decompress: async (bytes) => new Uint8Array(await xz.decompress(Buffer.from(bytes))),
 })
