@@ -48,6 +48,22 @@ def snowflake_to_date(snowflake: str) -> str:
                                   tz=timezone.utc).strftime("%Y-%m-%d")
 
 
+def snowflake_to_iso(snowflake: str) -> str | None:
+    """Convert a Discord snowflake to a UTC ISO-8601 timestamp.
+
+    Args:
+        snowflake (str): the Discord snowflake id (empty/invalid -> None).
+    """
+    if not snowflake:
+        return None
+    try:
+        ms = (int(snowflake) >> 22) + 1420070400000
+    except (TypeError, ValueError):
+        return None
+    dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+
 def guild_entry(g: dict) -> IndexEntry:
     return IndexEntry(
         id=g["id"],

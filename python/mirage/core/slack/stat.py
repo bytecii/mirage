@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from datetime import datetime, timezone
+
 from mirage.accessor.slack import SlackAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.core.slack.readdir import readdir as _readdir
@@ -20,6 +22,17 @@ from mirage.utils.errors import enoent
 from mirage.utils.filetype import filetype_from_mimetype
 
 VIRTUAL_DIRS = {"", "channels", "dms", "users"}
+
+
+def _slack_modified(remote_time: str) -> str | None:
+    if not remote_time:
+        return None
+    try:
+        ts = float(remote_time)
+    except (TypeError, ValueError):
+        return None
+    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
 
 
 async def _populate_via_parent(
@@ -75,6 +88,7 @@ async def stat(
         return FileStat(
             name=lookup.entry.vfs_name or lookup.entry.name,
             type=FileType.DIRECTORY,
+            modified=_slack_modified(lookup.entry.remote_time),
             extra={"channel_id": lookup.entry.id},
         )
 
@@ -119,6 +133,7 @@ async def stat(
             name=lookup.entry.vfs_name or lookup.entry.name,
             type=filetype_from_mimetype(mimetype),
             size=lookup.entry.size,
+            modified=_slack_modified(lookup.entry.remote_time),
             extra={"file_id": lookup.entry.id},
         )
 

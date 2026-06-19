@@ -39,6 +39,17 @@ export function snowflakeToDate(snowflake: string): string {
   return `${yyyy}-${mm}-${dd}`
 }
 
+export function snowflakeToIso(snowflake: string): string | null {
+  if (snowflake === '') return null
+  let ms: bigint
+  try {
+    ms = (BigInt(snowflake) >> 22n) + DISCORD_EPOCH
+  } catch {
+    return null
+  }
+  return new Date(Number(ms)).toISOString().replace('.000Z', 'Z')
+}
+
 export function dateRangeDescending(endDate: string, days = 30): string[] {
   const [y, m, d] = endDate.split('-').map((n) => Number.parseInt(n, 10))
   if (y === undefined || m === undefined || d === undefined) return []

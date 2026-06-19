@@ -40,6 +40,13 @@ function filetypeFromMimetype(mime: string): FileType {
   return FileType.BINARY
 }
 
+function slackModified(remoteTime: string): string | null {
+  if (remoteTime === '') return null
+  const ts = Number.parseFloat(remoteTime)
+  if (Number.isNaN(ts)) return null
+  return new Date(ts * 1000).toISOString().replace('.000Z', 'Z')
+}
+
 function fileNotFound(key: string): Error {
   const e = new Error(`ENOENT: ${key}`) as Error & { code: string }
   e.code = 'ENOENT'
@@ -106,6 +113,7 @@ export async function stat(
     return new FileStat({
       name: lookup.entry.vfsName !== '' ? lookup.entry.vfsName : lookup.entry.name,
       type: FileType.DIRECTORY,
+      modified: slackModified(lookup.entry.remoteTime),
       extra: { channel_id: lookup.entry.id },
     })
   }
@@ -162,6 +170,7 @@ export async function stat(
       name: lookup.entry.vfsName !== '' ? lookup.entry.vfsName : lookup.entry.name,
       type: filetypeFromMimetype(mimetype),
       size: lookup.entry.size ?? null,
+      modified: slackModified(lookup.entry.remoteTime),
       extra: { file_id: lookup.entry.id },
     })
   }
