@@ -52,6 +52,28 @@ PATCH_MODULES = (
     "wc",
 )
 
+IO_HELPERS = frozenset({
+    "readdir",
+    "_readdir",
+    "stat",
+    "_stat",
+    "stat_core",
+    "stat_impl",
+    "read_bytes",
+    "_read_bytes",
+    "read_stream",
+    "_read_stream",
+    "write_bytes",
+    "mkdir_impl",
+    "copy",
+    "rename",
+    "unlink",
+    "rmdir",
+    "rm_r",
+    "exists",
+    "find_impl",
+})
+
 
 class FakeOneDriveStore:
 
@@ -250,34 +272,47 @@ class FakeOneDriveStore:
         return results
 
 
-def patch_attr(monkeypatch, module, name: str, value) -> None:
+def patch_attr(monkeypatch, module, name: str, value) -> bool:
     if hasattr(module, name):
         monkeypatch.setattr(module, name, value)
+        return True
+    return False
 
 
 def patch_module(monkeypatch, store: FakeOneDriveStore, name: str) -> None:
     module = importlib.import_module(
         f"mirage.commands.builtin.onedrive.{name}")
-    patch_attr(monkeypatch, module, "resolve_glob", store.resolve_glob)
-    patch_attr(monkeypatch, module, "readdir", store.readdir)
-    patch_attr(monkeypatch, module, "_readdir", store.readdir)
-    patch_attr(monkeypatch, module, "stat", store.stat)
-    patch_attr(monkeypatch, module, "_stat", store.stat)
-    patch_attr(monkeypatch, module, "stat_core", store.stat)
-    patch_attr(monkeypatch, module, "stat_impl", store.stat)
-    patch_attr(monkeypatch, module, "read_bytes", store.read_bytes)
-    patch_attr(monkeypatch, module, "_read_bytes", store.read_bytes)
-    patch_attr(monkeypatch, module, "read_stream", store.read_stream)
-    patch_attr(monkeypatch, module, "_read_stream", store.read_stream)
-    patch_attr(monkeypatch, module, "write_bytes", store.write_bytes)
-    patch_attr(monkeypatch, module, "mkdir_impl", store.mkdir)
-    patch_attr(monkeypatch, module, "copy", store.copy)
-    patch_attr(monkeypatch, module, "rename", store.rename)
-    patch_attr(monkeypatch, module, "unlink", store.unlink)
-    patch_attr(monkeypatch, module, "rmdir", store.rmdir)
-    patch_attr(monkeypatch, module, "rm_r", store.rm_r)
-    patch_attr(monkeypatch, module, "exists", store.exists)
-    patch_attr(monkeypatch, module, "find_impl", store.find)
+    targets = {
+        "resolve_glob": store.resolve_glob,
+        "readdir": store.readdir,
+        "_readdir": store.readdir,
+        "stat": store.stat,
+        "_stat": store.stat,
+        "stat_core": store.stat,
+        "stat_impl": store.stat,
+        "read_bytes": store.read_bytes,
+        "_read_bytes": store.read_bytes,
+        "read_stream": store.read_stream,
+        "_read_stream": store.read_stream,
+        "write_bytes": store.write_bytes,
+        "mkdir_impl": store.mkdir,
+        "copy": store.copy,
+        "rename": store.rename,
+        "unlink": store.unlink,
+        "rmdir": store.rmdir,
+        "rm_r": store.rm_r,
+        "exists": store.exists,
+        "find_impl": store.find,
+    }
+    patched = {
+        attr
+        for attr, value in targets.items()
+        if patch_attr(monkeypatch, module, attr, value)
+    }
+    assert patched & IO_HELPERS, (
+        f"onedrive.{name}: no known I/O helper was patched; the fake store is "
+        "not installed, so the test may reach the real OneDrive accessor. "
+        "Update IO_HELPERS/targets to match the module's imported helpers.")
 
 
 @pytest.fixture
