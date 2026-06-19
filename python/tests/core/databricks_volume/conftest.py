@@ -243,11 +243,11 @@ def index() -> RAMIndexCacheStore:
     return RAMIndexCacheStore(ttl=600)
 
 
-def file_metadata(size: int = 0, modified: int | None = None) -> object:
+def file_metadata(size: int = 0, modified: str | None = None) -> object:
     return SimpleNamespace(
-        is_directory=False,
-        file_size=size,
-        modification_time=modified,
+        content_length=size,
+        content_type=None,
+        last_modified=modified,
     )
 
 
