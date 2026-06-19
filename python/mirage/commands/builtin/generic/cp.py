@@ -34,6 +34,7 @@ async def cp(
     v: bool,
     index: IndexCacheStore | None = None,
     backend_key: Callable[[PathSpec], str] | None = None,
+    dir_copy: Callable[..., Awaitable[None]] | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     """Copy sources to a destination, fanning out into a directory.
 
@@ -78,6 +79,16 @@ async def cp(
         if recursive:
             src_base = src.strip_prefix.rstrip("/")
             dst_base = target.strip_prefix.rstrip("/")
+            if dir_copy is not None:
+                if n and await path_exists(stat, target):
+                    continue
+                await dir_copy(src, target)
+                for entry in await find(src, type=find_type):
+                    entry_dst = dst_base + entry[len(src_base):]
+                    writes[entry_dst] = b""
+                    if v:
+                        lines.append(f"'{entry}' -> '{entry_dst}'")
+                continue
             for entry in await find(src, type=find_type):
                 entry_dst = dst_base + entry[len(src_base):]
                 if n and await path_exists(stat, entry_dst):

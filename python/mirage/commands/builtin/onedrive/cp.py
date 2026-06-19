@@ -12,8 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from functools import partial
+
 from mirage.accessor.onedrive import OneDriveAccessor
 from mirage.cache.index import IndexCacheStore
+from mirage.commands.builtin.generic.cp import cp as generic_cp
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.onedrive.copy import copy
@@ -22,14 +25,6 @@ from mirage.core.onedrive.glob import resolve_glob
 from mirage.core.onedrive.stat import stat as stat_impl
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-
-
-async def _exists(accessor: OneDriveAccessor, path: PathSpec | str) -> bool:
-    try:
-        await stat_impl(accessor, path)
-        return True
-    except FileNotFoundError:
-        return False
 
 
 @command("cp", resource="onedrive", spec=SPECS["cp"], write=True)
@@ -50,23 +45,13 @@ async def cp(
     if len(paths) < 2:
         raise ValueError("cp: requires src and dst")
     paths = await resolve_glob(accessor, paths, index)
-    recursive = r or R or a
-    if recursive:
-        src_base = paths[0].strip_prefix.rstrip("/")
-        dst_base = paths[1].strip_prefix.rstrip("/")
-        if n and await _exists(accessor, paths[1]):
-            return None, IOResult()
-        files = await find_impl(accessor, paths[0], type="file")
-        await copy(accessor, paths[0], paths[1])
-        writes = {dst_base + f[len(src_base):]: b"" for f in files}
-        if v:
-            lines = [f"{f} -> {dst_base + f[len(src_base):]}" for f in files]
-            return ("\n".join(lines) + "\n").encode(), IOResult(writes=writes)
-        return None, IOResult(writes=writes)
-    if n and await _exists(accessor, paths[1]):
-        return None, IOResult()
-    await copy(accessor, paths[0], paths[1])
-    output = None
-    if v:
-        output = f"{paths[0].original} -> {paths[1].original}\n".encode()
-    return output, IOResult(writes={paths[1].strip_prefix: b""})
+    return await generic_cp(paths,
+                            copy=partial(copy, accessor),
+                            find=partial(find_impl, accessor),
+                            find_type="f",
+                            stat=partial(stat_impl, accessor),
+                            recursive=r or R or a,
+                            n=n,
+                            v=v,
+                            index=index,
+                            dir_copy=partial(copy, accessor))

@@ -173,6 +173,16 @@ jobs:
           ./python/.venv/bin/python integ/s3_cases.py > /tmp/s3_cases.out
           diff integ/truth.txt /tmp/s3_cases.out
 
+      - name: Run onedrive integ (fake Graph) and diff against truth
+        run: |
+          ./python/.venv/bin/python integ/onedrive.py > /tmp/onedrive.out
+          diff integ/truth_onedrive.txt /tmp/onedrive.out
+
+      - name: Run shared command suite on onedrive (fake Graph) and diff against shared truth
+        run: |
+          ./python/.venv/bin/python integ/onedrive_cases.py > /tmp/onedrive_cases.out
+          diff integ/truth.txt /tmp/onedrive_cases.out
+
       - name: Run lancedb integ (embedded) and diff against truth
         run: |
           ./python/.venv/bin/python integ/lancedb.py > /tmp/lancedb.out

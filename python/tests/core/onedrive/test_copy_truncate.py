@@ -96,6 +96,19 @@ async def test_cp_recursive_uses_server_side_folder_copy():
                       "file": {}
                   }]
               })
+        m.get(_BASE + "/root:/dst",
+              status=404,
+              payload={"error": {
+                  "code": "itemNotFound"
+              }})
+        m.get(_BASE + "/root:/src",
+              payload={
+                  "id": "0",
+                  "name": "src",
+                  "folder": {
+                      "childCount": 2
+                  }
+              })
         m.post(_BASE + "/root:/src:/copy", status=202, payload={})
         _out, io = await cp.__wrapped__(_accessor(), [src, dst],
                                         r=True,
