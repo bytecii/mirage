@@ -56,5 +56,5 @@ async def uniq(
         skip_fields=int(f) if f else 0,
         skip_chars=int(s) if s else 0,
         ignore_case=i,
-        check_chars=int(w) if w else 0,
+        check_chars=int(w) if w else None,
     )

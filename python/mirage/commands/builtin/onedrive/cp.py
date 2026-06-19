@@ -69,4 +69,4 @@ async def cp(
     output = None
     if v:
         output = f"{paths[0].original} -> {paths[1].original}\n".encode()
-    return output, IOResult(writes={paths[1].original: b""})
+    return output, IOResult(writes={paths[1].strip_prefix: b""})

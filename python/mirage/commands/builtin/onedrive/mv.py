@@ -50,8 +50,8 @@ async def mv(
         return None, IOResult()
     await rename(accessor, paths[0], paths[1])
     writes = {
-        paths[0].original: b"",
-        paths[1].original: b"",
+        paths[0].strip_prefix: b"",
+        paths[1].strip_prefix: b"",
     }
     output = None
     if v:
