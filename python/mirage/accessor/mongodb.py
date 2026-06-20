@@ -13,15 +13,30 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import logging
 import time
 from collections.abc import Awaitable, Callable
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as get_version
 from typing import Any
 
-from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import AsyncMongoClient
+from pymongo.driver_info import DriverInfo
 
 from mirage.accessor.base import Accessor
 from mirage.resource.mongodb.config import MongoDBConfig
 from mirage.resource.secrets import reveal_secret
+
+logger = logging.getLogger(__name__)
+
+try:
+    _VERSION = get_version("mirage-ai")
+except PackageNotFoundError:
+    logger.error("mirage-ai package metadata not found; "
+                 "MongoDB driver handshake will omit the version")
+    _VERSION = None
+
+_DRIVER_INFO = DriverInfo(name="Mirage", version=_VERSION)
 
 
 class MongoDBAccessor(Accessor):
@@ -31,24 +46,24 @@ class MongoDBAccessor(Accessor):
                  listing_cache_ttl: float = 5.0) -> None:
         self.config = config
         self.listing_cache_ttl = listing_cache_ttl
-        self._clients: dict[int, AsyncIOMotorClient] = {}
+        self._clients: dict[int, AsyncMongoClient] = {}
         self._cache: dict[str, tuple[float, Any]] = {}
 
     @property
-    def client(self) -> AsyncIOMotorClient:
+    def client(self) -> AsyncMongoClient:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return self._for_loop(None)
         return self._for_loop(loop)
 
-    def _for_loop(
-            self,
-            loop: asyncio.AbstractEventLoop | None) -> AsyncIOMotorClient:
+    def _for_loop(self,
+                  loop: asyncio.AbstractEventLoop | None) -> AsyncMongoClient:
         key = id(loop) if loop is not None else 0
         client = self._clients.get(key)
         if client is None:
-            client = AsyncIOMotorClient(reveal_secret(self.config.uri))
+            client = AsyncMongoClient(reveal_secret(self.config.uri),
+                                      driver=_DRIVER_INFO)
             self._clients[key] = client
         return client
 

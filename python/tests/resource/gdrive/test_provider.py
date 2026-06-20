@@ -34,7 +34,7 @@ def test_resource_init(config):
     with patch("mirage.core.google._client.refresh_access_token", ):
         resource = GoogleDriveResource(config)
         assert resource.name == ResourceName.GDRIVE
-        assert resource.is_remote is True
+        assert resource.caches_reads is True
 
 
 def test_resource_accessor(config):

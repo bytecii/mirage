@@ -15,6 +15,7 @@
 import time
 
 from mirage.accessor.onedrive import OneDriveAccessor
+from mirage.cache.context import invalidate_after_write
 from mirage.core.onedrive._client import (graph_post, graph_put_bytes,
                                           item_url, split_path, upload_chunk)
 from mirage.observe.context import record
@@ -55,3 +56,4 @@ async def write_bytes(accessor: OneDriveAccessor, path: PathSpec,
     else:
         await _upload_session(accessor, stripped, data)
     record("write", stripped, "onedrive", len(data), start_ms)
+    await invalidate_after_write(path)

@@ -236,6 +236,7 @@ export class Workspace {
     this.observer = new Observer(options.observe)
     this.registry.mount(HISTORY_PREFIX, new HistoryViewResource(this.observer), MountMode.READ)
     this.cache = options.cache ?? new RAMFileCacheStore({ limit: options.cacheLimit ?? '512MB' })
+    this.registry.attachFileCache(this.cache)
     this.dispatcher = new Dispatcher(
       this.registry,
       this.cache,

@@ -40,7 +40,7 @@ export interface BoxResourceState {
 
 export class BoxResource implements Resource {
   readonly kind: string = ResourceName.BOX
-  readonly isRemote: boolean = true
+  readonly cachesReads: boolean = true
   readonly indexTtl: number = 86_400
   readonly prompt: string = BOX_PROMPT
   readonly config: BoxConfig

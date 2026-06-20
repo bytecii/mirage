@@ -40,7 +40,7 @@ export interface DropboxResourceState {
 
 export class DropboxResource implements Resource {
   readonly kind: string = ResourceName.DROPBOX
-  readonly isRemote: boolean = true
+  readonly cachesReads: boolean = true
   readonly indexTtl: number = 86_400
   readonly prompt: string = DROPBOX_PROMPT
   readonly config: DropboxConfig

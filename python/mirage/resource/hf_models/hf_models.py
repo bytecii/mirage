@@ -54,7 +54,7 @@ _OPS = {
 class HfModelsResource(BaseResource):
 
     name: str = ResourceName.HF_MODELS
-    is_remote: bool = True
+    caches_reads: bool = True
     _ops: dict[str, Any] = _OPS
     PROMPT: str = PROMPT
     SUPPORTS_SNAPSHOT: bool = True

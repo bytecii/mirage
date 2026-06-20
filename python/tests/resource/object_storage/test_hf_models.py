@@ -22,7 +22,7 @@ from mirage.types import ResourceName
 def test_resource_name():
     r = HfModelsResource(HfModelsConfig(repo_id="org/model"))
     assert r.name == ResourceName.HF_MODELS
-    assert r.is_remote is True
+    assert r.caches_reads is True
 
 
 def test_config_immutable():

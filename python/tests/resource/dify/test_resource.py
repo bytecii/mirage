@@ -18,7 +18,7 @@ def test_dify_resource_is_registered_and_redacts_api_key():
     )
 
     assert resource.name == ResourceName.DIFY
-    assert resource.is_remote is True
+    assert resource.caches_reads is True
     assert resource.SUPPORTS_SNAPSHOT is False
     assert resource.config.base_url == "https://api.dify.ai/v1"
     assert resource.config.slug_metadata_name == "slug"

@@ -41,7 +41,7 @@ export interface GSlidesResourceState {
 
 export class GSlidesResource implements Resource {
   readonly kind: string = ResourceName.GSLIDES
-  readonly isRemote: boolean = true
+  readonly cachesReads: boolean = true
   readonly indexTtl: number = 86_400
   readonly prompt: string = GSLIDES_PROMPT
   readonly writePrompt: string = GSLIDES_WRITE_PROMPT

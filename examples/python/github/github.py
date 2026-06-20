@@ -198,6 +198,10 @@ async def main() -> None:
         "grep 'import' /github/python/mirage/types.py | sort | uniq")
     print(await r.stdout_str())
 
+    print("=== uniq (file path, streams via github read) ===")
+    r = await ws.execute("uniq /github/python/mirage/types.py")
+    print(await r.stdout_str())
+
     print("=== sha256sum ===")
     r = await ws.execute("sha256sum /github/python/mirage/types.py")
     print(await r.stdout_str())

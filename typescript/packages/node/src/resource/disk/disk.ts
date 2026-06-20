@@ -70,7 +70,7 @@ async function walkFiles(root: string, current: string, out: string[]): Promise<
 
 export class DiskResource extends BaseResource implements Resource {
   readonly kind = ResourceName.DISK
-  readonly isRemote: boolean = false
+  readonly cachesReads: boolean = false
   readonly indexTtl: number = 60
   readonly prompt = DISK_PROMPT
   readonly root: string

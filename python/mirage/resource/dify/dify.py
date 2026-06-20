@@ -21,7 +21,7 @@ _DIFY_OPS = {
 class DifyResource(BaseResource):
 
     name: str = ResourceName.DIFY
-    is_remote: bool = True
+    caches_reads: bool = True
     _ops = _DIFY_OPS
     PROMPT: str = PROMPT
     SUPPORTS_SNAPSHOT: bool = False

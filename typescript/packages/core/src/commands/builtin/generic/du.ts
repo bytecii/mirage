@@ -63,10 +63,10 @@ export async function duGeneric(
             ? entries.filter(([p]) => depthOf(p, root.original) <= maxDepth)
             : entries
         for (const [p, size] of filtered) lines.push(`${fmt(size)}\t${p}`)
-        lines.push(`${fmt(total)}\t${root.original}`)
+        lines.push(`${fmt(total)}\t${root.display}`)
         grand += total
       } catch {
-        lines.push(`${fmt(0)}\t${root.original}`)
+        lines.push(`${fmt(0)}\t${root.display}`)
       }
     } else {
       let total = 0
@@ -75,7 +75,7 @@ export async function duGeneric(
       } catch {
         total = 0
       }
-      lines.push(`${fmt(total)}\t${root.original}`)
+      lines.push(`${fmt(total)}\t${root.display}`)
       grand += total
     }
   }

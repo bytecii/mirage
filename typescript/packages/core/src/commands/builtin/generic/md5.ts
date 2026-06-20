@@ -27,7 +27,7 @@ export async function md5Generic(
   if (paths.length > 0) {
     for (const p of paths) {
       const data = await materialize(stream(p))
-      lines.push(`${md5Hex(data)}  ${p.original}`)
+      lines.push(`${md5Hex(data)}  ${p.display}`)
     }
   } else if (opts.stdin !== null) {
     const data = await materialize(opts.stdin)

@@ -46,7 +46,7 @@ export interface GitHubResourceState {
 
 export class GitHubResource implements Resource {
   readonly kind: string = ResourceName.GITHUB
-  readonly isRemote: boolean = true
+  readonly cachesReads: boolean = true
   readonly indexTtl: number = 86_400
   readonly prompt: string = GITHUB_PROMPT
   readonly config: GitHubConfig

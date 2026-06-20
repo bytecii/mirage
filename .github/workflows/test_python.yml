@@ -161,6 +161,28 @@ jobs:
           print(f"OK: imported ${{ matrix.module }} cleanly without ${{ matrix.blocked }}")
           PY
 
+  audit:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.hit == 'true') }}
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Audit dependencies for known vulnerabilities (informational)
+        working-directory: python
+        run: uv audit --preview-features audit --no-extra camel
+
   gate:
     name: test-python-gate
     runs-on: ubuntu-latest

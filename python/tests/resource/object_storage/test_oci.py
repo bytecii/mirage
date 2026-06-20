@@ -91,7 +91,7 @@ def test_oci_resource_uses_s3_resource_type():
             secret_access_key="secret-key",
         ))
     assert resource.name == ResourceName.S3
-    assert resource.is_remote is True
+    assert resource.caches_reads is True
     assert isinstance(resource.config, S3Config)
     assert resource.config.path_style is True
 

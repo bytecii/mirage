@@ -16,8 +16,9 @@ import { record } from '../../observe/context.ts'
 import type { RAMAccessor } from '../../accessor/ram.ts'
 import { ResourceName, type PathSpec } from '../../types.ts'
 import { norm, nowIso } from './utils.ts'
+import { invalidateAfterWrite } from '../../cache/context.ts'
 
-export function appendBytes(
+export async function appendBytes(
   accessor: RAMAccessor,
   path: PathSpec,
   data: Uint8Array,
@@ -35,5 +36,6 @@ export function appendBytes(
   }
   accessor.store.modified.set(p, nowIso())
   record('append', p, ResourceName.RAM, data.byteLength, start)
+  await invalidateAfterWrite(path)
   return Promise.resolve()
 }

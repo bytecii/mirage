@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.redis import RedisAccessor
+from mirage.cache.context import invalidate_after_write
 from mirage.core.timeutil import now_iso
 from mirage.types import PathSpec
 from mirage.utils.path import norm
@@ -38,3 +39,4 @@ async def copy(
         raise FileNotFoundError(s)
     await store.set_file(d, data)
     await store.set_modified(d, now_iso())
+    await invalidate_after_write(dst)

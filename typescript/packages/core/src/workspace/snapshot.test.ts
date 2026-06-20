@@ -87,7 +87,7 @@ describe('toStateDict / applyStateDict', () => {
 
   it('restores cache entries even when every mount has redacted config', async () => {
     const ram = new RAMResource()
-    ;(ram as unknown as { isRemote: boolean }).isRemote = true
+    ;(ram as unknown as { cachesReads: boolean }).cachesReads = true
     const ops = new OpsRegistry()
     ops.registerResource(ram)
     const ws = new Workspace({ '/data': ram }, { mode: MountMode.WRITE, ops, shellParser: parser })

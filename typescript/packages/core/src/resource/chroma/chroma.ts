@@ -32,7 +32,7 @@ export interface ChromaResourceOptions {
 
 export class ChromaResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.CHROMA
-  readonly isRemote: boolean = true
+  readonly cachesReads: boolean = false
   readonly supportsSnapshot: boolean = false
   readonly prompt: string = CHROMA_PROMPT
   readonly config: ChromaConfigResolved

@@ -41,7 +41,7 @@ export abstract class HfResource extends BaseResource implements Resource {
   abstract readonly kind: string
   abstract readonly prompt: string
   abstract readonly accessor: HfAccessor
-  readonly isRemote: boolean = true
+  readonly cachesReads: boolean = true
   readonly supportsSnapshot: boolean = true
   readonly opsMap: Record<string, unknown> = {
     read_bytes: readCore,

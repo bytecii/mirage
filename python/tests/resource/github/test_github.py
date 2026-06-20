@@ -49,9 +49,9 @@ def test_name() -> None:
     assert resource.name == ResourceName.GITHUB
 
 
-def test_is_remote() -> None:
+def test_caches_reads() -> None:
     resource = _make_resource()
-    assert resource.is_remote is True
+    assert resource.caches_reads is True
 
 
 def test_bind_args() -> None:

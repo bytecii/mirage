@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.s3 import S3Accessor
+from mirage.cache.context import invalidate_after_unlink
 from mirage.core.s3._client import _client_kwargs, _prefix, async_session
 from mirage.types import PathSpec
 
@@ -40,3 +41,4 @@ async def rm_r(accessor: S3Accessor, path: PathSpec) -> None:
                     Bucket=config.bucket,
                     Delete={"Objects": keys},
                 )
+    await invalidate_after_unlink(path)

@@ -31,7 +31,7 @@ def config():
 def test_resource_init(config):
     resource = GmailResource(config=config)
     assert resource.name == ResourceName.GMAIL
-    assert resource.is_remote is True
+    assert resource.caches_reads is True
 
 
 def test_resource_accessor(config):

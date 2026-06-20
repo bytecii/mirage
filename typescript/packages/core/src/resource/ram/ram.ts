@@ -49,7 +49,7 @@ export interface RAMResourceState {
 
 export class RAMResource extends BaseResource implements Resource {
   readonly kind = ResourceName.RAM
-  readonly isRemote: boolean = false
+  readonly cachesReads: boolean = false
   readonly indexTtl: number = 0
   readonly store = new RAMStore()
   readonly accessor = new RAMAccessor(this.store)

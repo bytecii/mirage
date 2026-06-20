@@ -41,7 +41,7 @@ export interface TrelloResourceState {
 
 export class TrelloResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.TRELLO
-  readonly isRemote: boolean = true
+  readonly cachesReads: boolean = true
   readonly indexTtl: number = 600
   readonly prompt: string = TRELLO_PROMPT
   readonly writePrompt: string = TRELLO_WRITE_PROMPT

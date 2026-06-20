@@ -14,7 +14,7 @@
 
 import type { FileEntryWithStats, SFTPWrapper, Stats } from 'ssh2'
 import type { PathSpec } from '@struktoai/mirage-core'
-import { enoent } from '@struktoai/mirage-core'
+import { enoent, invalidateAfterUnlink } from '@struktoai/mirage-core'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
 import { isDirectoryAttrs, isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
 
@@ -79,4 +79,5 @@ export async function rmR(accessor: SSHAccessor, p: PathSpec): Promise<void> {
     if (isNoSuchFile(err)) throw enoent(p)
     throw err
   }
+  await invalidateAfterUnlink(p)
 }

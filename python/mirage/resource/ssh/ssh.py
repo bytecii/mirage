@@ -80,7 +80,7 @@ class SSHConfig(BaseModel):
 class SSHResource(BaseResource):
 
     name: str = ResourceName.SSH
-    is_remote: bool = True
+    caches_reads: bool = True
     _ops: dict[str, Any] = _SSH_OPS
     PROMPT: str = PROMPT
 

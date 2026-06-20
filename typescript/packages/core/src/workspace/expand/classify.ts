@@ -82,6 +82,7 @@ export function classifyWord(
       directory: path.slice(0, lastSlash + 1),
       pattern: path.slice(lastSlash + 1),
       resolved: false,
+      asTyped: word,
     })
   }
 
@@ -94,6 +95,7 @@ export function classifyWord(
       original: path,
       directory: path.slice(0, path.lastIndexOf('/') + 1),
       resolved: true,
+      asTyped: w,
     })
   }
 
@@ -117,12 +119,14 @@ export function classifyBarePath(
       directory: path.slice(0, lastSlash + 1),
       pattern: path.slice(lastSlash + 1),
       resolved: false,
+      asTyped: word,
     })
   }
   return new PathSpec({
     original: path,
     directory: path.slice(0, path.lastIndexOf('/') + 1),
     resolved: true,
+    asTyped: word,
   })
 }
 

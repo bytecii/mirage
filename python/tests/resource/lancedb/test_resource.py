@@ -25,12 +25,12 @@ def _resource(**kw) -> LanceDBResource:
 def test_resource_name_local_is_not_remote():
     res = _resource()
     assert res.name == "lancedb"
-    assert res.is_remote is False
+    assert res.caches_reads is False
 
 
-def test_resource_remote_uri_is_remote():
+def test_resource_remote_uri_caches_reads():
     res = _resource(uri="s3://bucket/db")
-    assert res.is_remote is True
+    assert res.caches_reads is True
 
 
 def test_resource_registers_ops():
@@ -63,6 +63,6 @@ def test_cloud_config_fields_and_remote():
                     api_key="sk-xxx",
                     region="us-west-2",
                     host_override="https://my-db.region.api.lancedb.com")
-    assert res.is_remote is True
+    assert res.caches_reads is True
     assert res.config.region == "us-west-2"
     assert res.config.host_override == "https://my-db.region.api.lancedb.com"

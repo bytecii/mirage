@@ -74,7 +74,7 @@ async function resolveAuth(config: DatabricksVolumeConfig): Promise<[string, str
 
 export class DatabricksVolumeResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.DATABRICKS_VOLUME
-  readonly isRemote: boolean = true
+  readonly cachesReads: boolean = true
   readonly indexTtl: number = 600
   readonly prompt: string = DATABRICKS_VOLUME_PROMPT
   readonly config: DatabricksVolumeConfig

@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { PathSpec } from '@struktoai/mirage-core'
-import { enoent } from '@struktoai/mirage-core'
+import { enoent, invalidateAfterUnlink } from '@struktoai/mirage-core'
 import type { SSHAccessor } from '../../accessor/ssh.ts'
 import { isNoSuchFile, joinRoot, stripPrefix } from './utils.ts'
 
@@ -31,4 +31,5 @@ export async function rmdir(accessor: SSHAccessor, p: PathSpec): Promise<void> {
       else rejectFn(err)
     })
   })
+  await invalidateAfterUnlink(p)
 }

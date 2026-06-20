@@ -23,7 +23,7 @@ from mirage.types import ResourceName
 class SlackResource(BaseResource):
 
     name: str = ResourceName.SLACK
-    is_remote: bool = True
+    caches_reads: bool = True
     PROMPT: str = PROMPT
     WRITE_PROMPT: str = WRITE_PROMPT
 

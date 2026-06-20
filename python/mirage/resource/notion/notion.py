@@ -32,7 +32,7 @@ _NOTION_OPS = {
 class NotionResource(BaseResource):
 
     name: str = ResourceName.NOTION
-    is_remote: bool = True
+    caches_reads: bool = True
     _ops: dict = _NOTION_OPS
     PROMPT: str = PROMPT
     WRITE_PROMPT: str = WRITE_PROMPT

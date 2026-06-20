@@ -30,7 +30,7 @@ from mirage.types import ResourceName
 class GitHubResource(BaseResource):
 
     name: str = ResourceName.GITHUB
-    is_remote: bool = True
+    caches_reads: bool = True
     PROMPT: str = PROMPT
 
     def __init__(

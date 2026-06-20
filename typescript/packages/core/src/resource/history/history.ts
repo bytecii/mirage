@@ -37,7 +37,7 @@ export const HISTORY_PREFIX = '/.bash_history'
  */
 export class HistoryViewResource extends BaseResource implements Resource {
   readonly kind = ResourceName.HISTORY
-  readonly isRemote = false
+  readonly cachesReads = false
   readonly accessor: HistoryAccessor
 
   constructor(observer: Observer) {

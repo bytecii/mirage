@@ -71,7 +71,7 @@ class FakeRemoteAccessor extends Accessor {
 
 class FakeRemoteResource implements Resource {
   readonly kind = 'fake-remote'
-  readonly isRemote = true
+  readonly cachesReads = true
   readonly supportsSnapshot = true
   readonly accessor: FakeRemoteAccessor
 

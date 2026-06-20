@@ -173,6 +173,16 @@ jobs:
           ./python/.venv/bin/python integ/s3_cases.py > /tmp/s3_cases.out
           diff integ/truth.txt /tmp/s3_cases.out
 
+      - name: Run onedrive integ (fake Graph) and diff against truth
+        run: |
+          ./python/.venv/bin/python integ/onedrive.py > /tmp/onedrive.out
+          diff integ/truth_onedrive.txt /tmp/onedrive.out
+
+      - name: Run shared command suite on onedrive (fake Graph) and diff against shared truth
+        run: |
+          ./python/.venv/bin/python integ/onedrive_cases.py > /tmp/onedrive_cases.out
+          diff integ/truth.txt /tmp/onedrive_cases.out
+
       - name: Run lancedb integ (embedded) and diff against truth
         run: |
           ./python/.venv/bin/python integ/lancedb.py > /tmp/lancedb.out
@@ -322,15 +332,6 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.database == 'true') }}
     runs-on: ubuntu-latest
     services:
-      mongodb:
-        image: mongo:8
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
       postgres:
         image: postgres:16
         env:
@@ -349,7 +350,7 @@ jobs:
         ports:
           - 8000:8000
     env:
-      MONGODB_URI: mongodb://localhost:27017
+      MONGODB_URI: mongodb://localhost:27017/?replicaSet=rs0
       POSTGRES_DSN: postgres://mirage:mirage@localhost:5432/mirage_integ
     steps:
       - uses: actions/checkout@v6
@@ -377,6 +378,21 @@ jobs:
           echo "ChromaDB did not become healthy" >&2
           exit 1
 
+      - name: Start MongoDB replica set
+        run: |
+          docker run -d --name mongo -p 27017:27017 mongo:8 \
+            mongod --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do
+            docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec mongo mongosh --quiet --eval \
+            "rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27017'}]})"
+          for i in $(seq 1 30); do
+            [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary' 2>/dev/null)" = "true" ] && break
+            sleep 1
+          done
+
       - name: Run MongoDB backend and check against truth
         shell: bash
         run: |
@@ -401,15 +417,6 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.database == 'true') }}
     runs-on: ubuntu-latest
     services:
-      mongodb:
-        image: mongo:8
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
       postgres:
         image: postgres:16
         env:
@@ -428,7 +435,7 @@ jobs:
         ports:
           - 8000:8000
     env:
-      MONGODB_URI: mongodb://localhost:27017
+      MONGODB_URI: mongodb://localhost:27017/?replicaSet=rs0
       POSTGRES_DSN: postgres://mirage:mirage@localhost:5432/mirage_integ
     steps:
       - uses: actions/checkout@v6
@@ -463,6 +470,21 @@ jobs:
           done
           echo "ChromaDB did not become healthy" >&2
           exit 1
+
+      - name: Start MongoDB replica set
+        run: |
+          docker run -d --name mongo -p 27017:27017 mongo:8 \
+            mongod --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do
+            docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec mongo mongosh --quiet --eval \
+            "rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27017'}]})"
+          for i in $(seq 1 30); do
+            [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary' 2>/dev/null)" = "true" ] && break
+            sleep 1
+          done
 
       - name: Run MongoDB backend (TS) and check against truth
         shell: bash

@@ -13,6 +13,8 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.ram import RAMAccessor
+from mirage.cache.context import (invalidate_after_unlink,
+                                  invalidate_after_write)
 from mirage.core.timeutil import now_iso
 from mirage.types import PathSpec
 from mirage.utils.path import norm
@@ -44,3 +46,5 @@ async def rename(accessor: RAMAccessor, src: PathSpec, dst: PathSpec) -> None:
                 store.files[new_key] = store.files.pop(key)
     else:
         raise FileNotFoundError(s)
+    await invalidate_after_write(dst)
+    await invalidate_after_unlink(src)

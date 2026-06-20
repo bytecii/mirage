@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.ssh import SSHAccessor
+from mirage.cache.context import invalidate_after_write
 from mirage.core.ssh._client import _abs
 from mirage.types import PathSpec
 
@@ -22,3 +23,4 @@ async def create(accessor: SSHAccessor, path: PathSpec) -> None:
     sftp = await accessor.sftp()
     async with sftp.open(_abs(config, path), "wb"):
         pass
+    await invalidate_after_write(path)

@@ -41,7 +41,7 @@ export interface GSheetsResourceState {
 
 export class GSheetsResource implements Resource {
   readonly kind: string = ResourceName.GSHEETS
-  readonly isRemote: boolean = true
+  readonly cachesReads: boolean = true
   readonly indexTtl: number = 86_400
   readonly prompt: string = GSHEETS_PROMPT
   readonly writePrompt: string = GSHEETS_WRITE_PROMPT

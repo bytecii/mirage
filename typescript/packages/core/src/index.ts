@@ -254,6 +254,7 @@ export { gzipGeneric } from './commands/builtin/generic/gzip.ts'
 export { gunzipGeneric } from './commands/builtin/generic/gunzip.ts'
 export { iconvGeneric } from './commands/builtin/generic/iconv.ts'
 export { sedGeneric } from './commands/builtin/generic/sed.ts'
+export { makeSed, type SedBackend } from './commands/builtin/generic/sed_command.ts'
 export { teeGeneric } from './commands/builtin/generic/tee.ts'
 export { splitGeneric } from './commands/builtin/generic/split.ts'
 export { csplitGeneric } from './commands/builtin/generic/csplit.ts'
@@ -413,6 +414,14 @@ export {
 } from './cache/index/config.ts'
 export { IndexCacheStore } from './cache/index/store.ts'
 export { RAMIndexCacheStore } from './cache/index/ram.ts'
+export { CacheManager } from './cache/manager.ts'
+export {
+  activeCacheManager,
+  invalidateAfterUnlink,
+  invalidateAfterWrite,
+  runWithCacheManager,
+  type CacheInvalidator,
+} from './cache/context.ts'
 export {
   RedisIndexCacheStore,
   type RedisClientLike,

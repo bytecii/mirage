@@ -65,7 +65,7 @@ async def grep(
 
     limit = accessor.config.default_search_limit
 
-    if paths and pattern is not None:
+    if paths and pattern is not None and "\n" not in pattern:
         scope = detect_scope(paths[0])
 
         if scope.level != "root":

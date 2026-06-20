@@ -18,7 +18,7 @@ from mirage.resource.postgres import PostgresConfig, PostgresResource
 def test_resource_name():
     res = PostgresResource(PostgresConfig(dsn="postgres://localhost/db"))
     assert res.name == "postgres"
-    assert res.is_remote is True
+    assert res.caches_reads is False
 
 
 def test_resource_registers_three_ops():

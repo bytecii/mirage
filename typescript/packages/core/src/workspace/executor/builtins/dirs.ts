@@ -17,6 +17,7 @@ import { IOResult } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import { FileType } from '../../../types.ts'
 import type { Session } from '../../session/session.ts'
+import { changeDir } from '../../session/shell_dirs.ts'
 import { ExecutionNode } from '../../types.ts'
 import type { DispatchFn } from '../cross_mount.ts'
 import { toScope, scopePath } from './scope.ts'
@@ -27,26 +28,42 @@ export async function handleCd(
   isMountRoot: (path: string) => boolean,
   path: string | PathSpec,
   session: Session,
+  printPath = false,
 ): Promise<Result> {
   const raw = scopePath(path)
   const resolved = resolvePath(session.cwd, raw)
-  if (resolved === '/') {
-    session.cwd = '/'
-    return [null, new IOResult(), new ExecutionNode({ command: `cd ${raw}`, exitCode: 0 })]
-  }
-  const scope = toScope(resolved)
-  let stat: { type?: string } | null = null
-  let notFound = false
-  try {
-    const [s] = await dispatch('stat', scope)
-    stat = s as { type?: string } | null
-  } catch (exc) {
-    const msg = exc instanceof Error ? exc.message : String(exc)
-    const code = (exc as { code?: string }).code
-    if (code === 'ENOENT' || /not found|no such file/i.test(msg)) {
-      notFound = true
-    } else {
-      const err = new TextEncoder().encode(`cd: ${raw}: ${msg}\n`)
+  if (resolved !== '/') {
+    const scope = toScope(resolved)
+    let stat: { type?: string } | null = null
+    let notFound = false
+    try {
+      const [s] = await dispatch('stat', scope)
+      stat = s as { type?: string } | null
+    } catch (exc) {
+      const msg = exc instanceof Error ? exc.message : String(exc)
+      const code = (exc as { code?: string }).code
+      if (code === 'ENOENT' || /not found|no such file/i.test(msg)) {
+        notFound = true
+      } else {
+        const err = new TextEncoder().encode(`cd: ${raw}: ${msg}\n`)
+        return [
+          null,
+          new IOResult({ exitCode: 1, stderr: err }),
+          new ExecutionNode({ command: `cd ${raw}`, exitCode: 1, stderr: err }),
+        ]
+      }
+    }
+    if (stat === null || notFound) {
+      if (!isMountRoot(resolved)) {
+        const err = new TextEncoder().encode(`cd: ${raw}: No such file or directory\n`)
+        return [
+          null,
+          new IOResult({ exitCode: 1, stderr: err }),
+          new ExecutionNode({ command: `cd ${raw}`, exitCode: 1, stderr: err }),
+        ]
+      }
+    } else if (stat.type !== FileType.DIRECTORY) {
+      const err = new TextEncoder().encode(`cd: ${raw}: Not a directory\n`)
       return [
         null,
         new IOResult({ exitCode: 1, stderr: err }),
@@ -54,23 +71,7 @@ export async function handleCd(
       ]
     }
   }
-  if (stat === null || notFound) {
-    if (!isMountRoot(resolved)) {
-      const err = new TextEncoder().encode(`cd: ${raw}: No such file or directory\n`)
-      return [
-        null,
-        new IOResult({ exitCode: 1, stderr: err }),
-        new ExecutionNode({ command: `cd ${raw}`, exitCode: 1, stderr: err }),
-      ]
-    }
-  } else if (stat.type !== FileType.DIRECTORY) {
-    const err = new TextEncoder().encode(`cd: ${raw}: Not a directory\n`)
-    return [
-      null,
-      new IOResult({ exitCode: 1, stderr: err }),
-      new ExecutionNode({ command: `cd ${raw}`, exitCode: 1, stderr: err }),
-    ]
-  }
-  session.cwd = resolved
-  return [null, new IOResult(), new ExecutionNode({ command: `cd ${raw}`, exitCode: 0 })]
+  changeDir(session, resolved)
+  const out = printPath ? new TextEncoder().encode(`${resolved}\n`) : null
+  return [out, new IOResult(), new ExecutionNode({ command: `cd ${raw}`, exitCode: 0 })]
 }

@@ -12,7 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from bson import Decimal128, ObjectId
@@ -36,7 +36,7 @@ class _AsyncIter:
 
 def _col(docs):
     col = MagicMock()
-    col.aggregate = MagicMock(return_value=_AsyncIter(docs))
+    col.aggregate = AsyncMock(return_value=_AsyncIter(docs))
     return col
 
 

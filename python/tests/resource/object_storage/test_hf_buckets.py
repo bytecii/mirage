@@ -22,7 +22,7 @@ from mirage.types import ResourceName
 def test_resource_name():
     r = HfBucketsResource(HfBucketsConfig(bucket="o/b"))
     assert r.name == ResourceName.HF_BUCKETS
-    assert r.is_remote is True
+    assert r.caches_reads is True
     assert r.SUPPORTS_SNAPSHOT is True
 
 

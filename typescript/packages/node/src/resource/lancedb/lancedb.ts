@@ -41,7 +41,7 @@ export interface LanceDBResourceOptions {
 
 export class LanceDBResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.LANCEDB
-  readonly isRemote: boolean
+  readonly cachesReads: boolean
   readonly indexTtl: number = 0
   readonly prompt: string = LANCEDB_PROMPT
   readonly config: LanceDBConfigResolved
@@ -52,7 +52,7 @@ export class LanceDBResource extends BaseResource implements Resource {
     super()
     const config = 'config' in options ? options.config : options
     this.config = resolveLanceDBConfig(config)
-    this.isRemote = REMOTE_SCHEMES.some((scheme) => this.config.uri.startsWith(scheme))
+    this.cachesReads = REMOTE_SCHEMES.some((scheme) => this.config.uri.startsWith(scheme))
     this.store = new LanceDBStore(this.config)
     this.accessor = new LanceDBAccessor(this.store, this.config)
   }

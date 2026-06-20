@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.onedrive import OneDriveAccessor
+from mirage.cache.context import invalidate_after_write
 from mirage.core.onedrive._client import graph_put_bytes, item_url, split_path
 from mirage.types import PathSpec
 
@@ -21,3 +22,4 @@ async def create(accessor: OneDriveAccessor, path: PathSpec) -> None:
     _, stripped = split_path(path)
     url = item_url(accessor.config, "/" + stripped, action="/content")
     await graph_put_bytes(accessor.config, url, b"")
+    await invalidate_after_write(path)

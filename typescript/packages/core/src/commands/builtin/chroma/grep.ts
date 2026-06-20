@@ -37,7 +37,7 @@ async function grepCommand(
   let files = resolved
   let showFilename = false
   let grepOpts = opts
-  if (resolved.length > 0 && pattern !== undefined) {
+  if (resolved.length > 0 && pattern !== undefined && !pattern.includes('\n')) {
     // Pushdown: expand the scope to files and let ChromaDB pre-filter
     // which documents can contain the pattern, so only candidate
     // documents are fetched. The generic grep owns flag handling and

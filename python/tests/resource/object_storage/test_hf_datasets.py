@@ -22,7 +22,7 @@ from mirage.types import ResourceName
 def test_resource_name():
     r = HfDatasetsResource(HfDatasetsConfig(repo_id="org/dataset"))
     assert r.name == ResourceName.HF_DATASETS
-    assert r.is_remote is True
+    assert r.caches_reads is True
     assert r.SUPPORTS_SNAPSHOT is True
 
 

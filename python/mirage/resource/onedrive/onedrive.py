@@ -64,7 +64,7 @@ _ONEDRIVE_OPS = {
 class OneDriveResource(BaseResource):
 
     name: str = ResourceName.ONEDRIVE
-    is_remote: bool = True
+    caches_reads: bool = True
     _ops: dict[str, Any] = _ONEDRIVE_OPS
     PROMPT: str = PROMPT
     SUPPORTS_SNAPSHOT: bool = True

@@ -31,7 +31,7 @@ def config():
 def test_resource_init(config):
     resource = GDocsResource(config=config)
     assert resource.name == ResourceName.GDOCS
-    assert resource.is_remote is True
+    assert resource.caches_reads is True
 
 
 def test_resource_accessor(config):

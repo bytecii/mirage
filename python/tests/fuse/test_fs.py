@@ -304,7 +304,7 @@ async def test_drain_ops_read_deduplication(seed_ws):
 @pytest.mark.asyncio
 async def test_fuse_read_uses_cache_when_populated():
     mem = RAMResource()
-    mem.is_remote = True
+    mem.caches_reads = True
     mem._store.files["/a.txt"] = b"hello world"
     ws = Workspace({"/": mem}, mode=MountMode.WRITE)
     await ws.execute("cat /a.txt")

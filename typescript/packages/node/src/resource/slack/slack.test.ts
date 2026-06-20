@@ -40,7 +40,7 @@ describe('SlackResource (node)', () => {
   it('constructs with token and exposes expected fields', () => {
     const r = new SlackResource({ token: 'xoxb-test' })
     expect(r.kind).toBe(ResourceName.SLACK)
-    expect(r.isRemote).toBe(true)
+    expect(r.cachesReads).toBe(true)
     expect(r.indexTtl).toBe(600)
     expect(r.config).toEqual({ token: 'xoxb-test' })
     expect(typeof r.prompt).toBe('string')

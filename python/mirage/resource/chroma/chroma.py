@@ -21,7 +21,7 @@ _CHROMA_OPS = {
 class ChromaResource(BaseResource):
 
     name: str = ResourceName.CHROMA
-    is_remote: bool = True
+    caches_reads: bool = False
     _ops = _CHROMA_OPS
     PROMPT: str = PROMPT
     SUPPORTS_SNAPSHOT: bool = False

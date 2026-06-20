@@ -203,6 +203,41 @@ describe('integration: subshell and grouping', () => {
     expect(lines).toEqual(['inner', 'outer'])
     await ws.close()
   })
+
+  it('subshell function def does not leak', async () => {
+    const { ws } = await fresh()
+    const result = await run(
+      ws,
+      '(only_inner() { echo inner; }); only_inner 2>/dev/null || echo gone',
+    )
+    expect(result.trim()).toBe('gone')
+    await ws.close()
+  })
+
+  it('subshell function redefinition is isolated', async () => {
+    const { ws } = await fresh()
+    const result = await run(ws, 'greet() { echo outer; }; (greet() { echo inner; }; greet); greet')
+    expect(result.trim().split('\n')).toEqual(['inner', 'outer'])
+    await ws.close()
+  })
+
+  it('subshell inherits parent functions', async () => {
+    const { ws } = await fresh()
+    expect((await run(ws, 'greet() { echo hi; }; (greet)')).trim()).toBe('hi')
+    await ws.close()
+  })
+
+  it('subshell positional params are isolated', async () => {
+    const { ws } = await fresh()
+    expect((await run(ws, 'set -- a b c; (set -- x); echo $# $1')).trim()).toBe('3 a')
+    await ws.close()
+  })
+
+  it('subshell inherits parent positional params', async () => {
+    const { ws } = await fresh()
+    expect((await run(ws, 'set -- a b; (echo $1 $2)')).trim()).toBe('a b')
+    await ws.close()
+  })
 })
 
 describe('integration: functions with pipelines', () => {

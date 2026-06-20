@@ -75,7 +75,7 @@ describe('DatabricksVolumeResource', () => {
       normalizeDatabricksVolumeConfig(BASE_CONFIG),
     )
     expect(resource.kind).toBe(ResourceName.DATABRICKS_VOLUME)
-    expect(resource.isRemote).toBe(true)
+    expect(resource.cachesReads).toBe(true)
     expect(resource.commands().length).toBeGreaterThan(20)
     expect(resource.ops().map((op) => op.name)).toContain('write')
     const state = await resource.getState()

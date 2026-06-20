@@ -14,7 +14,7 @@
 
 import type { DiskAccessor } from '../../accessor/disk.ts'
 import { mkdir as fsMkdir } from 'node:fs/promises'
-import type { PathSpec } from '@struktoai/mirage-core'
+import { type PathSpec, invalidateAfterWrite } from '@struktoai/mirage-core'
 import { resolveSafe } from './utils.ts'
 
 export async function mkdir(
@@ -25,8 +25,10 @@ export async function mkdir(
   const full = resolveSafe(accessor.root, path.stripPrefix)
   if (parents) {
     await fsMkdir(full, { recursive: true })
+    await invalidateAfterWrite(path)
     return
   }
+  await invalidateAfterWrite(path)
   try {
     await fsMkdir(full)
   } catch (err) {

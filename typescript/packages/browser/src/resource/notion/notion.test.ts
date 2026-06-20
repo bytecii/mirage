@@ -39,7 +39,7 @@ describe('NotionResource (browser)', () => {
     const authProvider = makeAuthProvider()
     const r = new NotionResource({ authProvider })
     expect(r.kind).toBe(ResourceName.NOTION)
-    expect(r.isRemote).toBe(true)
+    expect(r.cachesReads).toBe(true)
     expect(r.indexTtl).toBe(600)
     expect(r.config).toEqual({ authProvider })
     expect(typeof r.prompt).toBe('string')

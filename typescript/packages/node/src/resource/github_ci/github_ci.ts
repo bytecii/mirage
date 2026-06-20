@@ -39,7 +39,7 @@ export interface GitHubCIResourceState {
 
 export class GitHubCIResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.GITHUB_CI
-  readonly isRemote: boolean = true
+  readonly cachesReads: boolean = true
   readonly indexTtl: number = 86_400
   readonly prompt: string = GITHUB_CI_PROMPT
   readonly config: GitHubCIConfig

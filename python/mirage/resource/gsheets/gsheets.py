@@ -24,7 +24,7 @@ from mirage.types import ResourceName
 class GSheetsResource(BaseResource):
 
     name: str = ResourceName.GSHEETS
-    is_remote: bool = True
+    caches_reads: bool = True
     PROMPT: str = PROMPT
     WRITE_PROMPT: str = WRITE_PROMPT
 

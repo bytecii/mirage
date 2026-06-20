@@ -15,6 +15,7 @@
 import asyncio
 
 from mirage.accessor.databricks_volume import DatabricksVolumeAccessor
+from mirage.cache.context import invalidate_after_unlink
 from mirage.cache.index import IndexCacheStore
 from mirage.core.databricks_volume._helpers import ensure_path_spec
 from mirage.core.databricks_volume.errors import is_not_found
@@ -63,3 +64,4 @@ async def rmdir(
         if is_not_found(exc):
             raise enoent(path) from exc
         raise
+    await invalidate_after_unlink(path)

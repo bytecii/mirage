@@ -23,7 +23,7 @@ from mirage.types import ResourceName
 class GitHubCIResource(BaseResource):
 
     name: str = ResourceName.GITHUB_CI
-    is_remote: bool = True
+    caches_reads: bool = True
     PROMPT: str = PROMPT
 
     def __init__(self, config: GitHubCIConfig) -> None:

@@ -121,7 +121,7 @@ async function* headMulti(
     if (p === undefined) continue
     if (paths.length > 1) {
       const prefix = i > 0 ? '\n' : ''
-      yield ENC.encode(`${prefix}==> ${p.original} <==\n`)
+      yield ENC.encode(`${prefix}==> ${p.display} <==\n`)
     }
     const source = stream(p)
     for await (const chunk of headStream(source, lines, bytesMode)) yield chunk

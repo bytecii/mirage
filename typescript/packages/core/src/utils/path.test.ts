@@ -13,18 +13,30 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { NATIVE_BACKENDS } from './native_fixture.ts'
+import { expandTilde } from './path.ts'
 
-describe.each(NATIVE_BACKENDS)('native wget (%s backend)', (_kind) => {
-  it.skip('wget -O flag accepted (placeholder — Python original is empty)', () => {
-    expect(true).toBe(true)
+describe('expandTilde', () => {
+  it('~ alone → home', () => {
+    expect(expandTilde('~', '/home/u')).toBe('/home/u')
   })
 
-  it.skip('wget -q flag accepted (placeholder — Python original is empty)', () => {
-    expect(true).toBe(true)
+  it('~/sub → home/sub', () => {
+    expect(expandTilde('~/file.txt', '/home/u')).toBe('/home/u/file.txt')
   })
 
-  it.skip('wget --spider flag accepted (placeholder — Python original is empty)', () => {
-    expect(true).toBe(true)
+  it('~/sub with root home', () => {
+    expect(expandTilde('~/file.txt', '/')).toBe('/file.txt')
+  })
+
+  it('~user left unchanged', () => {
+    expect(expandTilde('~other/x', '/home/u')).toBe('~other/x')
+  })
+
+  it('non-leading ~ left unchanged', () => {
+    expect(expandTilde('a~b', '/home/u')).toBe('a~b')
+  })
+
+  it('plain word left unchanged', () => {
+    expect(expandTilde('file.txt', '/home/u')).toBe('file.txt')
   })
 })

@@ -71,7 +71,7 @@ export interface RedisResourceState {
 
 export class RedisResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.REDIS
-  readonly isRemote: boolean = false
+  readonly cachesReads: boolean = false
   readonly indexTtl: number = 0
   readonly prompt: string = REDIS_PROMPT
   readonly url: string

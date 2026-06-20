@@ -22,6 +22,7 @@ from mirage.commands.spec.types import FlagView
 from mirage.io.stream import exit_on_empty
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.path import rebase_display
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,7 +168,7 @@ async def rg(
                 warnings_f.append(scope_warning_str)
             results: list[str] = []
             for p in paths:
-                results.extend(await rg_full(
+                hits_full = await rg_full(
                     rd,
                     st,
                     rb,
@@ -188,8 +189,10 @@ async def rg(
                     glob_pattern=f.glob_pattern,
                     hidden=f.hidden,
                     warnings=warnings_f,
-                    file_prefix=p.original if len(paths) > 1 else None,
-                ))
+                    file_prefix=p.display if len(paths) > 1 else None,
+                )
+                results.extend(rebase_display(hits_full, p.original,
+                                              p.display))
             stderr = format_optional_records(warnings_f)
             if not results:
                 return b"", IOResult(exit_code=1, stderr=stderr)
@@ -203,16 +206,16 @@ async def rg(
             for p in paths:
                 data = split_lines((await
                                     rb(p.original)).decode(errors="replace"))
-                hits = grep_lines(p.original, data, pat, f.invert,
+                hits = grep_lines(p.display, data, pat, f.invert,
                                   f.line_numbers, f.count_only, f.files_only,
                                   f.only_matching, f.max_count)
                 if f.count_only:
                     if grep_count_has_matches(hits):
-                        all_results.append(f"{p.original}:{hits[0]}")
+                        all_results.append(f"{p.display}:{hits[0]}")
                 elif f.files_only:
                     all_results.extend(hits)
                 else:
-                    all_results.extend(f"{p.original}:{r}" for r in hits)
+                    all_results.extend(f"{p.display}:{r}" for r in hits)
             if not all_results:
                 return b"", IOResult(exit_code=1)
             return format_records(all_results), IOResult()

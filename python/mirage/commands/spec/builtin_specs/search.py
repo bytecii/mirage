@@ -84,9 +84,11 @@ SPECS: dict[str, CommandSpec] = {
     CommandSpec(
         options=(
             Option(short="-i"),
-            Option(short="-e"),
+            # -e takes a script and may repeat; joined with newlines.
+            Option(short="-e", value_kind=OperandKind.TEXT, repeatable=True),
             Option(short="-n"),
             Option(short="-E"),
+            Option(short="-r"),
         ),
         positional=(Operand(kind=OperandKind.TEXT), ),
         rest=Operand(kind=OperandKind.PATH),

@@ -24,7 +24,7 @@ from mirage.types import ResourceName
 class GoogleDriveResource(BaseResource):
 
     name: str = ResourceName.GDRIVE
-    is_remote: bool = True
+    caches_reads: bool = True
     PROMPT: str = PROMPT
 
     def __init__(self, config: GoogleDriveConfig) -> None:

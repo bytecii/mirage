@@ -24,7 +24,7 @@ from mirage.types import ResourceName
 class GDocsResource(BaseResource):
 
     name: str = ResourceName.GDOCS
-    is_remote: bool = True
+    caches_reads: bool = True
     PROMPT: str = PROMPT
     WRITE_PROMPT: str = WRITE_PROMPT
 

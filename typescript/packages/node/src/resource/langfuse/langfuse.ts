@@ -39,7 +39,7 @@ export interface LangfuseResourceState {
 
 export class LangfuseResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.LANGFUSE
-  readonly isRemote: boolean = true
+  readonly cachesReads: boolean = true
   readonly indexTtl: number = 600
   readonly prompt: string = LANGFUSE_PROMPT
   readonly config: LangfuseConfig

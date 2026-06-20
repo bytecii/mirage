@@ -44,7 +44,7 @@ describe('DiscordResource (node)', () => {
   it('constructs with token and exposes expected fields', () => {
     const r = new DiscordResource({ token: 'bot-test' })
     expect(r.kind).toBe(ResourceName.DISCORD)
-    expect(r.isRemote).toBe(true)
+    expect(r.cachesReads).toBe(true)
     expect(r.indexTtl).toBe(600)
     expect(r.config).toEqual({ token: 'bot-test' })
     expect(typeof r.prompt).toBe('string')

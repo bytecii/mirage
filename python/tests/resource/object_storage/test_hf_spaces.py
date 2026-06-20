@@ -22,7 +22,7 @@ from mirage.types import ResourceName
 def test_resource_name():
     r = HfSpacesResource(HfSpacesConfig(repo_id="org/space"))
     assert r.name == ResourceName.HF_SPACES
-    assert r.is_remote is True
+    assert r.caches_reads is True
 
 
 def test_config_immutable():

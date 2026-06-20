@@ -14,6 +14,7 @@
 
 import type { PathSpec } from '../../types.ts'
 import type { S3Accessor } from '../../accessor/s3.ts'
+import { invalidateAfterWrite } from '../../cache/context.ts'
 import { loadS3Module, rawPathOf, s3Key, withClient } from './_client.ts'
 
 export async function create(accessor: S3Accessor, path: PathSpec): Promise<void> {
@@ -28,4 +29,5 @@ export async function create(accessor: S3Accessor, path: PathSpec): Promise<void
       }),
     )
   })
+  await invalidateAfterWrite(path)
 }

@@ -39,7 +39,7 @@ describe('HfModelsResource', () => {
     const resource = new HfModelsResource({ repoId: 'ns/model' })
     expect(Object.keys(resource.opsMap).sort()).toEqual([...PY_OPS].sort())
     expect(resource.kind).toBe('hf_models')
-    expect(resource.isRemote).toBe(true)
+    expect(resource.cachesReads).toBe(true)
     expect(resource.supportsSnapshot).toBe(true)
     const optional = resource as unknown as Record<string, unknown>
     expect(optional.rename).toBeUndefined()

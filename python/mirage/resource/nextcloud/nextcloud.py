@@ -28,7 +28,7 @@ class NextcloudConfig(BaseModel):
 class NextcloudResource(BaseResource):
 
     name: str = ResourceName.NEXTCLOUD
-    is_remote: bool = True
+    caches_reads: bool = True
     _ops: dict[str, Any] = _NEXTCLOUD_OPS
     PROMPT: str = PROMPT
     SUPPORTS_SNAPSHOT: bool = True

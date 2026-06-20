@@ -19,6 +19,7 @@ import { parseFindExpression } from '../findParse.ts'
 import { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
+import { rebaseDisplay } from '../../../utils/path.ts'
 
 const ENC = new TextEncoder()
 
@@ -173,13 +174,15 @@ export async function findGeneric(
       throw err
     }
     const rootKey = rstripSlash(root.stripPrefix) || '/'
+    const rootMatches: string[] = []
     for (const key of keys) {
       const displayPath =
         root.original === '/'
           ? key
           : rstripSlash(root.original) + key.slice(rootKey === '/' ? 0 : rootKey.length)
-      matches.push(displayPath)
+      rootMatches.push(displayPath)
     }
+    matches.push(...rebaseDisplay(rootMatches, root.original, root.display))
   }
   matches.sort()
   const out: ByteSource = ENC.encode(matches.length ? matches.join('\n') + '\n' : '')

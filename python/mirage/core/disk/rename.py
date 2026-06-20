@@ -17,6 +17,8 @@ from pathlib import Path
 import aiofiles.os
 
 from mirage.accessor.disk import DiskAccessor
+from mirage.cache.context import (invalidate_after_unlink,
+                                  invalidate_after_write)
 from mirage.types import PathSpec
 
 
@@ -37,4 +39,6 @@ async def rename(accessor: DiskAccessor, src: PathSpec, dst: PathSpec) -> None:
     if isinstance(dst, PathSpec):
         dst = dst.strip_prefix
     root = accessor.root
+    await invalidate_after_unlink(src)
+    await invalidate_after_write(dst)
     await aiofiles.os.rename(_resolve(root, src), _resolve(root, dst))

@@ -1,11 +1,41 @@
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 
-from mirage.core.databricks_volume.stat import _name_from_backend_path, stat
+from mirage.core.databricks_volume.stat import (_modified,
+                                                _name_from_backend_path, stat)
 from mirage.types import FileType, PathSpec
 
 from .conftest import ToThreadRecorder, file_metadata
+
+
+def test_modified_none_and_empty_string_return_none():
+    assert _modified(None) is None
+    assert _modified("") is None
+
+
+def test_modified_parses_http_date_to_iso_utc():
+    assert _modified(
+        "Tue, 14 Nov 2023 22:13:20 GMT") == "2023-11-14T22:13:20+00:00"
+
+
+def test_modified_returns_unparseable_string_verbatim():
+    assert _modified("not a date") == "not a date"
+
+
+def test_modified_coerces_naive_datetime_to_utc():
+    naive = datetime(2023, 11, 14, 22, 13, 20)
+    assert _modified(naive) == "2023-11-14T22:13:20+00:00"
+
+
+def test_modified_converts_aware_datetime_to_utc():
+    aware = datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
+    assert _modified(aware) == "2023-11-14T22:13:20+00:00"
+
+
+def test_modified_treats_large_int_as_epoch_milliseconds():
+    assert _modified(1_700_000_000_000) == "2023-11-14T22:13:20+00:00"
 
 
 def test_name_from_backend_path_file():
@@ -22,7 +52,7 @@ def test_name_from_backend_path_directory_with_trailing_slash():
 async def test_stat_file(accessor, files, remote_root):
     files.metadata[f"{remote_root}/reports/latest.md"] = file_metadata(
         size=6,
-        modified=1_700_000_000_000,
+        modified="Tue, 14 Nov 2023 22:13:20 GMT",
     )
     path = PathSpec.from_str_path("/volume/reports/latest.md", "/volume")
     result = await stat(accessor, path)

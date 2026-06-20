@@ -15,6 +15,7 @@
 import { exitOnEmpty } from '../../../io/stream.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
+import { rebaseDisplay } from '../../../utils/path.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { compilePattern, grepStream, resolvePatternFromFlags } from '../grep_helper.ts'
 import { rgFolderFiletype, rgFull } from '../rg_helper.ts'
@@ -225,18 +226,17 @@ export async function rgGeneric(
     }
     const results: string[] = []
     for (const p of paths) {
-      results.push(
-        ...(await rgFull(
-          readdirFn,
-          statFn,
-          readBytesFn,
-          p.original,
-          exprText,
-          fullOpts,
-          warnings,
-          paths.length > 1 ? p.original : null,
-        )),
+      const hitsFull = await rgFull(
+        readdirFn,
+        statFn,
+        readBytesFn,
+        p.original,
+        exprText,
+        fullOpts,
+        warnings,
+        paths.length > 1 ? p.display : null,
       )
+      results.push(...rebaseDisplay(hitsFull, p.original, p.display))
     }
     const stderr = warnings.length > 0 ? ENC.encode(warnings.join('\n') + '\n') : undefined
     if (results.length === 0) {

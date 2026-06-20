@@ -320,6 +320,43 @@ async function runConsistency(): Promise<void> {
   }
 }
 
+// In-band coherence: under LAZY (which never revalidates on its own), a mutation
+// done through a mirage command must invalidate the parent listing at the write
+// site, so a previously cached `ls` reflects the change. cp -> core copy, rm -r
+// -> core rm_r: each first caches the listing with ls, mutates in-band, then
+// lists again and must see fresh state. Mirrors s3.py _run_coherence.
+async function runCoherence(): Promise<void> {
+  const ws = new Workspace(
+    {
+      "/s3": new S3Resource({
+        bucket: S3_BUCKET,
+        region: REGION,
+        endpoint: ENDPOINT,
+        accessKeyId: ACCESS,
+        secretAccessKey: SECRET,
+        forcePathStyle: true,
+      }),
+    },
+    { mode: MountMode.WRITE, consistency: ConsistencyPolicy.LAZY },
+  );
+  try {
+    await ws.execute(
+      "mkdir -p /s3/coh && echo one | tee /s3/coh/a.txt > /dev/null",
+    );
+    await run(ws, "coherence:seed_ls", "ls /s3/coh");
+    await ws.execute("cp /s3/coh/a.txt /s3/coh/b.txt");
+    await run(ws, "coherence:after_cp_ls", "ls /s3/coh");
+    await ws.execute(
+      "mkdir -p /s3/coh/sub && echo z | tee /s3/coh/sub/z.txt > /dev/null",
+    );
+    await run(ws, "coherence:after_mkdir_ls", "ls /s3/coh");
+    await ws.execute("rm -r /s3/coh/sub");
+    await run(ws, "coherence:after_rmr_ls", "ls /s3/coh");
+  } finally {
+    await ws.close();
+  }
+}
+
 async function main(): Promise<void> {
   await seed();
   const ws = buildWorkspace();
@@ -365,6 +402,7 @@ async function main(): Promise<void> {
     }
     await runNotFound(ws, "/s3");
     await runConsistency();
+    await runCoherence();
   } finally {
     await ws.close();
   }

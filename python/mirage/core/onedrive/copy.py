@@ -15,6 +15,7 @@
 import posixpath
 
 from mirage.accessor.onedrive import OneDriveAccessor
+from mirage.cache.context import invalidate_after_write
 from mirage.core.onedrive._client import (GraphError, drive_ref_path,
                                           graph_post_monitor, item_url,
                                           poll_monitor, split_path)
@@ -46,3 +47,4 @@ async def copy(accessor: OneDriveAccessor, src: PathSpec,
     if status not in ("completed", None):
         raise GraphError(504, "copyTimeout",
                          f"copy {src_s} -> {dst_s} not confirmed complete")
+    await invalidate_after_write(dst)

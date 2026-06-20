@@ -38,7 +38,7 @@ async def _tail_multi(
 ) -> AsyncIterator[bytes]:
     for i, p in enumerate(paths):
         if show_headers:
-            header = f"==> {p.original} <==\n"
+            header = f"==> {p.display} <==\n"
             if i > 0:
                 header = "\n" + header
             yield header.encode()

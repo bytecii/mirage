@@ -12,15 +12,16 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { describe, expect, it } from 'vitest'
-import { NATIVE_BACKENDS } from './native_fixture.ts'
+import type { Session } from './session.ts'
 
-describe.each(NATIVE_BACKENDS)('native curl (%s backend)', (_kind) => {
-  it.skip('curl -s flag accepted (placeholder — Python original is empty)', () => {
-    expect(true).toBe(true)
-  })
+export const DEFAULT_HOME = '/'
 
-  it.skip('curl -L flag accepted (placeholder — Python original is empty)', () => {
-    expect(true).toBe(true)
-  })
-})
+export function homeDir(session: Session): string {
+  const home = session.env.HOME
+  return home !== undefined && home !== '' ? home : DEFAULT_HOME
+}
+
+export function changeDir(session: Session, newCwd: string): void {
+  session.env.OLDPWD = session.cwd
+  session.cwd = newCwd
+}

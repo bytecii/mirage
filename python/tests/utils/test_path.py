@@ -12,8 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.utils.path import (gnu_basename, gnu_dirname, norm, parent,
-                               resolve_path)
+from mirage.utils.path import (expand_tilde, gnu_basename, gnu_dirname, norm,
+                               parent, resolve_path)
 
 
 def test_norm_strips_and_adds_leading_slash():
@@ -109,3 +109,27 @@ def test_resolve_absolute_ignores_cwd():
 
 def test_resolve_current_dir_segment():
     assert resolve_path("./x", "/a/b") == "/a/b/x"
+
+
+def test_expand_tilde_alone():
+    assert expand_tilde("~", "/home/u") == "/home/u"
+
+
+def test_expand_tilde_with_subpath():
+    assert expand_tilde("~/file.txt", "/home/u") == "/home/u/file.txt"
+
+
+def test_expand_tilde_root_home():
+    assert expand_tilde("~/file.txt", "/") == "/file.txt"
+
+
+def test_expand_tilde_user_unchanged():
+    assert expand_tilde("~other/x", "/home/u") == "~other/x"
+
+
+def test_expand_tilde_non_leading_unchanged():
+    assert expand_tilde("a~b", "/home/u") == "a~b"
+
+
+def test_expand_tilde_plain_word_unchanged():
+    assert expand_tilde("file.txt", "/home/u") == "file.txt"

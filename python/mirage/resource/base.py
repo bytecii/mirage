@@ -31,7 +31,7 @@ except ImportError:
 class BaseResource:
 
     name: str = "base"
-    is_remote: bool = False
+    caches_reads: bool = False
     accessor: Accessor = Accessor()
     _ops: dict[str, Callable[..., Any]] = {}
     PROMPT: str = ""

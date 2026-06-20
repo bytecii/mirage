@@ -291,6 +291,35 @@ async def _run_consistency(endpoint: str) -> None:
         print(second, end="" if second.endswith("\n") else "\n")
 
 
+# In-band coherence: under LAZY (which never revalidates on its own), each
+# mutation done through a mirage command must invalidate the parent listing at
+# the write site, so a previously cached `ls` reflects it. cp -> core copy and
+# rm -r -> core rm_r: each caches the listing with ls, mutates in-band, then
+# lists again and must see fresh state. Verified to go stale when the copy/rm
+# hook is removed; the gzip case only covers the write/unlink hooks.
+async def _run_coherence(endpoint: str) -> None:
+    s3 = S3Resource(
+        S3Config(bucket=S3_BUCKET,
+                 region="us-east-1",
+                 endpoint_url=endpoint,
+                 aws_access_key_id="testing",
+                 aws_secret_access_key="testing",
+                 path_style=True))
+    ws = Workspace({"/s3/": s3},
+                   mode=MountMode.WRITE,
+                   consistency=ConsistencyPolicy.LAZY)
+    await ws.execute("mkdir -p /s3/coh"
+                     " && echo one | tee /s3/coh/a.txt > /dev/null")
+    await _run(ws, "coherence:seed_ls", "ls /s3/coh")
+    await ws.execute("cp /s3/coh/a.txt /s3/coh/b.txt")
+    await _run(ws, "coherence:after_cp_ls", "ls /s3/coh")
+    await ws.execute("mkdir -p /s3/coh/sub"
+                     " && echo z | tee /s3/coh/sub/z.txt > /dev/null")
+    await _run(ws, "coherence:after_mkdir_ls", "ls /s3/coh")
+    await ws.execute("rm -r /s3/coh/sub")
+    await _run(ws, "coherence:after_rmr_ls", "ls /s3/coh")
+
+
 async def main() -> None:
     logging.getLogger("werkzeug").setLevel(logging.ERROR)
     server = ThreadedMotoServer(ip_address="127.0.0.1", port=0, verbose=False)
@@ -334,6 +363,7 @@ async def main() -> None:
                 _safeguard.DEFAULT_COMMAND_SAFEGUARDS["sleep"] = prev_sleep
         await run_not_found(ws, MOUNTS[0])
         await _run_consistency(endpoint)
+        await _run_coherence(endpoint)
     finally:
         server.stop()
 

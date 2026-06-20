@@ -17,6 +17,7 @@ from pathlib import Path
 import aiofiles.os
 
 from mirage.accessor.disk import DiskAccessor
+from mirage.cache.context import invalidate_after_write
 from mirage.types import PathSpec
 
 
@@ -42,3 +43,4 @@ async def mkdir(accessor: DiskAccessor,
             await aiofiles.os.mkdir(p)
         except FileExistsError:
             pass
+    await invalidate_after_write(path)

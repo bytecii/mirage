@@ -32,7 +32,7 @@ _LINEAR_OPS = {
 class LinearResource(BaseResource):
 
     name: str = ResourceName.LINEAR
-    is_remote: bool = True
+    caches_reads: bool = True
     _ops: dict = _LINEAR_OPS
     PROMPT: str = PROMPT
     WRITE_PROMPT: str = WRITE_PROMPT

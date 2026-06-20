@@ -83,3 +83,44 @@ async def test_readdir_paginates_nextlink():
               }]})
         names = await readdir(_accessor(), PathSpec.from_str_path("/"), index)
     assert names == ["/a.txt", "/b.txt"]
+
+
+@pytest.mark.asyncio
+async def test_readdir_stores_remote_time_for_files():
+    index = RAMIndexCacheStore()
+    with aioresponses() as m:
+        m.get(_BASE + "/root/children",
+              payload={
+                  "value": [{
+                      "id": "1",
+                      "name": "a.txt",
+                      "size": 10,
+                      "file": {},
+                      "lastModifiedDateTime": "2026-06-19T09:28:00Z",
+                  }]
+              })
+        await readdir(_accessor(), PathSpec.from_str_path("/"), index)
+    lookup = await index.get("/a.txt")
+    assert lookup.entry.remote_time == "2026-06-19T09:28:00Z"
+
+
+@pytest.mark.asyncio
+async def test_readdir_stores_remote_time_for_folders():
+    index = RAMIndexCacheStore()
+    with aioresponses() as m:
+        m.get(_BASE + "/root/children",
+              payload={
+                  "value": [{
+                      "id": "2",
+                      "name": "Docs",
+                      "folder": {
+                          "childCount": 3
+                      },
+                      "size": 5000,
+                      "lastModifiedDateTime": "2026-05-28T02:10:00Z",
+                  }]
+              })
+        await readdir(_accessor(), PathSpec.from_str_path("/"), index)
+    lookup = await index.get("/Docs")
+    assert lookup.entry.remote_time == "2026-05-28T02:10:00Z"
+    assert lookup.entry.size == 5000

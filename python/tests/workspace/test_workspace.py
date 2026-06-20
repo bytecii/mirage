@@ -26,9 +26,9 @@ def _run(coro):
 def _ws():
     """Workspace with 3 RAM mounts: /s3/, /disk/, /ram/."""
     s3 = RAMResource()
-    s3.is_remote = True
+    s3.caches_reads = True
     disk = RAMResource()
-    disk.is_remote = True
+    disk.caches_reads = True
     ram = RAMResource()
 
     s3._store.files["/report.csv"] = b"name,age\nalice,30\nbob,25\n"
@@ -1886,7 +1886,7 @@ def test_sh_alias():
 def test_bash_dash_c_for_loop_over_dirs():
     """`bash -lc` with a for-loop iterating mount paths."""
     s3 = RAMResource()
-    s3.is_remote = True
+    s3.caches_reads = True
     s3._store.dirs.update({
         "/INBOX",
         "/INBOX/2026-04-28",

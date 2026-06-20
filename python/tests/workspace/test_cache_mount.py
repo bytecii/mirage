@@ -119,7 +119,7 @@ async def test_custom_stat_after_cache_promotion(tmp_path):
     output."""
     (tmp_path / "example.zzz").write_bytes(b"payload")
     disk = DiskResource(root=str(tmp_path))
-    disk.is_remote = True
+    disk.caches_reads = True
     ws = Workspace({"/": disk}, mode=MountMode.READ)
     ws.mount("/").register_fns([stat_zzz_disk])
     ws.cache_mount.register_fns([stat_zzz_ram])
@@ -143,7 +143,7 @@ async def test_custom_stat_after_cache_promotion_without_fix_falls_through(
     flips and the test above becomes redundant."""
     (tmp_path / "example.zzz").write_bytes(b"payload")
     disk = DiskResource(root=str(tmp_path))
-    disk.is_remote = True
+    disk.caches_reads = True
     ws = Workspace({"/": disk}, mode=MountMode.READ)
     ws.mount("/").register_fns([stat_zzz_disk])
     # Intentionally NOT calling ws.cache_mount.register_fns(...)

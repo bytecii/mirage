@@ -40,7 +40,7 @@ export interface SlackResourceState {
 
 export class SlackResource extends BaseResource implements Resource {
   readonly kind: string = ResourceName.SLACK
-  readonly isRemote: boolean = true
+  readonly cachesReads: boolean = true
   readonly indexTtl: number = 600
   readonly prompt: string = SLACK_PROMPT
   readonly writePrompt: string = SLACK_WRITE_PROMPT

@@ -81,17 +81,21 @@ async def find(
             saw_descendant = True
             entry_name = rel.rsplit("/", 1)[-1]
             full_path = "/" + rel
+            size = item.get("size", 0)
+            is_empty = (None if not empty else
+                        (size == 0 if not is_dir else False))
             entry = FindEntry(key=full_path,
                               name=entry_name,
                               kind="d" if is_dir else "f",
-                              depth=depth)
+                              depth=depth,
+                              is_empty=is_empty)
             if not keep(entry, tree, mindepth):
                 continue
-            size = item.get("size", 0)
-            if min_size is not None and size < min_size:
-                continue
-            if max_size is not None and size > max_size:
-                continue
+            if not is_dir:
+                if min_size is not None and size < min_size:
+                    continue
+                if max_size is not None and size > max_size:
+                    continue
             results.append(full_path)
     dir_exists = saw_descendant
     if base and not dir_exists:
@@ -104,7 +108,8 @@ async def find(
         root_entry = FindEntry(key="/" + base,
                                name=base.rsplit("/", 1)[-1],
                                kind="d",
-                               depth=0)
+                               depth=0,
+                               is_empty=False if empty else None)
         if keep(root_entry, tree, mindepth):
             results.append("/" + base)
     return sorted(results)

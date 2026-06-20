@@ -625,3 +625,15 @@ v2
 v1
 === consistency:lazy:second ===
 v1
+=== coherence:seed_ls ===
+a.txt
+=== coherence:after_cp_ls ===
+a.txt
+b.txt
+=== coherence:after_mkdir_ls ===
+a.txt
+b.txt
+sub
+=== coherence:after_rmr_ls ===
+a.txt
+b.txt

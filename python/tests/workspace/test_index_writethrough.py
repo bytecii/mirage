@@ -20,7 +20,7 @@ from mirage.workspace import Workspace
 
 
 class _FakeRemote(RAMResource):
-    is_remote = True
+    caches_reads = True
     index_ttl = 600
 
 

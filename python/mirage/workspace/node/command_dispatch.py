@@ -28,6 +28,7 @@ from mirage.workspace.expand import classify_parts, expand_node, expand_parts
 from mirage.workspace.expand.classify import classify_bare_path
 from mirage.workspace.node.classify_argv import classify_argv_by_spec
 from mirage.workspace.node.resolve_globs import resolve_globs
+from mirage.workspace.session.shell_dirs import home_dir
 from mirage.workspace.types import ExecutionNode
 
 from mirage.shell.helpers import (  # isort: skip
@@ -216,18 +217,29 @@ async def _dispatch_command_body(
 
     if name == SB.CD:
         if len(classified) <= 1:
-            path = "/"
+            return await handle_cd(dispatch, registry.is_mount_root,
+                                   home_dir(session), session)
+        raw = classified[1]
+        raw_str = raw.original if isinstance(raw, PathSpec) else str(raw)
+        if raw_str == "-":
+            old = session.env.get("OLDPWD")
+            if not old:
+                err = b"cd: OLDPWD not set\n"
+                return None, IOResult(exit_code=1, stderr=err), ExecutionNode(
+                    command="cd -", exit_code=1, stderr=err)
+            return await handle_cd(dispatch,
+                                   registry.is_mount_root,
+                                   old,
+                                   session,
+                                   print_path=True)
+        if raw_str == "~":
+            path = home_dir(session)
+        elif isinstance(raw, PathSpec):
+            path = raw
+        elif raw_str.startswith("/"):
+            path = raw_str
         else:
-            raw = classified[1]
-            raw_str = raw.original if isinstance(raw, PathSpec) else str(raw)
-            if raw_str == "~":
-                path = "/"
-            elif isinstance(raw, PathSpec):
-                path = raw
-            elif raw_str.startswith("/"):
-                path = raw_str
-            else:
-                path = classify_bare_path(raw_str, registry, session.cwd)
+            path = classify_bare_path(raw_str, registry, session.cwd)
         return await handle_cd(dispatch, registry.is_mount_root, path, session)
 
     if name == SB.HISTORY:

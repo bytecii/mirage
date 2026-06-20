@@ -14,13 +14,13 @@
 
 from collections.abc import AsyncIterator
 
-from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import AsyncMongoClient
 
 from mirage.core.mongodb.types import EntityKind
 from mirage.resource.mongodb.config import MongoDBConfig
 
 
-async def list_databases(client: AsyncIOMotorClient,
+async def list_databases(client: AsyncMongoClient,
                          config: MongoDBConfig) -> list[str]:
     all_dbs = await client.list_database_names()
     system_dbs = {"admin", "local", "config"}
@@ -31,7 +31,7 @@ async def list_databases(client: AsyncIOMotorClient,
 
 
 async def list_collections(
-    client: AsyncIOMotorClient,
+    client: AsyncMongoClient,
     database: str,
     kind: EntityKind | None = None,
 ) -> list[str]:
@@ -43,7 +43,7 @@ async def list_collections(
 
 
 async def database_exists(
-    client: AsyncIOMotorClient,
+    client: AsyncMongoClient,
     config: MongoDBConfig,
     database: str,
     accessor: object | None = None,
@@ -59,7 +59,7 @@ async def database_exists(
 
 
 async def entity_exists(
-    client: AsyncIOMotorClient,
+    client: AsyncMongoClient,
     config: MongoDBConfig,
     database: str,
     name: str,
@@ -81,7 +81,7 @@ async def entity_exists(
 
 
 async def find_documents(
-    client: AsyncIOMotorClient,
+    client: AsyncMongoClient,
     database: str,
     collection: str,
     filter: dict | None = None,
@@ -99,7 +99,7 @@ async def find_documents(
 
 
 async def iter_documents(
-    client: AsyncIOMotorClient,
+    client: AsyncMongoClient,
     database: str,
     collection: str,
     filter: dict | None = None,
@@ -118,7 +118,7 @@ async def iter_documents(
 
 
 async def count_documents(
-    client: AsyncIOMotorClient,
+    client: AsyncMongoClient,
     database: str,
     collection: str,
     filter: dict | None = None,
@@ -129,13 +129,13 @@ async def count_documents(
 
 
 async def iter_inserts(
-    client: AsyncIOMotorClient,
+    client: AsyncMongoClient,
     database: str,
     collection: str,
 ) -> AsyncIterator[dict]:
     col = client[database][collection]
     pipeline = [{"$match": {"operationType": "insert"}}]
-    async with col.watch(pipeline) as stream:
+    async with await col.watch(pipeline) as stream:
         async for change in stream:
             doc = change.get("fullDocument")
             if doc is not None:
@@ -143,7 +143,7 @@ async def iter_inserts(
 
 
 async def is_view(
-    client: AsyncIOMotorClient,
+    client: AsyncMongoClient,
     database: str,
     collection: str,
 ) -> bool:
@@ -155,7 +155,7 @@ async def is_view(
 
 
 async def get_indexes(
-    client: AsyncIOMotorClient,
+    client: AsyncMongoClient,
     database: str,
     collection: str,
 ) -> list[dict]:
@@ -163,13 +163,13 @@ async def get_indexes(
         return []
     col = client[database][collection]
     indexes = []
-    async for idx in col.list_indexes():
+    async for idx in await col.list_indexes():
         indexes.append(idx)
     return indexes
 
 
 async def get_validator(
-    client: AsyncIOMotorClient,
+    client: AsyncMongoClient,
     database: str,
     collection: str,
 ) -> dict | None:
@@ -182,12 +182,12 @@ async def get_validator(
 
 
 async def get_index_stats(
-    client: AsyncIOMotorClient,
+    client: AsyncMongoClient,
     database: str,
     collection: str,
 ) -> dict[str, dict]:
     col = client[database][collection]
     out: dict[str, dict] = {}
-    async for doc in col.aggregate([{"$indexStats": {}}]):
+    async for doc in await col.aggregate([{"$indexStats": {}}]):
         out[doc["name"]] = doc.get("accesses", {})
     return out

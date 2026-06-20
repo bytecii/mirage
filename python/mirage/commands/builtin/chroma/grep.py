@@ -28,7 +28,7 @@ async def grep(
     pattern = pattern_arg(texts, fl)
     files = paths
     show_filename = False
-    if paths and pattern is not None:
+    if paths and pattern is not None and "\n" not in pattern:
         # Pushdown: expand the scope to files and let ChromaDB pre-filter
         # which documents can contain the pattern, so only candidate
         # documents are fetched. The generic grep owns flag handling and

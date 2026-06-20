@@ -15,6 +15,8 @@
 import posixpath
 
 from mirage.accessor.onedrive import OneDriveAccessor
+from mirage.cache.context import (invalidate_after_unlink,
+                                  invalidate_after_write)
 from mirage.core.onedrive._client import (drive_ref_path, graph_patch,
                                           item_url, split_path)
 from mirage.types import PathSpec
@@ -34,3 +36,5 @@ async def rename(accessor: OneDriveAccessor, src: PathSpec,
         }
     await graph_patch(accessor.config, item_url(accessor.config, "/" + src_s),
                       body)
+    await invalidate_after_write(dst)
+    await invalidate_after_unlink(src)

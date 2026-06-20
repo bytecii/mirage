@@ -12,7 +12,7 @@ def test_chroma_resource_is_registered():
     resource = build_resource("chroma", {"collection_name": "docs"})
 
     assert resource.name == ResourceName.CHROMA
-    assert resource.is_remote is True
+    assert resource.caches_reads is False
     assert resource.SUPPORTS_SNAPSHOT is False
     assert resource.config.collection_name == "docs"
     assert resource.config.slug_field == "page_slug"

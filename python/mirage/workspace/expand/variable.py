@@ -17,6 +17,7 @@ import fnmatch
 from mirage.shell.call_stack import CallStack
 from mirage.shell.types import NodeType as NT
 from mirage.workspace.session import Session
+from mirage.workspace.session.shell_dirs import home_dir
 
 _PARAM_OPS = frozenset({
     ":-", "-", ":+", "+", ":?", "?", ":=", "=", "#", "##", "%", "%%", "/",
@@ -56,6 +57,10 @@ def _lookup_var(var: str, session: Session,
         local_val = call_stack.get_local(var)
         if local_val is not None:
             return local_val
+    if var == "PWD":
+        return session.cwd
+    if var == "HOME":
+        return home_dir(session)
     return env.get(var, "")
 
 

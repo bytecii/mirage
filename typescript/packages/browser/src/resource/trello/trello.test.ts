@@ -38,7 +38,7 @@ describe('TrelloResource (browser)', () => {
   it('constructs with apiKey/apiToken and exposes expected fields', () => {
     const r = new TrelloResource({ apiKey: 'k', apiToken: 't' })
     expect(r.kind).toBe(ResourceName.TRELLO)
-    expect(r.isRemote).toBe(true)
+    expect(r.cachesReads).toBe(true)
     expect(r.indexTtl).toBe(600)
     expect(r.config).toEqual({ apiKey: 'k', apiToken: 't' })
     expect(typeof r.prompt).toBe('string')

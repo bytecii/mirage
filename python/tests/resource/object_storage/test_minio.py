@@ -82,7 +82,7 @@ def test_minio_resource_uses_s3_resource_type():
             secret_access_key="s",
         ))
     assert resource.name == ResourceName.S3
-    assert resource.is_remote is True
+    assert resource.caches_reads is True
     assert isinstance(resource.config, S3Config)
 
 

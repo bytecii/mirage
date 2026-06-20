@@ -24,7 +24,7 @@ async def _sha256_multi(
         h = hashlib.sha256()
         async for chunk in read_stream(accessor, p):
             h.update(chunk)
-        yield (h.hexdigest() + "  " + p.original + "\n").encode()
+        yield (h.hexdigest() + "  " + p.display + "\n").encode()
 
 
 def _resolve_check_target(filename: str, mount_prefix: str) -> str | PathSpec:

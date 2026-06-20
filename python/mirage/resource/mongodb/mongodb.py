@@ -23,7 +23,7 @@ from mirage.types import ResourceName
 class MongoDBResource(BaseResource):
 
     name: str = ResourceName.MONGODB
-    is_remote: bool = True
+    caches_reads: bool = False
     PROMPT: str = PROMPT
 
     def __init__(self, config: MongoDBConfig) -> None:

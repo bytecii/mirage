@@ -26,7 +26,7 @@ def config():
 
 def test_resource_init(config):
     resource = DiscordResource(config)
-    assert resource.is_remote is True
+    assert resource.caches_reads is True
 
 
 def test_resource_name(config):

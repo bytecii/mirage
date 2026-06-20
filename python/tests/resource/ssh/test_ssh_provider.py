@@ -30,7 +30,7 @@ def test_ssh_resource_attributes():
     cfg = SSHConfig(host="dev")
     resource = SSHResource(cfg)
     assert resource.name == ResourceName.SSH
-    assert resource.is_remote is True
+    assert resource.caches_reads is True
     assert len(resource.commands()) > 0
     assert len(resource.ops_list()) > 0
 

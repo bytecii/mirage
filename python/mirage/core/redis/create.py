@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.redis import RedisAccessor
+from mirage.cache.context import invalidate_after_write
 from mirage.core.timeutil import now_iso
 from mirage.types import PathSpec
 from mirage.utils.path import norm
@@ -23,3 +24,4 @@ async def create(accessor: RedisAccessor, path: PathSpec) -> None:
     p = norm(path)
     await store.set_file(p, b"")
     await store.set_modified(p, now_iso())
+    await invalidate_after_write(path)

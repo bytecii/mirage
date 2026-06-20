@@ -1,4 +1,5 @@
 from mirage.accessor.nextcloud import NextcloudAccessor
+from mirage.cache.context import invalidate_after_write
 from mirage.types import PathSpec
 
 
@@ -8,3 +9,4 @@ async def create(accessor: NextcloudAccessor, path: PathSpec) -> None:
     key = path.strip_prefix.lstrip("/")
     op = accessor.operator()
     await op.write(key, b"")
+    await invalidate_after_write(path)

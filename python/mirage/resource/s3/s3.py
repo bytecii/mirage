@@ -64,7 +64,7 @@ _S3_OPS = {
 class S3Resource(BaseResource):
 
     name: str = ResourceName.S3
-    is_remote: bool = True
+    caches_reads: bool = True
     _ops: dict[str, Any] = _S3_OPS
     PROMPT: str = PROMPT
     SUPPORTS_SNAPSHOT: bool = True

@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.cache.file.mixin import FileCacheMixin
+from mirage.cache.manager import CacheManager
 from mirage.commands.builtin.general import COMMANDS as GENERAL_COMMANDS
 from mirage.ops.config import OpsMount
 from mirage.resource.base import BaseResource
@@ -35,10 +36,32 @@ class MountRegistry:
         self._mounts: list[Mount] = []
         self._default_mount: Mount | None = None
         self._consistency: ConsistencyPolicy = ConsistencyPolicy.LAZY
+        self._file_cache: FileCacheMixin | None = None
         self.mount(DEV_PREFIX, DevResource(), MountMode.WRITE)
 
     def set_consistency(self, consistency: ConsistencyPolicy) -> None:
         self._consistency = consistency
+
+    def attach_file_cache(self, cache: FileCacheMixin | None) -> None:
+        """Attach the workspace file cache and build per-mount
+        CacheManagers.
+
+        Called once by Workspace after the cache store exists. Mounts
+        added later get their manager in ``mount()`` /
+        ``set_default_mount()``.
+
+        Args:
+            cache (FileCacheMixin | None): Workspace file cache store.
+        """
+        self._file_cache = cache
+        for m in self._mounts:
+            self._attach_manager(m)
+        if self._default_mount is not None:
+            self._attach_manager(self._default_mount)
+
+    def _attach_manager(self, m: Mount) -> None:
+        m.cache_manager = CacheManager(self._file_cache, m.resource.index,
+                                       m.prefix, m.resource.caches_reads)
 
     def set_default_mount(self, resource: BaseResource) -> None:
         """Set a default fallback mount (cache resource).
@@ -53,6 +76,8 @@ class MountRegistry:
             m.register_general(cmd)
         for ro in resource.ops_list():
             m.register_op(ro)
+        if self._file_cache is not None:
+            self._attach_manager(m)
         self._default_mount = m
 
     def mount(
@@ -76,6 +101,8 @@ class MountRegistry:
             m.register_general(cmd)
         for ro in resource.ops_list():
             m.register_op(ro)
+        if self._file_cache is not None:
+            self._attach_manager(m)
         self._mounts.append(m)
         self._mounts.sort(key=lambda x: len(x.prefix), reverse=True)
         return m
@@ -257,7 +284,7 @@ class MountRegistry:
         if (default is not None and path_scopes and resolved is not None
                 and not resolved.write
                 and isinstance(default.resource, FileCacheMixin)
-                and mount.resource.is_remote is True):
+                and mount.resource.caches_reads):
             keys = [p.original for p in path_scopes]
             if self._consistency == ConsistencyPolicy.ALWAYS:
                 await self._evict_stale(mount, default.resource, path_scopes)

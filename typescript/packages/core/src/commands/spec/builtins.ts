@@ -111,6 +111,7 @@ export const BUILTIN_SPECS: Readonly<Record<string, CommandSpec>> = Object.freez
       new Option({ short: '-c', valueKind: OperandKind.TEXT }),
       new Option({ short: '-q' }),
       new Option({ short: '-v' }),
+      new Option({ short: '-f', long: '--follow' }),
     ],
     rest: new Operand({ kind: OperandKind.PATH }),
   }),
@@ -299,9 +300,11 @@ export const BUILTIN_SPECS: Readonly<Record<string, CommandSpec>> = Object.freez
   sed: new CommandSpec({
     options: [
       new Option({ short: '-i' }),
-      new Option({ short: '-e' }),
+      // -e takes a script and may repeat; multiple -e are joined with newlines.
+      new Option({ short: '-e', valueKind: OperandKind.TEXT, repeatable: true }),
       new Option({ short: '-n' }),
       new Option({ short: '-E' }),
+      new Option({ short: '-r' }),
     ],
     positional: [new Operand({ kind: OperandKind.TEXT })],
     rest: new Operand({ kind: OperandKind.PATH }),

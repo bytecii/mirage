@@ -127,7 +127,7 @@ streaming reads) and `tail -f` (live change-stream follows).
 ## Streaming and Limits
 
 `cat`, `grep`, `head`, and `tail -f` consume documents lazily through a
-batched Motor cursor (or change stream); the consumer cancels to stop
+batched PyMongo async cursor (or change stream); the consumer cancels to stop
 fetching. There is no truncation notice because nothing is forced into
 memory ahead of the consumer.
 
@@ -196,10 +196,15 @@ change streams aren't defined on views.
 
 ## Cache
 
-The MongoDB resource uses `IndexCacheStore` (same as RAM/S3/disk/GitHub).
-Index entries store database names, collection names, and document counts.
-There is no separate content cache - file content caching is handled by
-the workspace `IOResult` mechanism.
+The MongoDB resource uses `IndexCacheStore` (same as RAM/S3/disk/GitHub)
+for listings: database names, collection names, and document counts.
+
+Document content is **not** cached. The resource leaves `caches_reads`
+at its default of `False`, so `cat`, `grep`, `head`, and `tail` always
+query the live collection
+instead of serving a stored snapshot. This keeps reads consistent with a
+mutable database and ensures `tail -f` follows the live change stream
+rather than replaying cached bytes.
 
 ## Example
 

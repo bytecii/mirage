@@ -18,6 +18,7 @@ from functools import partial
 from mirage.accessor.github import GitHubAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.uniq import uniq as generic_uniq
+from mirage.commands.builtin.utils.wrap import stream_from_bytes
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.github.glob import resolve_glob
@@ -48,7 +49,7 @@ async def uniq(
         paths = []
     return await generic_uniq(
         paths,
-        read_stream=partial(github_read, index=index),
+        read_stream=partial(stream_from_bytes, github_read, index=index),
         accessor=accessor,
         stdin=stdin,
         count=c,

@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.onedrive import OneDriveAccessor
+from mirage.cache.context import invalidate_after_unlink
 from mirage.core.onedrive._client import graph_delete, item_url, split_path
 from mirage.types import PathSpec
 
@@ -23,3 +24,4 @@ async def rmdir(accessor: OneDriveAccessor, path: PathSpec) -> None:
         return
     await graph_delete(accessor.config,
                        item_url(accessor.config, "/" + stripped))
+    await invalidate_after_unlink(path)

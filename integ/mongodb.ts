@@ -99,6 +99,43 @@ async function run(ws: Workspace, name: string, cmd: string): Promise<void> {
   }
 }
 
+async function insertUntilDone(
+  client: MongoClient,
+  done: () => boolean,
+): Promise<void> {
+  let i = 0;
+  while (!done()) {
+    i += 1;
+    await client
+      .db(DB)
+      .collection("books")
+      .insertOne({ _id: 100 + i, title: "live_insert" });
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+async function runFollow(ws: Workspace, client: MongoClient): Promise<void> {
+  const name = "tail_f_change_stream";
+  const cmd = `tail -f ${MOUNT}/${DB}/collections/books/documents.jsonl | head -n 1`;
+  let finished = false;
+  const followP = ws.execute(cmd).then((result) => {
+    finished = true;
+    return DEC.decode(result.stdout);
+  });
+  const inserter = insertUntilDone(client, () => finished);
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error("tail -f change stream timed out")), 30000),
+  );
+  try {
+    const out = await Promise.race([followP, timeout]);
+    process.stdout.write(`=== ${name} ===\n`);
+    process.stdout.write(out.endsWith("\n") ? out : out + "\n");
+  } finally {
+    finished = true;
+    await inserter;
+  }
+}
+
 function setCatSafeguard(ws: Workspace, maxLines: number): void {
   const sg = new CommandSafeguard({ maxLines });
   for (const m of ws.registry.allMounts()) m.commandSafeguards.set("cat", sg);
@@ -123,6 +160,13 @@ async function main(): Promise<void> {
       await run(ws, name, cmd);
     }
     await runNotFound(ws, MOUNT);
+    const liveClient = new MongoClient(MONGODB_URI);
+    await liveClient.connect();
+    try {
+      await runFollow(ws, liveClient);
+    } finally {
+      await liveClient.close();
+    }
   } finally {
     await ws.close();
     await resource.close();

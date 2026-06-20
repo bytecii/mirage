@@ -108,6 +108,7 @@ def classify_word(word: str, registry: MountRegistry,
             directory=path[:last_slash + 1],
             pattern=path[last_slash + 1:],
             resolved=False,
+            as_typed=word,
         )
 
     # Relative path (no glob): resolve against cwd if the word
@@ -129,6 +130,7 @@ def classify_word(word: str, registry: MountRegistry,
             original=path,
             directory=path[:path.rfind("/") + 1],
             resolved=True,
+            as_typed=word,
         )
 
     return word
@@ -157,11 +159,13 @@ def classify_bare_path(word: str, registry: MountRegistry,
             directory=path[:last_slash + 1],
             pattern=path[last_slash + 1:],
             resolved=False,
+            as_typed=word,
         )
     return PathSpec(
         original=path,
         directory=path[:path.rfind("/") + 1],
         resolved=True,
+        as_typed=word,
     )
 
 

@@ -23,7 +23,7 @@ from mirage.types import ResourceName
 class LangfuseResource(BaseResource):
 
     name: str = ResourceName.LANGFUSE
-    is_remote: bool = True
+    caches_reads: bool = True
     PROMPT: str = PROMPT
 
     def __init__(self, config: LangfuseConfig) -> None:

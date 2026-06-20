@@ -40,7 +40,7 @@ describe('SlackResource (browser)', () => {
   it('constructs with proxyUrl and exposes expected fields', () => {
     const r = new SlackResource({ proxyUrl: '/api/slack' })
     expect(r.kind).toBe(ResourceName.SLACK)
-    expect(r.isRemote).toBe(true)
+    expect(r.cachesReads).toBe(true)
     expect(r.indexTtl).toBe(600)
     expect(r.config).toEqual({ proxyUrl: '/api/slack' })
     expect(typeof r.prompt).toBe('string')

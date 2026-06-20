@@ -181,7 +181,7 @@ Copy from an existing resource (Discord/Slack), then:
 ```python
 class MyResource(BaseResource):
     name: str = ResourceName.MY_RESOURCE
-    is_remote: bool = True
+    caches_reads: bool = True
 
     def __init__(self, config: MyConfig) -> None:
         super().__init__()

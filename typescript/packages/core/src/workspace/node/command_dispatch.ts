@@ -60,6 +60,7 @@ import {
 } from '../executor/builtins/index.ts'
 import type { MountRegistry } from '../mount/registry.ts'
 import type { Session } from '../session/session.ts'
+import { homeDir } from '../session/shell_dirs.ts'
 import { ExecutionNode } from '../types.ts'
 import { resolveGlobs } from './resolve_globs.ts'
 
@@ -288,15 +289,28 @@ async function runCommandBody(
   }
 
   if (name === SB.CD) {
-    let path: string | PathSpec = '/'
-    if (classified.length > 1) {
-      const raw = classified[1]
-      const rawStr = raw instanceof PathSpec ? raw.original : String(raw)
-      if (rawStr === '~') path = '/'
-      else if (raw instanceof PathSpec) path = raw
-      else if (rawStr.startsWith('/')) path = rawStr
-      else path = classifyBarePath(rawStr, registry, session.cwd)
+    if (classified.length <= 1) {
+      return handleCd(dispatch, (p) => registry.isMountRoot(p), homeDir(session), session)
     }
+    const raw = classified[1]
+    const rawStr = raw instanceof PathSpec ? raw.original : String(raw)
+    if (rawStr === '-') {
+      const old = session.env.OLDPWD
+      if (!old) {
+        const err = new TextEncoder().encode('cd: OLDPWD not set\n')
+        return [
+          null,
+          new IOResult({ exitCode: 1, stderr: err }),
+          new ExecutionNode({ command: 'cd -', exitCode: 1, stderr: err }),
+        ]
+      }
+      return handleCd(dispatch, (p) => registry.isMountRoot(p), old, session, true)
+    }
+    let path: string | PathSpec
+    if (rawStr === '~') path = homeDir(session)
+    else if (raw instanceof PathSpec) path = raw
+    else if (rawStr.startsWith('/')) path = rawStr
+    else path = classifyBarePath(rawStr, registry, session.cwd)
     return handleCd(dispatch, (p) => registry.isMountRoot(p), path, session)
   }
 

@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { PathSpec } from '@struktoai/mirage-core'
+import { invalidateAfterWrite, type PathSpec } from '@struktoai/mirage-core'
 import type { RedisAccessor } from '../../accessor/redis.ts'
 import { norm, nowIso } from './utils.ts'
 
@@ -21,4 +21,5 @@ export async function create(accessor: RedisAccessor, path: PathSpec): Promise<v
   const store = accessor.store
   await store.setFile(p, new Uint8Array(0))
   await store.setModified(p, nowIso())
+  await invalidateAfterWrite(path)
 }

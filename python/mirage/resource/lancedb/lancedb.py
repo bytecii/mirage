@@ -30,7 +30,7 @@ class LanceDBResource(BaseResource):
     def __init__(self, config: LanceDBConfig) -> None:
         super().__init__()
         self.config = config
-        self.is_remote = config.uri.startswith(_REMOTE_SCHEMES)
+        self.caches_reads = config.uri.startswith(_REMOTE_SCHEMES)
         self.accessor = LanceDBAccessor(self.config)
         from mirage.commands.builtin.lancedb import COMMANDS
         from mirage.ops.lancedb import OPS as LANCEDB_OPS

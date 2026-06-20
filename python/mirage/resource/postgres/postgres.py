@@ -23,7 +23,7 @@ from mirage.types import ResourceName
 class PostgresResource(BaseResource):
 
     name: str = ResourceName.POSTGRES
-    is_remote: bool = True
+    caches_reads: bool = False
     PROMPT: str = PROMPT
 
     def __init__(self, config: PostgresConfig) -> None:

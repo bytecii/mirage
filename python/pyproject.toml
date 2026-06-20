@@ -86,7 +86,7 @@ hf       = ["opendal>=0.47.1"]
 fuse     = ["mfusepy>=1.0.0"]
 
 # --- mongodb ---
-mongodb  = ["motor>=3.7.1"]
+mongodb  = ["pymongo>=4.9"]
 
 # --- postgres ---
 postgres = ["asyncpg>=0.30.0"]

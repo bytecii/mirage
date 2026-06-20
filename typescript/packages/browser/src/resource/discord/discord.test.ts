@@ -38,7 +38,7 @@ describe('DiscordResource (browser)', () => {
   it('constructs with proxyUrl and exposes expected fields', () => {
     const r = new DiscordResource({ proxyUrl: '/api/discord' })
     expect(r.kind).toBe(ResourceName.DISCORD)
-    expect(r.isRemote).toBe(true)
+    expect(r.cachesReads).toBe(true)
     expect(r.indexTtl).toBe(600)
     expect(r.config).toEqual({ proxyUrl: '/api/discord' })
     expect(typeof r.prompt).toBe('string')

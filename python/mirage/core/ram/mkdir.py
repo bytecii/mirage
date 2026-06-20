@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.ram import RAMAccessor
+from mirage.cache.context import invalidate_after_write
 from mirage.core.timeutil import now_iso
 from mirage.types import PathSpec
 from mirage.utils.path import norm, parent
@@ -36,6 +37,7 @@ async def mkdir(accessor: RAMAccessor,
             store.dirs.add(current)
             if current not in store.modified:
                 store.modified[current] = now
+        await invalidate_after_write(path)
         return
     parent_dir = parent(p)
     if parent_dir != "/" and parent_dir not in store.dirs:
@@ -43,3 +45,4 @@ async def mkdir(accessor: RAMAccessor,
             f"parent directory does not exist: {parent_dir}")
     store.dirs.add(p)
     store.modified[p] = now_iso()
+    await invalidate_after_write(path)
