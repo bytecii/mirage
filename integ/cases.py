@@ -14,8 +14,6 @@
 
 import time
 
-from mirage.commands.builtin.utils.formatting import EPOCH_LS_TIME
-
 SEED_FILES = {
     "/data/a.txt":
     "hello\nworld\nfoo\nbar\nbaz\n",
@@ -900,7 +898,10 @@ async def assert_real_mtime(ws) -> None:
     for label, out in (("file", file_out), ("dir", dir_out)):
         if not out.strip():
             raise AssertionError(f"mtime check produced no {label} listing")
-        if EPOCH_LS_TIME in out:
+        # EPOCH_LS_TIME from mirage.commands.builtin.utils.formatting; kept as
+        # a literal so importing cases does not pull mirage into sys.path (it
+        # would evict the integ dir and break sibling imports like onedrive).
+        if "Jan  1 00:00" in out:
             raise AssertionError(
                 f"{label} ls -l shows epoch mtime (modified not set): "
                 f"{out.strip()!r}")
