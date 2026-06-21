@@ -32,7 +32,7 @@ def _slack_modified(remote_time: str) -> str | None:
         return None
     if ts <= 0:
         return None
-    return epoch_to_iso(int(ts))
+    return epoch_to_iso(ts)
 
 
 async def _populate_via_parent(

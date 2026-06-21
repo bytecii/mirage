@@ -45,7 +45,7 @@ function slackModified(remoteTime: string): string | null {
   if (remoteTime === '') return null
   const ts = Number.parseFloat(remoteTime)
   if (Number.isNaN(ts) || ts <= 0) return null
-  return epochToIso(Math.floor(ts))
+  return epochToIso(ts)
 }
 
 function fileNotFound(key: string): Error {

@@ -24,4 +24,12 @@ def now_iso() -> str:
 
 
 def epoch_to_iso(seconds: float) -> str:
-    return to_iso_z(datetime.fromtimestamp(seconds, tz=timezone.utc))
+    """Convert unix epoch seconds to a second-precision UTC ISO-8601 string.
+
+    Truncated to whole seconds so the Python and TypeScript converters
+    produce byte-identical output.
+
+    Args:
+        seconds (float): unix epoch seconds (sub-second part is dropped).
+    """
+    return to_iso_z(datetime.fromtimestamp(int(seconds), tz=timezone.utc))
