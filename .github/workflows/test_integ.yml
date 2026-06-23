@@ -70,6 +70,13 @@ jobs:
               - 'python/mirage/core/chroma/**'
               - 'python/mirage/commands/builtin/chroma/**'
               - 'python/mirage/resource/chroma/**'
+              - 'integ/qdrant.py'
+              - 'integ/qdrant.ts'
+              - 'integ/truth_qdrant.txt'
+              - 'python/mirage/accessor/qdrant.py'
+              - 'python/mirage/core/qdrant/**'
+              - 'python/mirage/commands/builtin/qdrant/**'
+              - 'python/mirage/resource/qdrant/**'
               - 'typescript/**'
               - '.github/workflows/test_integ.yml'
             data:
@@ -355,6 +362,10 @@ jobs:
         image: chromadb/chroma:latest
         ports:
           - 8000:8000
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
     env:
       MONGODB_URI: mongodb://localhost:27017/?replicaSet=rs0
       POSTGRES_DSN: postgres://mirage:mirage@localhost:5432/mirage_integ
@@ -382,6 +393,15 @@ jobs:
             sleep 1
           done
           echo "ChromaDB did not become healthy" >&2
+          exit 1
+
+      - name: Wait for Qdrant
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:6333/readyz && exit 0
+            sleep 1
+          done
+          echo "Qdrant did not become healthy" >&2
           exit 1
 
       - name: Start MongoDB replica set
@@ -418,6 +438,11 @@ jobs:
           ./python/.venv/bin/python integ/chroma.py > /tmp/chroma.out
           diff integ/truth_chroma.txt /tmp/chroma.out
 
+      - name: Run qdrant integ and diff against truth
+        run: |
+          ./python/.venv/bin/python integ/qdrant.py > /tmp/qdrant.out
+          diff integ/truth_qdrant.txt /tmp/qdrant.out
+
   integ-database-ts:
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.database == 'true') }}
@@ -440,6 +465,10 @@ jobs:
         image: chromadb/chroma:latest
         ports:
           - 8000:8000
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
     env:
       MONGODB_URI: mongodb://localhost:27017/?replicaSet=rs0
       POSTGRES_DSN: postgres://mirage:mirage@localhost:5432/mirage_integ
@@ -492,6 +521,15 @@ jobs:
             sleep 1
           done
 
+      - name: Wait for Qdrant
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:6333/readyz && exit 0
+            sleep 1
+          done
+          echo "Qdrant did not become healthy" >&2
+          exit 1
+
       - name: Run MongoDB backend (TS) and check against truth
         shell: bash
         working-directory: integ
@@ -513,6 +551,12 @@ jobs:
         run: |
           pnpm exec tsx chroma.ts > /tmp/ts-chroma.out
           diff truth_chroma.txt /tmp/ts-chroma.out
+
+      - name: Run TS qdrant integ and diff against truth
+        working-directory: integ
+        run: |
+          pnpm exec tsx qdrant.ts > /tmp/ts-qdrant.out
+          diff truth_qdrant.txt /tmp/ts-qdrant.out
 
   integ-data:
     needs: changes

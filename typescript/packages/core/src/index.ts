@@ -1088,6 +1088,22 @@ export { readdir as chromaReaddir } from './core/chroma/readdir.ts'
 export { stat as chromaStat } from './core/chroma/stat.ts'
 export { resolveGlob as resolveChromaGlob } from './core/chroma/glob.ts'
 export { searchSegments as chromaSearch } from './core/chroma/search.ts'
+export type { QdrantPoint, QdrantRow } from './core/qdrant/_client.ts'
+export { QdrantAccessor } from './accessor/qdrant.ts'
+export {
+  resolveQdrantConfig,
+  type QdrantConfig,
+  type QdrantConfigResolved,
+} from './resource/qdrant/config.ts'
+export { QDRANT_PROMPT } from './resource/qdrant/prompt.ts'
+export { QDRANT_OPS } from './ops/qdrant/index.ts'
+export { QDRANT_COMMANDS } from './commands/builtin/qdrant/index.ts'
+export { QdrantResource, type QdrantResourceOptions } from './resource/qdrant/qdrant.ts'
+export { read as qdrantRead } from './core/qdrant/read.ts'
+export { readdir as qdrantReaddir } from './core/qdrant/readdir.ts'
+export { stat as qdrantStat } from './core/qdrant/stat.ts'
+export { resolveGlob as resolveQdrantGlob } from './core/qdrant/glob.ts'
+export { searchRowsOutput as qdrantSearch } from './core/qdrant/search.ts'
 export { scoreFromDistance } from './utils/score.ts'
 export {
   countDocuments as mongoCountDocuments,

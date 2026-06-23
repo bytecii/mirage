@@ -124,6 +124,7 @@ jobs:
           - { extra: langfuse, module: mirage.resource.langfuse }
           - { extra: chroma, module: mirage.resource.chroma }
           - { extra: lancedb, module: mirage.resource.lancedb }
+          - { extra: qdrant, module: mirage.resource.qdrant }
           - { extra: databricks, module: mirage.resource.databricks_volume }
           - { extra: pydantic-ai, module: mirage.agents.pydantic_ai }
           - { extra: openai, module: mirage.agents.openai_agents }
