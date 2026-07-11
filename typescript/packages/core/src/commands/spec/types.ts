@@ -38,6 +38,12 @@ export interface OptionInit {
    * and route each joined path.
    */
   repeatable?: boolean
+  /**
+   * GNU optional-argument long option (e.g. `--color[=WHEN]`): bare
+   * `--color` parses as true, `--color=auto` parses as the string, and a
+   * detached next token is never consumed. Requires a long form.
+   */
+  valueOptional?: boolean
   description?: string
 }
 
@@ -47,6 +53,7 @@ export class Option {
   readonly valueKind: OperandKind
   readonly numericShorthand: boolean
   readonly repeatable: boolean
+  readonly valueOptional: boolean
   readonly description: string | null
 
   constructor(init: OptionInit = {}) {
@@ -55,6 +62,7 @@ export class Option {
     this.valueKind = init.valueKind ?? OperandKind.NONE
     this.numericShorthand = init.numericShorthand ?? false
     this.repeatable = init.repeatable ?? false
+    this.valueOptional = init.valueOptional ?? false
     this.description = init.description ?? null
     Object.freeze(this)
   }
@@ -120,6 +128,8 @@ export interface ParsedArgsInit {
   textFlagValues?: string[]
   warnings?: string[]
   wordKinds?: (OperandKind | null)[]
+  invalidOptions?: string[]
+  needsValueOptions?: string[]
 }
 
 export class ParsedArgs {
@@ -131,6 +141,11 @@ export class ParsedArgs {
   readonly textFlagValues: string[]
   readonly warnings: string[]
   readonly wordKinds: (OperandKind | null)[]
+  // GNU-shaped option errors, reported (never thrown) by the parser:
+  // undeclared options ('--bogus' or the offending cluster char 'Y'),
+  // and declared value flags that ran out of line ('--max-depth', 'm').
+  readonly invalidOptions: string[]
+  readonly needsValueOptions: string[]
 
   constructor(init: ParsedArgsInit) {
     this.flags = init.flags
@@ -141,6 +156,8 @@ export class ParsedArgs {
     this.textFlagValues = init.textFlagValues ?? []
     this.warnings = init.warnings ?? []
     this.wordKinds = init.wordKinds ?? []
+    this.invalidOptions = init.invalidOptions ?? []
+    this.needsValueOptions = init.needsValueOptions ?? []
   }
 
   paths(): string[] {

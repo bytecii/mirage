@@ -42,6 +42,10 @@ class Option:
             instead of last-wins (argparse append semantics, e.g. grep -e).
             TEXT values arrive as list[str]; PATH values are each resolved
             and routed and arrive as list[PathSpec].
+        value_optional (bool): GNU optional-argument long option (e.g.
+            ``--color[=WHEN]``): bare ``--color`` parses as True,
+            ``--color=auto`` parses as the string, and a detached next
+            token is never consumed. Requires a long form.
         description (str | None): help text.
     """
     short: str | None = None
@@ -49,6 +53,7 @@ class Option:
     value_kind: OperandKind = OperandKind.NONE
     numeric_shorthand: bool = False
     repeatable: bool = False
+    value_optional: bool = False
     description: str | None = None
 
 
@@ -156,6 +161,11 @@ class ParsedArgs:
     text_flag_values: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     word_kinds: list[OperandKind | None] = field(default_factory=list)
+    # GNU-shaped option errors, reported (never raised) by the parser:
+    # undeclared options ('--bogus' or the offending cluster char 'Y'),
+    # and declared value flags that ran out of line ('--max-depth', 'm').
+    invalid_options: list[str] = field(default_factory=list)
+    needs_value_options: list[str] = field(default_factory=list)
 
     def paths(self) -> list[str]:
         return [v for v, k in self.args if k == OperandKind.PATH]

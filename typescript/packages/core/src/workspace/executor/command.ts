@@ -12,9 +12,12 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { SPECS } from '../../commands/spec/index.ts'
 import { parseCommand, parseToKwargs } from '../../commands/spec/parser.ts'
+import { missingValueError, unknownOptionError } from '../../commands/spec/usage.ts'
 import { concatBytes } from '../../core/jq/format.ts'
 import { OperandKind } from '../../commands/spec/types.ts'
+import type { CommandSpec } from '../../commands/spec/types.ts'
 import type { ByteSource } from '../../io/types.ts'
 import { IOResult, materialize } from '../../io/types.ts'
 import type { Resource } from '../../resource/base.ts'
@@ -248,8 +251,6 @@ export async function handleCommand(
     const p = parts[i]
     if (p instanceof PathSpec) pathScopes.push(p)
   }
-  const textOnly = parts.slice(1).map((p) => (typeof p === 'string' ? p : p.virtual))
-
   const rawArgv = parts.slice(1).map((p) => (typeof p === 'string' ? p : p.virtual))
   const guardResult = checkMountRootGuard(cmdName, pathScopes, registry, rawArgv)
   if (guardResult !== null) {
@@ -302,15 +303,23 @@ export async function handleCommand(
   }
 
   if (isCrossMount(cmdName, pathScopes, registry)) {
-    // Parse against the mount spec so flags and text operands split like
-    // the single-mount path: raw argv would hand flag tokens ("-c") to
-    // the generic as the search pattern. The bound single-mount runner lets
-    // the strategy runners execute each operand natively on its owning mount.
-    const srcMount = registry.mountFor(pathScopes[0]?.virtual ?? session.cwd)
-    const csParsed =
-      srcMount !== null ? parseFlags(parts.slice(1), srcMount, cmdName, session.cwd) : null
-    const csFlags = csParsed !== null ? csParsed[2] : {}
-    const csTexts = findExprTokens ?? (csParsed !== null ? csParsed[1] : textOnly)
+    // Parse against the shared spec so flags and text operands do not
+    // depend on the source mount: raw argv would hand flag tokens ("-c")
+    // to the generic as the search pattern. The bound single-mount runner
+    // lets the strategy runners execute each operand natively on its
+    // owning mount.
+    const csParsed = parseFlags(parts.slice(1), SPECS[cmdName] ?? null, cmdName, session.cwd)
+    const csFlags = csParsed[2]
+    const csTexts = findExprTokens ?? csParsed[1]
+    const csRefusal = optionError(cmdName, csParsed[4], csParsed[5])
+    if (csRefusal !== null) {
+      const [msg, code] = csRefusal
+      return [
+        null,
+        new IOResult({ exitCode: code, stderr: msg }),
+        new ExecutionNode({ command: cmdStr, exitCode: code, stderr: msg }),
+      ]
+    }
     const runCtx: RunOnMountCtx = {
       registry,
       session,
@@ -331,6 +340,12 @@ export async function handleCommand(
       stdin,
       cmdStr,
     )
+    if (csParsed[3].length > 0) {
+      const csWarn = new TextEncoder().encode(csParsed[3].map((w) => `${cmdName}: ${w}\n`).join(''))
+      const csExisting = await materialize(csIo.stderr)
+      csIo.stderr = concatBytes([csWarn, csExisting])
+      csExec.stderr = concatBytes([csWarn, csExec.stderr])
+    }
     // The native sub-runs carry their own mount's safeguard; the cross-mount
     // command as a whole uses the strictest one across the operand mounts,
     // regardless of which sub-run merged last.
@@ -400,12 +415,17 @@ export async function handleCommand(
     throw err
   }
 
-  const [paths, textsRaw, flagKwargs, parseWarnings] = parseFlags(
-    parts.slice(1),
-    mount,
-    cmdName,
-    session.cwd,
-  )
+  const [paths, textsRaw, flagKwargs, parseWarnings, invalidOptions, needsValueOptions] =
+    parseFlags(parts.slice(1), mount.specFor(cmdName), cmdName, session.cwd)
+  const refusal = optionError(cmdName, invalidOptions, needsValueOptions)
+  if (refusal !== null) {
+    const [msg, code] = refusal
+    return [
+      null,
+      new IOResult({ exitCode: code, stderr: msg }),
+      new ExecutionNode({ command: cmdStr, exitCode: code, stderr: msg }),
+    ]
+  }
   const texts = findExprTokens ?? textsRaw
   if (findExprTokens !== null) {
     // `repeatable: true` on find value-flags makes parseToKwargs emit arrays;
@@ -477,12 +497,24 @@ export async function handleCommand(
   return [stdout, io, exec]
 }
 
+// Single-mount dispatch and cross-mount dispatch both parse through here,
+// so flags, texts, and parser warnings cannot drift between the two paths
+// (a cross-mount `grep --bogus` used to lose its warning). The spec comes
+// from the owning mount on the single-mount path and the shared SPECS
+// registry on the cross-mount path.
 function parseFlags(
   parts: readonly (string | PathSpec)[],
-  mount: MountEntry,
+  spec: CommandSpec | null,
   cmdName: string,
   cwd: string,
-): [PathSpec[], string[], Record<string, string | boolean | string[]>, string[]] {
+): [
+  PathSpec[],
+  string[],
+  Record<string, string | boolean | string[]>,
+  string[],
+  string[],
+  string[],
+] {
   const argv: string[] = parts.map((item) => (item instanceof PathSpec ? item.virtual : item))
   const scopeMap = new Map<string, PathSpec>()
   for (const item of parts) {
@@ -493,7 +525,6 @@ function parseFlags(
     }
   }
 
-  const spec = mount.specFor(cmdName)
   if (spec !== null) {
     const parsed = parseCommand(spec, argv, cwd)
     const flagKwargs = parseToKwargs(parsed)
@@ -529,7 +560,14 @@ function parseFlags(
         texts.push(value)
       }
     }
-    return [paths, texts, flagKwargs, parsed.warnings]
+    return [
+      paths,
+      texts,
+      flagKwargs,
+      parsed.warnings,
+      parsed.invalidOptions,
+      parsed.needsValueOptions,
+    ]
   }
 
   const paths: PathSpec[] = []
@@ -538,7 +576,21 @@ function parseFlags(
     if (item instanceof PathSpec) paths.push(item)
     else texts.push(item)
   }
-  return [paths, texts, {}, []]
+  return [paths, texts, {}, [], [], []]
+}
+
+// GNU-shaped refusal for option errors the parser reported. find is
+// exempt: its expression tokens are validated by parseFindExpression,
+// which raises the GNU predicate error itself.
+function optionError(
+  cmdName: string,
+  invalid: readonly string[],
+  needsValue: readonly string[],
+): [Uint8Array, number] | null {
+  if (cmdName === 'find') return null
+  if (invalid.length > 0) return unknownOptionError(cmdName, invalid[0] ?? '')
+  if (needsValue.length > 0) return missingValueError(cmdName, needsValue[0] ?? '')
+  return null
 }
 
 function prefixKeys(obj: Record<string, ByteSource>, prefix: string): Record<string, ByteSource> {

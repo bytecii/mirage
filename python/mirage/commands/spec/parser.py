@@ -74,6 +74,7 @@ def parse_command(
     value_flags: set[str] = set()
     long_bool_flags: set[str] = set()
     long_value_flags: set[str] = set()
+    long_optional_flags: set[str] = set()
     value_flag_kinds: dict[str, OperandKind] = {}
     repeat_flags: set[str] = set()
     numeric_shorthand_flag: str | None = None
@@ -91,6 +92,11 @@ def parse_command(
         if opt.long:
             if opt.value_kind == OperandKind.NONE:
                 long_bool_flags.add(opt.long)
+            elif opt.value_optional:
+                # GNU optional argument: bare form is boolean, value only
+                # attaches via `=`; a detached next token is an operand.
+                long_bool_flags.add(opt.long)
+                long_optional_flags.add(opt.long)
             else:
                 long_value_flags.add(opt.long)
                 value_flag_kinds[opt.long] = opt.value_kind
@@ -132,6 +138,8 @@ def parse_command(
     # or one dropped token shifts every later kind onto the wrong word.
     word_kinds: list[OperandKind | None] = [None] * len(argv)
     warnings: list[str] = []
+    invalid_options: list[str] = []
+    needs_value_options: list[str] = []
     # Free-text commands (echo/python/bash-style TEXT rest) keep unknown
     # dash tokens verbatim; elsewhere they are dropped with a warning so a
     # stray flag never corrupts pattern/path classification.
@@ -163,14 +171,18 @@ def parse_command(
                 i += 2
             else:
                 eq = tok.find("=")
-                if eq != -1 and tok[:eq] in long_value_flags:
+                if eq != -1 and (tok[:eq] in long_value_flags
+                                 or tok[:eq] in long_optional_flags):
                     _set_value_flag(flags, tok[:eq], tok[eq + 1:],
                                     repeat_flags)
+                elif tok in long_value_flags:
+                    # Declared value flag at end of line with no argument.
+                    needs_value_options.append(tok)
                 elif lenient_dash_operands:
                     raw_args.append(tok)
                     raw_indices.append(orig_indices[i])
                 else:
-                    warnings.append(f"warning: unknown option '{tok}' ignored")
+                    invalid_options.append(tok)
                 i += 1
             continue
 
@@ -233,8 +245,21 @@ def parse_command(
             if lenient_dash_operands or NUMERIC_SHORT.match(tok):
                 raw_args.append(tok)
                 raw_indices.append(orig_indices[i])
+            elif tok in value_flags or (mixed is not None
+                                        and mixed[2] is None):
+                # A declared value flag (alone or ending a cluster) with no
+                # argument left on the line. GNU reports the flag character.
+                needy = tok[1:] if tok in value_flags else mixed[1][1:]
+                needs_value_options.append(needy)
             else:
-                warnings.append(f"warning: unknown option '{tok}' ignored")
+                # GNU reports the first offending character, not the token.
+                bad = tok[1:2]
+                for ch in tok[1:]:
+                    if (f"-{ch}" not in bool_flags
+                            and f"-{ch}" not in value_flags):
+                        bad = ch
+                        break
+                invalid_options.append(bad)
             i += 1
             continue
 
@@ -297,6 +322,8 @@ def parse_command(
         text_flag_values=text_flag_values,
         warnings=warnings,
         word_kinds=word_kinds,
+        invalid_options=invalid_options,
+        needs_value_options=needs_value_options,
     )
 
 
