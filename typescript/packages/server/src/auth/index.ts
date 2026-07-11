@@ -30,4 +30,4 @@ export {
 } from './config.ts'
 export { JWTVerificationError } from './jwt.ts'
 export { registerAuth } from './middleware.ts'
-export { DEFAULT_TOKEN_FILE, ensureTokenFile, readTokenFile } from './storage.ts'
+export { defaultTokenFile, ensureTokenFile, readTokenFile } from './storage.ts'
