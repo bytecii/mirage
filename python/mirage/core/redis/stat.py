@@ -36,7 +36,7 @@ def _decode_attrs(raw: dict[str, str]) -> dict:
 async def stat(
     accessor: RedisAccessor,
     path: PathSpec,
-    index: IndexCacheStore = None,
+    index: IndexCacheStore | None = None,
 ) -> FileStat:
     virtual = path.virtual
     if isinstance(path, PathSpec):
