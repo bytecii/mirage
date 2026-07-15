@@ -96,7 +96,7 @@ def test_quickjs_exit_code_and_error():
 @live
 def test_quickjs_host_fs_invisible():
     rt = QuickJsRuntime()
-    # No preopens: the sandbox filesystem is empty, so a host path cannot
+    # No dispatch: the sandbox filesystem is empty, so a host path cannot
     # be opened (std.open returns null rather than a handle).
     result = asyncio.run(
         rt.run(
@@ -147,3 +147,59 @@ def test_quickjs_reuses_compiled_module():
     root = _home_dir()
     assert root is not None
     assert (Path(root) / "qjs-wasi.cwasm").is_file()
+
+
+@live
+@pytest.mark.asyncio
+async def test_quickjs_mounts_read_write_readdir():
+    # Guest file I/O bridges through the workspace dispatch: reads see
+    # shell writes, guest writes land in the mount, readdir lists it.
+    ws = Workspace({"/data": RAMResource()},
+                   mode=MountMode.EXEC,
+                   js_runtime="quickjs")
+    await ws.execute("echo hello-mount > /data/in.txt")
+    r = await ws.execute("js -e \"const f = std.open('/data/in.txt', 'r');"
+                         "console.log(f.readAsString().trim());"
+                         "f.close();"
+                         "const w = std.open('/data/out.txt', 'w');"
+                         "w.puts('from-qjs\\n');"
+                         "w.close();"
+                         "const [names] = os.readdir('/data');"
+                         "console.log(names.filter((n) => !n.startsWith('.'))"
+                         ".sort().join(','))\"")
+    assert r.exit_code == 0
+    assert (await r.stdout_str()) == "hello-mount\nin.txt,out.txt\n"
+    r = await ws.execute("cat /data/out.txt")
+    assert (await r.stdout_str()) == "from-qjs\n"
+    await ws.close()
+
+
+@live
+def test_quickjs_without_dispatch_sees_no_mounts():
+    rt = QuickJsRuntime()
+    result = asyncio.run(
+        rt.run(
+            JsRunArgs(
+                code="console.log(std.open('/data/in.txt', 'r') === null)")))
+    assert result.exit_code == 0
+    assert result.stdout == b"true\n"
+
+
+@live
+@pytest.mark.asyncio
+async def test_quickjs_session_narrowing_reaches_the_guest():
+    # A session narrowed to read denies guest writes at open() and no
+    # file materializes in the mount.
+    ws = Workspace({"/data": RAMResource()},
+                   mode=MountMode.EXEC,
+                   js_runtime="quickjs")
+    ws.create_session("narrow", {"/data": "read"})
+    r = await ws.execute(
+        "js -e \"try { std.open('/data/g.txt', 'w').puts('x');"
+        " console.log('WROTE') } catch (e) { console.log('denied') }\"",
+        session_id="narrow")
+    assert r.exit_code == 0
+    assert (await r.stdout_str()) == "denied\n"
+    r = await ws.execute("cat /data/g.txt", session_id="narrow")
+    assert r.exit_code == 1
+    await ws.close()

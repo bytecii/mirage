@@ -9,7 +9,7 @@ two names for the same command family. One runtime ships today:
 
 | Runtime | Engine | Filesystem | Default |
 | --- | --- | --- | --- |
-| `quickjs` | [quickjs-ng](https://github.com/quickjs-ng/quickjs) compiled to WebAssembly, run in-process on [wasmtime](https://wasmtime.dev) | None: no host filesystem, no mounts, no network | Yes |
+| `quickjs` | [quickjs-ng](https://github.com/quickjs-ng/quickjs) compiled to WebAssembly, run in-process on [wasmtime](https://wasmtime.dev) | Workspace mounts only, bridged through Mirage; no host filesystem, no network | Yes |
 
 ## What it is for
 
@@ -51,12 +51,14 @@ js -m -e "const x = await Promise.resolve(41); console.log(x + 1)"
 ## Isolation
 
 The engine runs under WebAssembly capability isolation: it sees only what
-the run passes it. Host files, mounts, and the network are all invisible,
-and file I/O inside the code cannot reach workspace mounts. The `node`/`js`
-command still resolves a script *file* through the workspace before running
-it, so `node /data/script.mjs` works, but `readFile('/data/other')` inside
-the code does not. Use the `monty` Python runtime when code needs live
-workspace file I/O.
+the run passes it. Host files and the network are invisible. Workspace
+mounts are visible with no setup: mirage intercepts the sandbox's
+filesystem calls and bridges them through the workspace dispatch, so
+`std.open('/data/f.txt', 'r')` reads the mount live — RAM, Redis, S3, or
+a virtual backend — and writes are immediately visible to every command,
+with the same cache, write modes, and per-session mount narrowing as
+`cat`. A read-only mount (or a session narrowed to read) fails the open,
+so `std.open` returns `null` instead of writing.
 
 This is capability isolation, not a resource sandbox: the sandboxed code
 cannot reach your files or the network, but its CPU and memory are bounded

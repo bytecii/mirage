@@ -12,8 +12,10 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 import os
 from pathlib import Path
+from typing import Callable
 
 try:
     import wasmtime
@@ -22,7 +24,7 @@ except ImportError:
 
 from mirage.runtime.python.base import (PythonRunArgs, PythonRunResult,
                                         PythonRuntime)
-from mirage.runtime.wasm import WasmRuntime
+from mirage.runtime.wasm import GuestFs, SyncDispatch, WasmRuntime
 
 WASI_HOME_ENV = "MIRAGE_WASI_HOME"
 
@@ -39,12 +41,14 @@ class WasiRuntime(PythonRuntime):
     """Run Python code on a WASI CPython under wasmtime, in-process.
 
     Full CPython (classes, complete stdlib, real `sys`) inside a wasm
-    sandbox: the run sees only the interpreter's own build directory,
-    no host filesystem, no network, and only the environment the run
-    passes. Code does not see workspace mounts either; the `python3`
-    command still resolves script files through the workspace before the
-    run, but file I/O inside the code cannot reach mounts. Use the
-    `monty` runtime for workspace file I/O.
+    sandbox: no host filesystem, no network, only the environment the
+    run passes. The guest's filesystem imports are intercepted, so
+    `open('/data/f.txt')` inside the code routes through the workspace
+    dispatch — the same cache, write modes, and session narrowing as
+    shell commands — while the interpreter's own build directory is
+    served read-only from the host. Workspace mounts are therefore
+    visible to the code with no FUSE mount and no extra setup; without
+    an injected dispatch, only the build directory is visible.
 
     Runs execute on a worker thread with the GIL released, and each run
     gets its own epoch-interruption engine: cancelling the `run` task
@@ -53,19 +57,27 @@ class WasiRuntime(PythonRuntime):
 
     The build directory comes from the `home` argument (the yaml
     `runtime: wasi: home:` entry ends up here) or the MIRAGE_WASI_HOME
-    environment variable. CPython requires the preopen to be
-    rights-complete, so the directory is mounted read-write into the
-    sandbox; make it read-only on the host filesystem to keep runs from
-    persisting files into the bundle.
+    environment variable. It is read-only inside the sandbox; guest
+    writes land in the workspace or answer EACCES, never in the bundle.
 
     Args:
         home (str | None): path to the unzipped CPython WASI build
             directory. None reads MIRAGE_WASI_HOME.
+        dispatch (Callable | None): workspace dispatch the guest's file
+            I/O bridges through; None leaves mounts invisible.
+        mount_prefixes (Callable[[], list[str]] | None): live list of
+            workspace mount prefixes, read per run (mounts can come
+            and go).
     """
 
     name = "wasi"
 
-    def __init__(self, home: str | None = None) -> None:
+    def __init__(
+        self,
+        home: str | None = None,
+        dispatch: Callable | None = None,
+        mount_prefixes: Callable[[], list[str]] | None = None,
+    ) -> None:
         if wasmtime is None:
             raise ImportError(
                 "the wasi runtime requires the 'wasi' extra. Install with: "
@@ -82,9 +94,19 @@ class WasiRuntime(PythonRuntime):
             raise FileNotFoundError(
                 f"no lib/python3.* under {self._root}; {_BUILD_HINT}")
         self._pythonhome = f"/lib/{stdlibs[-1].name}"
+        self._dispatch = dispatch
+        self._mount_prefixes = mount_prefixes
         self._runtime = WasmRuntime(self._root / "python.wasm", "python3")
 
     async def run(self, args: PythonRunArgs) -> PythonRunResult:
+        # Mount prefixes route to the workspace bridge; everything else
+        # is served from the build directory, so a mount at "/" never
+        # collides with the interpreter's own files.
+        bridge = (SyncDispatch(self._dispatch, asyncio.get_running_loop())
+                  if self._dispatch is not None else None)
+        fs = GuestFs(host_root=self._root,
+                     bridge=bridge,
+                     mount_prefixes=self._mount_prefixes)
         # sys.argv becomes ['-c', *args.args], matching the local runtime.
         stdout, stderr, exit_code = await self._runtime.run(
             argv=["python", "-c", args.code, *args.args],
@@ -93,8 +115,9 @@ class WasiRuntime(PythonRuntime):
                 *args.env.items(),
                 ("PYTHONHOME", self._pythonhome),
                 ("PYTHONPATH", self._pythonhome),
+                ("PYTHONDONTWRITEBYTECODE", "1"),
             ],
-            preopens=[(str(self._root), "/")],
+            fs=fs,
         )
         return PythonRunResult(stdout=stdout,
                                stderr=stderr,

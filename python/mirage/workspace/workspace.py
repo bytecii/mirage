@@ -190,7 +190,10 @@ class Workspace:
         # per invocation. An explicitly requested runtime still fails loud.
         try:
             self._python_runtime = select_python_runtime(
-                python_runtime, self.dispatch, options=runtime_options)
+                python_runtime,
+                self.dispatch,
+                options=runtime_options,
+                mount_prefixes=self._runtime_mount_prefixes)
         except ImportError:
             if python_runtime is not None:
                 raise
@@ -202,8 +205,11 @@ class Workspace:
         # the command reports the hint per invocation; an explicit runtime
         # or option still fails loud.
         try:
-            self._js_runtime = select_js_runtime(js_runtime,
-                                                 options=runtime_options)
+            self._js_runtime = select_js_runtime(
+                js_runtime,
+                self.dispatch,
+                options=runtime_options,
+                mount_prefixes=self._runtime_mount_prefixes)
         except (ImportError, FileNotFoundError):
             if js_runtime is not None:
                 raise
@@ -342,6 +348,11 @@ class Workspace:
     @property
     def fuse_mountpoints(self) -> dict[str, str]:
         return dict(self._fuse_mountpoints)
+
+    def _runtime_mount_prefixes(self) -> list[str]:
+        # Pull-model provider for the wasm runtimes: read per run, so
+        # mounts added or removed after construction are picked up.
+        return self._ops.mount_prefixes()
 
     @property
     def _cwd(self) -> str:

@@ -12,7 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from typing import Any
+from typing import Any, Callable
 
 from mirage.runtime.js.base import JsRuntime
 from mirage.runtime.js.quickjs import QuickJsRuntime
@@ -39,19 +39,27 @@ def validate_js_runtime_name(name: str) -> str:
 
 def select_js_runtime(
         name: str | None,
-        options: dict[str, dict[str, Any]] | None = None) -> JsRuntime:
+        dispatch: Callable | None = None,
+        options: dict[str, dict[str, Any]] | None = None,
+        mount_prefixes: Callable[[], list[str]] | None = None) -> JsRuntime:
     """Build the JavaScript runtime for a workspace.
 
     Args:
         name (str | None): runtime name; None means the default (quickjs).
+        dispatch (Callable | None): workspace dispatch the sandboxed
+            runtime bridges file I/O through.
         options (dict[str, dict[str, Any]] | None): per-runtime option
             blocks; the selected runtime consumes its own block
             (`quickjs`: `home` is the directory containing qjs-wasi.wasm,
             falling back to MIRAGE_QUICKJS_HOME). Other blocks are ignored.
+        mount_prefixes (Callable[[], list[str]] | None): live list of
+            workspace mount prefixes the runtime routes to the dispatch.
 
     Raises:
         ValueError: unknown runtime name, or an invalid option block.
     """
     resolved = validate_js_runtime_name(name or DEFAULT_JS_RUNTIME)
     opts = resolve_runtime_options(resolved, options)
-    return QuickJsRuntime(home=opts.get("home"))
+    return QuickJsRuntime(home=opts.get("home"),
+                          dispatch=dispatch,
+                          mount_prefixes=mount_prefixes)
