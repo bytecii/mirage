@@ -15,11 +15,12 @@
 import asyncio
 import errno
 import os
+import posixpath
 import stat
 import threading
 import time
-import uuid
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 
 try:
     import mfusepy as fuse
@@ -29,11 +30,8 @@ except ImportError:
 from mirage.bridge.sync import run_async_from_sync
 from mirage.fuse.platform.macos import is_macos_metadata
 from mirage.ops import Ops
-from mirage.types import FileType
+from mirage.types import FileStat, FileType
 
-_ENV_AGENT_ID = "MIRAGE_AGENT_ID"
-_MIRAGE_DIR = "/.mirage"
-_MIRAGE_WHOAMI = "/.mirage/whoami"
 # "attribute not found" errno: ENOATTR on macOS, ENODATA on Linux.
 _NO_XATTR = getattr(errno, "ENOATTR", None) or errno.ENODATA
 # Base class only when mfusepy is installed; otherwise the module still imports
@@ -56,10 +54,7 @@ class MirageFS(_FUSE_OPERATIONS):
 
     use_ns = True
 
-    def __init__(self,
-                 ops: Ops,
-                 agent_id: str | None = None,
-                 root_prefix: str = "") -> None:
+    def __init__(self, ops: Ops, root_prefix: str = "") -> None:
         if fuse is None:
             raise RuntimeError(
                 "FUSE support requires the 'fuse' extra: install "
@@ -67,8 +62,6 @@ class MirageFS(_FUSE_OPERATIONS):
                 "WinFsp). Setup and support matrix: "
                 "https://mirage.dev/home/setup/fuse")
         self._ops = ops
-        self.agent_id = (agent_id or os.environ.get(_ENV_AGENT_ID)
-                         or f"agent-{uuid.uuid4().hex[:8]}")
         self._now = time.time_ns()
         self._root = root_prefix.rstrip("/")
         # When scoped to a single mount, the FUSE root maps onto that mount and
@@ -105,15 +98,6 @@ class MirageFS(_FUSE_OPERATIONS):
             return self._root
         return self._root + path
 
-    def _whoami_content(self) -> bytes:
-        mounts = self._ops.mount_prefixes()
-        lines = [
-            f"agent: {self.agent_id}",
-            "cwd: /",
-            f"mounts: {', '.join(mounts)}",
-        ]
-        return ("\n".join(lines) + "\n").encode()
-
     def _dir_stat(self) -> dict:
         return {
             "st_mode": stat.S_IFDIR | 0o755,
@@ -137,6 +121,77 @@ class MirageFS(_FUSE_OPERATIONS):
             "st_mtime": self._now,
             "st_ctime": self._now,
         }
+
+    def _apply_stat_attrs(self, entry: dict, s: FileStat) -> dict:
+        """Fold merged stat attributes into a FUSE attr dict.
+
+        The ops stat already carries the namespace overlay (chmod bits,
+        chown ids, touched mtime), so honoring these fields here is what
+        makes metadata ops visible over FUSE. String uid/gid (names) are
+        skipped: FUSE wants numeric ids and there is no user db to map
+        against.
+
+        Args:
+            entry (dict): base attr dict from _dir_stat/_file_stat.
+            s (FileStat): the merged stat returned by the ops facade.
+        """
+        if s.mode is not None:
+            entry["st_mode"] = (entry["st_mode"] & ~0o7777) | (s.mode & 0o7777)
+        if isinstance(s.uid, int):
+            entry["st_uid"] = s.uid
+        if isinstance(s.gid, int):
+            entry["st_gid"] = s.gid
+        if s.modified is not None:
+            try:
+                ts = datetime.fromisoformat(s.modified)
+            except ValueError:
+                return entry
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            ns = int(ts.timestamp()) * 1_000_000_000
+            entry["st_mtime"] = ns
+            entry["st_ctime"] = ns
+        return entry
+
+    def _link_target(self, path: str) -> str | None:
+        """The target to present for a namespace link at a FUSE path.
+
+        Relative targets are stored verbatim and returned as-is. Absolute
+        targets name virtual paths, so they are rewritten relative to the
+        link's directory: returned raw, the kernel would resolve them
+        against the host root and escape the mountpoint.
+
+        Args:
+            path (str): FUSE path to inspect.
+
+        Returns:
+            str | None: displayable target, or None when not a link.
+        """
+        links = self._ops.links
+        if links is None:
+            return None
+        target = links.readlink(self._resolve(path))
+        if target is None:
+            return None
+        if not target.startswith("/"):
+            return target
+        fuse_target = target
+        if self._root:
+            if target == self._root:
+                fuse_target = "/"
+            elif target.startswith(self._root + "/"):
+                fuse_target = target[len(self._root):]
+            else:
+                # points outside the scoped root: unreachable through this
+                # mount, keep the stored form (a dangling link is legal)
+                return target
+        parent = path.rsplit("/", 1)[0] or "/"
+        return posixpath.relpath(fuse_target, parent)
+
+    def _link_stat(self, target: str) -> dict:
+        entry = self._file_stat(len(target.encode()))
+        entry["st_mode"] = stat.S_IFLNK | 0o777
+        return entry
 
     def _is_virtual_dir(self, path: str) -> bool:
         normalized = path.rstrip("/") + "/"
@@ -228,21 +283,22 @@ class MirageFS(_FUSE_OPERATIONS):
                 return self._file_stat(len(ctx.data))
         if path == "/":
             return self._dir_stat()
-        if path == _MIRAGE_DIR:
-            return self._dir_stat()
-        if path == _MIRAGE_WHOAMI:
-            return self._file_stat(len(self._whoami_content()))
         # macOS Finder/Spotlight probes .DS_Store, ._*, .Spotlight-V100, etc.
         # Reject early to avoid hitting the ops layer.
         name = path.rsplit("/", 1)[-1]
         if is_macos_metadata(name):
             raise fuse.FuseOSError(errno.ENOENT)
+        # Link check must precede the ops stat: the ops facade follows
+        # namespace links, so stat on a link path reports the target.
+        target = self._link_target(path)
+        if target is not None:
+            return self._link_stat(target)
         if self._is_virtual_dir(path):
             return self._dir_stat()
         try:
             s = self._run(self._ops.stat(self._resolve(path)))
             if s.type == FileType.DIRECTORY:
-                return self._dir_stat()
+                return self._apply_stat_attrs(self._dir_stat(), s)
             size = s.size
             if size is None:
                 size = self._cached_size(path)
@@ -254,18 +310,19 @@ class MirageFS(_FUSE_OPERATIONS):
                 # a fake size and never fetch content here: getattr runs once
                 # per entry on every ls -l.
                 size = 0
-            return self._file_stat(size)
+            return self._apply_stat_attrs(self._file_stat(size), s)
         except (FileNotFoundError, ValueError):
             # unresolvable entry falls through to the canonical ENOENT below
             pass
         raise fuse.FuseOSError(errno.ENOENT)
 
     def readdir(self, path: str, fh) -> list:
-        if path == _MIRAGE_DIR:
-            return [".", "..", "whoami"]
         names = set(self._virtual_children(path))
-        if path == "/":
-            names.add(".mirage")
+        links = self._ops.links
+        if links is not None:
+            for link_name in links.links_under(self._resolve(path)):
+                if link_name and not is_macos_metadata(link_name):
+                    names.add(link_name)
         try:
             entries = self._run(self._ops.readdir(self._resolve(path)))
             for e in entries:
@@ -278,9 +335,6 @@ class MirageFS(_FUSE_OPERATIONS):
         return [".", ".."] + sorted(names)
 
     def read(self, path: str, size: int, offset: int, fh) -> bytes:
-        if path == _MIRAGE_WHOAMI:
-            data = self._whoami_content()
-            return data[offset:offset + size]
         ctx = self._handles.get(fh)
         if ctx is not None and ctx.data is not None:
             return ctx.data[offset:offset + size]
@@ -338,7 +392,37 @@ class MirageFS(_FUSE_OPERATIONS):
         except ValueError:
             raise fuse.FuseOSError(errno.ENOENT)
 
+    def readlink(self, path: str) -> str:
+        target = self._link_target(path)
+        if target is None:
+            raise fuse.FuseOSError(errno.EINVAL)
+        return target
+
+    def symlink(self, target: str, source: str) -> None:
+        """Create namespace link ``target -> source`` (ln -s source target).
+
+        Relative sources are stored verbatim (resolved at follow time,
+        exactly like the shell ``ln -s``); absolute sources are mapped
+        into virtual space so a scoped mount stores the path it will
+        later follow.
+
+        Args:
+            target (str): FUSE path of the link being created.
+            source (str): what the link points to, as typed.
+        """
+        links = self._ops.links
+        if links is None:
+            raise fuse.FuseOSError(errno.EROFS)
+        stored = self._resolve(source) if source.startswith("/") else source
+        self._run(links.symlink(self._resolve(target), stored, time.time()))
+
     def unlink(self, path: str) -> None:
+        links = self._ops.links
+        if links is not None and links.is_link(self._resolve(path)):
+            self._run(links.unlink(self._resolve(path)))
+            self._xattrs.pop(path, None)
+            self._prefetch.pop(path, None)
+            return
         try:
             self._run(self._ops.unlink(self._resolve(path)))
         except PermissionError:
@@ -458,11 +542,6 @@ class MirageFS(_FUSE_OPERATIONS):
         self.flush(path, fh)
 
     def open(self, path: str, flags) -> int:
-        if path == _MIRAGE_WHOAMI:
-            fh = self._next_fh
-            self._next_fh += 1
-            self._handles[fh] = Handle(path=path)
-            return fh
         try:
             s = self._run(self._ops.stat(self._resolve(path)))
         except (FileNotFoundError, ValueError):

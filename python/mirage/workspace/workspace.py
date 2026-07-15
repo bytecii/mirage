@@ -58,6 +58,7 @@ from mirage.workspace.file_prompt import build_file_prompt
 from mirage.workspace.fuse import FuseManager
 from mirage.workspace.mount import MountEntry, MountRegistry
 from mirage.workspace.mount.namespace import Namespace
+from mirage.workspace.mount.namespace.overlay import merge_overlay_stat
 from mirage.workspace.mount.namespace.store import NamespaceStore
 from mirage.workspace.mount.spec import Mount
 from mirage.workspace.node import provision_node, run_command_tree
@@ -90,7 +91,7 @@ class Workspace:
         mode: MountMode = MountMode.READ,
         consistency: ConsistencyPolicy = ConsistencyPolicy.LAZY,
         session_id: str = DEFAULT_SESSION_ID,
-        agent_id: str = DEFAULT_AGENT_ID,
+        agent_id: str | None = None,
         observe: ObserverStore | None = None,
         namespace_store: NamespaceStore | None = None,
         python_runtime: str | None = None,
@@ -122,14 +123,19 @@ class Workspace:
         # First dispatch/execute drains via asyncio.gather, then clears.
         self._pending_drift: list[tuple[MountEntry, str, str]] = []
         self.job_table = JobTable()
-        self._current_agent_id: str = agent_id
+        resolved_agent = agent_id if agent_id is not None else DEFAULT_AGENT_ID
+        self._current_agent_id: str = resolved_agent
         self._default_session_id = session_id
-        self._default_agent_id = agent_id
+        self._default_agent_id = resolved_agent
         self._session_mgr = SessionManager(session_id)
         self._consistency = consistency
         self._registry.set_consistency(consistency)
         self._registry.attach_file_cache(self._cache)
-        self._namespace = Namespace(self._registry, store=namespace_store)
+        # Only an explicit agent_id claims the workspace user; a bare
+        # launch adopts whatever identity the namespace store holds.
+        self._namespace = Namespace(self._registry,
+                                    store=namespace_store,
+                                    user=agent_id)
         self._dispatcher = Dispatcher(self._namespace, self._cache,
                                       consistency)
 
@@ -174,8 +180,10 @@ class Workspace:
         self._ops = Ops(self._registry.ops_mounts(),
                         on_write=self._invalidate_after_write_by_path,
                         observer=self.observer,
-                        agent_id=agent_id,
-                        session_id=session_id)
+                        agent_id=resolved_agent,
+                        session_id=session_id,
+                        links=self._namespace,
+                        stat_overlay=self._merge_overlay)
 
         # Graceful default: without the 'monty' extra the default runtime
         # cannot build; leave it unset so python3 reports the install hint
@@ -609,6 +617,18 @@ class Workspace:
         await self._session_mgr.close_all()
 
     # ── mount management ────────────────────────────────────────────────────
+
+    def _merge_overlay(self, path: str, stat: FileStat) -> FileStat:
+        """Overlay namespace attrs onto an ops-facade stat.
+
+        Injected into Ops so FUSE and the os patch report chmod/chown/touch
+        results identically to dispatch("stat").
+
+        Args:
+            path (str): virtual path (already link-resolved).
+            stat (FileStat): the backend-reported stat.
+        """
+        return merge_overlay_stat(self._namespace.meta_for(path), stat)
 
     async def dispatch(self, op: str, path: PathSpec,
                        **kwargs: Any) -> tuple[Any, IOResult]:

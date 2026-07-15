@@ -74,6 +74,7 @@ import type { PythonReplRunResult } from './executor/python/types.ts'
 import { makeAbortError } from './abort.ts'
 import { Dispatcher } from './dispatcher.ts'
 import { Namespace } from './mount/namespace/namespace.ts'
+import { mergeOverlayStat } from './mount/namespace/overlay.ts'
 import { provisionNode } from './node/provision_node.ts'
 import { runCommandTree } from './node/run_tree.ts'
 import { buildFilePrompt } from './file_prompt.ts'
@@ -286,7 +287,14 @@ export class Workspace {
     this.registry.mount(HISTORY_PREFIX, new HistoryViewResource(this.observer), MountMode.READ)
     this.cache = options.cache ?? new RAMFileCacheStore({ limit: options.cacheLimit ?? '512MB' })
     this.registry.attachFileCache(this.cache)
-    this.namespace = new Namespace(this.registry, (p) => this.resolve(p), options.namespaceStore)
+    // Only an explicit agentId claims the workspace user; a bare launch
+    // adopts whatever identity the namespace store holds.
+    this.namespace = new Namespace(
+      this.registry,
+      (p) => this.resolve(p),
+      options.namespaceStore,
+      options.agentId ?? null,
+    )
     this.dispatcher = new Dispatcher(this.namespace, this.cache, this.opsRegistry, consistency)
     // The file cache is a hidden store (attached above), never a mount. Arg-less
     // commands and root listing resolve against a neutral root anchor: reuse the
@@ -336,6 +344,8 @@ export class Workspace {
         this.records.push(rec)
         await this.observer.logOp(rec, this.agentId, this.sessionManager.defaultId)
       },
+      this.namespace,
+      (path, stat) => mergeOverlayStat(this.namespace.metaFor(path), stat),
     )
   }
 
@@ -735,7 +745,7 @@ export class Workspace {
     )
     const guarded = await applyOpSafeguard(result, opOverride)
     if (opName === 'stat' && guarded instanceof FileStat) {
-      return this.dispatcher.mergeOverlayStat(path, guarded)
+      return mergeOverlayStat(this.namespace.metaFor(path), guarded)
     }
     return guarded
   }
