@@ -21,8 +21,8 @@ try:
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.config import Config as WorkspaceConfig
 except ImportError:
-    WorkspaceConfig = None
-    WorkspaceClient = None
+    WorkspaceConfig = None  # type: ignore[misc, assignment]
+    WorkspaceClient = None  # type: ignore[misc, assignment]
 
 
 class DatabricksVolumeAccessor(Accessor):
