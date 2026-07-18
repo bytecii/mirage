@@ -80,6 +80,11 @@ OPS_INVENTORY = {
         ("unlink", "disk", "", True),
         ("write", "disk", "", True),
     ],
+    "dropbox": [
+        ("read", "dropbox", "", False),
+        ("readdir", "dropbox", "", False),
+        ("stat", "dropbox", "", False),
+    ],
     "email": [
         ("read", "email", "", False),
         ("readdir", "email", "", False),

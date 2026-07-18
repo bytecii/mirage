@@ -101,7 +101,7 @@
         "hf",
         "hf-prefix",
         "dropbox",
-        "dropbox-prefix",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",

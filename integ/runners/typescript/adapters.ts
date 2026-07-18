@@ -176,10 +176,10 @@ async function openHf(target: Target): Promise<Open> {
 }
 
 async function openDropbox(target: Target): Promise<Open> {
-  const root = integRoot()
-  // Mounts sharing a `bucket` share one fake account (the -prefix target
-  // mounts three subfolders of a single account, mirroring s3-prefix's
-  // shared bucket); distinct buckets get isolated accounts.
+  const fixtureRoot = integRoot()
+  // Mounts sharing a `bucket` share one fake account (the -root target
+  // mounts three rootPath subfolders of a single account, mirroring
+  // s3-prefix's shared bucket); distinct buckets get isolated accounts.
   const accounts = new Map<string, FakeDropbox>()
   const mounts: Record<string, DropboxResource> = {}
   for (const m of target.mounts) {
@@ -189,9 +189,9 @@ async function openDropbox(target: Target): Promise<Open> {
       fake = await startFakeDropbox()
       accounts.set(account, fake)
     }
-    const base = m.prefix !== undefined ? `/${m.prefix}` : ''
+    const base = m.root !== undefined ? `/${m.root}` : ''
     if (m.fixture !== undefined) {
-      const dir = join(root, 'fixtures', m.fixture)
+      const dir = join(fixtureRoot, 'fixtures', m.fixture)
       for (const file of walkFiles(dir)) {
         const rel = relative(dir, file).split(sep).join('/')
         fake.seed(`${base}/${rel}`, new Uint8Array(readFileSync(file)))
@@ -202,7 +202,7 @@ async function openDropbox(target: Target): Promise<Open> {
       clientSecret: 'integ-secret',
       refreshToken: 'integ-refresh',
       endpoint: fake.endpoint,
-      ...(m.prefix !== undefined ? { rootPath: m.prefix } : {}),
+      ...(m.root !== undefined ? { rootPath: m.root } : {}),
     })
   }
   const ws = new Workspace(mounts, { mode: MountMode.READ })

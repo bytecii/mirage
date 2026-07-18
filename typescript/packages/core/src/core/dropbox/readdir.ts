@@ -17,6 +17,8 @@ import type { DropboxAccessor } from '../../accessor/dropbox.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { PathSpec } from '../../types.ts'
+import { enoent } from '../../utils/errors.ts'
+import { DropboxApiError } from './_client.ts'
 import { listFolder, type DropboxEntry } from './api.ts'
 
 function resourceTypeFor(entry: DropboxEntry): string {
@@ -44,7 +46,18 @@ export async function readdir(
   }
 
   const dropboxPath = dropboxPathFromKey(accessor.rootPath, key)
-  const files = await listFolder(accessor.tokenManager, dropboxPath)
+  let files: DropboxEntry[]
+  try {
+    files = await listFolder(accessor.tokenManager, dropboxPath)
+  } catch (err) {
+    // list_folder 409s on missing paths and on file operands
+    // (path/not_found, path/not_folder); both map to ENOENT so ls falls
+    // back to its stat-the-operand path like other backends.
+    if (err instanceof DropboxApiError && err.status === 409) {
+      throw enoent(path.virtual)
+    }
+    throw err
+  }
 
   const entries: { name: string; entry: IndexEntry; isDir: boolean }[] = []
   for (const f of files) {

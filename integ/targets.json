@@ -170,8 +170,10 @@
     {
       "id": "dropbox",
       "hosts": [
+        "python",
         "typescript-node"
       ],
+      "service": "dropbox",
       "mounts": [
         {
           "path": "/data",
@@ -196,17 +198,19 @@
       ]
     },
     {
-      "id": "dropbox-prefix",
+      "id": "dropbox-root",
       "hosts": [
+        "python",
         "typescript-node"
       ],
+      "service": "dropbox",
       "mounts": [
         {
           "path": "/data",
           "resource": "dropbox",
           "backend": "dropbox",
           "bucket": "shared",
-          "prefix": "team/reports/data",
+          "root": "team/reports/data",
           "fixture": "files/v1"
         },
         {
@@ -214,14 +218,14 @@
           "resource": "dropbox",
           "backend": "dropbox",
           "bucket": "shared",
-          "prefix": "team/reports/data2"
+          "root": "team/reports/data2"
         },
         {
           "path": "/res",
           "resource": "dropbox",
           "backend": "dropbox",
           "bucket": "shared",
-          "prefix": "team/reports/res",
+          "root": "team/reports/res",
           "fixture": "columnar/v1"
         }
       ]

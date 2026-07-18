@@ -30,6 +30,7 @@ from mirage.accessor.onedrive import OneDriveConfig
 from mirage.accessor.sharepoint import SharePointConfig
 from mirage.core.sharepoint import _resolver as sharepoint_resolver
 from mirage.resource.disk import DiskResource
+from mirage.resource.dropbox import DropboxConfig, DropboxResource
 from mirage.resource.hf_buckets import HfBucketsConfig, HfBucketsResource
 from mirage.resource.nextcloud import NextcloudConfig, NextcloudResource
 from mirage.resource.onedrive.onedrive import OneDriveResource
@@ -118,6 +119,11 @@ def _load_onedrive_server() -> ModuleType:
 def _load_hf_server() -> ModuleType:
     return _load_module(
         Path(__file__).resolve().parents[2] / "server" / "hf_server.py")
+
+
+def _load_dropbox_server() -> ModuleType:
+    return _load_module(
+        Path(__file__).resolve().parents[2] / "server" / "dropbox_server.py")
 
 
 def _load_ssh_server() -> ModuleType:
@@ -246,6 +252,60 @@ class OneDriveService:
         await self.runner.cleanup()
 
 
+class DropboxService:
+    """Per-account fake Dropbox servers, seeded out-of-band.
+
+    Dropbox is a read-only backend, so fixtures cannot seed through the
+    workspace (mkdir/tee); they go straight into the fake's file tree.
+    Mounts sharing a ``bucket`` share one fake account (the -root target
+    mounts three root_path subfolders of a single account); distinct
+    buckets get isolated accounts.
+    """
+
+    seeds = True
+
+    def __init__(self) -> None:
+        self.accounts: dict[str, object] = {}
+        self.runners: list = []
+
+    @classmethod
+    async def create(cls, target: dict) -> "DropboxService":
+        service = cls()
+        module = _load_dropbox_server()
+        fixtures = Path(__file__).resolve().parents[2] / "fixtures"
+        for mount in target["mounts"]:
+            account = mount.get("bucket") or mount["path"]
+            fake = service.accounts.get(account)
+            if fake is None:
+                fake, runner = await module.start_fake_dropbox()
+                service.accounts[account] = fake
+                service.runners.append(runner)
+            base = f"/{mount['root']}" if mount.get("root") else ""
+            fixture = mount.get("fixture")
+            if fixture:
+                root = fixtures / fixture
+                for file in sorted(root.rglob("*")):
+                    if not file.is_file():
+                        continue
+                    rel = file.relative_to(root).as_posix()
+                    fake.seed(f"{base}/{rel}", file.read_bytes())
+        return service
+
+    def resource(self, mount: dict) -> DropboxResource:
+        account = mount.get("bucket") or mount["path"]
+        fake = self.accounts[account]
+        return DropboxResource(
+            DropboxConfig(client_id="integ-client",
+                          client_secret="integ-secret",
+                          refresh_token="integ-refresh",
+                          endpoint=fake.endpoint,
+                          root_path=mount.get("root") or "/"))
+
+    async def teardown(self) -> None:
+        for runner in self.runners:
+            await runner.cleanup()
+
+
 class HfService:
 
     def __init__(self, run_id: str, runner, endpoint: str) -> None:
@@ -307,7 +367,7 @@ class SharePointService:
 
 
 Service = (S3Service | OneDriveService | SharePointService | SSHService
-           | NextcloudService | HfService)
+           | NextcloudService | HfService | DropboxService)
 
 
 def build_ram(
@@ -363,6 +423,13 @@ def build_hf(
     return service.resource(mount), _noop
 
 
+def build_dropbox(
+        mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, DropboxService)
+    return service.resource(mount), _noop
+
+
 def build_ssh(
         mount: dict, run_id: str, service: Service | None
 ) -> tuple[object, Callable[[], Awaitable[None]]]:
@@ -387,11 +454,18 @@ BUILDERS = {
     "ssh": build_ssh,
     "nextcloud": build_nextcloud,
     "hf": build_hf,
+    "dropbox": build_dropbox,
 }
 
 
 async def open_target(
-        target: dict) -> tuple[Workspace, Callable[[], Awaitable[None]]]:
+        target: dict) -> tuple[Workspace, Callable[[], Awaitable[None]], bool]:
+    """Open a target's workspace.
+
+    Returns (workspace, cleanup, seeded); ``seeded`` is True when the
+    service already seeded fixtures out-of-band (read-only backends
+    cannot seed through the workspace), so main skips seed_fixture.
+    """
     run_id = uuid.uuid4().hex[:8]
     service: Service | None = None
     if target.get("service") == "s3":
@@ -406,6 +480,8 @@ async def open_target(
         service = await NextcloudService.create(run_id, target)
     elif target.get("service") == "hf":
         service = await HfService.create(run_id)
+    elif target.get("service") == "dropbox":
+        service = await DropboxService.create(target)
     mounts: dict[str, object] = {}
     cleanups: list[Callable[[], Awaitable[None]]] = []
     for mount in target["mounts"]:
@@ -422,4 +498,5 @@ async def open_target(
         if service is not None:
             await service.teardown()
 
-    return ws, cleanup_all
+    seeded = getattr(service, "seeds", False) is True
+    return ws, cleanup_all, seeded
