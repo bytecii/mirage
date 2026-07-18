@@ -126,11 +126,15 @@ export interface CommandIO<A extends Accessor = Accessor> {
   copy?: CopyOp<A>
   dirCopy?: CopyOp<A>
   create?: PathOp<A>
-  truncate?: PathOp<A>
+  truncate?: (accessor: A, path: PathSpec, length: number) => Promise<void>
   find?: FindOp<A>
   isDirName?: IsDirNameOp<A>
   duTotal?: DuTotalOp<A>
   duAll?: DuAllOp<A>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  append?: (...args: any[]) => unknown
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setAttrs?: (...args: any[]) => unknown
 }
 
 export function resolveGlobOf<A extends Accessor = Accessor>(ops: CommandIO<A>): ResolveGlobOp<A> {

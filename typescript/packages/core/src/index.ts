@@ -84,6 +84,7 @@ export {
   registerOp,
 } from './ops/registry.ts'
 export { RAM_OPS } from './ops/ram/index.ts'
+export { makeGenericOps } from './ops/generic/factory.ts'
 export { extractWriteData } from './ops/write_args.ts'
 export { RAM_COMMANDS } from './commands/builtin/ram/index.ts'
 export {
