@@ -1247,6 +1247,30 @@
         "stdout": "ab cd\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "param_indirect_local",
+      "seq": 500652,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "s3-prefix",
+        "hf",
+        "hf-prefix",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud"
+      ],
+      "command": "vfp1() { local pit=inner; pref3=pit; echo ${!pref3}; }; vfp1",
+      "expect": {
+        "exit": 0,
+        "stdout": "inner\n",
+        "stderr": ""
+      }
     }
   ]
 }
