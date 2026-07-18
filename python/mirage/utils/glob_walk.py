@@ -16,6 +16,7 @@ import dataclasses
 import fnmatch
 import logging
 from collections.abc import Callable
+from typing import Any
 
 from mirage.accessor.base import Accessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
@@ -72,10 +73,10 @@ def spell_match(raw: str, virtual: str, walked: int) -> str:
 
 
 async def expand_pattern(
-    readdir: Callable,
+    readdir: Callable[..., Any],
     accessor: Accessor,
     path: PathSpec,
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
 ) -> list[PathSpec]:
     """Expand a glob PathSpec segment-by-segment via readdir.
 
@@ -93,7 +94,7 @@ async def expand_pattern(
         accessor (Accessor): backend handle passed through to readdir.
         path (PathSpec): unresolved spec whose ``resource_path`` still
             contains the pattern.
-        index (IndexCacheStore | None): the per-call cache index.
+        index (IndexCacheStore): the per-call cache index.
     """
     prefix = path.virtual[:len(path.virtual.rstrip("/")) -
                           len(path.resource_path)]
@@ -140,9 +141,9 @@ async def expand_pattern(
 
 
 def make_resolve_glob(
-    readdir: Callable,
+    readdir: Callable[..., Any],
     max_glob_matches: int | None = DEFAULT_MAX_GLOB_MATCHES,
-) -> Callable:
+) -> Callable[..., Any]:
     """Build a resolve_glob generic over a backend's readdir.
 
     Args:
@@ -154,7 +155,7 @@ def make_resolve_glob(
     async def resolve_glob(
         accessor: Accessor,
         paths: list[PathSpec],
-        index: IndexCacheStore | None = NULL_INDEX,
+        index: IndexCacheStore = NULL_INDEX,
     ) -> list[PathSpec]:
         return await resolve_glob_with(readdir, accessor, paths, index,
                                        max_glob_matches)
@@ -163,10 +164,10 @@ def make_resolve_glob(
 
 
 async def resolve_glob_with(
-    readdir: Callable,
+    readdir: Callable[..., Any],
     accessor: Accessor,
     paths: list[PathSpec],
-    index: IndexCacheStore | None,
+    index: IndexCacheStore,
     cap: int | None = None,
 ) -> list[PathSpec]:
     """Shared resolve_glob loop over a backend's readdir.
@@ -182,7 +183,7 @@ async def resolve_glob_with(
             returning absolute virtual paths.
         accessor (Accessor): backend handle passed through to readdir.
         paths (list[PathSpec]): specs to resolve.
-        index (IndexCacheStore | None): the per-call cache index.
+        index (IndexCacheStore): the per-call cache index.
         cap (int | None): cap on matches per pattern before truncation.
     """
     result: list[PathSpec] = []

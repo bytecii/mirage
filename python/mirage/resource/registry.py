@@ -14,7 +14,7 @@
 
 import importlib.metadata
 import logging
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from mirage.resource.loader import load_backend_class
 
@@ -240,7 +240,8 @@ def resolve_class(ref: str | type) -> type:
     return ref if isinstance(ref, type) else load_backend_class(ref)
 
 
-def build_resource(name: str, config: dict | None = None) -> "BaseResource":
+def build_resource(name: str,
+                   config: dict[str, Any] | None = None) -> "BaseResource":
     """Construct a resource instance by its registry name.
 
     Resolves resource and config classes lazily via importlib, so

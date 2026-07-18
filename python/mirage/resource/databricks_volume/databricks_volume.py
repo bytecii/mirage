@@ -89,7 +89,7 @@ class DatabricksVolumeResource(BaseResource):
             ]
         return await _resolve_glob(self.accessor, paths, self._index)
 
-    def get_state(self) -> dict:
+    def get_state(self) -> dict[str, Any]:
         redacted = ["token"]
         cfg = self.config.model_dump()
         for field in redacted:
@@ -102,5 +102,5 @@ class DatabricksVolumeResource(BaseResource):
             "config": cfg,
         }
 
-    def load_state(self, state: dict) -> None:
+    def load_state(self, state: dict[str, Any]) -> None:
         pass
