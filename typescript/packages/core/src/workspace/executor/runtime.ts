@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { BridgeDispatchFn } from './python/mirage_bridge.ts'
+import { ScriptSource, type RouteScript } from './route/types.ts'
 
 /** One interpreter execution request, language-agnostic. */
 export interface RunArgs {
@@ -48,6 +49,13 @@ export interface Runtime {
   readonly name: string
   readonly captures: readonly string[]
   /**
+   * Per-line admission script for the routing ladder, answering "do I
+   * want this line": a function taking a RouteContext, or a
+   * config-borne ScriptSource. Absent = always willing. Policy, not
+   * capability: it can only refuse lines the captures already allow.
+   */
+  script?: RouteScript
+  /**
    * Late-wire workspace I/O into a user-constructed instance. The
    * workspace attaches its dispatch bridge at construction; runtimes
    * that never touch workspace files keep this a no-op.
@@ -60,7 +68,71 @@ export interface Runtime {
 /** A workspace runtimes-list entry: an instance or a name shorthand. */
 export type RuntimeEntry = Runtime | string
 
-export const VFS_ENTRY = 'vfs'
+/** The code API takes functions; script source belongs to config. */
+export function scriptStringError(kind = 'a script'): Error {
+  return new Error(
+    `${kind} in code must be a function taking the RouteContext; config ` +
+      `scripts reference a .py file (script:/route: in the workspace yaml)`,
+  )
+}
+
+/**
+ * The workspace's built-in command engine as a runtime.
+ *
+ * By default it captures nothing and serves every command no other
+ * runtime captures (cat, ls, echo, and anything unknown): it is the
+ * catch-all. Passing explicit captures flips it into an ordinary
+ * capturer: the workspace serves exactly those commands and anything
+ * unclaimed exits 126. Required: every workspace world contains
+ * exactly one, appended automatically when the runtimes list omits it;
+ * pass your own instance to customize it. run() stays unimplemented
+ * until the line-door contract exists; the workspace executor serves
+ * its commands internally.
+ */
+export class VfsRuntime implements Runtime {
+  readonly name = 'vfs'
+  readonly captures: readonly string[] = []
+  // Declaring captures (even empty) turns the catch-all off; the
+  // dispatcher reads this bit, not the array's length.
+  readonly restricted: boolean = false
+  script?: RouteScript
+
+  // The record form exists for the shared buildRuntime path, which
+  // hands every runtime its options object ({script?, captures?}).
+  constructor(options?: RouteScript | Record<string, unknown>) {
+    if (typeof options === 'function' || options instanceof ScriptSource) {
+      this.script = options
+      return
+    }
+    if (options === undefined) return
+    if (typeof options === 'string') throw scriptStringError()
+    const script = options.script
+    if (typeof script === 'string') throw scriptStringError()
+    if (typeof script === 'function' || script instanceof ScriptSource) {
+      this.script = script as RouteScript
+    }
+    if (Array.isArray(options.captures)) {
+      this.captures = (options.captures as string[]).slice()
+      this.restricted = true
+    }
+  }
+
+  attach(): void {
+    // the workspace executor serves vfs commands; nothing to wire
+  }
+
+  run(): Promise<never> {
+    return Promise.reject(
+      new Error(
+        'the vfs runtime has no interpreter door; the workspace executor runs its commands',
+      ),
+    )
+  }
+
+  close(): Promise<void> {
+    return Promise.resolve()
+  }
+}
 
 /**
  * The default world when no runtimes list is given: today's behavior
@@ -68,7 +140,7 @@ export const VFS_ENTRY = 'vfs'
  * `@pydantic/monty` can answer builtin `open()` calls; `local`/`wasi`
  * are Python-only.
  */
-export const DEFAULT_ENTRIES: readonly string[] = ['pyodide', 'quickjs', VFS_ENTRY]
+export const DEFAULT_ENTRIES: readonly string[] = ['pyodide', 'quickjs', 'vfs']
 
 /** Python-only runtime names a cross-language config may carry. */
 export const PYTHON_ONLY_HINTS: Record<string, string> = {
@@ -83,26 +155,64 @@ export const PYTHON_ONLY_HINTS: Record<string, string> = {
 }
 
 /**
+ * Resolve an explicit runtime name into a binding override map.
+ *
+ * Naming a runtime places a line's captured stages on it without
+ * touching capability: only commands the runtime captures rebind,
+ * everything else keeps its normal binding.
+ */
+export function runtimeBindingsFor(
+  entries: readonly Runtime[],
+  name: string,
+): Record<string, Runtime> {
+  if (name === 'vfs') {
+    throw new Error(`'vfs' is the default executor, not a runtime you can select`)
+  }
+  for (const entry of entries) {
+    if (entry.name === name) {
+      const bindings: Record<string, Runtime> = {}
+      for (const command of entry.captures) bindings[command] = entry
+      return bindings
+    }
+  }
+  const known = entries.map((e) => `'${e.name}'`).join(', ')
+  throw new Error(`unknown runtime: '${name}' (workspace runtimes: ${known})`)
+}
+
+/**
  * Resolve the ordered world into a command -> runtime binding map.
  *
- * A command binds to the FIRST entry that captures it; the vfs entry is
- * an ordering marker with no interpreter captures. Duplicate names are
- * rejected: a second entry under the same name could never bind
- * anything and always signals a config mistake.
+ * A command binds to the FIRST entry that captures it; a default vfs
+ * runtime captures nothing, so only a vfs with declared captures
+ * appears in the map. Duplicate names are rejected: a second entry
+ * under the same name could never bind anything and always signals a
+ * config mistake.
  */
-export function bindCommands(entries: readonly RuntimeEntry[]): Record<string, Runtime> {
+export function bindCommands(entries: readonly Runtime[]): Record<string, Runtime> {
   const bindings: Record<string, Runtime> = {}
   const seen = new Set<string>()
   for (const entry of entries) {
-    const entryName = typeof entry === 'string' ? entry : entry.name
-    if (seen.has(entryName)) {
-      throw new Error(`duplicate runtime entry: '${entryName}'`)
+    if (seen.has(entry.name)) {
+      throw new Error(`duplicate runtime entry: '${entry.name}'`)
     }
-    seen.add(entryName)
-    if (typeof entry === 'string') continue
+    seen.add(entry.name)
     for (const command of entry.captures) {
       if (!(command in bindings)) bindings[command] = entry
     }
   }
   return bindings
+}
+
+/**
+ * The runtime that serves commands no entry captures, if any.
+ *
+ * That is the world's VfsRuntime, unless it declares captures (then it
+ * is an ordinary capturer and nothing is catch-all) or it is not among
+ * the given entries (refused the line / omitted).
+ */
+export function catchAll(entries: readonly Runtime[]): Runtime | null {
+  for (const entry of entries) {
+    if (entry instanceof VfsRuntime && !entry.restricted) return entry
+  }
+  return null
 }
