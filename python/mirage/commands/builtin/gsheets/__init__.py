@@ -20,13 +20,13 @@ from mirage.commands.builtin.gsheets.gws_sheets_spreadsheets_batchUpdate import 
 from mirage.commands.builtin.gsheets.gws_sheets_spreadsheets_create import \
     gws_sheets_spreadsheets_create  # noqa: E501
 from mirage.commands.builtin.gsheets.gws_sheets_write import gws_sheets_write
-from mirage.commands.builtin.gsheets.ops import OPS as _GSHEETS_CMD_OPS
+from mirage.commands.builtin.gsheets.io import IO as _IO
 from mirage.commands.builtin.gsheets.rm import rm
 
 COMMANDS = [
     *make_generic_commands(
         "gsheets",
-        _GSHEETS_CMD_OPS,
+        _IO,
     ),
     rm,
     gws_sheets_append,
