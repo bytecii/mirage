@@ -53,9 +53,11 @@ async function runTarget(
   report: Report | null,
   emit: EmitRow[] | null,
 ): Promise<void> {
-  const { ws, cleanup } = await ADAPTERS[target.mounts[0].resource](target)
+  const { ws, cleanup, seeded } = await ADAPTERS[target.mounts[0].resource](target)
   try {
-    for (const mount of target.mounts) await seedFixture(ws, mount.fixture, mount.path, root)
+    if (seeded !== true) {
+      for (const mount of target.mounts) await seedFixture(ws, mount.fixture, mount.path, root)
+    }
     for (const c of cases) {
       if (!c.targets.includes(target.id)) continue
       const { exitCode, out, err, elapsed } = await runCase(ws, c)

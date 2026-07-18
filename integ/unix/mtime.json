@@ -84,6 +84,8 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-prefix",
         "onedrive",
         "sharepoint",
         "ssh",

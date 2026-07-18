@@ -129,7 +129,7 @@ export function loadCases(root: string): Case[] {
   return cases
 }
 
-function walkFiles(base: string): string[] {
+export function walkFiles(base: string): string[] {
   const out: string[] = []
   for (const entry of readdirSync(base)) {
     const full = join(base, entry)
