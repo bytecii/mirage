@@ -21,6 +21,12 @@ export interface DropboxConfig {
   clientId: string
   clientSecret?: string
   refreshToken: string
+  /**
+   * Base URL overriding the real Dropbox hosts (integ fakes): one origin
+   * serving `/oauth2/token`, the RPC API under `/2`, and content downloads
+   * under `/2`. Unset means the production oauth/api/content hosts.
+   */
+  endpoint?: string
   refreshFn?: (refreshToken: string) => Promise<{ accessToken: string; expiresIn: number }>
 }
 
@@ -33,6 +39,11 @@ export class DropboxApiError extends Error {
   }
 }
 
+function tokenUrlOf(config: DropboxConfig): string {
+  if (config.endpoint === undefined || config.endpoint === '') return DROPBOX_TOKEN_URL
+  return `${config.endpoint.replace(/\/+$/, '')}/oauth2/token`
+}
+
 export async function refreshAccessToken(config: DropboxConfig): Promise<[string, number]> {
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
@@ -42,7 +53,7 @@ export async function refreshAccessToken(config: DropboxConfig): Promise<[string
   if (config.clientSecret !== undefined && config.clientSecret !== '') {
     body.set('client_secret', config.clientSecret)
   }
-  const r = await fetch(DROPBOX_TOKEN_URL, {
+  const r = await fetch(tokenUrlOf(config), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
@@ -56,6 +67,8 @@ export async function refreshAccessToken(config: DropboxConfig): Promise<[string
 }
 
 export class DropboxTokenManager {
+  readonly apiBase: string
+  readonly contentBase: string
   private readonly config: DropboxConfig
   private accessToken: string | null = null
   private expiresAt = 0
@@ -63,6 +76,14 @@ export class DropboxTokenManager {
 
   constructor(config: DropboxConfig) {
     this.config = config
+    if (config.endpoint !== undefined && config.endpoint !== '') {
+      const base = `${config.endpoint.replace(/\/+$/, '')}/2`
+      this.apiBase = base
+      this.contentBase = base
+    } else {
+      this.apiBase = DROPBOX_API_BASE
+      this.contentBase = DROPBOX_CONTENT_BASE
+    }
   }
 
   async getToken(): Promise<string> {
@@ -106,7 +127,7 @@ export async function dropboxRpc(
   body: unknown,
 ): Promise<unknown> {
   const headers = await dropboxAuthHeaders(tm)
-  const url = `${DROPBOX_API_BASE}${endpoint}`
+  const url = `${tm.apiBase}${endpoint}`
   const r = await fetch(url, {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
@@ -121,7 +142,7 @@ export async function dropboxRpc(
 
 export async function dropboxDownload(tm: DropboxTokenManager, path: string): Promise<Uint8Array> {
   const headers = await dropboxAuthHeaders(tm)
-  const url = `${DROPBOX_CONTENT_BASE}/files/download`
+  const url = `${tm.contentBase}/files/download`
   const r = await fetch(url, {
     method: 'POST',
     headers: { ...headers, 'Dropbox-API-Arg': JSON.stringify({ path }) },
@@ -139,7 +160,7 @@ export async function* dropboxDownloadStream(
   path: string,
 ): AsyncIterable<Uint8Array> {
   const headers = await dropboxAuthHeaders(tm)
-  const url = `${DROPBOX_CONTENT_BASE}/files/download`
+  const url = `${tm.contentBase}/files/download`
   const r = await fetch(url, {
     method: 'POST',
     headers: { ...headers, 'Dropbox-API-Arg': JSON.stringify({ path }) },

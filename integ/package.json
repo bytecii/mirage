@@ -13,6 +13,7 @@
     "s3_cases": "tsx s3_cases.ts",
     "mongodb": "tsx mongodb.ts",
     "notion": "tsx notion.ts",
+    "dropbox": "tsx dropbox.ts",
     "postgres": "tsx postgres.ts",
     "safeguard": "tsx safeguard.ts",
     "chroma": "tsx chroma.ts",

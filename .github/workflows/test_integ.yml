@@ -300,6 +300,12 @@ jobs:
           pnpm exec tsx notion.ts > /tmp/notion_ts.out
           diff truth_notion.txt /tmp/notion_ts.out
 
+      - name: Run dropbox integ (TS, mock server) and diff against truth
+        working-directory: integ
+        run: |
+          pnpm exec tsx dropbox.ts > /tmp/dropbox_ts.out
+          diff truth_dropbox.txt /tmp/dropbox_ts.out
+
       - name: Run lancedb integ (TS, embedded) and diff against truth
         working-directory: integ
         run: |
