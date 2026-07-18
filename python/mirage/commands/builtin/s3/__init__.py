@@ -17,7 +17,7 @@ from mirage.commands.builtin.generic_bind import make_generic_commands
 from mirage.commands.builtin.s3._provision import \
     file_read_provision as _ft_provision
 from mirage.commands.builtin.s3.du import du
-from mirage.commands.builtin.s3.io import IO as _S3_CMD_OPS
+from mirage.commands.builtin.s3.io import IO as _IO
 from mirage.commands.builtin.s3.mkdir import mkdir
 from mirage.commands.builtin.s3.rm import rm
 from mirage.commands.builtin.s3.stat import stat
@@ -33,10 +33,10 @@ _S3_OVERRIDES = {"stat", "du", "rm", "mkdir", "tee", "touch"}
 
 COMMANDS = [
     *make_filetype_commands(
-        "s3", _S3_CMD_OPS.resolve_glob, _read, provision=_ft_provision),
+        "s3", _IO.resolve_glob, _read, provision=_ft_provision),
     *make_generic_commands(
         "s3",
-        _S3_CMD_OPS,
+        _IO,
         overrides=_S3_OVERRIDES,
     ),
     du,
