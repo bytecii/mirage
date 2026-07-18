@@ -24,9 +24,9 @@ function resourceTypeFor(entry: DropboxEntry): string {
   return 'dropbox/file'
 }
 
-function dropboxPathFromKey(key: string): string {
-  if (key === '') return ''
-  return `/${key}`
+function dropboxPathFromKey(root: string, key: string): string {
+  if (key === '') return root
+  return `${root}/${key}`
 }
 
 export async function readdir(
@@ -43,7 +43,7 @@ export async function readdir(
     if (cached.entries !== undefined && cached.entries !== null) return cached.entries
   }
 
-  const dropboxPath = dropboxPathFromKey(key)
+  const dropboxPath = dropboxPathFromKey(accessor.rootPath, key)
   const files = await listFolder(accessor.tokenManager, dropboxPath)
 
   const entries: { name: string; entry: IndexEntry; isDir: boolean }[] = []

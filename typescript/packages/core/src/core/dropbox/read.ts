@@ -27,11 +27,11 @@ function eisdir(p: string): Error {
   return e
 }
 
-function dropboxPathFromVirtual(virtualKey: string, prefix: string): string {
+function dropboxPathFromVirtual(root: string, virtualKey: string, prefix: string): string {
   let key = virtualKey
   if (prefix !== '' && key.startsWith(prefix)) key = key.slice(prefix.length)
   key = stripSlash(key)
-  return key === '' ? '' : `/${key}`
+  return key === '' ? root : `${root}/${key}`
 }
 
 export async function read(
@@ -63,7 +63,7 @@ export async function read(
     if (entry === undefined || entry === null) throw enoent(path.virtual)
   }
   if (entry.resourceType === 'dropbox/folder') throw eisdir(path.virtual)
-  const dropboxPath = dropboxPathFromVirtual(virtualKey, prefix)
+  const dropboxPath = dropboxPathFromVirtual(accessor.rootPath, virtualKey, prefix)
   return dropboxDownload(accessor.tokenManager, dropboxPath)
 }
 
@@ -96,7 +96,7 @@ export async function* stream(
     if (entry === undefined || entry === null) throw enoent(path.virtual)
   }
   if (entry.resourceType === 'dropbox/folder') throw eisdir(path.virtual)
-  const dropboxPath = dropboxPathFromVirtual(virtualKey, prefix)
+  const dropboxPath = dropboxPathFromVirtual(accessor.rootPath, virtualKey, prefix)
   for await (const chunk of dropboxDownloadStream(accessor.tokenManager, dropboxPath)) {
     yield chunk
   }

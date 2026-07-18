@@ -38,6 +38,28 @@ console.log(res.stdoutText)
 The `DropboxTokenManager` caches the access token in memory and refreshes it ~5 minutes before
 expiry, so cold-start API calls don't pay the refresh round-trip.
 
+## Mount a subfolder
+
+Pass `rootPath` to expose a single Dropbox folder as the mount root instead of the whole
+account. Every command and FUSE/VFS op is scoped to that folder; paths outside it are
+unreachable.
+
+```ts
+const dropbox = new DropboxResource({
+  clientId: process.env.DROPBOX_APP_KEY!,
+  clientSecret: process.env.DROPBOX_APP_SECRET!,
+  refreshToken: process.env.DROPBOX_REFRESH_TOKEN!,
+  rootPath: '/Team/data',
+})
+
+const ws = new Workspace({ '/dropbox': dropbox }, { mode: MountMode.READ })
+await ws.execute('ls /dropbox/') // lists the contents of /Team/data
+```
+
+`rootPath` accepts `Team/data`, `/Team/data`, or `/Team/data/` (all normalized the same way);
+`..` segments are rejected. Config dictionaries (e.g. via the resource registry) may spell it
+`root_path`. Omitting it (or passing `/`) mounts the account root as before.
+
 ## Browser (PKCE, no client secret)
 
 ```bash
