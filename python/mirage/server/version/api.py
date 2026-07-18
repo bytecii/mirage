@@ -136,12 +136,6 @@ async def diff_live_vs_ref(store: VersionStore, state: dict[str, Any],
     return _strip_meta(await store.diff(ref_tree, live_tree))
 
 
-async def status(store: VersionStore,
-                 ws,
-                 branch: str = "main") -> dict[str, list[str]]:
-    return await status_state(store, await to_state_dict(ws), branch)
-
-
 async def status_state(store: VersionStore,
                        state: dict[str, Any],
                        branch: str = "main") -> dict[str, list[str]]:
