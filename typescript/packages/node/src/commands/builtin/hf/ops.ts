@@ -15,7 +15,9 @@
 import type { CommandIO } from '@struktoai/mirage-core'
 import type { HfAccessor } from '../../../accessor/hf.ts'
 import { SCOPE_ERROR } from '../../../core/hf/constants.ts'
+import { create as hfCreate } from '../../../core/hf/create.ts'
 import { mkdir as hfMkdir } from '../../../core/hf/mkdir.ts'
+import { unlink as hfUnlink } from '../../../core/hf/unlink.ts'
 import { read as hfRead } from '../../../core/hf/read.ts'
 import { readdir as hfReaddir } from '../../../core/hf/readdir.ts'
 import { stat as hfStat } from '../../../core/hf/stat.ts'
@@ -34,4 +36,6 @@ export const HF_CMD_OPS: CommandIO<HfAccessor> = {
   write: hfWrite,
   exists: hfExists,
   mkdir: (accessor, path) => hfMkdir(accessor, path),
+  unlink: hfUnlink,
+  create: hfCreate,
 }
