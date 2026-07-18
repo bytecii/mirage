@@ -17,11 +17,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import NamedTuple, overload
 
-from mirage.accessor.base import Accessor
 from mirage.cache.index import IndexCacheStore
 from mirage.ops.config import StatOverlay
 from mirage.types import FileStat, PathSpec
-from mirage.utils.glob_walk import resolve_glob_with
+from mirage.utils.glob_walk import DEFAULT_MAX_GLOB_MATCHES, make_resolve_glob
 
 
 async def overlaid_stat(stat: Callable, overlay: StatOverlay, path: PathSpec,
@@ -79,24 +78,6 @@ class Builder(NamedTuple):
     read: bool = False
 
 
-def make_resolve_glob(readdir: Callable,
-                      max_glob_matches: int | None = None) -> Callable:
-    """Build a resolve_glob generic over a backend's readdir.
-
-    Args:
-        readdir (Callable): backend readdir ``(accessor, path, index)``.
-        max_glob_matches (int | None): cap on matches per pattern before
-            truncation.
-    """
-
-    async def resolve_glob(accessor: Accessor, paths: list[PathSpec],
-                           index: IndexCacheStore | None) -> list[PathSpec]:
-        return await resolve_glob_with(readdir, accessor, paths, index,
-                                       max_glob_matches)
-
-    return resolve_glob
-
-
 @dataclass(frozen=True)
 class CommandIO:
     readdir: Callable
@@ -105,7 +86,7 @@ class CommandIO:
     stat: Callable
     is_mounted: Callable
     local: bool = True
-    max_glob_matches: int | None = None
+    max_glob_matches: int | None = DEFAULT_MAX_GLOB_MATCHES
     write: Callable | None = None
     exists: Callable | None = None
     mkdir: Callable | None = None

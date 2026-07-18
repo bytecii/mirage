@@ -20,9 +20,9 @@ from mirage.cache.index import IndexCacheStore
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.commands.builtin.generic.du import du_multi
 from mirage.commands.builtin.github._provision import metadata_provision
+from mirage.commands.builtin.github.ops import RESOLVE_GLOB as resolve_glob
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.core.github.glob import resolve_glob
 from mirage.io.types import ByteSource, IOResult
 from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
