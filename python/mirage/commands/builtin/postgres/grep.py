@@ -19,11 +19,11 @@ from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.grep import grep as generic_grep
 from mirage.commands.builtin.grep_helper import pattern_arg
 from mirage.commands.builtin.postgres._provision import search_provision
+from mirage.commands.builtin.postgres.ops import RESOLVE_GLOB as resolve_glob
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
-from mirage.core.postgres.glob import resolve_glob
 from mirage.core.postgres.read import read as postgres_read
 from mirage.core.postgres.readdir import readdir as _readdir
 from mirage.core.postgres.scope import detect_scope

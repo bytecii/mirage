@@ -13,11 +13,14 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.email import EmailAccessor
-from mirage.core.email.glob import resolve_glob as _resolve_glob
+from mirage.core.email.readdir import readdir
 from mirage.resource.base import BaseResource
 from mirage.resource.email.config import EmailConfig
 from mirage.resource.email.prompt import PROMPT, WRITE_PROMPT
 from mirage.types import ResourceName
+from mirage.utils.glob_walk import make_resolve_glob
+
+_resolve_glob = make_resolve_glob(readdir)
 
 
 class EmailResource(BaseResource):
