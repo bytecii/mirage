@@ -28,8 +28,7 @@ from mirage.utils.key_prefix import mount_key, mount_prefix_of
 logger = logging.getLogger(__name__)
 
 
-def dropbox_path_from_virtual(root: str, virtual_key: str,
-                              prefix: str) -> str:
+def dropbox_path_from_virtual(root: str, virtual_key: str, prefix: str) -> str:
     key = virtual_key
     if prefix and key.startswith(prefix):
         key = key[len(prefix):]

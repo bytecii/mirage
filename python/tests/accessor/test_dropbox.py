@@ -43,9 +43,7 @@ def test_dotdot_segments_rejected():
 
 
 def test_accessor_defaults_to_account_root():
-    config = DropboxConfig(client_id="c",
-                           client_secret="s",
-                           refresh_token="r")
+    config = DropboxConfig(client_id="c", client_secret="s", refresh_token="r")
     accessor = DropboxAccessor(config, DropboxTokenManager(config))
     assert accessor.root_path == ""
 

@@ -25,7 +25,7 @@ class FakeDropbox:
     Serves the three endpoints the backend calls — /oauth2/token,
     /2/files/list_folder, /2/files/download — on a single origin,
     matching the DropboxConfig ``endpoint`` override. Mirrors the TS
-    fake in integ/runners/typescript/dropbox_fake.ts.
+    fake in integ/server/dropbox.ts.
     """
 
     def __init__(self) -> None:
@@ -84,8 +84,8 @@ class FakeDropbox:
         body = await request.json()
         entries = self._list_children(body.get("path") or "")
         if entries is None:
-            return web.json_response(
-                {"error_summary": "path/not_found/..."}, status=409)
+            return web.json_response({"error_summary": "path/not_found/..."},
+                                     status=409)
         return web.json_response({
             "entries": entries,
             "cursor": "cursor-0",
@@ -96,8 +96,8 @@ class FakeDropbox:
         arg = json.loads(request.headers.get("Dropbox-API-Arg", "{}"))
         content = self.files.get(arg.get("path") or "")
         if content is None:
-            return web.json_response(
-                {"error_summary": "path/not_found/..."}, status=409)
+            return web.json_response({"error_summary": "path/not_found/..."},
+                                     status=409)
         return web.Response(body=content,
                             content_type="application/octet-stream")
 

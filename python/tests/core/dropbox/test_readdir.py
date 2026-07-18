@@ -68,6 +68,7 @@ async def test_readdir_root_marks_folders_with_slash(index):
 
 @pytest.mark.asyncio
 async def test_readdir_scopes_under_subfolder_root(index):
+
     async def fake_list(tm, path):
         if path == "/Team/data":
             return [{
@@ -94,8 +95,8 @@ async def test_readdir_scopes_under_subfolder_root(index):
             index)
         nested = await readdir(
             accessor,
-            PathSpec(resource_path="docs", virtual="/docs",
-                     directory="/docs"), index)
+            PathSpec(resource_path="docs", virtual="/docs", directory="/docs"),
+            index)
     assert root == ["/docs/"]
     assert nested == ["/docs/note.md"]
 
