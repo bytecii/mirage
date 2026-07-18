@@ -35,7 +35,7 @@ import {
   Workspace,
 } from '@struktoai/mirage-node'
 import { installFakeNavigator, makeMockRoot } from '../../../typescript/packages/browser/src/test-utils.ts'
-import { startFakeDropbox, type FakeDropbox } from './dropbox_fake.ts'
+import { startFakeDropbox, type FakeDropbox } from '../../server/dropbox.ts'
 import { integRoot, walkFiles, type ExecWorkspace, type Mount, type Target } from './harness.ts'
 
 export interface Open {
