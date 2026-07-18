@@ -16,8 +16,9 @@ import pytest
 
 from mirage.runtime.base import RunArgs, RunResult, Runtime
 from mirage.runtime.python import LocalRuntime
-from mirage.runtime.table import (DEFAULT_ENTRIES, RUNTIMES, VFS_ENTRY,
-                                  bind_commands, build_runtime)
+from mirage.runtime.table import (DEFAULT_ENTRIES, RUNTIMES, VfsRuntime,
+                                  bind_commands, build_runtime,
+                                  runtime_bindings_for)
 
 
 class FakeRuntime(Runtime):
@@ -30,7 +31,7 @@ class FakeRuntime(Runtime):
 
 def test_default_entries_never_include_local():
     assert "local" not in DEFAULT_ENTRIES
-    assert DEFAULT_ENTRIES[-1] == VFS_ENTRY
+    assert DEFAULT_ENTRIES[-1] == "vfs"
 
 
 def test_build_runtime_unknown_name_fails_loud():
@@ -51,14 +52,18 @@ def test_build_runtime_local_takes_options():
 def test_bind_commands_first_capturer_wins():
     fake = FakeRuntime()
     local = LocalRuntime()
-    bindings = bind_commands([fake, local, VFS_ENTRY])
+    bindings = bind_commands([fake, local, VfsRuntime()])
     assert bindings["python3"] is fake
     assert bindings["made-up"] is fake
     assert bindings["python"] is local
 
 
-def test_bind_commands_vfs_marker_binds_nothing():
-    assert bind_commands([VFS_ENTRY]) == {}
+def test_bind_commands_vfs_runtime_binds_nothing():
+    assert bind_commands([VfsRuntime()]) == {}
+
+
+def test_build_runtime_vfs_is_a_named_runtime():
+    assert isinstance(build_runtime("vfs"), VfsRuntime)
 
 
 def test_bind_commands_rejects_duplicate_names():
@@ -69,3 +74,19 @@ def test_bind_commands_rejects_duplicate_names():
 def test_every_runtime_declares_captures():
     for cls in RUNTIMES:
         assert cls.captures
+
+
+def test_runtime_bindings_for_maps_only_the_named_captures():
+    fake = FakeRuntime()
+    bindings = runtime_bindings_for([fake, VfsRuntime()], "fake")
+    assert bindings == {"python3": fake, "made-up": fake}
+
+
+def test_runtime_bindings_for_rejects_vfs():
+    with pytest.raises(ValueError, match="not a runtime you can select"):
+        runtime_bindings_for([FakeRuntime(), VfsRuntime()], "vfs")
+
+
+def test_runtime_bindings_for_unknown_name_lists_entries():
+    with pytest.raises(ValueError, match="'fake', 'vfs'"):
+        runtime_bindings_for([FakeRuntime(), VfsRuntime()], "nope")

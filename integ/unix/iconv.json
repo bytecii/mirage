@@ -15,7 +15,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/a.txt | iconv -f utf-8 -t utf-8",
       "expect": {
@@ -39,7 +41,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "iconv",
       "expect": {

@@ -17,7 +17,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "grep -v c /data/dup.txt | sort | uniq | wc -l",
       "expect": {
@@ -43,7 +45,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/csv.csv | cut -d , -f 2 | sort -n",
       "expect": {
@@ -69,7 +73,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "jq \".id\" /data/data.jsonl | grep 2",
       "expect": {
@@ -95,7 +101,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "find /data -name \"*.txt\" | grep dup | wc -l",
       "expect": {
@@ -121,7 +129,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/dup.txt | tr a-z A-Z | sort | uniq -c",
       "expect": {
@@ -147,7 +157,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "head /data/numbers.txt | tail -n 2",
       "expect": {
@@ -173,7 +185,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "tail /data/a.txt | head -n 1",
       "expect": {
@@ -199,7 +213,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "awk '{print $2}' /data/fields.txt | sort -n",
       "expect": {
@@ -225,7 +241,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "grep -v name /data/csv.csv | cut -d , -f 1",
       "expect": {
@@ -251,7 +269,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "sed 's/hello/hi/g' /data/mixed.txt | wc -l",
       "expect": {
@@ -277,7 +297,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "find /data/sub -name \"*.txt\" | sort | head -n 1",
       "expect": {
@@ -303,7 +325,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/dup.txt | tr a-z A-Z | sort | uniq -c | sort -n",
       "expect": {
@@ -329,7 +353,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/sorted_a.txt /data/sorted_b.txt | head -n 2",
       "expect": {
@@ -355,7 +381,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/sorted_a.txt /data/sorted_b.txt | head -n 4",
       "expect": {
@@ -381,7 +409,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/sorted_a.txt",
       "expect": {
@@ -407,7 +437,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/sorted_b.txt",
       "expect": {

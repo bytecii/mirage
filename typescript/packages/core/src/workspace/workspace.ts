@@ -62,9 +62,20 @@ import { handlePythonRepl } from './executor/python/handle.ts'
 import type { BridgeDispatchFn, MirageEntry } from './executor/python/mirage_bridge.ts'
 import type { PythonRuntime } from './executor/python/runtimes/interface.ts'
 import {
+  commandFacts,
+  decideLine,
+  RoutingDecisionError,
+  type RoutingDecision,
+  type RouteContext,
+  type RouteFn,
+} from './executor/route/index.ts'
+import {
   bindCommands,
+  catchAll,
+  runtimeBindingsFor,
+  scriptStringError,
   DEFAULT_ENTRIES,
-  VFS_ENTRY,
+  VfsRuntime,
   type Runtime,
   type RuntimeEntry,
 } from './executor/runtime.ts'
@@ -135,10 +146,18 @@ export interface WorkspaceOptions {
   }
   /**
    * The workspace's ordered runtime world: instances and name
-   * shorthands plus the vfs marker; the first capturer binds each
+   * shorthands including 'vfs'; the first capturer binds each
    * command. Unset = the default world (pyodide, quickjs, vfs).
    */
   runtimes?: RuntimeEntry[]
+  /**
+   * Global route script for the routing ladder: a function taking the
+   * RouteContext (or a config-borne ScriptSource) naming the runtime
+   * for a line, or null to fall to the entries' own scripts. Ladder:
+   * the runtime argument > route > scripts by list order > admission
+   * failure (exit 126).
+   */
+  route?: RouteFn
 }
 
 export class ExecuteResult {
@@ -200,6 +219,19 @@ export interface ExecuteOptions {
    * this option.
    */
   env?: Record<string, string>
+  /**
+   * Explicit runtime for this line, naming a workspace runtime entry.
+   * Stages the named runtime captures rebind to it for this line only
+   * (nested evals inherit it); everything else keeps its normal
+   * binding, so the argument overrides policy, never capability.
+   * Throws for a name that is not a workspace entry.
+   */
+  runtime?: string
+  /**
+   * @internal The typed line's routing decision, forwarded to nested
+   * evals so inner lines never re-route.
+   */
+  routingDecision?: RoutingDecision
 }
 
 export class Workspace {
@@ -227,8 +259,9 @@ export class Workspace {
   readonly fs: WorkspaceFS
   private closed = false
   private readonly closers: (() => Promise<void>)[] = []
-  private readonly runtimeEntries: RuntimeEntry[]
-  private readonly runtimeBindings: Record<string, Runtime>
+  private readonly runtimeEntries: Runtime[]
+  private runtimeBindings: Record<string, Runtime>
+  private readonly route: RouteFn | null
   // True when the workspace auto-added an empty `/` anchor (no user `/` mount).
   // The anchor is internal and is not forwarded into the Pyodide filesystem.
   private syntheticRootAnchor = false
@@ -297,27 +330,30 @@ export class Workspace {
     this.runtimeEntries = []
     if (options.runtimes === undefined) {
       for (const name of DEFAULT_ENTRIES) {
-        if (name === VFS_ENTRY) {
-          this.runtimeEntries.push(VFS_ENTRY)
-          continue
-        }
         this.runtimeEntries.push(buildRuntime(name, name === 'pyodide' ? { ...userPython } : {}))
       }
     } else {
       for (const entry of options.runtimes) {
-        if (typeof entry === 'string' && entry !== VFS_ENTRY) {
-          this.runtimeEntries.push(buildRuntime(entry))
-        } else {
-          this.runtimeEntries.push(entry)
-        }
+        this.runtimeEntries.push(typeof entry === 'string' ? buildRuntime(entry) : entry)
       }
     }
+    // The vfs runtime is required: every world names an executor for
+    // unclaimed commands, so an omitted entry appends the default
+    // unconditional one.
+    if (!this.runtimeEntries.some((entry) => entry.name === 'vfs')) {
+      this.runtimeEntries.push(new VfsRuntime())
+    }
+    this.registry.vfsRuntime =
+      this.runtimeEntries.find((entry) => entry instanceof VfsRuntime) ?? null
     for (const entry of this.runtimeEntries) {
-      if (typeof entry === 'string') continue
+      if (typeof entry.script === 'string')
+        throw scriptStringError(`runtime '${entry.name}' script`)
       entry.attach(this.buildWorkspaceBridge(), () => this.sandboxVisibleMounts())
       this.closers.push(() => entry.close())
     }
     this.runtimeBindings = bindCommands(this.runtimeEntries)
+    if (typeof options.route === 'string') throw scriptStringError('route')
+    this.route = options.route ?? null
     this.observer = new Observer(observeStore)
     this.registry.mount(HISTORY_PREFIX, new HistoryViewResource(this.observer), MountMode.READ)
     this.cache = options.cache ?? new RAMFileCacheStore({ limit: options.cacheLimit ?? '512MB' })
@@ -399,6 +435,78 @@ export class Workspace {
       prefixes.push(m.prefix)
     }
     return prefixes
+  }
+
+  /**
+   * Append a runtime entry to the workspace's ordered world.
+   *
+   * The entry lands last, so it never steals a command an earlier
+   * entry already captures (first capturer still wins). A name builds
+   * like a config entry and fails loud; a duplicate name is rejected
+   * before any state changes.
+   */
+  addRuntime(runtime: RuntimeEntry): Runtime {
+    const entry: Runtime = typeof runtime === 'string' ? buildRuntime(runtime) : runtime
+    if (typeof entry.script === 'string') throw scriptStringError(`runtime '${entry.name}' script`)
+    const candidate = [...this.runtimeEntries, entry]
+    const bindings = bindCommands(candidate)
+    entry.attach(this.buildWorkspaceBridge(), () => this.sandboxVisibleMounts())
+    this.closers.push(() => entry.close())
+    this.runtimeEntries.push(entry)
+    this.runtimeBindings = bindings
+    return entry
+  }
+
+  /**
+   * The routing ladder for one typed line: runtime, route, scripts.
+   * Returns null when nothing decides (no runtime argument, no policy
+   * configured)
+   * so dispatch falls to the static bindings; a nested eval inherits
+   * the typed line's decision and never re-routes.
+   */
+  private async resolveRoutingDecision(
+    root: TSNodeLike,
+    command: string,
+    options: ExecuteOptions,
+  ): Promise<RoutingDecision | null> {
+    if (options.routingDecision !== undefined) return options.routingDecision
+    if (options.runtime !== undefined) {
+      let overlay: Record<string, Runtime>
+      try {
+        overlay = runtimeBindingsFor(this.runtimeEntries, options.runtime)
+      } catch (caught) {
+        throw new RoutingDecisionError(caught instanceof Error ? caught.message : String(caught), {
+          cause: caught,
+        })
+      }
+      return {
+        bindings: { ...this.runtimeBindings, ...overlay },
+        fallback: catchAll(this.runtimeEntries),
+      }
+    }
+    const hasScripts = this.runtimeEntries.some((entry) => entry.script !== undefined)
+    if (this.route === null && !hasScripts) return null
+    const facts = commandFacts(root)
+    const sessionId = options.sessionId ?? this.sessionManager.defaultId
+    const session = this.sessionManager.get(sessionId)
+    const ctx: RouteContext = {
+      line: command,
+      commands: facts,
+      command: facts[0]?.command ?? '',
+      builtin: facts[0]?.builtin ?? false,
+      cwd: options.cwd ?? session.cwd,
+      env: { ...session.env, ...(options.env ?? {}) },
+      sessionId,
+      agentId: options.agentId ?? this.agentId ?? '',
+      mounts: this.sandboxVisibleMounts(),
+    }
+    return decideLine(
+      this.runtimeEntries,
+      this.route,
+      ctx,
+      this.runtimeBindings,
+      this.buildWorkspaceBridge(),
+    )
   }
 
   /**
@@ -944,6 +1052,7 @@ export class Workspace {
       return new ExecuteResult(new Uint8Array(), err, 2)
     }
     const rootNode = root as unknown as TSNodeLike
+    const routingDecision = await this.resolveRoutingDecision(rootNode, command, options)
 
     const dispatch: DispatchFn = this.dispatcher.dispatch
 
@@ -954,6 +1063,9 @@ export class Workspace {
       // recorder (GNU: history is appended by the line reader).
       const innerOpts: ExecuteOptions & { provision?: false } = { record: false }
       if (options.signal !== undefined) innerOpts.signal = options.signal
+      // Nested lines never re-route: the evaluator's inner lines keep
+      // the typed line's decision (runtime argument, route, or scripts).
+      if (routingDecision !== null) innerOpts.routingDecision = routingDecision
       const res = await this.execute(cmd, innerOpts)
       return new IOResult({
         exitCode: res.exitCode,
@@ -984,6 +1096,7 @@ export class Workspace {
       ensureOpen,
       unmount: (prefix: string) => this.unmount(prefix),
       runtimeBindings: this.runtimeBindings,
+      ...(routingDecision !== null ? { routingDecision } : {}),
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
     }
     const targetSessionId = options.sessionId ?? this.sessionManager.defaultId

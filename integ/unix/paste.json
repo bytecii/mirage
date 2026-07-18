@@ -17,7 +17,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "paste /data/a.txt /data/b.txt",
       "expect": {
@@ -43,7 +45,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "paste -s /data/b.txt",
       "expect": {
@@ -69,7 +73,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "paste -d , /data/a.txt /data/b.txt",
       "expect": {

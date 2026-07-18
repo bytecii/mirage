@@ -17,7 +17,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/a.txt",
       "expect": {
@@ -43,7 +45,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/a.txt /data/b.txt",
       "expect": {
@@ -69,7 +73,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat -n /data/a.txt",
       "expect": {
@@ -95,7 +101,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/a.txt /data/b.txt /data/dup.txt",
       "expect": {
@@ -121,7 +129,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/a.txt | head -n 2",
       "expect": {
@@ -147,7 +157,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/dup.txt | sort | uniq -c",
       "expect": {
@@ -173,7 +185,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/a.txt | tr a-z A-Z | sort",
       "expect": {
@@ -199,7 +213,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/a.txt | tr -d aeiou | wc -c",
       "expect": {
@@ -225,7 +241,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/empty.txt",
       "expect": {
@@ -251,7 +269,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/no_nl.txt",
       "expect": {
@@ -277,7 +297,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/sub/nested.txt",
       "expect": {
@@ -303,7 +325,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat --bogus /data/a.txt 2>&1; echo code=$?",
       "expect": {
@@ -329,7 +353,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat -E /data/a.txt",
       "expect": {
@@ -355,7 +381,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat -T /data/tabbed.txt",
       "expect": {
@@ -381,7 +409,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat -A /data/tabbed.txt",
       "expect": {

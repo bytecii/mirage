@@ -17,7 +17,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "sha256sum /data/empty.txt",
       "expect": {
@@ -43,7 +45,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "echo hello | sha256sum",
       "expect": {
@@ -69,7 +73,9 @@
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "cat /data/a.txt | sha256sum",
       "expect": {

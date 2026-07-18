@@ -33,6 +33,9 @@ from mirage.resource.mongodb import MongoDBResource  # noqa: E402
 from mirage.resource.ram import RAMResource  # noqa: E402
 from mirage.resource.redis import RedisResource  # noqa: E402
 from mirage.resource.s3 import S3Config, S3Resource  # noqa: E402
+from mirage.runtime.python.monty import MontyRuntime  # noqa: E402
+from mirage.runtime.route import ScriptSource  # noqa: E402
+from mirage.runtime.table import VfsRuntime  # noqa: E402
 from mirage.types import CommandSafeguard, PathSpec  # noqa: E402
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
@@ -288,6 +291,145 @@ async def main() -> None:
         print("=== py3_monty_runtime_argv ===")
         print(await result.stdout_str(), end="")
         await ws_monty.close()
+
+        # Explicit runtime argument: the world binds python3 to monty
+        # (first capturer), a line run with runtime="local" reroutes
+        # its captured stages to local for that line only. `import sys`
+        # fails on monty, so the routed output proves the rebind; the
+        # follow-up line proves the argument does not leak past its
+        # line.
+        ws_arg = Workspace({"/ram": RAMResource()},
+                           mode=MountMode.EXEC,
+                           runtimes=["monty", "local", "vfs"])
+        result = await ws_arg.execute('python3 -c "print(argv[0])"')
+        print("=== runtime_arg_static_monty ===")
+        print(await result.stdout_str(), end="")
+        result = await ws_arg.execute(
+            "python3 -c \"import sys; print('routed-to-local')\"",
+            runtime="local")
+        print("=== runtime_arg_line_local ===")
+        print(await result.stdout_str(), end="")
+        result = await ws_arg.execute('python3 -c "print(argv[0])"')
+        print("=== runtime_arg_does_not_leak ===")
+        print(await result.stdout_str(), end="")
+        await ws_arg.close()
+
+        # Routing ladder: monty's entry script refuses lines carrying a
+        # use-local marker, so those fall to the next capturer (local,
+        # where import sys works). A world whose only capturer refuses
+        # everything turns python3 lines into admission failures (126)
+        # while vfs commands keep running.
+        routed_monty = MontyRuntime()
+        routed_monty.script = ScriptSource("'use-local' not in ctx['line']")
+        ws_route = Workspace({"/ram": RAMResource()},
+                             mode=MountMode.EXEC,
+                             runtimes=[routed_monty, "local", "vfs"])
+        result = await ws_route.execute('python3 -c "print(argv[0])"')
+        print("=== route_script_monty ===")
+        print(await result.stdout_str(), end="")
+        result = await ws_route.execute(
+            "python3 -c \"import sys; print('routed-to-local')\" "
+            "&& echo use-local")
+        print("=== route_script_local ===")
+        print(await result.stdout_str(), end="")
+        await ws_route.close()
+
+        deny_monty = MontyRuntime()
+        deny_monty.script = ScriptSource("False")
+        ws_deny = Workspace({"/ram": RAMResource()},
+                            mode=MountMode.EXEC,
+                            runtimes=[deny_monty, "vfs"])
+        result = await ws_deny.execute('python3 -c "x"')
+        print("=== route_refused ===")
+        print(f"exit_code={result.exit_code}")
+        print((await result.stderr_str()), end="")
+        result = await ws_deny.execute("echo vfs-open")
+        print("=== route_vfs_open ===")
+        print(await result.stdout_str(), end="")
+        await ws_deny.close()
+
+        # Global route: names the runtime for marked lines, None falls
+        # to the entry order (monty first).
+        ws_groute = Workspace(
+            {"/ram": RAMResource()},
+            mode=MountMode.EXEC,
+            runtimes=["monty", "local", "vfs"],
+            route=ScriptSource(
+                "'local' if 'go-local' in ctx['line'] else None"))
+        result = await ws_groute.execute('python3 -c "print(argv[0])"')
+        print("=== global_route_default ===")
+        print(await result.stdout_str(), end="")
+        result = await ws_groute.execute(
+            "python3 -c \"import sys; print('went-local')\" && echo go-local")
+        print("=== global_route_named ===")
+        print(await result.stdout_str(), end="")
+        await ws_groute.close()
+
+        # add_runtime: the runtime argument can only name a workspace
+        # entry, so it fails loud until the entry is added at runtime.
+        ws_add = Workspace({"/ram": RAMResource()},
+                           mode=MountMode.EXEC,
+                           runtimes=["monty", "vfs"])
+        try:
+            await ws_add.execute('python3 -c "x"', runtime="local")
+        except ValueError:
+            print("=== add_runtime_arg_before ===")
+            print("unknown-runtime-rejected")
+        ws_add.add_runtime("local")
+        result = await ws_add.execute(
+            "python3 -c \"import sys; print('added-local')\"", runtime="local")
+        print("=== add_runtime_arg_after ===")
+        print(await result.stdout_str(), end="")
+        await ws_add.close()
+
+        # Overriding the vfs runtime: explicit captures restrict the
+        # workspace to those commands; interpreter bindings untouched.
+        ws_vfs = Workspace(
+            {"/ram": RAMResource()},
+            mode=MountMode.EXEC,
+            runtimes=["monty", VfsRuntime(captures=("echo", "cat"))])
+        result = await ws_vfs.execute("echo vfs-captured")
+        print("=== vfs_captures_allow ===")
+        print(await result.stdout_str(), end="")
+        result = await ws_vfs.execute("ls /ram")
+        print("=== vfs_captures_deny ===")
+        print(f"exit_code={result.exit_code}")
+        print((await result.stderr_str()), end="")
+        result = await ws_vfs.execute('python3 -c "print(6 * 7)"')
+        print("=== vfs_captures_python3 ===")
+        print(await result.stdout_str(), end="")
+        await ws_vfs.close()
+
+        # Per-runtime context: monty's script sees its own stage, so
+        # a pipeline led by cat still routes python3 onto monty.
+        ctx_monty = MontyRuntime()
+        ctx_monty.script = ScriptSource("ctx['command'] == 'python3'")
+        ws_ctx = Workspace({"/ram": RAMResource()},
+                           mode=MountMode.EXEC,
+                           runtimes=[ctx_monty, "vfs"])
+        await ws_ctx.execute(
+            "printf \"print('came-through-pipe')\" > /ram/pipe.py")
+        result = await ws_ctx.execute("cat /ram/pipe.py | python3")
+        print("=== ctx_command_pipeline ===")
+        print(await result.stdout_str(), end="")
+        await ws_ctx.close()
+
+        # Overriding the vfs runtime with a script: lockdown, the same
+        # per-line contract every runtime uses.
+        ws_lock = Workspace(
+            {"/ram": RAMResource()},
+            mode=MountMode.EXEC,
+            runtimes=[
+                VfsRuntime(script=ScriptSource("'secret' not in ctx['line']"))
+            ])
+        result = await ws_lock.execute("echo fine")
+        print("=== vfs_script_allow ===")
+        print(await result.stdout_str(), end="")
+        result = await ws_lock.execute("cat /ram/secret.txt")
+        print("=== vfs_script_deny ===")
+        print(f"exit_code={result.exit_code}")
+        print((await result.stderr_str()), end="")
+        await ws_lock.close()
 
         slow_ram = RAMResource()
         slow_ram._store.files["/slow.py"] = SLOW_SCRIPT.encode()
