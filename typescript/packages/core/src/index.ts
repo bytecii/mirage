@@ -761,6 +761,7 @@ export { GITHUB_CI_PROMPT } from './resource/github_ci/prompt.ts'
 export {
   DOCS_API_BASE,
   DRIVE_API_BASE,
+  DRIVE_UPLOAD_BASE,
   GMAIL_API_BASE,
   GoogleApiError,
   SHEETS_API_BASE,
@@ -768,6 +769,12 @@ export {
   TOKEN_BUFFER_SECONDS,
   TOKEN_URL,
   TokenManager,
+  docsBase,
+  driveBase,
+  driveUploadBase,
+  sheetsBase,
+  slidesBase,
+  tokenUrl,
   googleGet,
   googleGetBytes,
   googleGetStream,
@@ -804,8 +811,6 @@ export {
 export { readdir as gdocsReaddir } from './core/gdocs/readdir.ts'
 export { stat as gdocsStat } from './core/gdocs/stat.ts'
 export { appendText as gdocsAppendText } from './core/gdocs/write.ts'
-export { batchUpdate as gdocsBatchUpdate } from './core/gdocs/update.ts'
-export { createDoc as gdocsCreateDoc } from './core/gdocs/create.ts'
 export { GDOCS_PROMPT, GDOCS_WRITE_PROMPT } from './resource/gdocs/prompt.ts'
 export {
   type DocEntry,
@@ -824,8 +829,6 @@ export {
 export { readdir as gsheetsReaddir } from './core/gsheets/readdir.ts'
 export { stat as gsheetsStat } from './core/gsheets/stat.ts'
 export { appendValues as gsheetsAppendValues, SheetsApiError } from './core/gsheets/write.ts'
-export { batchUpdate as gsheetsBatchUpdate } from './core/gsheets/update.ts'
-export { createSpreadsheet as gsheetsCreateSpreadsheet } from './core/gsheets/create.ts'
 export { GSHEETS_PROMPT, GSHEETS_WRITE_PROMPT } from './resource/gsheets/prompt.ts'
 export {
   type SheetEntry,
@@ -842,8 +845,6 @@ export {
 } from './core/gslides/read.ts'
 export { readdir as gslidesReaddir } from './core/gslides/readdir.ts'
 export { stat as gslidesStat } from './core/gslides/stat.ts'
-export { batchUpdate as gslidesBatchUpdate } from './core/gslides/update.ts'
-export { createPresentation as gslidesCreatePresentation } from './core/gslides/create.ts'
 export { GSLIDES_PROMPT, GSLIDES_WRITE_PROMPT } from './resource/gslides/prompt.ts'
 export {
   type SlideEntry,

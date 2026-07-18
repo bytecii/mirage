@@ -22,6 +22,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import ModuleType
 
+import aiohttp
 import boto3
 from moto.server import ThreadedMotoServer
 
@@ -30,6 +31,8 @@ from mirage.accessor.onedrive import OneDriveConfig
 from mirage.accessor.sharepoint import SharePointConfig
 from mirage.core.sharepoint import _resolver as sharepoint_resolver
 from mirage.resource.disk import DiskResource
+from mirage.resource.gdrive.config import GoogleDriveConfig
+from mirage.resource.gdrive.gdrive import GoogleDriveResource
 from mirage.resource.hf_buckets import HfBucketsConfig, HfBucketsResource
 from mirage.resource.nextcloud import NextcloudConfig, NextcloudResource
 from mirage.resource.onedrive.onedrive import OneDriveResource
@@ -226,6 +229,76 @@ class NextcloudService:
         await self.admin_ws.close()
 
 
+FOLDER_MIME = "application/vnd.google-apps.folder"
+
+
+class GwsService:
+    """Points gdrive mounts at the fake Google Workspace server.
+
+    The server is external (integ/server/gws_server.ts) and shared across runs;
+    /reset gives each run a clean, deterministic state. Each mount is scoped
+    to a per-mount folder via GoogleConfig.folder_id, the s3 key_prefix
+    analog, so the three mounts never see each other.
+    """
+
+    def __init__(self, url: str, folder_ids: dict[str, str]) -> None:
+        self.url = url
+        self.folder_ids = folder_ids
+
+    @classmethod
+    async def create(cls, run_id: str, target: dict) -> "GwsService":
+        url = os.environ["GWS_URL"].rstrip("/")
+        folder_ids: dict[str, str] = {}
+        drive_ids: dict[str, str] = {}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{url}/reset") as resp:
+                resp.raise_for_status()
+            for mount in target["mounts"]:
+                # A mount may live inside a Shared Drive: the drive is
+                # created once per name and its id is the walk's start.
+                drive = mount.get("drive")
+                if drive and drive not in drive_ids:
+                    async with session.post(f"{url}/drive/v3/drives",
+                                            json={"name": drive}) as resp:
+                        resp.raise_for_status()
+                        drive_ids[drive] = (await resp.json())["id"]
+                parent = drive_ids[drive] if drive else "root"
+                for segment in str(mount["root"]).split("/"):
+                    parent = await cls._folder(session, url, segment, parent)
+                folder_ids[mount["path"]] = parent
+        return cls(url, folder_ids)
+
+    @staticmethod
+    async def _folder(session: aiohttp.ClientSession, url: str, name: str,
+                      parent: str) -> str:
+        query = (f"name='{name}' and '{parent}' in parents "
+                 "and trashed=false")
+        async with session.get(f"{url}/drive/v3/files",
+                               params={"q": query}) as resp:
+            resp.raise_for_status()
+            files = (await resp.json())["files"]
+        if files:
+            return files[0]["id"]
+        async with session.post(f"{url}/drive/v3/files",
+                                json={
+                                    "name": name,
+                                    "mimeType": FOLDER_MIME,
+                                    "parents": [parent],
+                                }) as resp:
+            resp.raise_for_status()
+            return (await resp.json())["id"]
+
+    def resource(self, mount: dict) -> GoogleDriveResource:
+        return GoogleDriveResource(
+            GoogleDriveConfig(client_id="integ",
+                              refresh_token="integ",
+                              api_base=self.url,
+                              folder_id=self.folder_ids[mount["path"]]))
+
+    async def teardown(self) -> None:
+        return None
+
+
 class OneDriveService:
 
     def __init__(self, runner) -> None:
@@ -307,7 +380,7 @@ class SharePointService:
 
 
 Service = (S3Service | OneDriveService | SharePointService | SSHService
-           | NextcloudService | HfService)
+           | NextcloudService | GwsService | HfService)
 
 
 def build_ram(
@@ -370,6 +443,13 @@ def build_ssh(
     return service.resource(mount), _noop
 
 
+def build_gdrive(
+        mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, GwsService)
+    return service.resource(mount), _noop
+
+
 def build_nextcloud(
         mount: dict, run_id: str, service: Service | None
 ) -> tuple[object, Callable[[], Awaitable[None]]]:
@@ -386,6 +466,7 @@ BUILDERS = {
     "sharepoint": build_sharepoint,
     "ssh": build_ssh,
     "nextcloud": build_nextcloud,
+    "gdrive": build_gdrive,
     "hf": build_hf,
 }
 
@@ -404,6 +485,8 @@ async def open_target(
         service = await SSHService.create(run_id, target)
     elif target.get("service") == "nextcloud":
         service = await NextcloudService.create(run_id, target)
+    elif target.get("service") == "gws":
+        service = await GwsService.create(run_id, target)
     elif target.get("service") == "hf":
         service = await HfService.create(run_id)
     mounts: dict[str, object] = {}
