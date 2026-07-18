@@ -17,7 +17,7 @@ from mirage.commands.builtin.generic_bind import make_generic_commands
 from mirage.commands.builtin.onedrive._provision import \
     file_read_provision as _ft_provision
 from mirage.commands.builtin.onedrive.du import du
-from mirage.commands.builtin.onedrive.ops import OPS as _ONEDRIVE_CMD_OPS
+from mirage.commands.builtin.onedrive.io import IO as _ONEDRIVE_CMD_OPS
 from mirage.core.onedrive.read import read_bytes as _read
 
 # du keeps a wrapper because OneDrive's du_all

@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.commands.builtin.chroma.find import find
-from mirage.commands.builtin.chroma.ops import OPS as _CHROMA_CMD_OPS
+from mirage.commands.builtin.chroma.io import IO as _CHROMA_CMD_OPS
 from mirage.commands.builtin.chroma.search import search
 from mirage.commands.builtin.generic_bind import make_generic_commands
 

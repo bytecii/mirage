@@ -17,7 +17,7 @@ import {
   type FileStat,
   GDOCS_COMMANDS,
   GDOCS_PROMPT,
-  GDOCS_VFS_OPS,
+  GDOCS_OPS,
   GDOCS_WRITE_PROMPT,
   GDocsAccessor,
   type IndexCacheStore,
@@ -77,7 +77,7 @@ export class GDocsResource implements Resource {
   }
 
   ops(): readonly RegisteredOp[] {
-    return GDOCS_VFS_OPS
+    return GDOCS_OPS
   }
 
   readFile(p: PathSpec): Promise<Uint8Array> {

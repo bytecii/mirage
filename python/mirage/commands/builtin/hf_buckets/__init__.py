@@ -16,7 +16,7 @@ from mirage.commands.builtin.filetype_factory import make_filetype_commands
 from mirage.commands.builtin.generic_bind import (make_file_read_provision,
                                                   make_generic_commands)
 from mirage.commands.builtin.hf_buckets.du import du
-from mirage.commands.builtin.hf_buckets.ops import OPS as _HF_BUCKETS_CMD_OPS
+from mirage.commands.builtin.hf_buckets.io import IO as _HF_BUCKETS_CMD_OPS
 from mirage.core.hf_buckets.read import read_bytes as _read
 from mirage.core.hf_buckets.stat import stat as _stat
 

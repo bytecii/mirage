@@ -12,7 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.commands.builtin.disk.ops import OPS as _DISK_CMD_OPS
+from mirage.commands.builtin.disk.io import IO as _DISK_CMD_OPS
 from mirage.commands.builtin.filetype_factory import make_filetype_commands
 from mirage.commands.builtin.generic_bind import make_generic_commands
 from mirage.core.disk.read import read_bytes as _read

@@ -14,7 +14,7 @@
 
 from mirage.commands.builtin.dify.cat import make_cat
 from mirage.commands.builtin.dify.find import find
-from mirage.commands.builtin.dify.ops import OPS as _DIFY_CMD_OPS
+from mirage.commands.builtin.dify.io import IO as _DIFY_CMD_OPS
 from mirage.commands.builtin.dify.search import search
 from mirage.commands.builtin.generic_bind import (make_generic_commands,
                                                   with_read_cache)

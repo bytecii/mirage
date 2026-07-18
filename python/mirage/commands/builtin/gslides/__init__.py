@@ -17,7 +17,7 @@ from mirage.commands.builtin.gslides.gws_slides_presentations_batchUpdate import
     gws_slides_presentations_batchUpdate  # noqa: E501
 from mirage.commands.builtin.gslides.gws_slides_presentations_create import \
     gws_slides_presentations_create  # noqa: E501
-from mirage.commands.builtin.gslides.ops import OPS as _GSLIDES_CMD_OPS
+from mirage.commands.builtin.gslides.io import IO as _GSLIDES_CMD_OPS
 from mirage.commands.builtin.gslides.rm import rm
 
 COMMANDS = [

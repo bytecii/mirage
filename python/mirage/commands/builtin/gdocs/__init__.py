@@ -17,7 +17,7 @@ from mirage.commands.builtin.gdocs.gws_docs_documents_batchUpdate import \
 from mirage.commands.builtin.gdocs.gws_docs_documents_create import \
     gws_docs_documents_create
 from mirage.commands.builtin.gdocs.gws_docs_write import gws_docs_write
-from mirage.commands.builtin.gdocs.ops import OPS as _GDOCS_CMD_OPS
+from mirage.commands.builtin.gdocs.io import IO as _GDOCS_CMD_OPS
 from mirage.commands.builtin.gdocs.rm import rm
 from mirage.commands.builtin.generic_bind import make_generic_commands
 

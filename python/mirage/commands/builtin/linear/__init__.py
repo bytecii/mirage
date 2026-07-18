@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.commands.builtin.generic_bind import make_generic_commands
+from mirage.commands.builtin.linear.io import IO as _LINEAR_CMD_OPS
 from mirage.commands.builtin.linear.linear_issue_add_label import \
     linear_issue_add_label
 from mirage.commands.builtin.linear.linear_issue_assign import \
@@ -32,7 +33,6 @@ from mirage.commands.builtin.linear.linear_issue_transition import \
 from mirage.commands.builtin.linear.linear_issue_update import \
     linear_issue_update
 from mirage.commands.builtin.linear.linear_search import linear_search
-from mirage.commands.builtin.linear.ops import OPS as _LINEAR_CMD_OPS
 
 COMMANDS = [
     *make_generic_commands(

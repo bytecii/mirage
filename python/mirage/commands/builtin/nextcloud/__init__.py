@@ -17,7 +17,7 @@ from mirage.commands.builtin.generic_bind import make_generic_commands
 from mirage.commands.builtin.nextcloud._provision import \
     file_read_provision as _ft_provision
 from mirage.commands.builtin.nextcloud.du import du
-from mirage.commands.builtin.nextcloud.ops import OPS as _NEXTCLOUD_CMD_OPS
+from mirage.commands.builtin.nextcloud.io import IO as _NEXTCLOUD_CMD_OPS
 from mirage.core.nextcloud.read import read_bytes as _read
 
 # du keeps a wrapper because Nextcloud's du_all

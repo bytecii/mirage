@@ -16,7 +16,7 @@ from mirage.commands.builtin.generic_bind import make_generic_commands
 from mirage.commands.builtin.github.du import du
 from mirage.commands.builtin.github.find import find
 from mirage.commands.builtin.github.grep import grep
-from mirage.commands.builtin.github.ops import OPS as _GITHUB_CMD_OPS
+from mirage.commands.builtin.github.io import IO as _GITHUB_CMD_OPS
 from mirage.commands.builtin.github.rg import rg
 
 _GITHUB_OVERRIDES = {"du", "find", "grep", "rg"}

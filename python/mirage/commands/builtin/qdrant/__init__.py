@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.commands.builtin.generic_bind import make_generic_commands
-from mirage.commands.builtin.qdrant.ops import OPS as _QDRANT_CMD_OPS
+from mirage.commands.builtin.qdrant.io import IO as _QDRANT_CMD_OPS
 from mirage.commands.builtin.qdrant.search import search
 
 _QDRANT_OVERRIDES = {"search"}

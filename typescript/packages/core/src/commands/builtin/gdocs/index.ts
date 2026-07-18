@@ -19,12 +19,12 @@ import { makeGenericCommands } from '../generic_bind/index.ts'
 import { GDOCS_GWS_BATCH_UPDATE } from './gws_docs_documents_batchUpdate.ts'
 import { GDOCS_GWS_CREATE } from './gws_docs_documents_create.ts'
 import { GDOCS_GWS_WRITE } from './gws_docs_write.ts'
-import { GDOCS_CMD_OPS } from './ops.ts'
+import { GDOCS_IO } from './io.ts'
 import { fileReadProvision, metadataProvision } from './provision.ts'
 import { GDOCS_RM } from './rm.ts'
 
 export const GDOCS_COMMANDS: readonly RegisteredCommand[] = [
-  ...makeGenericCommands<GDocsAccessor>(ResourceName.GDOCS, GDOCS_CMD_OPS, {
+  ...makeGenericCommands<GDocsAccessor>(ResourceName.GDOCS, GDOCS_IO, {
     provisionOverrides: {
       grep: fileReadProvision as ProvisionFn,
       rg: fileReadProvision as ProvisionFn,

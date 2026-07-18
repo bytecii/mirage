@@ -17,8 +17,8 @@ from mirage.commands.builtin.generic_bind import make_generic_commands
 from mirage.commands.builtin.s3._provision import \
     file_read_provision as _ft_provision
 from mirage.commands.builtin.s3.du import du
+from mirage.commands.builtin.s3.io import IO as _S3_CMD_OPS
 from mirage.commands.builtin.s3.mkdir import mkdir
-from mirage.commands.builtin.s3.ops import OPS as _S3_CMD_OPS
 from mirage.commands.builtin.s3.rm import rm
 from mirage.commands.builtin.s3.stat import stat
 from mirage.commands.builtin.s3.tee import tee
