@@ -1225,6 +1225,30 @@
         "stdout": "rc=0\ninner.txt\nskipme\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "find_name_caret_class",
+      "seq": 500312,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "s3-prefix",
+        "hf",
+        "hf-prefix",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud"
+      ],
+      "command": "find /data -name 'sorted_[^b]*' | sort",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/sorted_a.txt\n/data/sorted_c.txt\n",
+        "stderr": ""
+      }
     }
   ]
 }
