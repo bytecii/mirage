@@ -1,0 +1,33 @@
+{
+  "users": [
+    { "id": "U1", "name": "alice", "real_name": "Alice Anderson", "email": "alice@example.com" },
+    { "id": "U2", "name": "bob", "real_name": "Bob Brown", "email": "bob@example.com" },
+    { "id": "U3", "name": "carol", "real_name": "Carol Clark", "email": "carol@example.com" }
+  ],
+  "channels": [
+    { "id": "C1", "name": "general", "kind": "channel", "created": 1767225600 },
+    { "id": "C2", "name": "random", "kind": "channel", "created": 1767225600 }
+  ],
+  "dms": [
+    { "id": "D1", "user": "U2", "kind": "im", "created": 1767225600 }
+  ],
+  "messages": [
+    { "channel": "C1", "ts": "1767268800.000100", "user": "U1", "text": "let us deploy the beta build today" },
+    { "channel": "C1", "ts": "1767268860.000200", "user": "U2", "text": "the beta looks good, shipping now" },
+    { "channel": "C1", "ts": "1767346200.000300", "user": "U1", "text": "rollback done, all clear" },
+    { "channel": "C2", "ts": "1767268900.000100", "user": "U3", "text": "any lunch spot ideas today" },
+    { "channel": "D1", "ts": "1767268950.000100", "user": "U2", "text": "ping me about the beta review" }
+  ],
+  "files": [
+    {
+      "id": "F1",
+      "channel": "C1",
+      "message_ts": "1767268800.000100",
+      "name": "release_notes.txt",
+      "title": "Release notes",
+      "mimetype": "text/plain",
+      "filetype": "text",
+      "content": "beta rollout checklist\n"
+    }
+  ]
+}

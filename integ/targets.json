@@ -656,6 +656,21 @@
           "backend": "ram"
         }
       ]
+    },
+    {
+      "id": "slack",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "slack",
+      "mounts": [
+        {
+          "path": "/slack",
+          "resource": "slack",
+          "backend": "slack"
+        }
+      ]
     }
   ]
 }
