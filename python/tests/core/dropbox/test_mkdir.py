@@ -26,14 +26,13 @@ NOT_FOUND = DropboxApiError("nf", 409, "path/not_found/...")
 
 
 def make_accessor() -> DropboxAccessor:
-    config = DropboxConfig(client_id="c",
-                           client_secret="s",
-                           refresh_token="r")
+    config = DropboxConfig(client_id="c", client_secret="s", refresh_token="r")
     return DropboxAccessor(config, DropboxTokenManager(config))
 
 
 @pytest.mark.asyncio
 async def test_mkdir_creates_when_parent_exists():
+
     async def fake_meta(tm, path):
         if path == "/docs":
             raise NOT_FOUND
@@ -51,7 +50,10 @@ async def test_mkdir_creates_when_parent_exists():
 async def test_mkdir_existing_raises_eexist():
     with patch("mirage.core.dropbox.mkdir.get_metadata",
                new_callable=AsyncMock,
-               return_value={".tag": "folder", "name": "docs"}):
+               return_value={
+                   ".tag": "folder",
+                   "name": "docs"
+               }):
         with pytest.raises(FileExistsError):
             await mkdir(make_accessor(), PathSpec.from_str_path("/docs"))
 
@@ -60,7 +62,10 @@ async def test_mkdir_existing_raises_eexist():
 async def test_mkdir_parents_is_idempotent_for_existing_dir():
     with patch("mirage.core.dropbox.mkdir.get_metadata",
                new_callable=AsyncMock,
-               return_value={".tag": "folder", "name": "docs"}):
+               return_value={
+                   ".tag": "folder",
+                   "name": "docs"
+               }):
         with patch("mirage.core.dropbox.mkdir.create_folder",
                    new_callable=AsyncMock) as created:
             await mkdir(make_accessor(),

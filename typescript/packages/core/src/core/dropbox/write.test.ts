@@ -177,7 +177,9 @@ describe('dropbox rename', () => {
     vi.mocked(api.movePath).mockRejectedValue(
       new DropboxApiError('nf', 409, 'from_lookup/not_found/...'),
     )
-    await expect(rename(makeAccessor(), spec('/ghost'), spec('/b'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(rename(makeAccessor(), spec('/ghost'), spec('/b'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
   })
 })
 

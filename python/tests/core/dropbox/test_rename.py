@@ -24,9 +24,7 @@ from mirage.types import PathSpec
 
 
 def make_accessor() -> DropboxAccessor:
-    config = DropboxConfig(client_id="c",
-                           client_secret="s",
-                           refresh_token="r")
+    config = DropboxConfig(client_id="c", client_secret="s", refresh_token="r")
     return DropboxAccessor(config, DropboxTokenManager(config))
 
 
@@ -38,7 +36,10 @@ async def test_rename_replaces_existing_destination_file():
                side_effect=[conflict, None]) as moved:
         with patch("mirage.core.dropbox.rename.get_metadata",
                    new_callable=AsyncMock,
-                   return_value={".tag": "file", "name": "b.txt"}):
+                   return_value={
+                       ".tag": "file",
+                       "name": "b.txt"
+                   }):
             with patch("mirage.core.dropbox.rename.delete_path",
                        new_callable=AsyncMock) as deleted:
                 await rename(make_accessor(), PathSpec.from_str_path("/a.txt"),

@@ -48,7 +48,10 @@ async def test_copy_replaces_existing_destination_file():
                side_effect=[conflict, None]) as copied:
         with patch("mirage.core.dropbox.copy.get_metadata",
                    new_callable=AsyncMock,
-                   return_value={".tag": "file", "name": "b.txt"}):
+                   return_value={
+                       ".tag": "file",
+                       "name": "b.txt"
+                   }):
             with patch("mirage.core.dropbox.copy.delete_path",
                        new_callable=AsyncMock) as deleted:
                 await copy(make_accessor(), PathSpec.from_str_path("/a.txt"),

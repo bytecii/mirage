@@ -29,8 +29,7 @@ def make_accessor(root_path: str = "/") -> DropboxAccessor:
 
 
 def test_account_root_maps_to_empty_path():
-    assert dropbox_path_of(make_accessor(),
-                           PathSpec.from_str_path("/")) == ""
+    assert dropbox_path_of(make_accessor(), PathSpec.from_str_path("/")) == ""
 
 
 def test_subfolder_root_prefixes_api_path():
@@ -42,6 +41,5 @@ def test_subfolder_root_prefixes_api_path():
 def test_mount_prefix_is_stripped():
     spec = PathSpec(virtual="/dropbox/docs/a.txt",
                     directory="/dropbox/docs",
-                    resource_path=mount_key("/dropbox/docs/a.txt",
-                                            "/dropbox"))
+                    resource_path=mount_key("/dropbox/docs/a.txt", "/dropbox"))
     assert dropbox_path_of(make_accessor(), spec) == "/docs/a.txt"

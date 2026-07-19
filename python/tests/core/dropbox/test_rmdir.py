@@ -28,9 +28,7 @@ FILE = {".tag": "file", "name": "a.txt", "size": 1}
 
 
 def make_accessor() -> DropboxAccessor:
-    config = DropboxConfig(client_id="c",
-                           client_secret="s",
-                           refresh_token="r")
+    config = DropboxConfig(client_id="c", client_secret="s", refresh_token="r")
     return DropboxAccessor(config, DropboxTokenManager(config))
 
 

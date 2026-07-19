@@ -24,9 +24,7 @@ from mirage.types import PathSpec
 
 
 def make_accessor() -> DropboxAccessor:
-    config = DropboxConfig(client_id="c",
-                           client_secret="s",
-                           refresh_token="r")
+    config = DropboxConfig(client_id="c", client_secret="s", refresh_token="r")
     return DropboxAccessor(config, DropboxTokenManager(config))
 
 
@@ -51,5 +49,8 @@ async def test_409_maps_to_false():
 async def test_found_maps_to_true():
     with patch("mirage.core.dropbox.exists.get_metadata",
                new_callable=AsyncMock,
-               return_value={".tag": "file", "name": "a.txt"}):
+               return_value={
+                   ".tag": "file",
+                   "name": "a.txt"
+               }):
         assert await exists(make_accessor(), PathSpec.from_str_path("/a.txt"))

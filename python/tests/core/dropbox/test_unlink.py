@@ -24,9 +24,7 @@ from mirage.types import PathSpec
 
 
 def make_accessor() -> DropboxAccessor:
-    config = DropboxConfig(client_id="c",
-                           client_secret="s",
-                           refresh_token="r")
+    config = DropboxConfig(client_id="c", client_secret="s", refresh_token="r")
     return DropboxAccessor(config, DropboxTokenManager(config))
 
 
@@ -34,7 +32,10 @@ def make_accessor() -> DropboxAccessor:
 async def test_unlink_deletes_file():
     with patch("mirage.core.dropbox.unlink.get_metadata",
                new_callable=AsyncMock,
-               return_value={".tag": "file", "name": "a.txt"}):
+               return_value={
+                   ".tag": "file",
+                   "name": "a.txt"
+               }):
         with patch("mirage.core.dropbox.unlink.delete_path",
                    new_callable=AsyncMock) as deleted:
             await unlink(make_accessor(), PathSpec.from_str_path("/a.txt"))
@@ -45,7 +46,10 @@ async def test_unlink_deletes_file():
 async def test_unlink_folder_raises_eisdir():
     with patch("mirage.core.dropbox.unlink.get_metadata",
                new_callable=AsyncMock,
-               return_value={".tag": "folder", "name": "docs"}):
+               return_value={
+                   ".tag": "folder",
+                   "name": "docs"
+               }):
         with patch("mirage.core.dropbox.unlink.delete_path",
                    new_callable=AsyncMock) as deleted:
             with pytest.raises(IsADirectoryError):

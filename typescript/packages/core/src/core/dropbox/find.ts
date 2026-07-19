@@ -26,9 +26,13 @@ export function find(
   path: PathSpec,
   options: FindOptions,
 ): Promise<string[]> {
-  return walkFind(path, {
-    readdir: (spec, index) => readdir(accessor, spec, index),
-    stat: (spec, index) => stat(accessor, spec, index),
-    isDirName: (child) => isDirName(child),
-  }, options)
+  return walkFind(
+    path,
+    {
+      readdir: (spec, index) => readdir(accessor, spec, index),
+      stat: (spec, index) => stat(accessor, spec, index),
+      isDirName: (child) => isDirName(child),
+    },
+    options,
+  )
 }
