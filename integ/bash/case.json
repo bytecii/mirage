@@ -68,10 +68,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "case foo in f[^x]o) echo yes;; *) echo no;; esac",
       "expect": {
@@ -92,10 +96,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "case foo in f[!x]o) echo yes;; *) echo no;; esac",
       "expect": {

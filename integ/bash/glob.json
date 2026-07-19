@@ -338,10 +338,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "echo /data/?.txt",
       "expect": {
@@ -362,10 +366,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "echo /data/[ab].txt",
       "expect": {
@@ -386,10 +394,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "echo /data/[!ab].txt",
       "expect": {
@@ -410,10 +422,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "echo /data/[^ab].txt",
       "expect": {
@@ -434,10 +450,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "echo /data/[a-c].txt",
       "expect": {
@@ -458,10 +478,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "echo /data/[xy].txt",
       "expect": {
@@ -482,10 +506,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "echo /data/sorted_?.txt",
       "expect": {
@@ -506,10 +534,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "echo /data/sorted_[ac].txt",
       "expect": {
