@@ -32,6 +32,7 @@ from mirage.accessor.onedrive import OneDriveConfig
 from mirage.accessor.sharepoint import SharePointConfig
 from mirage.core.sharepoint import _resolver as sharepoint_resolver
 from mirage.resource.disk import DiskResource
+from mirage.resource.dropbox import DropboxConfig, DropboxResource
 from mirage.resource.gdocs.config import GDocsConfig
 from mirage.resource.gdocs.gdocs import GDocsResource
 from mirage.resource.gdrive.config import GoogleDriveConfig
@@ -128,6 +129,11 @@ def _load_onedrive_server() -> ModuleType:
 def _load_hf_server() -> ModuleType:
     return _load_module(
         Path(__file__).resolve().parents[2] / "server" / "hf_server.py")
+
+
+def _load_dropbox_server() -> ModuleType:
+    return _load_module(
+        Path(__file__).resolve().parents[2] / "server" / "dropbox_server.py")
 
 
 def _load_ssh_server() -> ModuleType:
@@ -400,6 +406,46 @@ class OneDriveService:
         await self.runner.cleanup()
 
 
+class DropboxService:
+    """Per-account fake Dropbox servers.
+
+    Mounts sharing a ``bucket`` share one fake account (the -root target
+    mounts three root_path subfolders of a single account, mirroring
+    s3-prefix's shared bucket); distinct buckets get isolated accounts.
+    Fixtures seed through the workspace like every writable backend.
+    """
+
+    def __init__(self) -> None:
+        self.accounts: dict[str, object] = {}
+        self.runners: list = []
+
+    @classmethod
+    async def create(cls, target: dict) -> "DropboxService":
+        service = cls()
+        module = _load_dropbox_server()
+        for mount in target["mounts"]:
+            account = mount.get("bucket") or mount["path"]
+            if account not in service.accounts:
+                fake, runner = await module.start_fake_dropbox()
+                service.accounts[account] = fake
+                service.runners.append(runner)
+        return service
+
+    def resource(self, mount: dict) -> DropboxResource:
+        account = mount.get("bucket") or mount["path"]
+        fake = self.accounts[account]
+        return DropboxResource(
+            DropboxConfig(client_id="integ-client",
+                          client_secret="integ-secret",
+                          refresh_token="integ-refresh",
+                          endpoint=fake.endpoint,
+                          root_path=mount.get("root") or "/"))
+
+    async def teardown(self) -> None:
+        for runner in self.runners:
+            await runner.cleanup()
+
+
 class HfService:
 
     def __init__(self, run_id: str, runner, endpoint: str) -> None:
@@ -461,7 +507,7 @@ class SharePointService:
 
 
 Service = (S3Service | OneDriveService | SharePointService | SSHService
-           | NextcloudService | GwsService | HfService)
+           | NextcloudService | GwsService | HfService | DropboxService)
 
 
 def build_ram(
@@ -514,6 +560,13 @@ def build_hf(
         mount: dict, run_id: str, service: Service | None
 ) -> tuple[object, Callable[[], Awaitable[None]]]:
     assert isinstance(service, HfService)
+    return service.resource(mount), _noop
+
+
+def build_dropbox(
+        mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, DropboxService)
     return service.resource(mount), _noop
 
 
@@ -573,6 +626,7 @@ BUILDERS = {
     "gsheets": build_gsheets,
     "gslides": build_gslides,
     "hf": build_hf,
+    "dropbox": build_dropbox,
 }
 
 
@@ -594,6 +648,8 @@ async def open_target(
         service = await GwsService.create(run_id, target)
     elif target.get("service") == "hf":
         service = await HfService.create(run_id)
+    elif target.get("service") == "dropbox":
+        service = await DropboxService.create(target)
     mounts: dict[str, object] = {}
     cleanups: list[Callable[[], Awaitable[None]]] = []
     for mount in target["mounts"]:
