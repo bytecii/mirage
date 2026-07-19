@@ -107,8 +107,10 @@ async def rg(
             if not narrowed:
                 return b"", IOResult(exit_code=1)
             # ripgrep labels every file a walk finds; narrowed candidates
-            # arrive as explicit operands, so force the label flag.
-            run_flags = {**flags, "H": True}
+            # arrive as explicit operands, so force the label flag —
+            # unless -I suppresses labels.
+            if not fl.as_bool("args_I"):
+                run_flags = {**flags, "H": True}
         paths = narrowed
 
     return await generic_rg(

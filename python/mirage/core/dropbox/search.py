@@ -81,8 +81,8 @@ async def narrow_paths(
             if lower != scope_lower and not lower.startswith(scope_prefix):
                 continue
             key = display[len(root):].strip("/")
-            scoped.append(f"{mount_prefix}/{key}" if key else mount_prefix
-                          or "/")
+            scoped.append(
+                f"{mount_prefix}/{key}" if key else mount_prefix or "/")
         scoped.sort(key=_path_components)
         for virtual in scoped:
             narrowed.append(

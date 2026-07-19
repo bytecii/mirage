@@ -112,6 +112,14 @@ async def test_narrowed_run_forces_filename_labels(harness, index):
 
 
 @pytest.mark.asyncio
+async def test_dash_upper_i_suppression_survives_narrowing(harness, index):
+    narrow, generic = harness
+    narrow.return_value = ([spec("/data/a.txt")], True)
+    await rg(make_accessor(), [scope()], "needle", args_I=True, index=index)
+    assert "H" not in generic.await_args.args[2]
+
+
+@pytest.mark.asyncio
 async def test_walk_fallback_leaves_flags_alone(harness, index):
     narrow, generic = harness
     narrow.return_value = ([scope()], False)

@@ -27,6 +27,8 @@ import { grepGeneric } from '../generic/grep.ts'
 import { DROPBOX_IO } from './io.ts'
 import { narrowScope } from './narrow.ts'
 
+const dropboxResolveGlob = resolveGlobOf(DROPBOX_IO)
+
 async function grepCommand(
   accessor: DropboxAccessor,
   paths: PathSpec[],
@@ -49,8 +51,7 @@ async function grepCommand(
       return [new Uint8Array(), new IOResult({ exitCode: 1 })]
     }
   }
-  const stat = (p: PathSpec): Promise<FileStat> =>
-    dropboxStat(accessor, p, opts.index ?? undefined)
+  const stat = (p: PathSpec): Promise<FileStat> => dropboxStat(accessor, p, opts.index ?? undefined)
   const readdir = (p: PathSpec): Promise<string[]> =>
     dropboxReaddir(accessor, p, opts.index ?? undefined)
   const stream = (p: PathSpec): AsyncIterable<Uint8Array> =>
@@ -65,5 +66,5 @@ export const DROPBOX_GREP = command({
   fn: grepCommand,
   // Same cost estimate the generic-bound grep carried; narrowing only
   // ever lowers the real cost below it.
-  provision: defaultProvision('grep', DROPBOX_IO.stat, resolveGlobOf(DROPBOX_IO), DROPBOX_IO.readdir),
+  provision: defaultProvision('grep', DROPBOX_IO.stat, dropboxResolveGlob, DROPBOX_IO.readdir),
 })

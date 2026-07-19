@@ -119,6 +119,12 @@ describe('dropbox rg push-down', () => {
     expect(generic.mock.calls[0]?.[2]?.flags.H).toBe(true)
   })
 
+  it('keeps -I suppression instead of forcing labels', async () => {
+    narrow.mockResolvedValue({ resolved: [spec('/data/a.txt')], usedSearch: true })
+    await runRg({ args_I: true })
+    expect('H' in (generic.mock.calls[0]?.[2]?.flags ?? {})).toBe(false)
+  })
+
   it('leaves flags alone on the walk fallback', async () => {
     narrow.mockResolvedValue({ resolved: [scope()], usedSearch: false })
     await runRg({})

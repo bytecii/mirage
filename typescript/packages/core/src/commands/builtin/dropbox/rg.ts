@@ -27,6 +27,8 @@ import { rgGeneric } from '../generic/rg.ts'
 import { DROPBOX_IO } from './io.ts'
 import { narrowScope } from './narrow.ts'
 
+const dropboxResolveGlob = resolveGlobOf(DROPBOX_IO)
+
 // Reproduce rg's dotfile pruning for search-narrowed candidates: the
 // generic rg walk skips hidden files and never descends into hidden
 // directories, but explicit file operands bypass that pruning, so narrowed
@@ -83,14 +85,17 @@ async function rgCommand(
       if (visible.length === 0) return [new Uint8Array(), new IOResult({ exitCode: 1 })]
       resolved = visible
       // ripgrep labels every file a walk finds; narrowed candidates
-      // arrive as explicit operands, so force the label flag.
-      runOpts = { ...opts, flags: { ...opts.flags, H: true } }
+      // arrive as explicit operands, so force the label flag — unless -I
+      // suppresses labels (forcing H would defeat it in the delegated
+      // grepGeneric body).
+      if (opts.flags.args_I !== true) {
+        runOpts = { ...opts, flags: { ...opts.flags, H: true } }
+      }
     } else {
       resolved = narrowed.resolved
     }
   }
-  const stat = (p: PathSpec): Promise<FileStat> =>
-    dropboxStat(accessor, p, opts.index ?? undefined)
+  const stat = (p: PathSpec): Promise<FileStat> => dropboxStat(accessor, p, opts.index ?? undefined)
   const readdir = (p: PathSpec): Promise<string[]> =>
     dropboxReaddir(accessor, p, opts.index ?? undefined)
   const stream = (p: PathSpec): AsyncIterable<Uint8Array> =>
@@ -105,5 +110,5 @@ export const DROPBOX_RG = command({
   fn: rgCommand,
   // Same cost estimate the generic-bound rg carried; narrowing only ever
   // lowers the real cost below it.
-  provision: defaultProvision('rg', DROPBOX_IO.stat, resolveGlobOf(DROPBOX_IO), DROPBOX_IO.readdir),
+  provision: defaultProvision('rg', DROPBOX_IO.stat, dropboxResolveGlob, DROPBOX_IO.readdir),
 })
