@@ -28,10 +28,21 @@ def make_resource(**overrides) -> DropboxResource:
                       **overrides))
 
 
-def test_registers_read_only_op_surface():
+def test_registers_read_write_op_surface():
     resource = make_resource()
     ops = {(o.name, o.write) for o in resource.ops_list()}
-    assert ops == {("read", False), ("readdir", False), ("stat", False)}
+    assert ops == {
+        ("read", False),
+        ("readdir", False),
+        ("stat", False),
+        ("write", True),
+        ("create", True),
+        ("mkdir", True),
+        ("unlink", True),
+        ("rmdir", True),
+        ("rename", True),
+        ("truncate", True),
+    }
 
 
 def test_subfolder_root_reaches_accessor():

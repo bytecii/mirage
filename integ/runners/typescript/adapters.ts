@@ -12,9 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, relative, sep } from 'node:path'
+import { join } from 'node:path'
 import {
   CreateBucketCommand,
   DeleteBucketCommand,
@@ -37,14 +37,11 @@ import {
 } from '@struktoai/mirage-node'
 import { installFakeNavigator, makeMockRoot } from '../../../typescript/packages/browser/src/test-utils.ts'
 import { startFakeDropbox, type FakeDropbox } from '../../server/dropbox.ts'
-import { integRoot, walkFiles, type ExecWorkspace, type Mount, type Target } from './harness.ts'
+import type { ExecWorkspace, Mount, Target } from './harness.ts'
 
 export interface Open {
   ws: ExecWorkspace
   cleanup: () => Promise<void>
-  // The adapter already seeded fixtures out-of-band (read-only backends
-  // cannot seed through the workspace); main skips seedFixture.
-  seeded?: boolean
 }
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379/0'
@@ -177,7 +174,6 @@ async function openHf(target: Target): Promise<Open> {
 }
 
 async function openDropbox(target: Target): Promise<Open> {
-  const fixtureRoot = integRoot()
   // Mounts sharing a `bucket` share one fake account (the -root target
   // mounts three rootPath subfolders of a single account, mirroring
   // s3-prefix's shared bucket); distinct buckets get isolated accounts.
@@ -190,14 +186,6 @@ async function openDropbox(target: Target): Promise<Open> {
       fake = await startFakeDropbox()
       accounts.set(account, fake)
     }
-    const base = m.root !== undefined ? `/${m.root}` : ''
-    if (m.fixture !== undefined) {
-      const dir = join(fixtureRoot, 'fixtures', m.fixture)
-      for (const file of walkFiles(dir)) {
-        const rel = relative(dir, file).split(sep).join('/')
-        fake.seed(`${base}/${rel}`, new Uint8Array(readFileSync(file)))
-      }
-    }
     mounts[m.path] = new DropboxResource({
       clientId: 'integ-client',
       clientSecret: 'integ-secret',
@@ -206,12 +194,12 @@ async function openDropbox(target: Target): Promise<Open> {
       ...(m.root !== undefined ? { rootPath: m.root } : {}),
     })
   }
-  const ws = new Workspace(mounts, { mode: MountMode.READ })
+  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
   const cleanup = async (): Promise<void> => {
     await ws.close()
     for (const fake of accounts.values()) fake.close()
   }
-  return { ws: ws as unknown as ExecWorkspace, cleanup, seeded: true }
+  return { ws: ws as unknown as ExecWorkspace, cleanup }
 }
 
 async function adminExec(ws: Workspace, command: string): Promise<void> {

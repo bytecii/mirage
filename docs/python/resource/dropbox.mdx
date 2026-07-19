@@ -1,14 +1,18 @@
 ---
 title: Dropbox
-description: Mount a Dropbox account (or a single folder of it) as a read-only Mirage filesystem with async access and shell commands.
+description: Mount a Dropbox account (or a single folder of it) as a read/write Mirage filesystem with async access and shell commands.
 icon: dropbox
 ---
 
 The Dropbox resource mounts a Dropbox account at some prefix such as
 `/dropbox/`. All operations involve network I/O to the
 [Dropbox v2 HTTP API](https://www.dropbox.com/developers/documentation/http/documentation):
-`/2/files/list_folder` for directories and `/2/files/download` for content.
-Files are served as raw bytes. The mount is read-only.
+`/2/files/list_folder` for directories, `/2/files/download` for content, and
+`/2/files/upload` / `create_folder_v2` / `delete_v2` / `move_v2` / `copy_v2`
+for writes. Files are served as raw bytes. Both `READ` and `WRITE` modes are
+supported; single-call uploads cap at ~150 MB (Dropbox's `upload` limit).
+`rmdir` fails `ENOTEMPTY` on a non-empty folder instead of using the API's
+recursive delete; `rm -r` is the recursive path.
 
 For credential setup (app key, secret, refresh token), see the
 [Dropbox Setup](/home/setup/dropbox) guide. The TypeScript packages ship the
@@ -31,7 +35,7 @@ config = DropboxConfig(
 )
 
 resource = DropboxResource(config)
-ws = Workspace({"/dropbox": resource}, mode=MountMode.READ)
+ws = Workspace({"/dropbox": resource}, mode=MountMode.WRITE)
 ```
 
 The access token is fetched from the long-lived refresh token and cached in
@@ -90,7 +94,7 @@ resource = DropboxResource(config)
 
 
 async def main() -> None:
-    ws = Workspace({"/dropbox": resource}, mode=MountMode.READ)
+    ws = Workspace({"/dropbox": resource}, mode=MountMode.WRITE)
 
     r = await ws.execute("ls /dropbox/")
     print(await r.stdout_str())

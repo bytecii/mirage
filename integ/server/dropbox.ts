@@ -12,9 +12,23 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { createServer, type IncomingMessage, type Server } from 'node:http'
+import {
+  createServer,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from 'node:http'
 
-const MODIFIED = '2026-01-02T00:00:00Z'
+// Uploads stamp the real clock (find -mtime expects fresh writes to
+// look fresh, like MinIO/moto in the s3 targets).
+function nowStamp(): string {
+  return new Date().toISOString().replace(/\.\d+Z$/, 'Z')
+}
+
+interface StoredFile {
+  data: Uint8Array
+  modified: string
+}
 
 interface DropboxEntryJson {
   '.tag': 'file' | 'folder'
@@ -26,112 +40,260 @@ interface DropboxEntryJson {
   server_modified?: string
 }
 
-// One fake Dropbox account: seeded files, folders implied by file paths.
-// Serves the three endpoints the backend calls — /oauth2/token,
-// /2/files/list_folder, /2/files/download — on a single origin, matching
-// the DropboxConfig `endpoint` override.
+// One fake Dropbox account with explicit folder objects. Serves every
+// endpoint the backend calls — /oauth2/token plus the /2/files RPCs
+// (list_folder, get_metadata, download, upload, create_folder_v2,
+// delete_v2, move_v2, copy_v2) — on a single origin, matching the
+// DropboxConfig `endpoint` override. Mirrors integ/server/dropbox_server.py.
 export interface FakeDropbox {
   endpoint: string
-  seed: (path: string, content: Uint8Array) => void
   close: () => void
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
     req.on('end', () => {
-      resolve(Buffer.concat(chunks).toString('utf8'))
+      resolve(Buffer.concat(chunks))
     })
     req.on('error', reject)
   })
 }
 
-function folderSet(files: Map<string, Uint8Array>): Set<string> {
-  const folders = new Set<string>()
-  for (const path of files.keys()) {
+function json(res: ServerResponse, body: unknown): void {
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify(body))
+}
+
+function jsonError(res: ServerResponse, summary: string): void {
+  res.writeHead(409, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ error_summary: summary }))
+}
+
+// The real API 400s on an empty path for mutation endpoints; a loud
+// non-409 keeps core bugs (like mkdir on the mount root) from silently
+// planting a corrupt "" entry that lists itself as its own child.
+function malformed(res: ServerResponse): void {
+  res.writeHead(400, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ error_summary: 'path/malformed' }))
+}
+
+class Account {
+  readonly folders = new Set<string>()
+  readonly files = new Map<string, StoredFile>()
+
+  addAncestors(path: string): void {
     const parts = path.split('/').slice(1, -1)
     let cur = ''
     for (const part of parts) {
       cur += `/${part}`
-      folders.add(cur)
+      this.folders.add(cur)
     }
   }
-  return folders
+
+  entryFor(path: string): DropboxEntryJson | null {
+    const stored = this.files.get(path)
+    if (stored !== undefined) {
+      return {
+        '.tag': 'file',
+        id: `id:${path}`,
+        name: path.slice(path.lastIndexOf('/') + 1),
+        path_lower: path.toLowerCase(),
+        path_display: path,
+        size: stored.data.length,
+        server_modified: stored.modified,
+      }
+    }
+    if (this.folders.has(path)) {
+      return {
+        '.tag': 'folder',
+        id: `id:${path}`,
+        name: path.slice(path.lastIndexOf('/') + 1),
+        path_lower: path.toLowerCase(),
+        path_display: path,
+      }
+    }
+    return null
+  }
+
+  listChildren(path: string): DropboxEntryJson[] | null {
+    if (path !== '' && !this.folders.has(path)) return null
+    const out: DropboxEntryJson[] = []
+    for (const folder of this.folders) {
+      if (folder.slice(0, folder.lastIndexOf('/')) !== path) continue
+      out.push(this.entryFor(folder) as DropboxEntryJson)
+    }
+    for (const file of this.files.keys()) {
+      if (file.slice(0, file.lastIndexOf('/')) !== path) continue
+      out.push(this.entryFor(file) as DropboxEntryJson)
+    }
+    return out.sort((a, b) => (a.name < b.name ? -1 : 1))
+  }
+
+  // Removes a file, or a folder plus its subtree (delete_v2 semantics).
+  remove(path: string): boolean {
+    if (this.files.delete(path)) return true
+    if (!this.folders.has(path)) return false
+    const prefix = `${path}/`
+    this.folders.delete(path)
+    for (const folder of [...this.folders]) {
+      if (folder.startsWith(prefix)) this.folders.delete(folder)
+    }
+    for (const file of [...this.files.keys()]) {
+      if (file.startsWith(prefix)) this.files.delete(file)
+    }
+    return true
+  }
+
+  // Copies a file or a folder subtree; returns false if src is missing.
+  copyTree(from: string, to: string): boolean {
+    const stored = this.files.get(from)
+    if (stored !== undefined) {
+      this.files.set(to, { ...stored })
+      this.addAncestors(to)
+      return true
+    }
+    if (!this.folders.has(from)) return false
+    const prefix = `${from}/`
+    this.folders.add(to)
+    this.addAncestors(to)
+    for (const folder of [...this.folders]) {
+      if (folder.startsWith(prefix)) this.folders.add(`${to}/${folder.slice(prefix.length)}`)
+    }
+    for (const [file, data] of [...this.files]) {
+      if (file.startsWith(prefix)) this.files.set(`${to}/${file.slice(prefix.length)}`, data)
+    }
+    return true
+  }
 }
 
-function listChildren(files: Map<string, Uint8Array>, path: string): DropboxEntryJson[] | null {
-  const folders = folderSet(files)
-  if (path !== '' && !folders.has(path)) return null
-  const out: DropboxEntryJson[] = []
-  for (const folder of folders) {
-    if (folder.slice(0, folder.lastIndexOf('/')) !== path) continue
-    out.push({
-      '.tag': 'folder',
-      id: `id:${folder}`,
-      name: folder.slice(folder.lastIndexOf('/') + 1),
-      path_lower: folder.toLowerCase(),
-      path_display: folder,
-    })
+function handle(
+  account: Account,
+  url: string,
+  body: Buffer,
+  req: IncomingMessage,
+  res: ServerResponse,
+): void {
+  if (url === '/oauth2/token') {
+    json(res, { access_token: 'integ-token', expires_in: 14400 })
+    return
   }
-  for (const [file, content] of files) {
-    if (file.slice(0, file.lastIndexOf('/')) !== path) continue
-    out.push({
-      '.tag': 'file',
-      id: `id:${file}`,
-      name: file.slice(file.lastIndexOf('/') + 1),
-      path_lower: file.toLowerCase(),
-      path_display: file,
-      size: content.length,
-      server_modified: MODIFIED,
-    })
+  if (url === '/2/files/list_folder') {
+    const { path = '' } = JSON.parse(body.toString('utf8') || '{}') as { path?: string }
+    const entries = account.listChildren(path)
+    if (entries === null) {
+      jsonError(res, 'path/not_found/...')
+      return
+    }
+    json(res, { entries, cursor: 'cursor-0', has_more: false })
+    return
   }
-  return out.sort((a, b) => (a.name < b.name ? -1 : 1))
+  if (url === '/2/files/get_metadata') {
+    const { path = '' } = JSON.parse(body.toString('utf8') || '{}') as { path?: string }
+    const entry = account.entryFor(path)
+    if (entry === null) {
+      jsonError(res, 'path/not_found/...')
+      return
+    }
+    json(res, entry)
+    return
+  }
+  if (url === '/2/files/download') {
+    const arg = JSON.parse(String(req.headers['dropbox-api-arg'] ?? '{}')) as { path?: string }
+    const stored = account.files.get(arg.path ?? '')
+    if (stored === undefined) {
+      jsonError(res, 'path/not_found/...')
+      return
+    }
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream' })
+    res.end(Buffer.from(stored.data))
+    return
+  }
+  if (url === '/2/files/upload') {
+    const arg = JSON.parse(String(req.headers['dropbox-api-arg'] ?? '{}')) as { path?: string }
+    const path = arg.path ?? ''
+    if (path === '') {
+      malformed(res)
+      return
+    }
+    if (account.folders.has(path)) {
+      jsonError(res, 'path/conflict/folder/...')
+      return
+    }
+    account.files.set(path, { data: new Uint8Array(body), modified: nowStamp() })
+    account.addAncestors(path)
+    json(res, account.entryFor(path))
+    return
+  }
+  if (url === '/2/files/create_folder_v2') {
+    const { path = '' } = JSON.parse(body.toString('utf8') || '{}') as { path?: string }
+    if (path === '') {
+      malformed(res)
+      return
+    }
+    if (account.entryFor(path) !== null) {
+      jsonError(res, 'path/conflict/folder/...')
+      return
+    }
+    account.folders.add(path)
+    account.addAncestors(path)
+    json(res, { metadata: account.entryFor(path) })
+    return
+  }
+  if (url === '/2/files/delete_v2') {
+    const { path = '' } = JSON.parse(body.toString('utf8') || '{}') as { path?: string }
+    if (path === '') {
+      malformed(res)
+      return
+    }
+    const entry = account.entryFor(path)
+    if (entry === null || !account.remove(path)) {
+      jsonError(res, 'path_lookup/not_found/...')
+      return
+    }
+    json(res, { metadata: entry })
+    return
+  }
+  if (url === '/2/files/move_v2' || url === '/2/files/copy_v2') {
+    const { from_path = '', to_path = '' } = JSON.parse(body.toString('utf8') || '{}') as {
+      from_path?: string
+      to_path?: string
+    }
+    if (from_path === '' || to_path === '') {
+      malformed(res)
+      return
+    }
+    const src = account.entryFor(from_path)
+    if (src === null) {
+      jsonError(res, 'from_lookup/not_found/...')
+      return
+    }
+    const dst = account.entryFor(to_path)
+    if (dst !== null) {
+      jsonError(res, dst['.tag'] === 'folder' ? 'to/conflict/folder/...' : 'to/conflict/file/...')
+      return
+    }
+    account.copyTree(from_path, to_path)
+    if (url === '/2/files/move_v2') account.remove(from_path)
+    json(res, { metadata: account.entryFor(to_path) })
+    return
+  }
+  res.writeHead(404, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ error_summary: `unknown endpoint ${url}` }))
 }
 
 export function startFakeDropbox(): Promise<FakeDropbox> {
-  const files = new Map<string, Uint8Array>()
+  const account = new Account()
   const server: Server = createServer((req, res) => {
-    void (async () => {
-      const url = req.url ?? ''
-      if (url === '/oauth2/token') {
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ access_token: 'integ-token', expires_in: 14400 }))
-        return
-      }
-      if (url === '/2/files/list_folder') {
-        const body = JSON.parse(await readBody(req)) as { path?: string }
-        const entries = listChildren(files, body.path ?? '')
-        if (entries === null) {
-          res.writeHead(409, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error_summary: 'path/not_found/...' }))
-          return
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ entries, cursor: 'cursor-0', has_more: false }))
-        return
-      }
-      if (url === '/2/files/download') {
-        await readBody(req)
-        const arg = JSON.parse(String(req.headers['dropbox-api-arg'] ?? '{}')) as {
-          path?: string
-        }
-        const content = files.get(arg.path ?? '')
-        if (content === undefined) {
-          res.writeHead(409, { 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ error_summary: 'path/not_found/...' }))
-          return
-        }
-        res.writeHead(200, { 'Content-Type': 'application/octet-stream' })
-        res.end(Buffer.from(content))
-        return
-      }
-      res.writeHead(404, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error_summary: `unknown endpoint ${url}` }))
-    })().catch(() => {
-      res.writeHead(500)
-      res.end()
-    })
+    readBody(req)
+      .then((body) => {
+        handle(account, req.url ?? '', body, req, res)
+      })
+      .catch(() => {
+        res.writeHead(500)
+        res.end()
+      })
   })
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
@@ -141,7 +303,6 @@ export function startFakeDropbox(): Promise<FakeDropbox> {
       }
       resolve({
         endpoint: `http://127.0.0.1:${String(address.port)}`,
-        seed: (path, content) => files.set(path, content),
         close: () => server.close(),
       })
     })

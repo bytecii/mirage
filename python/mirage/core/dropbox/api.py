@@ -17,6 +17,39 @@ from typing import Any
 from mirage.core.dropbox._client import DropboxTokenManager, dropbox_rpc
 
 
+async def get_metadata(tm: DropboxTokenManager, path: str) -> dict[str, Any]:
+    return await dropbox_rpc(tm, "/files/get_metadata", {"path": path})
+
+
+async def create_folder(tm: DropboxTokenManager, path: str) -> None:
+    await dropbox_rpc(tm, "/files/create_folder_v2", {
+        "path": path,
+        "autorename": False,
+    })
+
+
+async def delete_path(tm: DropboxTokenManager, path: str) -> None:
+    await dropbox_rpc(tm, "/files/delete_v2", {"path": path})
+
+
+async def move_path(tm: DropboxTokenManager, from_path: str,
+                    to_path: str) -> None:
+    await dropbox_rpc(tm, "/files/move_v2", {
+        "from_path": from_path,
+        "to_path": to_path,
+        "autorename": False,
+    })
+
+
+async def copy_path(tm: DropboxTokenManager, from_path: str,
+                    to_path: str) -> None:
+    await dropbox_rpc(tm, "/files/copy_v2", {
+        "from_path": from_path,
+        "to_path": to_path,
+        "autorename": False,
+    })
+
+
 async def list_folder(
     tm: DropboxTokenManager,
     path: str,

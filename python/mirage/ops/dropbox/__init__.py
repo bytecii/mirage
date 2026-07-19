@@ -15,4 +15,4 @@
 from mirage.commands.builtin.dropbox.io import IO
 from mirage.ops.generic import make_generic_ops
 
-OPS = make_generic_ops("dropbox", IO)
+OPS = make_generic_ops("dropbox", IO, emulate_truncate=True)

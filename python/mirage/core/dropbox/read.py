@@ -76,6 +76,18 @@ async def read(
     path: PathSpec,
     index: IndexCacheStore = NULL_INDEX,
 ) -> bytes:
+    if index is NULL_INDEX:
+        # Index-less callers (the ops factory's emulated truncate)
+        # download directly; the API 409s on missing paths and folders.
+        prefix = mount_prefix_of(path.virtual, path.resource_path)
+        dropbox_path = dropbox_path_from_virtual(accessor.root_path,
+                                                 path.virtual, prefix)
+        try:
+            return await dropbox_download(accessor.token_manager, dropbox_path)
+        except DropboxApiError as exc:
+            if exc.status == 409:
+                raise enoent(path.virtual) from exc
+            raise
     _, virtual_key, prefix = await _resolve_entry(accessor, path, index)
     dropbox_path = dropbox_path_from_virtual(accessor.root_path, virtual_key,
                                              prefix)

@@ -30,12 +30,11 @@ HOST = "python"
 async def run_target(target: dict, cases: list[dict], root: Path,
                      report: harness.Report | None,
                      emit: list[dict] | None) -> None:
-    ws, cleanup, seeded = await adapters.open_target(target)
+    ws, cleanup = await adapters.open_target(target)
     try:
-        if not seeded:
-            for mount in target["mounts"]:
-                await harness.seed_fixture(ws, mount.get("fixture"),
-                                           mount["path"], root)
+        for mount in target["mounts"]:
+            await harness.seed_fixture(ws, mount.get("fixture"), mount["path"],
+                                       root)
         for case in cases:
             if target["id"] not in case["targets"]:
                 continue

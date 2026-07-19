@@ -16,9 +16,15 @@ from typing import Any
 
 from mirage.accessor.dropbox import DropboxAccessor
 from mirage.core.dropbox._client import DropboxTokenManager
+from mirage.core.dropbox.copy import copy
+from mirage.core.dropbox.mkdir import mkdir
 from mirage.core.dropbox.read import read
 from mirage.core.dropbox.readdir import readdir
+from mirage.core.dropbox.rename import rename
+from mirage.core.dropbox.rmdir import rmdir
 from mirage.core.dropbox.stat import stat
+from mirage.core.dropbox.unlink import unlink
+from mirage.core.dropbox.write import write_bytes
 from mirage.resource.base import BaseResource
 from mirage.resource.dropbox.config import DropboxConfig
 from mirage.resource.dropbox.prompt import PROMPT
@@ -29,8 +35,14 @@ _resolve_glob = make_resolve_glob(readdir)
 
 _DROPBOX_OPS = {
     "read_bytes": read,
+    "write": write_bytes,
     "readdir": readdir,
     "stat": stat,
+    "mkdir": mkdir,
+    "unlink": unlink,
+    "rmdir": rmdir,
+    "copy": copy,
+    "rename": rename,
 }
 
 

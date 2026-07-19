@@ -32,10 +32,21 @@ export interface DropboxConfig {
 
 export class DropboxApiError extends Error {
   readonly status: number
-  constructor(message: string, status: number) {
+  /** Dropbox `error_summary` (e.g. "path/not_found/..", "path/conflict/folder/.."). */
+  readonly summary: string
+  constructor(message: string, status: number, summary = '') {
     super(message)
     this.status = status
+    this.summary = summary
     this.name = 'DropboxApiError'
+  }
+}
+
+function summaryOf(text: string): string {
+  try {
+    return (JSON.parse(text) as { error_summary?: string }).error_summary ?? ''
+  } catch {
+    return ''
   }
 }
 
@@ -135,9 +146,40 @@ export async function dropboxRpc(
   })
   if (!r.ok) {
     const text = await r.text().catch(() => '')
-    throw new DropboxApiError(`Dropbox POST ${endpoint} → ${String(r.status)} ${text}`, r.status)
+    throw new DropboxApiError(
+      `Dropbox POST ${endpoint} → ${String(r.status)} ${text}`,
+      r.status,
+      summaryOf(text),
+    )
   }
   return r.json()
+}
+
+export async function dropboxUpload(
+  tm: DropboxTokenManager,
+  path: string,
+  data: Uint8Array,
+): Promise<void> {
+  const headers = await dropboxAuthHeaders(tm)
+  const url = `${tm.contentBase}/files/upload`
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {
+      ...headers,
+      'Dropbox-API-Arg': JSON.stringify({ path, mode: 'overwrite', mute: true }),
+      'Content-Type': 'application/octet-stream',
+    },
+    body: data as unknown as BodyInit,
+  })
+  if (!r.ok) {
+    const text = await r.text().catch(() => '')
+    throw new DropboxApiError(
+      `Dropbox upload ${path} → ${String(r.status)} ${text}`,
+      r.status,
+      summaryOf(text),
+    )
+  }
+  await r.arrayBuffer()
 }
 
 export async function dropboxDownload(tm: DropboxTokenManager, path: string): Promise<Uint8Array> {

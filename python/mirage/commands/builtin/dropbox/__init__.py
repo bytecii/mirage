@@ -13,8 +13,17 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.commands.builtin.dropbox.io import IO as _IO
-from mirage.commands.builtin.generic_bind import make_generic_commands
+from mirage.commands.builtin.filetype_factory import make_filetype_commands
+from mirage.commands.builtin.generic_bind import (make_file_read_provision,
+                                                  make_generic_commands)
+from mirage.core.dropbox.read import read as _read
+from mirage.core.dropbox.stat import stat as _stat
 
 COMMANDS = [
+    *make_filetype_commands("dropbox",
+                            _IO.resolve_glob,
+                            _read,
+                            read_takes_index=True,
+                            provision=make_file_read_provision(_stat)),
     *make_generic_commands("dropbox", _IO),
 ]

@@ -31,9 +31,22 @@ TOKEN_BUFFER_SECONDS = 300
 
 class DropboxApiError(RuntimeError):
 
-    def __init__(self, message: str, status: int | None = None) -> None:
+    def __init__(self,
+                 message: str,
+                 status: int | None = None,
+                 summary: str = "") -> None:
         super().__init__(message)
         self.status = status
+        # Dropbox error_summary, e.g. "path/not_found/.." or
+        # "path/conflict/folder/..".
+        self.summary = summary
+
+
+def summary_of(text: str) -> str:
+    try:
+        return json.loads(text).get("error_summary", "")
+    except ValueError:
+        return ""
 
 
 def _token_url(config: DropboxConfig) -> str:
@@ -107,8 +120,27 @@ async def dropbox_rpc(
             if resp.status >= 400:
                 raise DropboxApiError(
                     f"Dropbox POST {endpoint} → {resp.status} {text}",
-                    resp.status)
+                    resp.status, summary_of(text))
     return json.loads(text)
+
+
+async def dropbox_upload(tm: DropboxTokenManager, path: str,
+                         data: bytes) -> None:
+    headers = await dropbox_auth_headers(tm)
+    headers["Dropbox-API-Arg"] = json.dumps({
+        "path": path,
+        "mode": "overwrite",
+        "mute": True,
+    })
+    headers["Content-Type"] = "application/octet-stream"
+    url = f"{tm.content_base}/files/upload"
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, data=data) as resp:
+            if resp.status >= 400:
+                text = await resp.text()
+                raise DropboxApiError(
+                    f"Dropbox upload {path} → {resp.status} {text}",
+                    resp.status, summary_of(text))
 
 
 async def dropbox_download(tm: DropboxTokenManager, path: str) -> bytes:

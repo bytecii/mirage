@@ -326,16 +326,13 @@ class OneDriveService:
 
 
 class DropboxService:
-    """Per-account fake Dropbox servers, seeded out-of-band.
+    """Per-account fake Dropbox servers.
 
-    Dropbox is a read-only backend, so fixtures cannot seed through the
-    workspace (mkdir/tee); they go straight into the fake's file tree.
     Mounts sharing a ``bucket`` share one fake account (the -root target
-    mounts three root_path subfolders of a single account); distinct
-    buckets get isolated accounts.
+    mounts three root_path subfolders of a single account, mirroring
+    s3-prefix's shared bucket); distinct buckets get isolated accounts.
+    Fixtures seed through the workspace like every writable backend.
     """
-
-    seeds = True
 
     def __init__(self) -> None:
         self.accounts: dict[str, object] = {}
@@ -345,23 +342,12 @@ class DropboxService:
     async def create(cls, target: dict) -> "DropboxService":
         service = cls()
         module = _load_dropbox_server()
-        fixtures = Path(__file__).resolve().parents[2] / "fixtures"
         for mount in target["mounts"]:
             account = mount.get("bucket") or mount["path"]
-            fake = service.accounts.get(account)
-            if fake is None:
+            if account not in service.accounts:
                 fake, runner = await module.start_fake_dropbox()
                 service.accounts[account] = fake
                 service.runners.append(runner)
-            base = f"/{mount['root']}" if mount.get("root") else ""
-            fixture = mount.get("fixture")
-            if fixture:
-                root = fixtures / fixture
-                for file in sorted(root.rglob("*")):
-                    if not file.is_file():
-                        continue
-                    rel = file.relative_to(root).as_posix()
-                    fake.seed(f"{base}/{rel}", file.read_bytes())
         return service
 
     def resource(self, mount: dict) -> DropboxResource:
@@ -540,13 +526,7 @@ BUILDERS = {
 
 
 async def open_target(
-        target: dict) -> tuple[Workspace, Callable[[], Awaitable[None]], bool]:
-    """Open a target's workspace.
-
-    Returns (workspace, cleanup, seeded); ``seeded`` is True when the
-    service already seeded fixtures out-of-band (read-only backends
-    cannot seed through the workspace), so main skips seed_fixture.
-    """
+        target: dict) -> tuple[Workspace, Callable[[], Awaitable[None]]]:
     run_id = uuid.uuid4().hex[:8]
     service: Service | None = None
     if target.get("service") == "s3":
@@ -581,5 +561,4 @@ async def open_target(
         if service is not None:
             await service.teardown()
 
-    seeded = getattr(service, "seeds", False) is True
-    return ws, cleanup_all, seeded
+    return ws, cleanup_all

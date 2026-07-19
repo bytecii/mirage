@@ -13,10 +13,13 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import logging
+from typing import Any
 
 from mirage.accessor.dropbox import DropboxAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.dropbox._client import DropboxApiError
+from mirage.core.dropbox.api import get_metadata
+from mirage.core.dropbox.paths import dropbox_path_of
 from mirage.core.dropbox.readdir import readdir
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import enoent
@@ -24,6 +27,46 @@ from mirage.utils.filetype import guess_type
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
 
 logger = logging.getLogger(__name__)
+
+
+def _stat_from_entry(entry: dict[str, Any]) -> FileStat:
+    modified = entry.get("server_modified") or entry.get(
+        "client_modified") or ""
+    name = entry.get("name", "")
+    entry_id = entry.get("id") or entry.get("path_display") or name
+    if entry.get(".tag") == "folder":
+        return FileStat(
+            name=name,
+            type=FileType.DIRECTORY,
+            modified=modified,
+            extra={"dropbox_id": entry_id},
+        )
+    size = entry.get("size")
+    return FileStat(
+        name=name,
+        size=size if isinstance(size, int) and size > 0 else None,
+        type=guess_type(name),
+        modified=modified,
+        fingerprint=modified or None,
+        extra={
+            "dropbox_id": entry_id,
+            "resource_type": "dropbox/file",
+        },
+    )
+
+
+async def _stat_from_api(accessor: DropboxAccessor,
+                         path: PathSpec) -> FileStat:
+    # API-truthful stat for index-less callers (unlink/rmdir
+    # classification, walk fallbacks): get_metadata resolves directly.
+    try:
+        entry = await get_metadata(accessor.token_manager,
+                                   dropbox_path_of(accessor, path))
+    except DropboxApiError as exc:
+        if exc.status == 409:
+            raise enoent(path.virtual) from exc
+        raise
+    return _stat_from_entry(entry)
 
 
 async def stat(
@@ -36,6 +79,8 @@ async def stat(
     key = path.resource_path
     if not key:
         return FileStat(name="/", type=FileType.DIRECTORY)
+    if index is NULL_INDEX:
+        return await _stat_from_api(accessor, path)
     virtual_key = prefix + "/" + key if prefix else "/" + key
 
     result = await index.get(virtual_key)
