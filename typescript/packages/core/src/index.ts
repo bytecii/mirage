@@ -1124,8 +1124,10 @@ export {
   evalPredicate,
   type FindEntry,
   keep,
+  optionsTree,
   type PredNode,
   startBasename,
+  treeHasEmpty,
 } from './commands/builtin/findEval.ts'
 export {
   eisdir,
