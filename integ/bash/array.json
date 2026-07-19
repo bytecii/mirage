@@ -12,10 +12,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar1=(one two three); echo ${ar1[0]}",
       "expect": {
@@ -36,10 +40,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar2=(one two three); echo ${ar2[2]}",
       "expect": {
@@ -60,10 +68,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar3=(one two three); echo ${ar3[-1]}",
       "expect": {
@@ -84,10 +96,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar4=(one two three); echo ${ar4[@]}",
       "expect": {
@@ -108,10 +124,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar5=(one two three); echo ${ar5[*]}",
       "expect": {
@@ -132,10 +152,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar6=(one two three); echo ${#ar6[@]}",
       "expect": {
@@ -156,10 +180,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar7=(); echo ${#ar7[@]}",
       "expect": {
@@ -180,10 +208,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar8=(one two three); echo $ar8",
       "expect": {
@@ -204,10 +236,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar9=(one two three); for x in \"${ar9[@]}\"; do echo \"[$x]\"; done",
       "expect": {
@@ -228,10 +264,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar10=('x y' z); echo ${#ar10[@]}",
       "expect": {
@@ -252,10 +292,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar11=('x y' z); for i in \"${ar11[@]}\"; do echo \"[$i]\"; done",
       "expect": {
@@ -276,10 +320,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar12=(one two); echo \"pre${ar12[@]}post\"",
       "expect": {
@@ -300,10 +348,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar13=(one two); echo ${ar13[1]^^}",
       "expect": {
@@ -324,10 +376,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar14=(hello hi); echo ${#ar14[0]}",
       "expect": {
@@ -348,10 +404,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar15=(1 2 3 4); echo ${ar15[@]:1:2}",
       "expect": {
@@ -372,10 +432,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar16=(1 2 3 4); echo ${ar16[@]:2}",
       "expect": {
@@ -396,10 +460,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar17=(x y z); echo ${!ar17[@]}",
       "expect": {
@@ -420,10 +488,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ai1=1; ar18=(x y z); echo ${ar18[ai1]}",
       "expect": {
@@ -444,10 +516,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ai2=1; ar19=(x y z); echo ${ar19[ai2+1]}",
       "expect": {
@@ -468,10 +544,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar20=(cat car cow); echo ${ar20[@]/c/K}",
       "expect": {
@@ -492,10 +572,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar21=(a.txt b.txt); echo ${ar21[@]%.txt}",
       "expect": {
@@ -516,10 +600,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar22=(1 2); ar22+=(3); echo ${#ar22[@]}",
       "expect": {
@@ -540,10 +628,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "as1=one; as1+=(two); echo ${#as1[@]} ${as1[0]} ${as1[1]}",
       "expect": {
@@ -564,10 +656,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar23=(1 2); ar23[0]=9; echo ${ar23[@]}",
       "expect": {
@@ -588,10 +684,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar24=(1 2 3); ar24[-1]=X; echo ${ar24[@]}",
       "expect": {
@@ -612,10 +712,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar25=($(echo one two)); echo ${#ar25[@]}",
       "expect": {
@@ -636,10 +740,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar26=(/data/sorted_*.txt); echo ${#ar26[@]}",
       "expect": {
@@ -660,10 +768,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "av1=ab; av1+=cd; echo $av1",
       "expect": {
@@ -684,10 +796,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "zz_av2+=x; echo $zz_av2",
       "expect": {
@@ -708,10 +824,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "ar27=(1); ar27[-5]=x; echo rc=$?",
       "expect": {
@@ -732,10 +852,14 @@
         "s3-prefix",
         "hf",
         "hf-prefix",
+        "dropbox",
+        "dropbox-root",
         "onedrive",
         "sharepoint",
         "ssh",
-        "nextcloud"
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
       ],
       "command": "(ar28=(1); ar28[-5]=x); echo rc=$?",
       "expect": {
