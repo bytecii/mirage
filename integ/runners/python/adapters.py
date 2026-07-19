@@ -32,6 +32,7 @@ from mirage import MountMode, Workspace
 from mirage.accessor.onedrive import OneDriveConfig
 from mirage.accessor.sharepoint import SharePointConfig
 from mirage.core.sharepoint import _resolver as sharepoint_resolver
+from mirage.resource.box import BoxConfig, BoxResource
 from mirage.resource.disk import DiskResource
 from mirage.resource.dropbox import DropboxConfig, DropboxResource
 from mirage.resource.gdocs.config import GDocsConfig
@@ -163,6 +164,11 @@ def _load_dropbox_server() -> ModuleType:
 def _load_ssh_server() -> ModuleType:
     return _load_module(
         Path(__file__).resolve().parents[2] / "server" / "ssh_server.py")
+
+
+def _load_box_server() -> ModuleType:
+    return _load_module(
+        Path(__file__).resolve().parents[2] / "server" / "box_server.py")
 
 
 async def _admin_exec(ws: Workspace, command: str) -> None:
@@ -459,10 +465,13 @@ class DropboxService:
         account = mount.get("bucket") or mount["path"]
         fake = self.accounts[account]
         return DropboxResource(
+            # The fake supports full-text search_v2, so exercise grep/rg
+            # narrowing in the battery.
             DropboxConfig(client_id="integ-client",
                           client_secret="integ-secret",
                           refresh_token="integ-refresh",
                           endpoint=fake.endpoint,
+                          content_search=True,
                           root_path=mount.get("root") or "/"))
 
     async def teardown(self) -> None:
@@ -492,6 +501,45 @@ class HfService:
                 token="integ-token",
                 endpoint=self.endpoint,
                 key_prefix=mount.get("prefix"),
+            ))
+
+    async def teardown(self) -> None:
+        await self.runner.cleanup()
+
+
+class BoxService:
+
+    def __init__(self, run_id: str, state, runner, endpoint: str) -> None:
+        self.run_id = run_id
+        self.state = state
+        self.runner = runner
+        self.endpoint = endpoint
+
+    @classmethod
+    async def create(cls, run_id: str) -> "BoxService":
+        module = _load_box_server()
+        state, _server, runner = await module.start_fake_box()
+        return cls(run_id, state, runner, state.base)
+
+    def resource(self, mount: dict) -> BoxResource:
+        # Box is read-only through the workspace, so the harness tee-seeding
+        # can't run; each mount gets its own root folder seeded in-process
+        # and mounted by id (mirrors how a real Box app scopes to a folder).
+        folder = self.state.add_folder("0", mount["folder"])
+        seed = mount.get("seed")
+        if seed:
+            base = Path(__file__).resolve().parents[2] / "fixtures" / seed
+            for src in sorted(base.rglob("*")):
+                if not src.is_file():
+                    continue
+                rel = src.relative_to(base).as_posix()
+                self.state.seed_path(f"{mount['folder']}/{rel}",
+                                     src.read_bytes())
+        return BoxResource(
+            BoxConfig(
+                access_token="integ-box-token",
+                endpoint=self.endpoint,
+                root_folder_id=folder["id"],
             ))
 
     async def teardown(self) -> None:
@@ -531,8 +579,8 @@ class SharePointService:
 
 
 Service = (S3Service | OneDriveService | SharePointService | SSHService
-           | NextcloudService | GwsService | HfService | DropboxService
-           | GridFSService)
+           | NextcloudService | GwsService | HfService | BoxService
+           | DropboxService | GridFSService)
 
 
 def build_ram(
@@ -592,6 +640,13 @@ def build_hf(
         mount: dict, run_id: str, service: Service | None
 ) -> tuple[object, Callable[[], Awaitable[None]]]:
     assert isinstance(service, HfService)
+    return service.resource(mount), _noop
+
+
+def build_box(
+        mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, BoxService)
     return service.resource(mount), _noop
 
 
@@ -659,6 +714,7 @@ BUILDERS = {
     "gsheets": build_gsheets,
     "gslides": build_gslides,
     "hf": build_hf,
+    "box": build_box,
     "dropbox": build_dropbox,
 }
 
@@ -683,6 +739,8 @@ async def open_target(
         service = await GwsService.create(run_id, target)
     elif target.get("service") == "hf":
         service = await HfService.create(run_id)
+    elif target.get("service") == "box":
+        service = await BoxService.create(run_id)
     elif target.get("service") == "dropbox":
         service = await DropboxService.create(target)
     mounts: dict[str, object] = {}

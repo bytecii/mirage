@@ -14,7 +14,7 @@
 
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import {
   CreateBucketCommand,
   DeleteBucketCommand,
@@ -24,6 +24,7 @@ import {
 } from '@aws-sdk/client-s3'
 import { OPFSResource, Workspace as BrowserWorkspace } from '@struktoai/mirage-browser'
 import {
+  BoxResource,
   DiskResource,
   DropboxResource,
   GDocsResource,
@@ -41,7 +42,7 @@ import {
 } from '@struktoai/mirage-node'
 import { installFakeNavigator, makeMockRoot } from '../../../typescript/packages/browser/src/test-utils.ts'
 import { startFakeDropbox, type FakeDropbox } from '../../server/dropbox.ts'
-import { integRoot } from './harness.ts'
+import { integRoot, walkFiles } from './harness.ts'
 import type { ExecWorkspace, Mount, Target } from './harness.ts'
 
 export interface Open {
@@ -206,6 +207,84 @@ async function openHf(target: Target): Promise<Open> {
   return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
 
+const BOX_AUTH = { Authorization: 'Bearer integ-box-token' }
+
+async function boxCreateFolder(endpoint: string, parentId: string, name: string): Promise<string> {
+  const r = await fetch(`${endpoint}/2.0/folders`, {
+    method: 'POST',
+    headers: { ...BOX_AUTH, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, parent: { id: parentId } }),
+  })
+  if (r.status === 201) return ((await r.json()) as { id: string }).id
+  if (r.status === 409) {
+    const list = await fetch(`${endpoint}/2.0/folders/${parentId}/items?limit=1000`, {
+      headers: BOX_AUTH,
+    })
+    const items = ((await list.json()) as { entries: { id: string; name: string; type: string }[] })
+      .entries
+    const hit = items.find((e) => e.type === 'folder' && e.name === name)
+    if (hit) return hit.id
+  }
+  throw new Error(`box folder create ${name} -> ${String(r.status)}`)
+}
+
+async function boxUpload(
+  endpoint: string,
+  folderId: string,
+  name: string,
+  content: Uint8Array,
+): Promise<void> {
+  const form = new FormData()
+  form.set('attributes', JSON.stringify({ name, parent: { id: folderId } }))
+  form.set('file', new Blob([content]), name)
+  const r = await fetch(`${endpoint}/2.0/files/content`, {
+    method: 'POST',
+    headers: BOX_AUTH,
+    body: form,
+  })
+  if (r.status !== 201) throw new Error(`box upload ${name} -> ${String(r.status)}`)
+}
+
+async function openBox(target: Target): Promise<Open> {
+  const endpoint = process.env.BOX_ENDPOINT
+  if (!endpoint) throw new Error('box target requires BOX_ENDPOINT')
+  const id = runId()
+  const root = integRoot()
+  const mounts: Record<string, BoxResource> = {}
+  for (const m of target.mounts) {
+    // Box is read-only through the workspace, so the harness tee-seeding
+    // can't run; the fixture is uploaded over the Box API instead. The
+    // shared fake server outlives a run, so a per-run folder name isolates
+    // runs, and the folder id becomes the mount root (mirrors how a real
+    // Box app scopes to a folder).
+    const folderId = await boxCreateFolder(endpoint, '0', `integ-${id}-${String(m.folder)}`)
+    if (m.seed !== undefined) {
+      const base = join(root, 'fixtures', m.seed)
+      for (const file of walkFiles(base)) {
+        const rel = relative(base, file).split(sep).join('/')
+        const parts = rel.split('/')
+        let parentId = folderId
+        for (const dir of parts.slice(0, -1)) {
+          parentId = await boxCreateFolder(endpoint, parentId, dir)
+        }
+        await boxUpload(
+          endpoint,
+          parentId,
+          parts[parts.length - 1] ?? '',
+          new Uint8Array(readFileSync(file)),
+        )
+      }
+    }
+    mounts[m.path] = new BoxResource({
+      accessToken: 'integ-box-token',
+      endpoint,
+      rootFolderId: folderId,
+    })
+  }
+  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
+}
+
 async function openDropbox(target: Target): Promise<Open> {
   // Mounts sharing a `bucket` share one fake account (the -root target
   // mounts three rootPath subfolders of a single account, mirroring
@@ -223,6 +302,9 @@ async function openDropbox(target: Target): Promise<Open> {
       clientId: 'integ-client',
       clientSecret: 'integ-secret',
       refreshToken: 'integ-refresh',
+      // The fake supports full-text search_v2, so exercise grep/rg
+      // narrowing in the battery.
+      contentSearch: true,
       endpoint: fake.endpoint,
       ...(m.root !== undefined ? { rootPath: m.root } : {}),
     })
@@ -413,5 +495,6 @@ export const ADAPTERS: Record<string, (target: Target) => Promise<Open>> = {
   gsheets: openGws,
   gslides: openGws,
   hf: openHf,
+  box: openBox,
   dropbox: openDropbox,
 }
