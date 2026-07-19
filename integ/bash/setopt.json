@@ -2,7 +2,7 @@
   "cases": [
     {
       "id": "opt_errexit_stops_line",
-      "seq": 501200,
+      "seq": 502200,
       "targets": [
         "ram",
         "disk",
@@ -33,7 +33,7 @@
     },
     {
       "id": "opt_errexit_or_recovers",
-      "seq": 501201,
+      "seq": 502201,
       "targets": [
         "ram",
         "disk",
@@ -64,7 +64,7 @@
     },
     {
       "id": "opt_errexit_if_condition_exempt",
-      "seq": 501202,
+      "seq": 502202,
       "targets": [
         "ram",
         "disk",
@@ -95,7 +95,7 @@
     },
     {
       "id": "opt_errexit_and_tail_fails",
-      "seq": 501203,
+      "seq": 502203,
       "targets": [
         "ram",
         "disk",
@@ -126,7 +126,7 @@
     },
     {
       "id": "opt_errexit_and_short_circuit_ok",
-      "seq": 501204,
+      "seq": 502204,
       "targets": [
         "ram",
         "disk",
@@ -157,7 +157,7 @@
     },
     {
       "id": "opt_errexit_negation_immune",
-      "seq": 501205,
+      "seq": 502205,
       "targets": [
         "ram",
         "disk",
@@ -188,7 +188,7 @@
     },
     {
       "id": "opt_errexit_plus_e_disables",
-      "seq": 501206,
+      "seq": 502206,
       "targets": [
         "ram",
         "disk",
@@ -219,7 +219,7 @@
     },
     {
       "id": "opt_errexit_plain_pipeline_ok",
-      "seq": 501207,
+      "seq": 502207,
       "targets": [
         "ram",
         "disk",
@@ -250,7 +250,7 @@
     },
     {
       "id": "opt_errexit_pipefail_stops",
-      "seq": 501208,
+      "seq": 502208,
       "targets": [
         "ram",
         "disk",
@@ -281,7 +281,7 @@
     },
     {
       "id": "opt_nounset_unset_fatal",
-      "seq": 501209,
+      "seq": 502209,
       "targets": [
         "ram",
         "disk",
@@ -312,7 +312,7 @@
     },
     {
       "id": "opt_nounset_default_ok",
-      "seq": 501210,
+      "seq": 502210,
       "targets": [
         "ram",
         "disk",
@@ -343,7 +343,7 @@
     },
     {
       "id": "opt_nounset_empty_set_ok",
-      "seq": 501211,
+      "seq": 502211,
       "targets": [
         "ram",
         "disk",
@@ -374,7 +374,7 @@
     },
     {
       "id": "opt_xtrace_traces_command",
-      "seq": 501212,
+      "seq": 502212,
       "targets": [
         "ram",
         "disk",
@@ -405,7 +405,7 @@
     },
     {
       "id": "opt_xtrace_expands_words",
-      "seq": 501213,
+      "seq": 502213,
       "targets": [
         "ram",
         "disk",
@@ -436,7 +436,7 @@
     },
     {
       "id": "opt_noglob_keeps_literal",
-      "seq": 501214,
+      "seq": 502214,
       "targets": [
         "ram",
         "disk",
@@ -467,7 +467,7 @@
     },
     {
       "id": "opt_noglob_off_globs_again",
-      "seq": 501215,
+      "seq": 502215,
       "targets": [
         "ram",
         "disk",
@@ -498,7 +498,7 @@
     },
     {
       "id": "opt_pipefail_reports_left_failure",
-      "seq": 501216,
+      "seq": 502216,
       "targets": [
         "ram",
         "disk",
@@ -529,7 +529,7 @@
     },
     {
       "id": "opt_no_pipefail_default_zero",
-      "seq": 501217,
+      "seq": 502217,
       "targets": [
         "ram",
         "disk",
@@ -560,7 +560,7 @@
     },
     {
       "id": "opt_set_dashdash_positionals",
-      "seq": 501218,
+      "seq": 502218,
       "targets": [
         "ram",
         "disk",
@@ -591,7 +591,7 @@
     },
     {
       "id": "opt_set_combined_flags_ok",
-      "seq": 501219,
+      "seq": 502219,
       "targets": [
         "ram",
         "disk",

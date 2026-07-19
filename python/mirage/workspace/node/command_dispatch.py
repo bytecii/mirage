@@ -35,7 +35,7 @@ from mirage.workspace.session.shell_dirs import home_dir
 from mirage.workspace.types import ExecutionNode
 
 from mirage.shell.helpers import (  # isort: skip
-    ProcessSubDirection, get_command_name, get_parts,
+    ProcessSubDirection, get_command_name, get_parts, get_process_sub_body,
     get_process_sub_direction, get_text, split_env_prefix)
 from mirage.workspace.executor.builtins import (  # isort: skip
     follow_paths, handle_bash, handle_cd, handle_chmod, handle_chown,
@@ -184,18 +184,21 @@ async def _dispatch_command_body(
     cancel: asyncio.Event | None = None,
     routing_decision: RoutingDecision | None = None,
 ) -> tuple[Any, IOResult, ExecutionNode]:
-    for child in node.named_children:
-        if child.type == NT.HERESTRING_REDIRECT:
-            for sc in child.named_children:
-                content = await expand_node(sc, session, execute_fn,
-                                            call_stack)
-                stdin = content.encode() + b"\n"
-                break
+    parent = node.parent
+    if parent is None or parent.type != NT.REDIRECTED_STATEMENT:
+        for child in node.named_children:
+            if child.type == NT.HERESTRING_REDIRECT:
+                for sc in child.named_children:
+                    content = await expand_node(sc, session, execute_fn,
+                                                call_stack)
+                    stdin = content.encode() + b"\n"
+                    break
 
     # Process substitution: <(cmd) feeds inner stdout as stdin.
     # Output direction >(cmd) is unsupported; reject early so the
     # caller sees a capability gap rather than a silent no-op.
     proc_sub_parts = []
+    proc_sub_stderr = []
     clean_parts = []
     for p in parts:
         if hasattr(p, "type") and p.type == NT.PROCESS_SUBSTITUTION:
@@ -203,11 +206,13 @@ async def _dispatch_command_body(
                 err = b"mirage: unsupported: process substitution >(...)\n"
                 return None, IOResult(exit_code=2, stderr=err), ExecutionNode(
                     command=name or "process_sub", exit_code=2, stderr=err)
-            inner_cmds = [c for c in p.named_children if c.type == NT.COMMAND]
-            if inner_cmds:
-                io_ps = await execute_fn(get_text(inner_cmds[0]),
-                                         session_id=session.session_id)
+            inner = get_process_sub_body(p)
+            if inner:
+                io_ps = await execute_fn(inner, session_id=session.session_id)
                 proc_sub_parts.append(io_ps.stdout or b"")
+                stderr = await materialize(io_ps.stderr)
+                if stderr:
+                    proc_sub_stderr.append(stderr)
         else:
             clean_parts.append(p)
     if proc_sub_parts and stdin is None:
@@ -226,13 +231,15 @@ async def _dispatch_command_body(
     # Capture xtrace before the body runs so `set -x` itself is not
     # traced (bash enables tracing only for the following commands).
     xtrace = bool(session.shell_options.get("xtrace"))
-    result = await run_with_timeout(body, timeout, argv.name or "?")
+    stdout, io, exec_node = await run_with_timeout(body, timeout, argv.name
+                                                   or "?")
+    if proc_sub_stderr:
+        io.stderr = b"".join(proc_sub_stderr) + await materialize(io.stderr)
+        exec_node.stderr = io.stderr
     if xtrace and argv.name:
-        stdout, io, exec_node = result
         existing = await materialize(io.stderr) or b""
         io.stderr = trace_command([argv.name, *argv.args]) + existing
-        return stdout, io, exec_node
-    return result
+    return stdout, io, exec_node
 
 
 async def _run_argv(

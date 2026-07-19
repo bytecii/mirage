@@ -2,7 +2,7 @@
   "cases": [
     {
       "id": "job_bg_then_wait",
-      "seq": 501400,
+      "seq": 502400,
       "targets": [
         "ram",
         "disk",
@@ -33,7 +33,7 @@
     },
     {
       "id": "job_last_bg_id_set",
-      "seq": 501401,
+      "seq": 502401,
       "targets": [
         "ram",
         "disk",
@@ -64,7 +64,7 @@
     },
     {
       "id": "job_bg_write_visible_after_wait",
-      "seq": 501402,
+      "seq": 502402,
       "targets": [
         "ram",
         "disk",
@@ -93,7 +93,7 @@
     },
     {
       "id": "job_wait_no_jobs_ok",
-      "seq": 501403,
+      "seq": 502403,
       "targets": [
         "ram",
         "disk",
@@ -124,7 +124,7 @@
     },
     {
       "id": "job_kill_by_last_bg_id",
-      "seq": 501404,
+      "seq": 502404,
       "targets": [
         "ram",
         "disk",
@@ -155,7 +155,7 @@
     },
     {
       "id": "job_wait_reports_exit_code",
-      "seq": 501405,
+      "seq": 502405,
       "targets": [
         "ram",
         "disk",
@@ -186,7 +186,7 @@
     },
     {
       "id": "job_jobs_lists_running",
-      "seq": 501406,
+      "seq": 502406,
       "targets": [
         "ram",
         "disk",

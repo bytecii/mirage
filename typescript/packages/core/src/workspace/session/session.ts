@@ -57,6 +57,7 @@ export class Session {
   // which bash exempts from errexit. Reset on every node execution.
   errexitImmune: boolean
   stdinBuffer: AsyncLineIterator | null = null
+  stdinSource: unknown = null
   localVars: Map<string, string | null> | null = null
   mountModes: ReadonlyMap<string, MountMode> | null
   generation: number

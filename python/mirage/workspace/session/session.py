@@ -42,6 +42,7 @@ class Session:
     # which bash exempts from errexit. Reset on every node execution.
     errexit_immune: bool = field(default=False, repr=False)
     _stdin_buffer: AsyncLineIterator | None = field(default=None, repr=False)
+    _stdin_source: object = field(default=None, repr=False)
     _local_vars: dict[str, str | None] | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
