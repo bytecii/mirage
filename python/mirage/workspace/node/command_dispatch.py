@@ -18,9 +18,11 @@ from typing import Any
 from mirage.commands.builtin.utils.safeguard import run_with_timeout
 from mirage.commands.safeguard import resolve_safeguard
 from mirage.io import IOResult
+from mirage.io.types import materialize
 from mirage.runtime.route import RoutingDecision
 from mirage.shell.types import NodeType as NT
 from mirage.shell.types import ShellBuiltin as SB
+from mirage.shell.xtrace import trace_command
 from mirage.types import PathSpec
 from mirage.utils.path import CycleError
 from mirage.workspace.executor.command import handle_command
@@ -45,6 +47,17 @@ from mirage.workspace.executor.builtins import (  # isort: skip
     prepare_mv, strip_link_operands)
 
 _CdArgs = list[str | PathSpec]
+
+
+def _loop_levels(args: list[str]) -> int:
+    """Parse the optional numeric level of ``break``/``continue``.
+
+    Args:
+        args (list[str]): words after the builtin name.
+    """
+    if args and args[0].isdigit() and int(args[0]) > 0:
+        return int(args[0])
+    return 1
 
 
 def _split_cd_options(args: _CdArgs) -> tuple[_CdArgs, str | None, bool]:
@@ -210,7 +223,16 @@ async def _dispatch_command_body(
     body = _run_argv(recurse, dispatch, registry, namespace, execute_fn, argv,
                      session, stdin, call_stack, job_table, cancel,
                      routing_decision)
-    return await run_with_timeout(body, timeout, argv.name or "?")
+    # Capture xtrace before the body runs so `set -x` itself is not
+    # traced (bash enables tracing only for the following commands).
+    xtrace = bool(session.shell_options.get("xtrace"))
+    result = await run_with_timeout(body, timeout, argv.name or "?")
+    if xtrace and argv.name:
+        stdout, io, exec_node = result
+        existing = await materialize(io.stderr) or b""
+        io.stderr = trace_command([argv.name, *argv.args]) + existing
+        return stdout, io, exec_node
+    return result
 
 
 async def _run_argv(
@@ -386,10 +408,10 @@ async def _run_argv(
         return await handle_timeout(execute_fn, args, session)
 
     if name == SB.BREAK:
-        raise BreakSignal()
+        raise BreakSignal(levels=_loop_levels(args))
 
     if name == SB.CONTINUE:
-        raise ContinueSignal()
+        raise ContinueSignal(levels=_loop_levels(args))
 
     # ── symlinks (namespace-backed; not bash builtins, not mount
     #    commands: they mutate the addressing layer) ──

@@ -37,6 +37,7 @@ import { handleCommand } from '../executor/command.ts'
 import { runWithTimeout } from '../../commands/builtin/utils/safeguard.ts'
 import { resolveSafeguard } from '../../commands/safeguard.ts'
 import { BreakSignal, ContinueSignal } from '../executor/control.ts'
+import { traceCommand } from '../../shell/xtrace.ts'
 import type { DispatchFn } from '../executor/cross_mount.ts'
 import {
   followPaths,
@@ -81,6 +82,15 @@ import { homeDir } from '../session/shell_dirs.ts'
 import { ExecutionNode } from '../types.ts'
 
 type Result = [ByteSource | null, IOResult, ExecutionNode]
+
+// Parse the optional numeric level of `break`/`continue`.
+function loopLevels(args: readonly string[]): number {
+  const first = args[0]
+  if (first !== undefined && /^\d+$/.test(first) && parseInt(first, 10) > 0) {
+    return parseInt(first, 10)
+  }
+  return 1
+}
 
 // Split leading `cd` option flags (-L -P -e -@, clusters like -LP, and a
 // `--` terminator) from the directory operand. A bare `-` is the OLDPWD
@@ -297,7 +307,10 @@ async function runCommandBody(
   // invocations get their real command's policy.
   const resolved = argv.name !== '' ? resolveSafeguard(argv.name) : null
   const timeout = resolved !== null ? resolved.timeoutSeconds : null
-  return runWithTimeout(
+  // Capture xtrace before the body runs so `set -x` itself is not
+  // traced (bash enables tracing only for the following commands).
+  const xtrace = session.shellOptions.xtrace === true
+  const result = await runWithTimeout(
     runArgv(
       recurse,
       dispatch,
@@ -318,6 +331,17 @@ async function runCommandBody(
     timeout,
     argv.name !== '' ? argv.name : '?',
   )
+  if (xtrace && argv.name !== '') {
+    const [stdout, io, execNode] = result
+    const existing = await materialize(io.stderr)
+    const trace = traceCommand([argv.name, ...argv.args])
+    const combined = new Uint8Array(trace.byteLength + existing.byteLength)
+    combined.set(trace, 0)
+    combined.set(existing, trace.byteLength)
+    io.stderr = combined
+    return [stdout, io, execNode]
+  }
+  return result
 }
 
 async function runArgv(
@@ -504,8 +528,8 @@ async function runArgv(
   if (name === SB.EXIT) {
     return handleExit(args, session)
   }
-  if (name === SB.BREAK) throw new BreakSignal()
-  if (name === SB.CONTINUE) throw new ContinueSignal()
+  if (name === SB.BREAK) throw new BreakSignal(null, new IOResult(), loopLevels(args))
+  if (name === SB.CONTINUE) throw new ContinueSignal(null, new IOResult(), loopLevels(args))
 
   if (name === SB.XARGS) {
     return handleXargs(executeFn, args, session, stdin)

@@ -52,6 +52,10 @@ export class Session {
   shellOptions: Record<string, boolean>
   readonlyVars: Set<string>
   arrays: Record<string, string[]>
+  // Transient `set -e` marker: true when the failure just returned
+  // came from a short-circuited &&/|| branch or a `!`-negated command,
+  // which bash exempts from errexit. Reset on every node execution.
+  errexitImmune: boolean
   stdinBuffer: AsyncLineIterator | null = null
   localVars: Map<string, string | null> | null = null
   mountModes: ReadonlyMap<string, MountMode> | null
@@ -61,6 +65,7 @@ export class Session {
 
   constructor(init: SessionInit) {
     this.sessionId = init.sessionId
+    this.errexitImmune = false
     this.cwd = init.cwd ?? '/'
     this.env = init.env ?? {}
     this.createdAt = init.createdAt ?? Date.now() / 1000

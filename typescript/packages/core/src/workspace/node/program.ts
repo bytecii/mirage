@@ -20,6 +20,7 @@ import type { JobTable } from '../../shell/job_table.ts'
 import { ERREXIT_EXEMPT_TYPES, NodeType as NT } from '../../shell/types.ts'
 import type { TSNodeLike } from '../expand/variable.ts'
 import { errorVirtualPath, gnuStrerror } from '../../utils/errors.ts'
+import { BreakSignal, ContinueSignal } from '../executor/control.ts'
 import { handleBackground } from '../executor/jobs.ts'
 import type { Session } from '../session/session.ts'
 import { ExecutionNode } from '../types.ts'
@@ -107,6 +108,16 @@ export async function executeProgram(
           })
           break
         }
+        if (err instanceof BreakSignal || err instanceof ContinueSignal) {
+          // break/continue with a level beyond the loop nesting ends
+          // every enclosing loop and execution continues with the next
+          // statement, like bash (which clamps the level to the depth).
+          if (err.stdout !== null) allStdout.push(err.stdout)
+          mergedIo = await mergedIo.merge(err.io)
+          session.lastExitCode = err.io.exitCode
+          i += 1
+          continue
+        }
         throw err
       }
       let drainErr: string | null = null
@@ -153,7 +164,8 @@ export async function executeProgram(
       io.exitCode !== 0 &&
       session.shellOptions.errexit === true &&
       !isBg &&
-      !ERREXIT_EXEMPT_TYPES.has(child.type)
+      !ERREXIT_EXEMPT_TYPES.has(child.type) &&
+      !session.errexitImmune
     ) {
       mergedIo.exitCode = io.exitCode
       break

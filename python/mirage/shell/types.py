@@ -121,8 +121,11 @@ class NodeType(StrEnum):
     ERROR = "ERROR"
 
 
+# Node types whose failure never triggers `set -e` by shape alone.
+# Lists are NOT exempt: bash exits when the command after the final
+# `&&`/`||` fails; short-circuit failures set Session.errexit_immune
+# instead, so the executor loops skip only those.
 ERREXIT_EXEMPT_TYPES = frozenset({
-    NodeType.LIST,
     NodeType.NEGATED_COMMAND,
 })
 

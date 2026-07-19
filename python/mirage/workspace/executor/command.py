@@ -537,7 +537,8 @@ async def handle_command(
                     all_stdout.append(stdout)
                 merged_io = await merged_io.merge(io)
                 if (io.exit_code != 0 and session.shell_options.get("errexit")
-                        and cmd.type not in ERREXIT_EXEMPT_TYPES):
+                        and cmd.type not in ERREXIT_EXEMPT_TYPES
+                        and not session.errexit_immune):
                     merged_io.exit_code = io.exit_code
                     break
             combined = async_chain(*all_stdout) if all_stdout else None

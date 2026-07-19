@@ -1,8 +1,8 @@
 {
   "cases": [
     {
-      "id": "read_r_flag",
-      "seq": 436,
+      "id": "job_bg_then_wait",
+      "seq": 501400,
       "targets": [
         "ram",
         "disk",
@@ -23,16 +23,16 @@
         "gdrive",
         "gdrive-folder"
       ],
-      "command": "printf 'hi there\\n' | read -r v; echo code=$?",
+      "command": "(sleep 0.2 & wait) 2>/dev/null; echo done",
       "expect": {
         "exit": 0,
-        "stdout": "code=0\n",
+        "stdout": "done\n",
         "stderr": ""
       }
     },
     {
-      "id": "read_invalid_opt",
-      "seq": 437,
+      "id": "job_last_bg_id_set",
+      "seq": 501401,
       "targets": [
         "ram",
         "disk",
@@ -53,16 +53,16 @@
         "gdrive",
         "gdrive-folder"
       ],
-      "command": "read -q v 2>&1; echo code=$?",
+      "command": "(sleep 0.1 & test -n \"$!\" && wait && echo ok) 2>/dev/null",
       "expect": {
         "exit": 0,
-        "stdout": "read: -q: invalid option\ncode=2\n",
+        "stdout": "ok\n",
         "stderr": ""
       }
     },
     {
-      "id": "read_ifs_colon_splits",
-      "seq": 501500,
+      "id": "job_bg_write_visible_after_wait",
+      "seq": 501402,
       "targets": [
         "ram",
         "disk",
@@ -72,8 +72,6 @@
         "gridfs",
         "s3-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -83,16 +81,16 @@
         "gdrive",
         "gdrive-folder"
       ],
-      "command": "IFS=: read ra rb rc <<< 'x:y:z'; echo \"$ra-$rb-$rc\"",
+      "command": "(echo bgdata > /data/zjb.txt & wait) 2>/dev/null; cat /data/zjb.txt",
       "expect": {
         "exit": 0,
-        "stdout": "x-y-z\n",
+        "stdout": "bgdata\n",
         "stderr": ""
       }
     },
     {
-      "id": "read_ifs_rest_to_last",
-      "seq": 501501,
+      "id": "job_wait_no_jobs_ok",
+      "seq": 501403,
       "targets": [
         "ram",
         "disk",
@@ -113,76 +111,16 @@
         "gdrive",
         "gdrive-folder"
       ],
-      "command": "IFS=: read rp rq <<< 'a:b:c:d'; echo \"$rp,$rq\"",
+      "command": "wait; echo $?",
       "expect": {
         "exit": 0,
-        "stdout": "a,b:c:d\n",
-        "stderr": ""
-      }
-    },
-    {
-      "id": "read_ifs_empty_fields",
-      "seq": 501502,
-      "targets": [
-        "ram",
-        "disk",
-        "redis",
-        "opfs",
-        "s3",
-        "gridfs",
-        "s3-prefix",
-        "gridfs-prefix",
-        "hf",
-        "hf-prefix",
-        "dropbox",
-        "dropbox-root",
-        "onedrive",
-        "sharepoint",
-        "ssh",
-        "nextcloud",
-        "gdrive",
-        "gdrive-folder"
-      ],
-      "command": "IFS=: read re1 re2 re3 <<< 'a::c'; echo \"[$re1][$re2][$re3]\"",
-      "expect": {
-        "exit": 0,
-        "stdout": "[a][][c]\n",
-        "stderr": ""
-      }
-    },
-    {
-      "id": "read_ifs_prefix_not_persistent",
-      "seq": 501503,
-      "targets": [
-        "ram",
-        "disk",
-        "redis",
-        "opfs",
-        "s3",
-        "gridfs",
-        "s3-prefix",
-        "gridfs-prefix",
-        "hf",
-        "hf-prefix",
-        "dropbox",
-        "dropbox-root",
-        "onedrive",
-        "sharepoint",
-        "ssh",
-        "nextcloud",
-        "gdrive",
-        "gdrive-folder"
-      ],
-      "command": "IFS=: read rz1 <<< 'q'; echo \"${IFS-default}\" | grep -c :",
-      "expect": {
-        "exit": 1,
         "stdout": "0\n",
         "stderr": ""
       }
     },
     {
-      "id": "read_default_ifs_collapses_ws",
-      "seq": 501504,
+      "id": "job_kill_by_last_bg_id",
+      "seq": 501404,
       "targets": [
         "ram",
         "disk",
@@ -203,16 +141,16 @@
         "gdrive",
         "gdrive-folder"
       ],
-      "command": "printf '  a   b  \\n' | { read rw1 rw2; echo \"[$rw1][$rw2]\"; }",
+      "command": "(sleep 5 & kill $! && echo killed) 2>/dev/null",
       "expect": {
         "exit": 0,
-        "stdout": "[a][b]\n",
+        "stdout": "killed\n",
         "stderr": ""
       }
     },
     {
-      "id": "read_pipe_group_sets_vars",
-      "seq": 501505,
+      "id": "job_wait_reports_exit_code",
+      "seq": 501405,
       "targets": [
         "ram",
         "disk",
@@ -233,10 +171,40 @@
         "gdrive",
         "gdrive-folder"
       ],
-      "command": "printf '1 2 3\\n' | { read rg1 rg2 rg3; echo \"$rg1:$rg2:$rg3\"; }",
+      "command": "(sh -c 'exit 4' & wait $!; echo rc=$?) 2>/dev/null",
       "expect": {
         "exit": 0,
-        "stdout": "1:2:3\n",
+        "stdout": "rc=4\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "job_jobs_lists_running",
+      "seq": 501406,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "(sleep 5 & jobs | grep -c sleep; kill $!) 2>/dev/null",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
         "stderr": ""
       }
     }

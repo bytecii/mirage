@@ -1,0 +1,932 @@
+{
+  "cases": [
+    {
+      "id": "ctl_elif_first_true",
+      "seq": 501100,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "if [ 1 -eq 1 ]; then echo a; elif [ 2 -eq 2 ]; then echo b; else echo c; fi",
+      "expect": {
+        "exit": 0,
+        "stdout": "a\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_elif_taken",
+      "seq": 501101,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "if [ 1 -eq 2 ]; then echo a; elif [ 2 -eq 2 ]; then echo b; else echo c; fi",
+      "expect": {
+        "exit": 0,
+        "stdout": "b\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_elif_else_taken",
+      "seq": 501102,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "if false; then echo a; elif false; then echo b; else echo c; fi",
+      "expect": {
+        "exit": 0,
+        "stdout": "c\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_elif_no_match_exit_zero",
+      "seq": 501103,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "if false; then echo a; elif false; then echo b; fi; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_until_counts_up",
+      "seq": 501104,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "cn=0; until [ $cn -ge 3 ]; do echo $cn; cn=$((cn+1)); done",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n1\n2\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_until_true_never_runs",
+      "seq": 501105,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "until true; do echo x; done; echo done",
+      "expect": {
+        "exit": 0,
+        "stdout": "done\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_until_break_ends",
+      "seq": 501106,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "cb=0; until false; do cb=$((cb+1)); echo $cb; if [ $cb = 2 ]; then break; fi; done",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n2\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_break_inner_loop_only",
+      "seq": 501107,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "for i in 1 2; do for j in a b; do echo $i$j; break; done; done",
+      "expect": {
+        "exit": 0,
+        "stdout": "1a\n2a\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_break_two_levels",
+      "seq": 501108,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "for i in 1 2; do for j in a b; do echo $i$j; break 2; done; done",
+      "expect": {
+        "exit": 0,
+        "stdout": "1a\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_break_beyond_depth",
+      "seq": 501109,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "for i in 1 2; do for j in a b; do echo $i$j; break 9; done; done; echo after",
+      "expect": {
+        "exit": 0,
+        "stdout": "1a\nafter\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_continue_skips_iteration",
+      "seq": 501110,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "for i in 1 2 3; do if [ $i = 2 ]; then continue; fi; echo $i; done",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n3\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_continue_two_levels",
+      "seq": 501111,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "for i in 1 2; do for j in a b; do if [ $j = a ]; then continue 2; fi; echo $i$j; done; echo inner:$i; done; echo after",
+      "expect": {
+        "exit": 0,
+        "stdout": "after\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_break_two_from_while",
+      "seq": 501112,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "for i in 1 2; do wn=0; while [ $wn -lt 3 ]; do wn=$((wn+1)); echo $i:$wn; break 2; done; done",
+      "expect": {
+        "exit": 0,
+        "stdout": "1:1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_select_picks_choice",
+      "seq": 501113,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "printf '2\\n' | select sx in aa bb; do echo got:$sx; break; done",
+      "expect": {
+        "exit": 0,
+        "stdout": "got:bb\n",
+        "stderr": "1) aa\n2) bb\n#? "
+      }
+    },
+    {
+      "id": "ctl_select_invalid_empty",
+      "seq": 501114,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "printf '9\\n' | select sx in aa bb; do echo got:${sx:-none}; break; done",
+      "expect": {
+        "exit": 0,
+        "stdout": "got:none\n",
+        "stderr": "1) aa\n2) bb\n#? "
+      }
+    },
+    {
+      "id": "ctl_select_reply_raw",
+      "seq": 501115,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "printf 'zz\\n' | select sx in aa bb; do echo r:$REPLY; break; done",
+      "expect": {
+        "exit": 0,
+        "stdout": "r:zz\n",
+        "stderr": "1) aa\n2) bb\n#? "
+      }
+    },
+    {
+      "id": "ctl_select_eof_ends",
+      "seq": 501116,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "printf '' | select sx in aa bb; do echo body; done; echo after",
+      "expect": {
+        "exit": 0,
+        "stdout": "\nafter\n",
+        "stderr": "1) aa\n2) bb\n#? "
+      }
+    },
+    {
+      "id": "ctl_eval_runs_string",
+      "seq": 501117,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "eval 'echo hi'",
+      "expect": {
+        "exit": 0,
+        "stdout": "hi\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_eval_assigns",
+      "seq": 501118,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "eval 'ev9=5'; echo $ev9",
+      "expect": {
+        "exit": 0,
+        "stdout": "5\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_eval_exit_code",
+      "seq": 501119,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "eval 'false'; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_eval_double_expansion",
+      "seq": 501120,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "ed1='$ed2'; ed2=deep; eval echo $ed1",
+      "expect": {
+        "exit": 0,
+        "stdout": "deep\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_group_pipes_whole",
+      "seq": 501121,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "{ echo a; echo b; } | wc -l",
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_group_exit_last",
+      "seq": 501122,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "{ echo a; false; }; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "a\n1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_group_redirect_writes",
+      "seq": 501123,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "{ echo x; echo y; } > /data/zctg.txt && cat /data/zctg.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "x\ny\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_negate_true",
+      "seq": 501124,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "! true; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_negate_false",
+      "seq": 501125,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "! false; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_negate_whole_pipeline",
+      "seq": 501126,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "! echo hi | grep -q zz; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_bash_c_runs",
+      "seq": 501127,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "bash -c 'echo hi'",
+      "expect": {
+        "exit": 0,
+        "stdout": "hi\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_sh_c_runs",
+      "seq": 501128,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "sh -c 'echo hi'",
+      "expect": {
+        "exit": 0,
+        "stdout": "hi\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_bash_c_exit_code",
+      "seq": 501129,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "bash -c 'exit 3'; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "3\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "ctl_bash_c_reads_mount",
+      "seq": 501130,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder"
+      ],
+      "command": "bash -c 'cat /data/sorted_a.txt'",
+      "expect": {
+        "exit": 0,
+        "stdout": "apple\nbanana\ncherry\n",
+        "stderr": ""
+      }
+    }
+  ]
+}

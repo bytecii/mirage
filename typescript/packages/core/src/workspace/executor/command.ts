@@ -864,7 +864,8 @@ async function executeShellFunction(
         if (
           io.exitCode !== 0 &&
           session.shellOptions.errexit === true &&
-          !ERREXIT_EXEMPT_TYPES.has(cmdNode.type)
+          !ERREXIT_EXEMPT_TYPES.has(cmdNode.type) &&
+          !session.errexitImmune
         ) {
           mergedIo.exitCode = io.exitCode
           break

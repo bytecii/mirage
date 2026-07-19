@@ -154,10 +154,15 @@ async def handle_read(
     line = line_bytes.decode(errors="replace").rstrip("\n")
     ifs = session.env.get("IFS", " \t\n")
     if ifs == " \t\n":
+        # GNU trims IFS whitespace from both ends before splitting.
+        line = line.strip(" \t\n")
         parts = line.split(None, len(variables) - 1) if variables else []
     elif not ifs:
         parts = [line]
     else:
+        ifs_ws = "".join(ch for ch in ifs if ch in " \t\n")
+        if ifs_ws:
+            line = line.strip(ifs_ws)
         n_splits = max(0, len(variables) - 1)
         chars = set(ifs)
         out: list[str] = []

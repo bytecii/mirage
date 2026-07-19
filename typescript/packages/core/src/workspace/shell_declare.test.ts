@@ -13,56 +13,44 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { makeIntegrationWS, run, runExit } from './fixtures/integration_fixture.ts'
+import { makeIntegrationWS, run } from './fixtures/integration_fixture.ts'
 
-describe('readonly', () => {
-  it('blocks reassignment', async () => {
+describe('declare/typeset scoping', () => {
+  it('assigns at top level', async () => {
     const { ws } = await makeIntegrationWS()
     try {
-      // A bare assignment to a readonly variable is fatal in
-      // non-interactive bash: the rest of the line is abandoned.
-      const code = await runExit(ws, 'readonly X=1; X=2; echo $X')
-      expect(code).toBe(1)
-      expect(await run(ws, 'echo $X')).toBe('1\n')
+      expect(await run(ws, 'declare zd1=5; echo $zd1')).toBe('5\n')
     } finally {
       await ws.close()
     }
   })
 
-  it('blocks unset', async () => {
+  it('is local inside a function', async () => {
     const { ws } = await makeIntegrationWS()
     try {
-      expect(await run(ws, 'readonly X=5; unset X; echo $X')).toBe('5\n')
+      expect(await run(ws, 'zf1() { declare dz=in; echo $dz; }; zf1; echo ${dz:-unset}')).toBe(
+        'in\nunset\n',
+      )
     } finally {
       await ws.close()
     }
   })
 
-  it('declare -r blocks reassignment', async () => {
+  it('typeset is local inside a function', async () => {
     const { ws } = await makeIntegrationWS()
     try {
-      const code = await runExit(ws, 'declare -r Y=5; Y=10; echo $Y')
-      expect(code).toBe(1)
-      expect(await run(ws, 'echo $Y')).toBe('5\n')
+      expect(await run(ws, 'zf2() { typeset tz=in; echo $tz; }; zf2; echo ${tz:-unset}')).toBe(
+        'in\nunset\n',
+      )
     } finally {
       await ws.close()
     }
   })
 
-  it('emits non-zero exit on reassignment', async () => {
+  it('shadows a global inside a function', async () => {
     const { ws } = await makeIntegrationWS()
     try {
-      const code = await runExit(ws, 'readonly X=1; X=2')
-      expect(code).not.toBe(0)
-    } finally {
-      await ws.close()
-    }
-  })
-
-  it('first assignment succeeds', async () => {
-    const { ws } = await makeIntegrationWS()
-    try {
-      expect(await run(ws, 'readonly X=hello; echo $X')).toBe('hello\n')
+      expect(await run(ws, 'gv=g; zf3() { declare gv=l; echo $gv; }; zf3; echo $gv')).toBe('l\ng\n')
     } finally {
       await ws.close()
     }

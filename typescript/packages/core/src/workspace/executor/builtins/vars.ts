@@ -263,6 +263,25 @@ export function handleExit(args: readonly string[], session: Session): Result {
   throw new ExitSignal(((code % 256) + 256) % 256)
 }
 
+/** Split on whitespace runs with a maxsplit, like Python's split(None, n). */
+function splitOnWhitespace(text: string, maxsplit: number): string[] {
+  const out: string[] = []
+  let i = 0
+  while (i < text.length) {
+    while (i < text.length && /[ \t\n]/.test(text[i] ?? '')) i++
+    if (i >= text.length) break
+    if (out.length === maxsplit) {
+      out.push(text.slice(i))
+      return out
+    }
+    let j = i
+    while (j < text.length && !/[ \t\n]/.test(text[j] ?? '')) j++
+    out.push(text.slice(i, j))
+    i = j
+  }
+  return out
+}
+
 /**
  * Read one line into variables, with bash's option handling.
  *
@@ -314,24 +333,25 @@ export async function handleRead(
   const ifs = session.env.IFS ?? ' \t\n'
   let parts: string[]
   if (ifs === ' \t\n') {
-    if (variables.length === 0) {
-      parts = []
-    } else if (variables.length === 1) {
-      parts = [line]
-    } else {
-      const split = line.split(/\s+/).filter((p) => p !== '')
-      const head = split.slice(0, variables.length - 1)
-      const tail = split.slice(variables.length - 1).join(' ')
-      parts = tail !== '' ? [...head, tail] : head
-    }
+    // GNU trims IFS whitespace from both ends before splitting; the
+    // remainder assigned to the last variable keeps inner whitespace.
+    parts = splitOnWhitespace(line.replace(/^[ \t\n]+|[ \t\n]+$/g, ''), variables.length - 1)
   } else if (ifs === '') {
     parts = [line]
   } else {
+    const ifsWs = new Set<string>(
+      ifs.split('').filter((c) => c === ' ' || c === '\t' || c === '\n'),
+    )
+    let start = 0
+    let end = line.length
+    while (start < end && ifsWs.has(line[start] ?? '')) start++
+    while (end > start && ifsWs.has(line[end - 1] ?? '')) end--
+    const work = line.slice(start, end)
     const nSplits = Math.max(0, variables.length - 1)
     const chars = new Set(ifs.split(''))
     const out: string[] = []
     let cur = ''
-    for (const ch of line) {
+    for (const ch of work) {
       if (chars.has(ch) && out.length < nSplits) {
         out.push(cur)
         cur = ''
