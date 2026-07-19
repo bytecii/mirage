@@ -21,7 +21,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "zbf1() { local lx=5; echo in:$lx; }; zbf1; echo out:${lx:-unset}",
       "expect": {
@@ -51,7 +52,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "zbg1=g; zbf2() { local zbg1=l; echo $zbg1; }; zbf2; echo $zbg1",
       "expect": {
@@ -81,7 +83,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "readonly zbr1=7; echo $zbr1",
       "expect": {
@@ -111,7 +114,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "readonly zbr2=1; zbr2=9; echo unreached",
       "expect": {
@@ -141,7 +145,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "readonly zbr3=1; unset zbr3; echo $?",
       "expect": {
@@ -171,7 +176,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "declare zbd1=5; echo $zbd1",
       "expect": {
@@ -201,7 +207,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "zbf3() { declare dz9=in; echo $dz9; }; zbf3; echo ${dz9:-unset}",
       "expect": {
@@ -231,7 +238,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "zbf4() { typeset tz9=in; echo $tz9; }; zbf4; echo ${tz9:-unset}",
       "expect": {
@@ -261,7 +269,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "export zbp1=v1; printenv zbp1",
       "expect": {
@@ -291,7 +300,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "printenv zbmissing9; echo $?",
       "expect": {
@@ -321,7 +331,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "true; echo $?; false; echo $?",
       "expect": {
@@ -351,7 +362,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "trap 'echo trapped' EXIT; echo body; echo $?",
       "expect": {
@@ -381,7 +393,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "exec ls; echo $?",
       "expect": {
@@ -411,7 +424,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "bg; echo $?",
       "expect": {
@@ -441,7 +455,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "ulimit -n; echo $?",
       "expect": {
@@ -471,7 +486,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "printf 'a\\n' | xargs -I{} echo x{}; echo $?",
       "expect": {
@@ -501,7 +517,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "printf 'a\\n' | xargs -P2 echo; echo $?",
       "expect": {
@@ -531,7 +548,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "timeout -s KILL 5 echo hi; echo $?",
       "expect": {
@@ -561,7 +579,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "timeout -k 1 5 echo hi; echo $?",
       "expect": {
@@ -589,7 +608,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "mkdir -p /data/zbc9 && chmod -R 755 /data/zbc9; echo $?",
       "expect": {
@@ -617,7 +637,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "mkdir -p /data/zbo9 && chown -R nobody /data/zbo9; echo $?",
       "expect": {
@@ -647,7 +668,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "echo $((16#ff))",
       "expect": {
@@ -677,7 +699,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "echo $((2#101))",
       "expect": {
@@ -707,7 +730,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "echo $((8#17))",
       "expect": {
@@ -737,7 +761,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "echo $((16#a + 2#10))",
       "expect": {

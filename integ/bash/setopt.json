@@ -21,7 +21,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "(set -e; false; echo unreached); echo rc=$?",
       "expect": {
@@ -51,7 +52,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "(set -e; false || echo recovered; echo ok)",
       "expect": {
@@ -81,7 +83,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "(set -e; if false; then echo t; fi; echo ok)",
       "expect": {
@@ -111,7 +114,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "(set -e; true && false; echo unreached); echo rc=$?",
       "expect": {
@@ -141,7 +145,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "(set -e; false && echo skipped; echo ok)",
       "expect": {
@@ -171,7 +176,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "(set -e; ! true; echo ok)",
       "expect": {
@@ -201,7 +207,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "(set -e; set +e; false; echo ok)",
       "expect": {
@@ -231,7 +238,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "(set -e; false | true; echo after)",
       "expect": {
@@ -261,7 +269,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "(set -e -o pipefail; false | true; echo unreached); echo rc=$?",
       "expect": {
@@ -291,7 +300,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "(set -u; echo $zqu1; echo unreached); echo rc=$?",
       "expect": {
@@ -321,7 +331,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "(set -u; echo ${zqu2:-d})",
       "expect": {
@@ -351,7 +362,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "(set -u; zue1=; echo x${zue1}y)",
       "expect": {
@@ -381,7 +393,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "set -x; echo hi; set +x",
       "expect": {
@@ -411,7 +424,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "set -x; xvt=5; echo $xvt; set +x",
       "expect": {
@@ -441,7 +455,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "set -f; echo /data/sorted_*.txt; set +f",
       "expect": {
@@ -471,7 +486,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "set -f; set +f; echo /data/sorted_*.txt",
       "expect": {
@@ -501,7 +517,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "set -o pipefail; false | true; echo $?; set +o pipefail",
       "expect": {
@@ -531,7 +548,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "false | true; echo $?",
       "expect": {
@@ -561,7 +579,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "set -- pa pb pc; echo $2 $#; set --",
       "expect": {
@@ -591,7 +610,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "(set -eu; echo ok)",
       "expect": {

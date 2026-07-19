@@ -21,7 +21,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "if [ 1 -eq 1 ]; then echo a; elif [ 2 -eq 2 ]; then echo b; else echo c; fi",
       "expect": {
@@ -51,7 +52,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "if [ 1 -eq 2 ]; then echo a; elif [ 2 -eq 2 ]; then echo b; else echo c; fi",
       "expect": {
@@ -81,7 +83,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "if false; then echo a; elif false; then echo b; else echo c; fi",
       "expect": {
@@ -111,7 +114,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "if false; then echo a; elif false; then echo b; fi; echo $?",
       "expect": {
@@ -141,7 +145,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "cn=0; until [ $cn -ge 3 ]; do echo $cn; cn=$((cn+1)); done",
       "expect": {
@@ -171,7 +176,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "until true; do echo x; done; echo done",
       "expect": {
@@ -201,7 +207,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "cb=0; until false; do cb=$((cb+1)); echo $cb; if [ $cb = 2 ]; then break; fi; done",
       "expect": {
@@ -231,7 +238,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "for i in 1 2; do for j in a b; do echo $i$j; break; done; done",
       "expect": {
@@ -261,7 +269,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "for i in 1 2; do for j in a b; do echo $i$j; break 2; done; done",
       "expect": {
@@ -291,7 +300,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "for i in 1 2; do for j in a b; do echo $i$j; break 9; done; done; echo after",
       "expect": {
@@ -321,7 +331,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "for i in 1 2 3; do if [ $i = 2 ]; then continue; fi; echo $i; done",
       "expect": {
@@ -351,7 +362,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "for i in 1 2; do for j in a b; do if [ $j = a ]; then continue 2; fi; echo $i$j; done; echo inner:$i; done; echo after",
       "expect": {
@@ -381,7 +393,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "for i in 1 2; do wn=0; while [ $wn -lt 3 ]; do wn=$((wn+1)); echo $i:$wn; break 2; done; done",
       "expect": {
@@ -411,7 +424,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "printf '2\\n' | select sx in aa bb; do echo got:$sx; break; done",
       "expect": {
@@ -441,7 +455,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "printf '9\\n' | select sx in aa bb; do echo got:${sx:-none}; break; done",
       "expect": {
@@ -471,7 +486,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "printf 'zz\\n' | select sx in aa bb; do echo r:$REPLY; break; done",
       "expect": {
@@ -501,7 +517,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "printf '' | select sx in aa bb; do echo body; done; echo after",
       "expect": {
@@ -531,7 +548,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "eval 'echo hi'",
       "expect": {
@@ -561,7 +579,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "eval 'ev9=5'; echo $ev9",
       "expect": {
@@ -591,7 +610,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "eval 'false'; echo $?",
       "expect": {
@@ -621,7 +641,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "ed1='$ed2'; ed2=deep; eval echo $ed1",
       "expect": {
@@ -651,7 +672,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "{ echo a; echo b; } | wc -l",
       "expect": {
@@ -681,7 +703,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "{ echo a; false; }; echo $?",
       "expect": {
@@ -709,7 +732,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "{ echo x; echo y; } > /data/zctg.txt && cat /data/zctg.txt",
       "expect": {
@@ -739,7 +763,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "! true; echo $?",
       "expect": {
@@ -769,7 +794,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "! false; echo $?",
       "expect": {
@@ -799,7 +825,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "! echo hi | grep -q zz; echo $?",
       "expect": {
@@ -829,7 +856,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "bash -c 'echo hi'",
       "expect": {
@@ -859,7 +887,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "sh -c 'echo hi'",
       "expect": {
@@ -889,7 +918,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "bash -c 'exit 3'; echo $?",
       "expect": {
@@ -919,7 +949,8 @@
         "ssh",
         "nextcloud",
         "gdrive",
-        "gdrive-folder"
+        "gdrive-folder",
+        "box"
       ],
       "command": "bash -c 'cat /data/sorted_a.txt'",
       "expect": {
