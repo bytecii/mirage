@@ -193,6 +193,15 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      nextcloud:
+        image: nextcloud:30-apache
+        ports:
+          - 8080:80
+        env:
+          SQLITE_DATABASE: nextcloud
+          NEXTCLOUD_ADMIN_USER: admin
+          NEXTCLOUD_ADMIN_PASSWORD: admin123
+          NEXTCLOUD_TRUSTED_DOMAINS: localhost
     env:
       REDIS_URL: redis://localhost:6379/0
       S3_BUCKET: mirage-integ
@@ -200,6 +209,9 @@ jobs:
       S3_REGION: us-east-1
       AWS_ACCESS_KEY_ID: minio
       AWS_SECRET_ACCESS_KEY: minio123
+      NEXTCLOUD_URL: http://localhost:8080/remote.php/dav/files/admin/
+      NEXTCLOUD_USERNAME: admin
+      NEXTCLOUD_PASSWORD: admin123
     steps:
       - uses: actions/checkout@v7
 
@@ -228,6 +240,24 @@ jobs:
       - name: Build mirage-browser
         working-directory: typescript
         run: pnpm --filter @struktoai/mirage-browser build
+
+      - name: Wait for Nextcloud install
+        shell: bash
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/status.php | grep -q '"installed":true'; then
+              echo "Nextcloud is installed"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Nextcloud did not finish installing in time" >&2
+          curl -s http://localhost:8080/status.php || true
+          exit 1
+
+      - name: Run declarative battery on Nextcloud
+        working-directory: integ
+        run: pnpm exec tsx runners/typescript/main.ts --target nextcloud
 
       - name: Start MinIO
         run: |
@@ -468,6 +498,26 @@ jobs:
           done
           cat /tmp/slacksrv.log
           echo "SLACK_URL=http://127.0.0.1:5097" >> "$GITHUB_ENV"
+
+      - name: Start fake Trello API for the typescript host
+        run: |
+          nohup ./python/.venv/bin/python integ/server/trello_server.py --port 5095 > /tmp/trellosrv.log 2>&1 &
+          for i in $(seq 1 30); do
+            grep -q "TRELLO_ENDPOINT=" /tmp/trellosrv.log && break
+            sleep 1
+          done
+          cat /tmp/trellosrv.log
+          echo "TRELLO_ENDPOINT=http://127.0.0.1:5095" >> "$GITHUB_ENV"
+
+      - name: Start fake Linear API for the typescript host
+        run: |
+          nohup ./python/.venv/bin/python integ/server/linear_server.py --port 5094 > /tmp/linearsrv.log 2>&1 &
+          for i in $(seq 1 30); do
+            grep -q "LINEAR_ENDPOINT=" /tmp/linearsrv.log && break
+            sleep 1
+          done
+          cat /tmp/linearsrv.log
+          echo "LINEAR_ENDPOINT=http://127.0.0.1:5094/graphql" >> "$GITHUB_ENV"
 
       - name: Run declarative battery (python hosts)
         run: ./python/.venv/bin/python integ/runners/python/main.py

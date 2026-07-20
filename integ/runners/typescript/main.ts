@@ -98,6 +98,10 @@ async function main(): Promise<void> {
       process.stderr.write(`skip [${id}]: SSH_HOST not set\n`)
       continue
     }
+    if (target.service === 'nextcloud' && !process.env.NEXTCLOUD_URL) {
+      process.stderr.write(`skip [${id}]: NEXTCLOUD_URL not set\n`)
+      continue
+    }
     if (target.service === 'gws' && !process.env.GWS_URL) {
       process.stderr.write(`skip [${id}]: GWS_URL not set\n`)
       continue
@@ -116,6 +120,14 @@ async function main(): Promise<void> {
     }
     if (target.service === 'slack' && !process.env.SLACK_URL) {
       process.stderr.write(`skip [${id}]: SLACK_URL not set\n`)
+      continue
+    }
+    if (target.service === 'trello' && !process.env.TRELLO_ENDPOINT) {
+      process.stderr.write(`skip [${id}]: TRELLO_ENDPOINT not set\n`)
+      continue
+    }
+    if (target.service === 'linear' && !process.env.LINEAR_ENDPOINT) {
+      process.stderr.write(`skip [${id}]: LINEAR_ENDPOINT not set\n`)
       continue
     }
     await runTarget(target, cases, root, report, emit)
