@@ -20,6 +20,8 @@ from mirage.commands.builtin.find_parse import (FindParseError, find_expr_tail,
                                                 parse_find_expression)
 from mirage.commands.builtin.generic.crossmount import (handle_cross_mount,
                                                         is_cross_mount)
+from mirage.commands.builtin.generic.crossmount.detect import strategy_for
+from mirage.commands.builtin.generic.crossmount.types import Strategy
 from mirage.commands.builtin.utils.safeguard import (CommandTimeoutError,
                                                      maybe_with_timeout)
 from mirage.commands.errors import UsageError
@@ -46,6 +48,7 @@ from mirage.workspace.executor.fanout import (_fan_out_traversal,
 from mirage.workspace.executor.find_action_dispatch import _apply_find_actions
 from mirage.workspace.executor.jobs import (handle_jobs, handle_kill,
                                             handle_ps, handle_wait)
+from mirage.workspace.expand.globs import resolve_globs
 from mirage.workspace.mount import (MountCommandUnsupported, MountEntry,
                                     MountRegistry)
 from mirage.workspace.mount.namespace import Namespace
@@ -618,6 +621,14 @@ async def handle_command(
                                       command=cmd_str,
                                       exit_code=code,
                                       stderr=refusal_msg)
+        cross_scopes = path_scopes
+        if strategy_for(cmd_name, cross_parsed.flag_kwargs) is Strategy.RELAY:
+            # STREAM and FANOUT run each operand natively on its mount, which
+            # expands the operand's glob. RELAY bypasses the mount command
+            # wrappers entirely, so its glob operands must expand here; an
+            # unmatched glob stays the literal word, like bash.
+            expanded = await resolve_globs(list(path_scopes), registry)
+            cross_scopes = [p for p in expanded if isinstance(p, PathSpec)]
         run_single = functools.partial(run_on_mount,
                                        registry,
                                        session,
@@ -625,7 +636,7 @@ async def handle_command(
                                        namespace,
                                        routing_decision=routing_decision)
         stdout, io = await handle_cross_mount(cmd_name,
-                                              path_scopes,
+                                              cross_scopes,
                                               cross_texts,
                                               cross_parsed.flag_kwargs,
                                               dispatch,

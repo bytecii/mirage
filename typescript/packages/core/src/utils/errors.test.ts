@@ -13,9 +13,18 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { enoent, formatFsError } from './errors.ts'
+import {
+  eacces,
+  eaccesReadOnly,
+  enoent,
+  enotsup,
+  formatFsError,
+  fsStrerror,
+  isFsError,
+} from './errors.ts'
 
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes)
+const DEC = new TextDecoder()
 
 describe('formatFsError', () => {
   it('prefixes a thrown command error with the command name (GNU prog: message)', () => {
@@ -53,5 +62,44 @@ describe('formatFsError', () => {
       ]),
     )
     expect(line).toBe('diff: missing.txt: No such file or directory\n')
+  })
+})
+
+describe('enotsup', () => {
+  it('carries the op and the operand', () => {
+    const err = enotsup('email', 'unlink', '/mail/inbox/a.txt')
+    expect(err.code).toBe('ENOTSUP')
+    expect(err.op).toBe('unlink')
+    expect(err.virtualPath).toBe('/mail/inbox/a.txt')
+    expect(err.message).toContain('no op registered: unlink')
+  })
+
+  it('is a recognized fs error with GNU strerror text', () => {
+    const err = enotsup('email', 'unlink', '/mail/a.txt')
+    expect(isFsError(err)).toBe(true)
+    expect(fsStrerror(err)).toBe('Operation not supported')
+  })
+
+  it('formats as a GNU operand line at the chokepoint', () => {
+    const line = formatFsError('mv', enotsup('email', 'unlink', '/mail/a.txt'))
+    expect(DEC.decode(line)).toBe('mv: /mail/a.txt: Operation not supported\n')
+  })
+})
+
+describe('eaccesReadOnly', () => {
+  it('keeps the read-only message while stamping EACCES and the operand', () => {
+    const err = eaccesReadOnly("mount '/mail/' is read-only", '/mail/a.txt')
+    expect(err.code).toBe('EACCES')
+    expect(err.virtualPath).toBe('/mail/a.txt')
+    expect(err.message).toContain('read-only')
+    expect(fsStrerror(err)).toBe('Permission denied')
+  })
+})
+
+describe('fsStrerror', () => {
+  it('maps recognized codes and returns null otherwise', () => {
+    expect(fsStrerror(enoent('/x'))).toBe('No such file or directory')
+    expect(fsStrerror(eacces('/x'))).toBe('Permission denied')
+    expect(fsStrerror(new Error('nope'))).toBeNull()
   })
 })
