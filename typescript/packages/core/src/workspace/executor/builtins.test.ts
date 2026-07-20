@@ -369,7 +369,7 @@ describe('handleTest', () => {
     const spy = vi.fn<DispatchFn>((op, scope) => {
       const ps = scope
       if (op === 'readdir' && ps.virtual === '/data/sub') {
-        return Promise.resolve<[unknown, IOResult]>([[], new IOResult()])
+        return Promise.resolve<[unknown, IOResult]>([['a.txt'], new IOResult()])
       }
       return Promise.reject(new Error(`not found: ${ps.virtual}`))
     })
