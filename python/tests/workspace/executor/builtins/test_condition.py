@@ -19,8 +19,7 @@ import pytest
 from mirage import MountMode, RAMResource, Workspace
 from mirage.io import IOResult
 from mirage.types import FileStat, FileType, PathSpec
-from mirage.workspace.executor.builtins.condition import (CondContext,
-                                                          eval_flat)
+from mirage.workspace.executor.builtins.condition import CondContext, eval_flat
 from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.session import Session
 

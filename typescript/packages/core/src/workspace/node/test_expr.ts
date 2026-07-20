@@ -14,7 +14,7 @@
 
 import type { CallStack } from '../../shell/call_stack.ts'
 import { NodeType as NT } from '../../shell/types.ts'
-import type { CondNode } from '../executor/builtins/condition.ts'
+import type { CondNode } from '../executor/builtins/condition/index.ts'
 import type { TSNodeLike } from '../expand/variable.ts'
 import type { ExecuteFn } from '../expand/node.ts'
 import { expandNode } from '../expand/node.ts'

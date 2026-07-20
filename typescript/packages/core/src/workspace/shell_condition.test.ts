@@ -16,7 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { IOResult } from '../io/types.ts'
 import type { FileStat } from '../types.ts'
 import { FileType } from '../types.ts'
-import { handleTest } from './executor/builtins/condition.ts'
+import { handleTest } from './executor/builtins/condition/index.ts'
 import type { DispatchFn } from './executor/cross_mount.ts'
 import type { Namespace } from './mount/namespace/namespace.ts'
 import type { Session } from './session/session.ts'
@@ -207,10 +207,12 @@ const stubSession = { cwd: '/data', env: {}, arrays: {} } as unknown as Session
  * instead of raising.
  */
 function prefixStoreDispatch(listing: string[]): DispatchFn {
-  const dispatch = async (op: string) => {
-    if (op === 'stat') throw Object.assign(new Error('not found'), { code: 'ENOENT' })
-    if (op === 'readdir') return [listing, new IOResult({})]
-    throw new Error(`unexpected op ${op}`)
+  const dispatch = (op: string) => {
+    if (op === 'stat') {
+      return Promise.reject(Object.assign(new Error('not found'), { code: 'ENOENT' }))
+    }
+    if (op === 'readdir') return Promise.resolve([listing, new IOResult({})])
+    return Promise.reject(new Error(`unexpected op ${op}`))
   }
   return dispatch as unknown as DispatchFn
 }
@@ -221,10 +223,10 @@ function prefixStoreDispatch(listing: string[]): DispatchFn {
  */
 function unknownSizeDispatch(content: Uint8Array): DispatchFn {
   const stat = { name: 'x', size: null, type: FileType.TEXT, mode: null } as unknown as FileStat
-  const dispatch = async (op: string) => {
-    if (op === 'stat') return [stat, new IOResult({})]
-    if (op === 'read') return [content, new IOResult({})]
-    throw new Error(`unexpected op ${op}`)
+  const dispatch = (op: string) => {
+    if (op === 'stat') return Promise.resolve([stat, new IOResult({})])
+    if (op === 'read') return Promise.resolve([content, new IOResult({})])
+    return Promise.reject(new Error(`unexpected op ${op}`))
   }
   return dispatch as unknown as DispatchFn
 }
