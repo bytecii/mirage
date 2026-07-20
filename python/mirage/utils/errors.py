@@ -87,7 +87,10 @@ def format_fs_error(cmd_name: str,
     to the as-typed ``PathSpec.raw_path`` so a relative argument is reported
     as typed, like GNU). Any other exception becomes the generic
     ``<cmd>: <message>`` line, so a command that throws is reported with the
-    ``prog: message`` prefix GNU and the TypeScript executor both use.
+    ``prog: message`` prefix GNU and the TypeScript executor both use. A
+    message that already carries the ``<cmd>: `` prefix (many generic
+    commands raise a fully GNU-formatted string, e.g. ``uniq: invalid
+    count``) is emitted verbatim so the prefix is not doubled.
 
     Args:
         cmd_name (str): Command name for the ``<cmd>:`` prefix.
@@ -96,7 +99,10 @@ def format_fs_error(cmd_name: str,
             resolved path back to the as-typed form.
     """
     if fs_strerror(exc) is None:
-        return f"{cmd_name}: {exc}\n".encode()
+        message = str(exc)
+        if message.startswith(f"{cmd_name}: "):
+            return f"{message}\n".encode()
+        return f"{cmd_name}: {message}\n".encode()
     path = getattr(exc, "filename", None) or str(exc)
     if paths:
         for p in paths:

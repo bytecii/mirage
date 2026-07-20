@@ -73,3 +73,10 @@ def test_format_fs_error_generic_value_error():
     err = format_fs_error("slack-add-reaction",
                           ValueError("--channel_id is required"))
     assert err == b"slack-add-reaction: --channel_id is required\n"
+
+
+def test_format_fs_error_generic_does_not_double_prefix():
+    # Many generic commands raise a fully GNU-formatted message already
+    # carrying the "<cmd>: " prefix; it must not be doubled (uniq: uniq: ...).
+    err = format_fs_error("uniq", ValueError("uniq: invalid count: '2junk'"))
+    assert err == b"uniq: invalid count: '2junk'\n"

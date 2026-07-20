@@ -32,6 +32,14 @@ describe('formatFsError', () => {
     expect(decode(formatFsError('slack-add-reaction', 'boom'))).toBe('slack-add-reaction: boom\n')
   })
 
+  it('does not double the prefix when the message already carries cmd:', () => {
+    // Generic commands throw a fully GNU-formatted message (uniq: invalid
+    // count); the prefix must not be doubled (uniq: uniq: ...).
+    expect(decode(formatFsError('uniq', new Error("uniq: invalid count: '2junk'")))).toBe(
+      "uniq: invalid count: '2junk'\n",
+    )
+  })
+
   it('renders a recognized filesystem error as cmd: path: strerror', () => {
     expect(decode(formatFsError('cat', enoent('/b/missing.txt')))).toBe(
       'cat: /b/missing.txt: No such file or directory\n',
