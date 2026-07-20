@@ -62,6 +62,7 @@ from mirage.resource.ram import RAMResource
 from mirage.resource.redis import RedisResource
 from mirage.resource.s3 import S3Config, S3Resource
 from mirage.resource.sharepoint.sharepoint import SharePointResource
+from mirage.resource.slack import SlackConfig, SlackResource
 from mirage.resource.ssh import SSHConfig, SSHResource
 from mirage.resource.trello import TrelloConfig, TrelloResource
 
@@ -698,6 +699,39 @@ class BoxService:
         await self.runner.cleanup()
 
 
+class SlackService:
+    """Points slack mounts at the shared fake Slack Web API server.
+
+    The server (integ/server/slack.ts) is external, Prisma-backed, and shared
+    across both hosts; /reset re-seeds it to the fixture. The mount uses a
+    user token (xoxp-) so the grep/rg search push-down runs against the fake's
+    search.messages / search.files endpoints.
+
+    Args:
+        url (str): SLACK_URL origin (methods live under /api).
+    """
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+
+    @classmethod
+    async def create(cls) -> "SlackService":
+        url = os.environ["SLACK_URL"].rstrip("/")
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{url}/reset") as resp:
+                resp.raise_for_status()
+        return cls(url)
+
+    def resource(self, mount: dict) -> SlackResource:
+        return SlackResource(
+            SlackConfig(token="xoxb-integ",
+                        search_token="xoxp-integ-search",
+                        base_url=f"{self.url}/api"))
+
+    async def teardown(self) -> None:
+        return None
+
+
 class TrelloService:
 
     def __init__(self, state, runner, base: str) -> None:
@@ -776,7 +810,8 @@ class SharePointService:
 
 Service = (S3Service | OneDriveService | SharePointService | SSHService
            | NextcloudService | GwsService | HfService | BoxService
-           | DropboxService | GridFSService | TrelloService | LinearService)
+           | DropboxService | GridFSService | SlackService | TrelloService
+           | LinearService)
 
 
 def build_ram(
@@ -923,6 +958,13 @@ def build_nextcloud(
     return service.resource(mount), _noop
 
 
+def build_slack(
+        mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, SlackService)
+    return service.resource(mount), _noop
+
+
 BUILDERS = {
     "ram": build_ram,
     "disk": build_disk,
@@ -942,6 +984,7 @@ BUILDERS = {
     "hf": build_hf,
     "box": build_box,
     "dropbox": build_dropbox,
+    "slack": build_slack,
     "trello": build_trello,
     "linear": build_linear,
 }
@@ -973,6 +1016,8 @@ async def open_target(
         service = await BoxService.create(run_id)
     elif target.get("service") == "dropbox":
         service = await DropboxService.create(target)
+    elif target.get("service") == "slack":
+        service = await SlackService.create()
     elif target.get("service") == "trello":
         service = await TrelloService.create()
     elif target.get("service") == "linear":

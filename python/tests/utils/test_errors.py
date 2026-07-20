@@ -66,6 +66,27 @@ def test_format_fs_error_prefers_exc_filename():
     assert err == b"head: /a/gone.txt: No such file or directory\n"
 
 
+def test_format_fs_error_generic_prefixes_command():
+    err = format_fs_error(
+        "slack-add-reaction",
+        RuntimeError("Slack API error (reactions.add): message_not_found"))
+    assert err == (b"slack-add-reaction: Slack API error "
+                   b"(reactions.add): message_not_found\n")
+
+
+def test_format_fs_error_generic_value_error():
+    err = format_fs_error("slack-add-reaction",
+                          ValueError("--channel_id is required"))
+    assert err == b"slack-add-reaction: --channel_id is required\n"
+
+
+def test_format_fs_error_generic_does_not_double_prefix():
+    # Many generic commands raise a fully GNU-formatted message already
+    # carrying the "<cmd>: " prefix; it must not be doubled (uniq: uniq: ...).
+    err = format_fs_error("uniq", ValueError("uniq: invalid count: '2junk'"))
+    assert err == b"uniq: invalid count: '2junk'\n"
+
+
 def test_enotsup_carries_op_and_operand():
     spec = PathSpec.from_str_path("/mail/inbox/a.txt")
     exc = enotsup("email", "unlink", spec)

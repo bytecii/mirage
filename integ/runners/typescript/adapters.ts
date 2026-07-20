@@ -41,6 +41,7 @@ import {
   RAMResource,
   RedisResource,
   S3Resource,
+  SlackResource,
   SSHResource,
   TrelloResource,
   Workspace,
@@ -705,6 +706,30 @@ async function openGws(target: Target): Promise<Open> {
   return { ws: ws as unknown as ExecWorkspace, cleanup }
 }
 
+// The fake Slack Web API server is external and shared across both hosts;
+// /reset re-seeds it to the fixture. A user token (xoxp-) enables the grep/rg
+// search push-down against the fake's search.messages / search.files.
+async function openSlack(target: Target): Promise<Open> {
+  let base = process.env.SLACK_URL ?? ''
+  while (base.endsWith('/')) base = base.slice(0, -1)
+  if (base === '') throw new Error('slack target requires SLACK_URL')
+  const reset = await fetch(`${base}/reset`, { method: 'POST' })
+  if (!reset.ok) throw new Error(`slack /reset failed: ${String(reset.status)}`)
+  const mounts: Record<string, SlackResource> = {}
+  for (const m of target.mounts) {
+    mounts[m.path] = new SlackResource({
+      token: 'xoxb-integ',
+      searchToken: 'xoxp-integ-search',
+      baseUrl: `${base}/api`,
+    })
+  }
+  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const cleanup = async (): Promise<void> => {
+    await ws.close()
+  }
+  return { ws: ws as unknown as ExecWorkspace, cleanup }
+}
+
 async function openTrello(target: Target): Promise<Open> {
   const endpoint = process.env.TRELLO_ENDPOINT
   if (!endpoint) throw new Error('trello target requires TRELLO_ENDPOINT')
@@ -760,6 +785,7 @@ export const ADAPTERS: Record<string, (target: Target) => Promise<Open>> = {
   hf: openHf,
   box: openBox,
   dropbox: openDropbox,
+  slack: openSlack,
   trello: openTrello,
   linear: openLinear,
 }

@@ -180,9 +180,15 @@ export function formatFsError(
   const strerror = gnuStrerror((err as { code?: string }).code)
   const vpath = errorVirtualPath(err)
   const spelled = paths?.find((p) => p.virtual === vpath)?.rawPath ?? vpath
-  const line =
-    strerror !== null
-      ? fsErrorLine(cmdName, spelled, err)
-      : `${cmdName}: ${err instanceof Error ? err.message : String(err)}\n`
+  let line: string
+  if (strerror !== null) {
+    line = fsErrorLine(cmdName, spelled, err)
+  } else {
+    // A message that already carries the `<cmd>: ` prefix (many generic
+    // commands throw a fully GNU-formatted string, e.g. `uniq: invalid
+    // count`) is emitted verbatim so the prefix is not doubled.
+    const message = err instanceof Error ? err.message : String(err)
+    line = message.startsWith(`${cmdName}: `) ? `${message}\n` : `${cmdName}: ${message}\n`
+  }
   return new TextEncoder().encode(line)
 }

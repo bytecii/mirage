@@ -19,8 +19,6 @@ import aiohttp
 from mirage.resource.secrets import reveal_secret
 from mirage.resource.slack.config import SlackConfig
 
-SLACK_API = "https://slack.com/api"
-
 
 def _auth_token(config: SlackConfig, method: str) -> str:
     if method.startswith("search."):
@@ -62,7 +60,7 @@ async def slack_get(
     method: str,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    url = f"{SLACK_API}/{method}"
+    url = f"{config.base_url.rstrip('/')}/{method}"
     headers = slack_headers(config, method)
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers, params=params) as resp:
@@ -77,7 +75,7 @@ async def slack_post(
     method: str,
     body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    url = f"{SLACK_API}/{method}"
+    url = f"{config.base_url.rstrip('/')}/{method}"
     headers = slack_headers(config, method)
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=body or {}) as resp:

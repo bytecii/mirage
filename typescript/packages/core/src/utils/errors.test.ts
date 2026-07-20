@@ -23,7 +23,47 @@ import {
   isFsError,
 } from './errors.ts'
 
+const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes)
 const DEC = new TextDecoder()
+
+describe('formatFsError', () => {
+  it('prefixes a thrown command error with the command name (GNU prog: message)', () => {
+    const line = decode(
+      formatFsError(
+        'slack-add-reaction',
+        new Error('Slack API error (reactions.add): message_not_found'),
+      ),
+    )
+    expect(line).toBe('slack-add-reaction: Slack API error (reactions.add): message_not_found\n')
+  })
+
+  it('stringifies a non-Error throw', () => {
+    expect(decode(formatFsError('slack-add-reaction', 'boom'))).toBe('slack-add-reaction: boom\n')
+  })
+
+  it('does not double the prefix when the message already carries cmd:', () => {
+    // Generic commands throw a fully GNU-formatted message (uniq: invalid
+    // count); the prefix must not be doubled (uniq: uniq: ...).
+    expect(decode(formatFsError('uniq', new Error("uniq: invalid count: '2junk'")))).toBe(
+      "uniq: invalid count: '2junk'\n",
+    )
+  })
+
+  it('renders a recognized filesystem error as cmd: path: strerror', () => {
+    expect(decode(formatFsError('cat', enoent('/b/missing.txt')))).toBe(
+      'cat: /b/missing.txt: No such file or directory\n',
+    )
+  })
+
+  it('rewrites the resolved path to the as-typed spelling', () => {
+    const line = decode(
+      formatFsError('diff', enoent('/a/missing.txt'), [
+        { virtual: '/a/missing.txt', rawPath: 'missing.txt' },
+      ]),
+    )
+    expect(line).toBe('diff: missing.txt: No such file or directory\n')
+  })
+})
 
 describe('enotsup', () => {
   it('carries the op and the operand', () => {

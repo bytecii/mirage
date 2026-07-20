@@ -485,6 +485,20 @@ jobs:
           cat /tmp/boxsrv.log
           echo "BOX_ENDPOINT=http://127.0.0.1:5096" >> "$GITHUB_ENV"
 
+      - name: Start fake Slack Web API (Prisma) shared by both hosts
+        working-directory: integ
+        env:
+          SLACK_DB_URL: file:/tmp/mirage-slack-ci.db
+        run: |
+          ./node_modules/.bin/prisma generate --schema prisma/schema.prisma
+          nohup ./node_modules/.bin/tsx server/slack.ts --port 5097 > /tmp/slacksrv.log 2>&1 &
+          for i in $(seq 1 30); do
+            grep -q "SLACK_URL=" /tmp/slacksrv.log && break
+            sleep 1
+          done
+          cat /tmp/slacksrv.log
+          echo "SLACK_URL=http://127.0.0.1:5097" >> "$GITHUB_ENV"
+
       - name: Start fake Trello API for the typescript host
         run: |
           nohup ./python/.venv/bin/python integ/server/trello_server.py --port 5095 > /tmp/trellosrv.log 2>&1 &
