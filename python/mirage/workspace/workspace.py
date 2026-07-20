@@ -1241,7 +1241,7 @@ class Workspace:
             io = IOResult(exit_code=1, stderr=msg)
             return io
         except Exception as exc:
-            io = IOResult(exit_code=1, stderr=str(exc).encode())
+            io = IOResult(exit_code=1, stderr=f"{exc}\n".encode())
             return io
         finally:
             # One rule on every path: an op that happened is always

@@ -75,24 +75,29 @@ def fs_error_line(cmd_name: str, path: object, exc: BaseException) -> str:
 
 
 def format_fs_error(cmd_name: str,
-                    exc: OSError,
+                    exc: Exception,
                     paths: list[PathSpec] | None = None) -> bytes:
-    """Format a filesystem OSError as a GNU coreutils stderr line.
+    """Format a thrown command error as a GNU coreutils stderr line.
 
     The chokepoint variant of ``fs_error_line`` for callers that only hold
-    the exception: the path is recovered from it (``exc.filename`` when set,
-    else ``str(exc)``); backends raise with the resolved absolute path
-    (``PathSpec.virtual``). When ``paths`` is supplied, the absolute path is
-    rewritten to the as-typed form (``PathSpec.raw_path``) so a relative
-    argument is reported as typed, like GNU.
+    the exception, byte-identical with the TypeScript ``formatFsError``. A
+    recognized filesystem error becomes ``<cmd>: <path>: <strerror>`` (the
+    path is recovered from ``exc.filename`` when set, else ``str(exc)``;
+    backends raise with the resolved absolute path, and ``paths`` rewrites it
+    to the as-typed ``PathSpec.raw_path`` so a relative argument is reported
+    as typed, like GNU). Any other exception becomes the generic
+    ``<cmd>: <message>`` line, so a command that throws is reported with the
+    ``prog: message`` prefix GNU and the TypeScript executor both use.
 
     Args:
         cmd_name (str): Command name for the ``<cmd>:`` prefix.
-        exc (OSError): The filesystem error.
+        exc (Exception): The thrown error.
         paths (list[PathSpec] | None): Command operands, used to map the
             resolved path back to the as-typed form.
     """
-    path = exc.filename or str(exc)
+    if fs_strerror(exc) is None:
+        return f"{cmd_name}: {exc}\n".encode()
+    path = getattr(exc, "filename", None) or str(exc)
     if paths:
         for p in paths:
             if p.virtual == path:

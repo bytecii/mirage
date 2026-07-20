@@ -20,7 +20,8 @@ from mirage.commands.builtin.find_parse import (FindParseError, find_expr_tail,
                                                 parse_find_expression)
 from mirage.commands.builtin.generic.crossmount import (handle_cross_mount,
                                                         is_cross_mount)
-from mirage.commands.builtin.utils.safeguard import maybe_with_timeout
+from mirage.commands.builtin.utils.safeguard import (CommandTimeoutError,
+                                                     maybe_with_timeout)
 from mirage.commands.errors import UsageError
 from mirage.commands.safeguard import resolve_across_mounts, resolve_safeguard
 from mirage.commands.spec import (SPECS, CommandSpec, OperandKind,
@@ -38,7 +39,7 @@ from mirage.shell.call_stack import CallStack
 from mirage.shell.job_table import JobTable
 from mirage.shell.types import ERREXIT_EXEMPT_TYPES
 from mirage.types import FileStat, PathSpec, word_text
-from mirage.utils.errors import FS_ERRORS, format_fs_error
+from mirage.utils.errors import format_fs_error
 from mirage.workspace.executor.control import ReturnSignal
 from mirage.workspace.executor.fanout import (_fan_out_traversal,
                                               _should_fan_out)
@@ -302,9 +303,17 @@ async def run_on_mount(
         # running, like a real shell (#452).
         return None, IOResult(exit_code=exc.exit_code,
                               stderr=f"{exc}\n".encode())
-    except FS_ERRORS as exc:
-        err = format_fs_error(cmd_name, exc, paths)
-        return None, IOResult(exit_code=1, stderr=err)
+    except CommandTimeoutError:
+        # A safeguard timeout is answered by the workspace-level handler
+        # (exit 124), not here.
+        raise
+    except Exception as exc:
+        # Every other thrown command error (a backend RuntimeError, a
+        # ValueError, or a filesystem OSError) becomes this command's
+        # IOResult, prefixed with the command name like GNU (prog: message)
+        # and the TypeScript executor.
+        return None, IOResult(exit_code=1,
+                              stderr=format_fs_error(cmd_name, exc, paths))
 
     if cmd_name == "ls" and io.exit_code == 0:
         stdout = await _inject_child_mounts(stdout, registry, paths,

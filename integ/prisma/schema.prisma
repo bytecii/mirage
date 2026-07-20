@@ -33,23 +33,26 @@ model User {
 }
 
 model Message {
-  pk        Int    @id @default(autoincrement())
-  channelId String
-  ts        String
-  userId    String
-  text      String
-  type      String @default("message")
+  pk           Int     @id @default(autoincrement())
+  channelId    String
+  ts           String
+  userId       String
+  text         String
+  type         String  @default("message")
+  threadTs     String?
+  reactionsJson String?
 }
 
 model SlackFile {
-  id        String @id
-  channelId String
-  messageTs String
-  name      String
-  title     String
-  mimetype  String
-  filetype  String
-  size      Int
-  timestamp Int
-  content   String
+  id          String  @id
+  channelId   String
+  messageTs   String
+  name        String
+  title       String
+  mimetype    String
+  filetype    String
+  size        Int
+  timestamp   Int
+  content     String
+  contentPath String?
 }

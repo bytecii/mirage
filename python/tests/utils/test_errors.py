@@ -59,3 +59,17 @@ def test_format_fs_error_prefers_exc_filename():
     exc = FileNotFoundError(2, "No such file or directory", "/a/gone.txt")
     err = format_fs_error("head", exc)
     assert err == b"head: /a/gone.txt: No such file or directory\n"
+
+
+def test_format_fs_error_generic_prefixes_command():
+    err = format_fs_error(
+        "slack-add-reaction",
+        RuntimeError("Slack API error (reactions.add): message_not_found"))
+    assert err == (b"slack-add-reaction: Slack API error "
+                   b"(reactions.add): message_not_found\n")
+
+
+def test_format_fs_error_generic_value_error():
+    err = format_fs_error("slack-add-reaction",
+                          ValueError("--channel_id is required"))
+    assert err == b"slack-add-reaction: --channel_id is required\n"

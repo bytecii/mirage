@@ -30,8 +30,15 @@ import { PrismaClient } from '@prisma/client'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SCHEMA = join(HERE, '..', 'prisma', 'schema.prisma')
-const FIXTURE = join(HERE, '..', 'fixtures', 'slack', 'v1.json')
+const FIXTURE_DIR = join(HERE, '..', 'fixtures', 'slack')
+const FIXTURE = join(FIXTURE_DIR, 'v1.json')
 const DEFAULT_PORT = 5097
+// chat.postMessage assigns synthetic, deterministic ts values so the write
+// commands produce byte-identical output on both hosts. postSeq resets in
+// seed() (i.e. on every /reset), so each host's run starts the counter fresh.
+const POST_TS_BASE = 1775000000
+const BOT_USER_ID = 'UBOT'
+let postSeq = 0
 
 interface FixtureUser {
   id: string
@@ -46,6 +53,8 @@ interface FixtureChannel {
   name: string
   kind: string
   created: number
+  is_archived?: boolean
+  is_private?: boolean
 }
 interface FixtureDm {
   id: string
@@ -53,11 +62,18 @@ interface FixtureDm {
   kind: string
   created: number
 }
+interface Reaction {
+  name: string
+  users: string[]
+  count: number
+}
 interface FixtureMessage {
   channel: string
   ts: string
   user: string
   text: string
+  thread_ts?: string
+  reactions?: Reaction[]
 }
 interface FixtureFile {
   id: string
@@ -67,7 +83,8 @@ interface FixtureFile {
   title: string
   mimetype: string
   filetype: string
-  content: string
+  content?: string
+  content_path?: string
 }
 interface Fixture {
   users: FixtureUser[]
@@ -92,6 +109,7 @@ function pushSchema(dbUrl: string): void {
 }
 
 async function seed(db: PrismaClient, fx: Fixture): Promise<void> {
+  postSeq = 0
   await db.slackFile.deleteMany({})
   await db.message.deleteMany({})
   await db.channel.deleteMany({})
@@ -110,7 +128,14 @@ async function seed(db: PrismaClient, fx: Fixture): Promise<void> {
   }
   for (const c of fx.channels) {
     await db.channel.create({
-      data: { id: c.id, name: c.name, kind: c.kind, created: c.created },
+      data: {
+        id: c.id,
+        name: c.name,
+        kind: c.kind,
+        created: c.created,
+        isArchived: c.is_archived ?? false,
+        isPrivate: c.is_private ?? false,
+      },
     })
   }
   for (const d of fx.dms) {
@@ -118,26 +143,57 @@ async function seed(db: PrismaClient, fx: Fixture): Promise<void> {
       data: { id: d.id, name: '', kind: d.kind, created: d.created, dmUserId: d.user },
     })
   }
-  for (const m of fx.messages) {
-    await db.message.create({
-      data: { channelId: m.channel, ts: m.ts, userId: m.user, text: m.text },
-    })
+  // createMany keeps re-seeding fast at scale (1000+ messages, re-seeded on
+  // every host's /reset). Reactions are stored as a JSON string column and
+  // re-materialized by conversations.history.
+  await db.message.createMany({
+    data: fx.messages.map((m) => ({
+      channelId: m.channel,
+      ts: m.ts,
+      userId: m.user,
+      text: m.text,
+      threadTs: m.thread_ts ?? null,
+      reactionsJson: m.reactions !== undefined ? JSON.stringify(m.reactions) : null,
+    })),
+  })
+  await db.slackFile.createMany({ data: fx.files.map(fileSeed) })
+}
+
+// Text attachments carry their bytes inline (content); binary attachments
+// (pdf/pptx/xlsx/png) live in fixtures/slack/blobs and are referenced by
+// content_path — their bytes are read from disk so size and download are the
+// real file, byte-for-byte.
+function fileSeed(f: FixtureFile): Record<string, unknown> {
+  const timestamp = Math.floor(Number(f.message_ts))
+  if (f.content_path !== undefined) {
+    const bytes = readFileSync(join(FIXTURE_DIR, f.content_path))
+    return {
+      id: f.id,
+      channelId: f.channel,
+      messageTs: f.message_ts,
+      name: f.name,
+      title: f.title,
+      mimetype: f.mimetype,
+      filetype: f.filetype,
+      size: bytes.length,
+      timestamp,
+      content: '',
+      contentPath: f.content_path,
+    }
   }
-  for (const f of fx.files) {
-    await db.slackFile.create({
-      data: {
-        id: f.id,
-        channelId: f.channel,
-        messageTs: f.message_ts,
-        name: f.name,
-        title: f.title,
-        mimetype: f.mimetype,
-        filetype: f.filetype,
-        size: Buffer.byteLength(f.content, 'utf8'),
-        timestamp: Math.floor(Number(f.message_ts)),
-        content: f.content,
-      },
-    })
+  const content = f.content ?? ''
+  return {
+    id: f.id,
+    channelId: f.channel,
+    messageTs: f.message_ts,
+    name: f.name,
+    title: f.title,
+    mimetype: f.mimetype,
+    filetype: f.filetype,
+    size: Buffer.byteLength(content, 'utf8'),
+    timestamp,
+    content,
+    contentPath: null,
   }
 }
 
@@ -169,6 +225,7 @@ interface FileRow {
   size: number
   timestamp: number
   content: string
+  contentPath: string | null
 }
 
 function userJson(u: UserRow): Record<string, unknown> {
@@ -209,18 +266,95 @@ function fileMeta(f: FileRow, host: string): Record<string, unknown> {
   }
 }
 
-// Slack search operators: `in:#channel` / `in:@user` scope the search; the
-// rest of the query is the literal. Mirrors what core/slack build_query emits.
-function parseQuery(query: string): { literal: string; channelName?: string; dmName?: string } {
-  const terms: string[] = []
-  let channelName: string | undefined
-  let dmName: string | undefined
-  for (const tok of query.split(/\s+/).filter((t) => t !== '')) {
-    if (tok.startsWith('in:#')) channelName = tok.slice(4)
-    else if (tok.startsWith('in:@')) dmName = tok.slice(4)
-    else terms.push(tok)
+// Slack search-query DSL (a faithful subset). Unquoted operator tokens are
+// stripped and interpreted; a "quoted phrase" is kept verbatim as literal:
+//   in:#channel   scope to a channel by name
+//   in:@user      scope to a DM by the other member's name
+//   from:@user    only messages authored by that user (name resolved to id)
+//   after:DATE    strictly after that UTC day (DATE = YYYY-MM-DD)
+//   before:DATE   strictly before that UTC day
+//   on:DATE       within that UTC day
+// Everything else is the literal, matched as an ASCII-case-insensitive
+// substring against the stored text/name/title/content — data-driven, so the
+// same fake answers any query, not just the fixture's exact wording. Names
+// (#channel / @user) are resolved to ids server-side, like real Slack.
+interface ParsedQuery {
+  literal: string
+  channelName?: string
+  dmName?: string
+  fromName?: string
+  after?: string
+  before?: string
+  on?: string
+}
+
+function tokenizeQuery(query: string): { value: string; quoted: boolean }[] {
+  const tokens: { value: string; quoted: boolean }[] = []
+  const re = /"([^"]*)"|(\S+)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(query)) !== null) {
+    if (m[1] !== undefined) tokens.push({ value: m[1], quoted: true })
+    else if (m[2] !== undefined) tokens.push({ value: m[2], quoted: false })
   }
-  return { literal: terms.join(' '), channelName, dmName }
+  return tokens
+}
+
+function parseQuery(query: string): ParsedQuery {
+  const terms: string[] = []
+  const out: ParsedQuery = { literal: '' }
+  for (const { value, quoted } of tokenizeQuery(query)) {
+    if (!quoted) {
+      if (value.startsWith('in:#')) {
+        out.channelName = value.slice(4)
+        continue
+      }
+      if (value.startsWith('in:@')) {
+        out.dmName = value.slice(4)
+        continue
+      }
+      if (value.startsWith('from:@')) {
+        out.fromName = value.slice(6)
+        continue
+      }
+      if (value.startsWith('from:')) {
+        out.fromName = value.slice(5)
+        continue
+      }
+      if (value.startsWith('after:')) {
+        out.after = value.slice(6)
+        continue
+      }
+      if (value.startsWith('before:')) {
+        out.before = value.slice(7)
+        continue
+      }
+      if (value.startsWith('on:')) {
+        out.on = value.slice(3)
+        continue
+      }
+    }
+    terms.push(value)
+  }
+  out.literal = terms.join(' ')
+  return out
+}
+
+function dayStartEpoch(date: string): number {
+  return Math.floor(Date.parse(`${date}T00:00:00Z`) / 1000)
+}
+
+function withinDates(tsNum: number, parsed: ParsedQuery): boolean {
+  if (parsed.after !== undefined && tsNum < dayStartEpoch(parsed.after) + 86400) return false
+  if (parsed.before !== undefined && tsNum >= dayStartEpoch(parsed.before)) return false
+  if (parsed.on !== undefined) {
+    const start = dayStartEpoch(parsed.on)
+    if (tsNum < start || tsNum >= start + 86400) return false
+  }
+  return true
+}
+
+function parseJsonBody(body: string): Record<string, unknown> {
+  return body === '' ? {} : (JSON.parse(body) as Record<string, unknown>)
 }
 
 function bearer(req: http.IncomingMessage): string {
@@ -235,6 +369,7 @@ async function handle(
   req: http.IncomingMessage,
   url: URL,
   host: string,
+  body: string,
 ): Promise<Reply> {
   const path = url.pathname
   const q = url.searchParams
@@ -244,10 +379,39 @@ async function handle(
     return { status: 200, json: { ok: true } }
   }
 
+  if (req.method === 'POST' && path === '/api/chat.postMessage') {
+    if (bearer(req) === '') return { status: 200, json: { ok: false, error: 'not_authed' } }
+    const payload = parseJsonBody(body)
+    const channel = typeof payload.channel === 'string' ? payload.channel : ''
+    const text = typeof payload.text === 'string' ? payload.text : ''
+    if (channel === '') return { status: 200, json: { ok: false, error: 'channel_not_found' } }
+    postSeq += 1
+    const ts = `${String(POST_TS_BASE)}.${String(postSeq).padStart(6, '0')}`
+    const message: Record<string, unknown> = { type: 'message', user: BOT_USER_ID, text, ts }
+    if (typeof payload.thread_ts === 'string' && payload.thread_ts !== '') {
+      message.thread_ts = payload.thread_ts
+    }
+    return { status: 200, json: { ok: true, channel, ts, message } }
+  }
+
+  if (req.method === 'POST' && path === '/api/reactions.add') {
+    if (bearer(req) === '') return { status: 200, json: { ok: false, error: 'not_authed' } }
+    const payload = parseJsonBody(body)
+    const channel = typeof payload.channel === 'string' ? payload.channel : ''
+    const timestamp = typeof payload.timestamp === 'string' ? payload.timestamp : ''
+    const msg = await db.message.findFirst({ where: { channelId: channel, ts: timestamp } })
+    if (msg === null) return { status: 200, json: { ok: false, error: 'message_not_found' } }
+    return { status: 200, json: { ok: true } }
+  }
+
   if (path.startsWith('/files/download/')) {
     const id = path.slice('/files/download/'.length)
     const file = (await db.slackFile.findUnique({ where: { id } })) as FileRow | null
     if (file === null) return { status: 404, json: { error: 'not_found' } }
+    if (file.contentPath !== null && file.contentPath !== '') {
+      const bytes = readFileSync(join(FIXTURE_DIR, file.contentPath))
+      return { status: 200, buffer: bytes, contentType: file.mimetype }
+    }
     return { status: 200, buffer: Buffer.from(file.content, 'utf8'), contentType: file.mimetype }
   }
 
@@ -278,11 +442,27 @@ async function handle(
       where,
       orderBy: { ts: 'desc' },
       take: limit,
-    })) as { channelId: string; ts: string; userId: string; text: string; type: string }[]
+    })) as {
+      channelId: string
+      ts: string
+      userId: string
+      text: string
+      type: string
+      threadTs: string | null
+      reactionsJson: string | null
+    }[]
     const files = (await db.slackFile.findMany({ where: { channelId: channel } })) as FileRow[]
+    // Fixed key order (type, user, text, ts, thread_ts, reactions, files) so
+    // the rendered chat.jsonl line is byte-identical on both hosts, which
+    // dump the parsed message verbatim.
     const messages = rows.map((m) => {
       const attached = files.filter((f) => f.messageTs === m.ts)
       const base: Record<string, unknown> = { type: m.type, user: m.userId, text: m.text, ts: m.ts }
+      if (m.threadTs !== null && m.threadTs !== '') base.thread_ts = m.threadTs
+      if (m.reactionsJson !== null && m.reactionsJson !== '') {
+        const rs = JSON.parse(m.reactionsJson) as Reaction[]
+        base.reactions = rs.map((r) => ({ name: r.name, users: r.users, count: r.count }))
+      }
       if (attached.length > 0) base.files = attached.map((f) => fileMeta(f, host))
       return base
     })
@@ -326,27 +506,41 @@ async function handle(
       }
     }
     const count = q.get('count') !== null ? Number.parseInt(q.get('count') as string, 10) : 20
+    let fromUserId: string | undefined
+    let fromMissing = false
+    if (parsed.fromName !== undefined) {
+      const fromUser = users.find((u) => u.name === parsed.fromName)
+      if (fromUser !== undefined) fromUserId = fromUser.id
+      else fromMissing = true
+    }
 
     if (path === '/api/search.messages') {
       const where: Record<string, unknown> = { text: { contains: parsed.literal } }
       if (scopedChannelId !== undefined) where.channelId = scopedChannelId
-      const rows = (await db.message.findMany({
-        where,
-        orderBy: { ts: 'asc' },
-        take: count,
-      })) as { channelId: string; ts: string; userId: string; text: string }[]
-      const matches = rows.map((m) => {
-        const ch = byId.get(m.channelId)
-        const chName = ch !== undefined ? channelDisplay(ch) : ''
-        return {
-          type: 'message',
-          user: m.userId,
-          username: m.userId,
-          ts: m.ts,
-          text: m.text,
-          channel: { id: m.channelId, name: chName },
-        }
-      })
+      if (fromUserId !== undefined) where.userId = fromUserId
+      const rows = fromMissing
+        ? []
+        : ((await db.message.findMany({ where, orderBy: { ts: 'asc' } })) as {
+            channelId: string
+            ts: string
+            userId: string
+            text: string
+          }[])
+      const matches = rows
+        .filter((m) => withinDates(Number(m.ts), parsed))
+        .slice(0, count)
+        .map((m) => {
+          const ch = byId.get(m.channelId)
+          const chName = ch !== undefined ? channelDisplay(ch) : ''
+          return {
+            type: 'message',
+            user: m.userId,
+            username: userName.get(m.userId) ?? m.userId,
+            ts: m.ts,
+            text: m.text,
+            channel: { id: m.channelId, name: chName },
+          }
+        })
       return {
         status: 200,
         json: {
@@ -355,30 +549,39 @@ async function handle(
           messages: {
             total: matches.length,
             pagination: { total_count: matches.length, page: 1, page_count: 1 },
+            paging: { count, total: matches.length, page: 1, pages: 1 },
             matches,
           },
         },
       }
     }
 
-    const where: Record<string, unknown> = {
+    // search.files has no author field in this model, so a from: query can
+    // never match a file; return an empty set rather than silently ignoring it.
+    const fileWhere: Record<string, unknown> = {
       OR: [
         { name: { contains: parsed.literal } },
         { title: { contains: parsed.literal } },
         { content: { contains: parsed.literal } },
       ],
     }
-    if (scopedChannelId !== undefined) where.channelId = scopedChannelId
-    const rows = (await db.slackFile.findMany({ where, orderBy: { id: 'asc' }, take: count })) as FileRow[]
-    const matches = rows.map((f) => ({
-      id: f.id,
-      name: f.name,
-      title: f.title,
-      mimetype: f.mimetype,
-      filetype: f.filetype,
-      size: f.size,
-      timestamp: f.timestamp,
-    }))
+    if (scopedChannelId !== undefined) fileWhere.channelId = scopedChannelId
+    const fileRows =
+      parsed.fromName !== undefined
+        ? []
+        : ((await db.slackFile.findMany({ where: fileWhere, orderBy: { id: 'asc' } })) as FileRow[])
+    const matches = fileRows
+      .filter((f) => withinDates(f.timestamp, parsed))
+      .slice(0, count)
+      .map((f) => ({
+        id: f.id,
+        name: f.name,
+        title: f.title,
+        mimetype: f.mimetype,
+        filetype: f.filetype,
+        size: f.size,
+        timestamp: f.timestamp,
+      }))
     return {
       status: 200,
       json: {
@@ -387,6 +590,7 @@ async function handle(
         files: {
           total: matches.length,
           pagination: { total_count: matches.length, page: 1, page_count: 1 },
+          paging: { count, total: matches.length, page: 1, pages: 1 },
           matches,
         },
       },
@@ -408,7 +612,8 @@ export async function startServer(port: number): Promise<http.Server> {
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
     req.on('end', () => {
-      void handle(db, req, url, host)
+      const body = Buffer.concat(chunks).toString('utf8')
+      void handle(db, req, url, host, body)
         .then((reply) => {
           if (reply.buffer !== undefined) {
             res.writeHead(reply.status, { 'Content-Type': reply.contentType ?? 'application/octet-stream' })
