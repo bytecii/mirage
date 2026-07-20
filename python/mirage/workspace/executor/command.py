@@ -46,8 +46,9 @@ from mirage.workspace.executor.control import ReturnSignal
 from mirage.workspace.executor.fanout import (_fan_out_traversal,
                                               _should_fan_out)
 from mirage.workspace.executor.find_action_dispatch import _apply_find_actions
-from mirage.workspace.executor.jobs import (handle_jobs, handle_kill,
-                                            handle_ps, handle_wait)
+from mirage.workspace.executor.jobs import (handle_fg, handle_jobs,
+                                            handle_kill, handle_ps,
+                                            handle_wait)
 from mirage.workspace.expand.globs import resolve_globs
 from mirage.workspace.mount import (MountCommandUnsupported, MountEntry,
                                     MountRegistry)
@@ -513,8 +514,10 @@ async def handle_command(
         text_parts = [
             p.virtual if isinstance(p, PathSpec) else p for p in parts
         ]
-        if cmd_name in ("wait", "fg"):
+        if cmd_name == "wait":
             return await handle_wait(job_table, text_parts)
+        if cmd_name == "fg":
+            return await handle_fg(job_table, text_parts)
         if cmd_name == "kill":
             return await handle_kill(job_table, text_parts)
         if cmd_name == "jobs":
@@ -548,8 +551,12 @@ async def handle_command(
                 if stdout is not None:
                     all_stdout.append(stdout)
                 merged_io = await merged_io.merge(io)
+                # $? tracks each statement inside the body, so a bare
+                # `return` (and mid-function $?) sees the last command.
+                session.last_exit_code = io.exit_code
                 if (io.exit_code != 0 and session.shell_options.get("errexit")
-                        and cmd.type not in ERREXIT_EXEMPT_TYPES):
+                        and cmd.type not in ERREXIT_EXEMPT_TYPES
+                        and not session.errexit_immune):
                     merged_io.exit_code = io.exit_code
                     break
             combined = async_chain(*all_stdout) if all_stdout else None

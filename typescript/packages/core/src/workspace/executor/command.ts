@@ -53,7 +53,7 @@ import {
 import { CommandTimeoutError, maybeWithTimeout } from '../../commands/builtin/utils/safeguard.ts'
 import { resolveAcrossMounts, resolveSafeguard } from '../../commands/safeguard.ts'
 import type { ExecuteNodeFn } from './jobs.ts'
-import { handleJobs, handleKill, handlePs, handleWait } from './jobs.ts'
+import { handleFg, handleJobs, handleKill, handlePs, handleWait } from './jobs.ts'
 import { UsageError } from '../../commands/errors.ts'
 import { formatFsError } from '../../utils/errors.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
@@ -306,7 +306,8 @@ export async function handleCommand(
 
   if (JOB_BUILTINS.has(cmdName) && jobTable !== null) {
     const textParts = parts.map((p) => (typeof p === 'string' ? p : p.virtual))
-    if (cmdName === 'wait' || cmdName === 'fg') return handleWait(jobTable, textParts)
+    if (cmdName === 'wait') return handleWait(jobTable, textParts)
+    if (cmdName === 'fg') return handleFg(jobTable, textParts)
     if (cmdName === 'kill') return handleKill(jobTable, textParts)
     if (cmdName === 'jobs') return handleJobs(jobTable, textParts)
     if (cmdName === 'ps') return handlePs(jobTable, textParts)
@@ -874,10 +875,14 @@ async function executeShellFunction(
         if (stdout !== null) allStdout.push(stdout)
         mergedIo = await mergedIo.merge(io)
         lastExec = execNode
+        // $? tracks each statement inside the body, so a bare `return`
+        // (and mid-function $?) sees the last command.
+        session.lastExitCode = io.exitCode
         if (
           io.exitCode !== 0 &&
           session.shellOptions.errexit === true &&
-          !ERREXIT_EXEMPT_TYPES.has(cmdNode.type)
+          !ERREXIT_EXEMPT_TYPES.has(cmdNode.type) &&
+          !session.errexitImmune
         ) {
           mergedIo.exitCode = io.exitCode
           break

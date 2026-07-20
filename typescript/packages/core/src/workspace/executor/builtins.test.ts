@@ -406,26 +406,28 @@ describe('handleTest', () => {
     Promise.resolve<[unknown, IOResult]>([new FileStat({ name: 'x' }), new IOResult()]),
   )
   const session = new Session({ sessionId: 'test' })
+  const testResolve: ResolveFn = () => Promise.reject(new Error('unused'))
+  const testNamespace = () => new Namespace(new MountRegistry({}, MountMode.READ), testResolve)
 
   it('-z on empty string → true (exit 0)', async () => {
-    const [, io] = await handleTest(dispatch, ['-z', ''], session)
+    const [, io] = await handleTest(dispatch, testNamespace(), ['-z', ''], session)
     expect(io.exitCode).toBe(0)
   })
 
   it('-z on non-empty → false (exit 1)', async () => {
-    const [, io] = await handleTest(dispatch, ['-z', 'x'], session)
+    const [, io] = await handleTest(dispatch, testNamespace(), ['-z', 'x'], session)
     expect(io.exitCode).toBe(1)
   })
 
   it('integer comparison -eq', async () => {
-    const [, io] = await handleTest(dispatch, ['3', '-eq', '3'], session)
+    const [, io] = await handleTest(dispatch, testNamespace(), ['3', '-eq', '3'], session)
     expect(io.exitCode).toBe(0)
-    const [, io2] = await handleTest(dispatch, ['3', '-eq', '4'], session)
+    const [, io2] = await handleTest(dispatch, testNamespace(), ['3', '-eq', '4'], session)
     expect(io2.exitCode).toBe(1)
   })
 
   it('string equality =', async () => {
-    const [, io] = await handleTest(dispatch, ['foo', '=', 'foo'], session)
+    const [, io] = await handleTest(dispatch, testNamespace(), ['foo', '=', 'foo'], session)
     expect(io.exitCode).toBe(0)
   })
 
@@ -442,9 +444,9 @@ describe('handleTest', () => {
     })
     const s = new Session({ sessionId: 'test' })
     s.cwd = '/data'
-    const [, io] = await handleTest(spy, ['-f', 'plain.txt'], s)
+    const [, io] = await handleTest(spy, testNamespace(), ['-f', 'plain.txt'], s)
     expect(io.exitCode).toBe(0)
-    const [, io2] = await handleTest(spy, ['-f', 'missing.txt'], s)
+    const [, io2] = await handleTest(spy, testNamespace(), ['-f', 'missing.txt'], s)
     expect(io2.exitCode).toBe(1)
   })
 
@@ -453,7 +455,7 @@ describe('handleTest', () => {
       Promise.resolve<[unknown, IOResult]>([new FileStat({ name: 'x' }), new IOResult()]),
     )
     const s = new Session({ sessionId: 'test' })
-    const [, io] = await handleTest(spy, ['-f', ''], s)
+    const [, io] = await handleTest(spy, testNamespace(), ['-f', ''], s)
     expect(io.exitCode).toBe(1)
     expect(spy).not.toHaveBeenCalled()
   })
@@ -462,13 +464,13 @@ describe('handleTest', () => {
     const spy = vi.fn<DispatchFn>((op, scope) => {
       const ps = scope
       if (op === 'readdir' && ps.virtual === '/data/sub') {
-        return Promise.resolve<[unknown, IOResult]>([[], new IOResult()])
+        return Promise.resolve<[unknown, IOResult]>([['a.txt'], new IOResult()])
       }
       return Promise.reject(new Error(`not found: ${ps.virtual}`))
     })
     const s = new Session({ sessionId: 'test' })
     s.cwd = '/data'
-    const [, io] = await handleTest(spy, ['-d', 'sub'], s)
+    const [, io] = await handleTest(spy, testNamespace(), ['-d', 'sub'], s)
     expect(io.exitCode).toBe(0)
   })
 })
@@ -511,12 +513,42 @@ describe('handleTrap / handleReturn / handleLocal', () => {
   })
 
   it('handleReturn throws ReturnSignal with exit code', () => {
-    expect(() => handleReturn(['42'])).toThrow(ReturnSignal)
+    const s = new Session({ sessionId: 'test' })
+    const cs = new CallStack()
+    cs.push([], 'f')
+    expect(() => handleReturn(['42'], s, cs)).toThrow(ReturnSignal)
     try {
-      handleReturn(['42'])
+      handleReturn(['42'], s, cs)
     } catch (err) {
       if (err instanceof ReturnSignal) expect(err.exitCode).toBe(42)
     }
+  })
+
+  it('bare return propagates the last exit code', () => {
+    const s = new Session({ sessionId: 'test' })
+    s.lastExitCode = 1
+    const cs = new CallStack()
+    cs.push([], 'f')
+    try {
+      handleReturn([], s, cs)
+      expect.unreachable()
+    } catch (err) {
+      if (!(err instanceof ReturnSignal)) throw err
+      expect(err.exitCode).toBe(1)
+    }
+  })
+
+  it('return outside a function fails without a signal', async () => {
+    const s = new Session({ sessionId: 'test' })
+    const [, io] = handleReturn([], s, new CallStack())
+    expect(io.exitCode).toBe(2)
+    expect(decode(await materialize(io.stderr))).toContain("can only `return'")
+  })
+
+  it('return in a sourced script raises the signal', () => {
+    const s = new Session({ sessionId: 'test' })
+    s.sourceDepth = 1
+    expect(() => handleReturn([], s, null)).toThrow(ReturnSignal)
   })
 
   it('handleLocal assigns to session.env', () => {
@@ -760,8 +792,11 @@ describe('handleShift / handleReturn argument checks', () => {
   })
 
   it('return with a non-numeric arg raises 2 with a message', () => {
+    const s = new Session({ sessionId: 'test' })
+    const cs = new CallStack()
+    cs.push([], 'f')
     try {
-      handleReturn(['x'])
+      handleReturn(['x'], s, cs)
       expect.unreachable()
     } catch (err) {
       if (!(err instanceof ReturnSignal)) throw err
