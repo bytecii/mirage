@@ -106,19 +106,23 @@ function runId(): string {
 }
 
 async function openRam(target: Target): Promise<Open> {
-  const mounts: Record<string, RAMResource> = {}
-  for (const m of target.mounts) mounts[m.path] = new RAMResource()
+  const mounts: Record<string, RAMResource | [RAMResource, MountMode]> = {}
+  for (const m of target.mounts) {
+    const resource = new RAMResource()
+    mounts[m.path] = m.mode === 'read' ? [resource, MountMode.READ] : resource
+  }
   const ws = new Workspace(mounts, { mode: MountMode.WRITE })
   return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
 
 async function openDisk(target: Target): Promise<Open> {
   const roots: string[] = []
-  const mounts: Record<string, DiskResource> = {}
+  const mounts: Record<string, DiskResource | [DiskResource, MountMode]> = {}
   for (const m of target.mounts) {
     const root = mkdtempSync(join(tmpdir(), 'mirage-integ-disk-'))
     roots.push(root)
-    mounts[m.path] = new DiskResource({ root })
+    const resource = new DiskResource({ root })
+    mounts[m.path] = m.mode === 'read' ? [resource, MountMode.READ] : resource
   }
   const ws = new Workspace(mounts, { mode: MountMode.WRITE })
   const cleanup = async (): Promise<void> => {
