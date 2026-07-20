@@ -16,7 +16,8 @@ import { evaluateArith } from '../../../shell/arith.ts'
 import { ArithError, ExitSignal } from '../../../shell/errors.ts'
 import { fnmatch } from '../../../utils/fnmatch.ts'
 import { resolvePath, resolveSymlinks } from '../../../utils/path.ts'
-import { IOResult } from '../../../io/types.ts'
+import { IOResult, materialize } from '../../../io/types.ts'
+import type { ByteSource } from '../../../io/types.ts'
 import type { FileStat } from '../../../types.ts'
 import { FileType, PathSpec } from '../../../types.ts'
 import type { Namespace } from '../../mount/namespace/namespace.ts'
@@ -74,23 +75,27 @@ function isMissError(exc: unknown): boolean {
   return /not found|no such file|not a directory|is a directory/i.test(msg)
 }
 
+/** Resolve a file operand to an addressable scope. */
+function operandScope(ctx: CondContext, val: string | PathSpec): PathSpec {
+  if (val instanceof PathSpec) return val
+  let resolved = resolvePath(val, ctx.session.cwd)
+  resolved = resolveSymlinks(resolved, ctx.namespace.symlinkTargets())
+  return toScope(resolved)
+}
+
 /**
  * Resolve an operand to 'dir' / 'file' / null plus its stat. Symlinks are
  * followed first; a stat naming a directory type answers directly, and a
- * readdir probe catches backends whose stat cannot see directories.
+ * readdir probe catches backends whose stat cannot see directories. The
+ * probe demands a non-empty listing: prefix stores (s3, gridfs, hf,
+ * nextcloud) list a missing path as [] instead of raising, and they
+ * cannot hold an empty directory anyway.
  */
 async function pathKind(
   ctx: CondContext,
   val: string | PathSpec,
 ): Promise<['dir' | 'file' | null, FileStat | null]> {
-  let scope: PathSpec
-  if (val instanceof PathSpec) {
-    scope = val
-  } else {
-    let resolved = resolvePath(val, ctx.session.cwd)
-    resolved = resolveSymlinks(resolved, ctx.namespace.symlinkTargets())
-    scope = toScope(resolved)
-  }
+  const scope = operandScope(ctx, val)
   let stat: FileStat | null = null
   try {
     const [s] = await ctx.dispatch('stat', scope)
@@ -102,13 +107,16 @@ async function pathKind(
     if (stat.type === FileType.DIRECTORY) return ['dir', stat]
     return ['file', stat]
   }
+  let entries: unknown
   try {
-    await ctx.dispatch('readdir', scope)
-    return ['dir', null]
+    const [raw] = await ctx.dispatch('readdir', scope)
+    entries = raw
   } catch (exc) {
     if (!isMissError(exc)) throw exc
     return [null, null]
   }
+  if (Array.isArray(entries) && entries.length > 0) return ['dir', null]
+  return [null, null]
 }
 
 async function applyUnary(ctx: CondContext, op: string, val: string | PathSpec): Promise<boolean> {
@@ -128,9 +136,12 @@ async function applyUnary(ctx: CondContext, op: string, val: string | PathSpec):
     if (op === '-s') {
       if (kind === 'dir') return true
       if (kind !== 'file' || stat === null) return false
-      // Unknown API-backed sizes count as non-empty: the file exists
-      // and hydration would be a full fetch per test.
-      return stat.size === null || stat.size > 0
+      if (stat.size !== null) return stat.size > 0
+      // API backends (dropbox, gdrive, box) stat freshly written empty
+      // files as size-unknown; only a read can answer, and the
+      // prefetch TTL cache keeps repeat tests cheap.
+      const [data] = await ctx.dispatch('read', operandScope(ctx, val))
+      return (await materialize(data as ByteSource | null)).length > 0
     }
     if (op === '-r' || op === '-w') {
       // Mirage has no per-user access model: whatever exists in a

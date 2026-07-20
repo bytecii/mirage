@@ -13,6 +13,13 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { IOResult } from '../io/types.ts'
+import type { FileStat } from '../types.ts'
+import { FileType } from '../types.ts'
+import { handleTest } from './executor/builtins/condition.ts'
+import type { DispatchFn } from './executor/cross_mount.ts'
+import type { Namespace } from './mount/namespace/namespace.ts'
+import type { Session } from './session/session.ts'
 import type { Workspace } from './workspace.ts'
 import { makeIntegrationWS, run, runExit, runResult } from './fixtures/integration_fixture.ts'
 
@@ -184,5 +191,73 @@ describe('[[ ]] semantics', () => {
       'yes\n',
     )
     expect(await run(ws, 'if [[ plain.txt == *.txt ]]; then echo yes; fi')).toBe('yes\n')
+  })
+})
+
+const stubNamespace = {
+  symlinkTargets: () => new Map<string, string>(),
+  isLink: () => false,
+} as unknown as Namespace
+
+const stubSession = { cwd: '/data', env: {}, arrays: {} } as unknown as Session
+
+/**
+ * Mimics a prefix store (s3/gridfs/hf/nextcloud): stat never sees
+ * directories and readdir answers a missing path with a listing
+ * instead of raising.
+ */
+function prefixStoreDispatch(listing: string[]): DispatchFn {
+  const dispatch = async (op: string) => {
+    if (op === 'stat') throw Object.assign(new Error('not found'), { code: 'ENOENT' })
+    if (op === 'readdir') return [listing, new IOResult({})]
+    throw new Error(`unexpected op ${op}`)
+  }
+  return dispatch as unknown as DispatchFn
+}
+
+/**
+ * Mimics an API backend (dropbox/gdrive/box) whose stat reports
+ * size-unknown for a regular file.
+ */
+function unknownSizeDispatch(content: Uint8Array): DispatchFn {
+  const stat = { name: 'x', size: null, type: FileType.TEXT, mode: null } as unknown as FileStat
+  const dispatch = async (op: string) => {
+    if (op === 'stat') return [stat, new IOResult({})]
+    if (op === 'read') return [content, new IOResult({})]
+    throw new Error(`unexpected op ${op}`)
+  }
+  return dispatch as unknown as DispatchFn
+}
+
+async function stubExit(dispatch: DispatchFn, argv: string[]): Promise<number> {
+  const [, io] = await handleTest(dispatch, stubNamespace, argv, stubSession)
+  return io.exitCode
+}
+
+describe('cloud-backend stat/readdir shapes', () => {
+  it('-e/-d/-s are false when a prefix store lists a missing path as []', async () => {
+    const dispatch = prefixStoreDispatch([])
+    expect(await stubExit(dispatch, ['-e', '/data/znope'])).toBe(1)
+    expect(await stubExit(dispatch, ['-d', '/data/znope'])).toBe(1)
+    expect(await stubExit(dispatch, ['-s', '/data/znope'])).toBe(1)
+  })
+
+  it('-e/-d are true when the readdir probe lists entries', async () => {
+    const dispatch = prefixStoreDispatch(['a.txt'])
+    expect(await stubExit(dispatch, ['-e', '/data/sub'])).toBe(0)
+    expect(await stubExit(dispatch, ['-d', '/data/sub'])).toBe(0)
+  })
+
+  it('-s reads content when stat reports size-unknown', async () => {
+    expect(await stubExit(unknownSizeDispatch(new Uint8Array(0)), ['-s', '/data/zte.txt'])).toBe(1)
+    expect(await stubExit(unknownSizeDispatch(new Uint8Array([120])), ['-s', '/data/zt.txt'])).toBe(
+      0,
+    )
+  })
+
+  it('-e/-f answer from stat alone without reading', async () => {
+    const dispatch = unknownSizeDispatch(new Uint8Array(0))
+    expect(await stubExit(dispatch, ['-e', '/data/zte.txt'])).toBe(0)
+    expect(await stubExit(dispatch, ['-f', '/data/zte.txt'])).toBe(0)
   })
 })

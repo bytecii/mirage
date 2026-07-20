@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Union
 
 from mirage.io import IOResult
-from mirage.io.types import ByteSource
+from mirage.io.types import ByteSource, materialize
 from mirage.shell.arith import ArithError, evaluate_arith
 from mirage.shell.errors import ExitSignal
 from mirage.types import FileStat, FileType, PathSpec
@@ -104,6 +104,20 @@ _BINARY_OPS = _STRING_BINARY | _NUMERIC_BINARY | _FILE_PAIR_BINARY
 _UNARY_OPS = _STRING_UNARY | _FILE_UNARY | _UNSUPPORTED_UNARY
 
 
+def _operand_scope(ctx: CondContext, val: str | PathSpec) -> PathSpec:
+    """Resolve a file operand to an addressable scope.
+
+    Args:
+        ctx (CondContext): evaluation context.
+        val (str | PathSpec): operand as typed or classified.
+    """
+    if isinstance(val, PathSpec):
+        return val
+    resolved = resolve_path(val, ctx.session.cwd)
+    resolved = resolve_symlinks(resolved, ctx.namespace.symlink_targets())
+    return _to_scope(resolved)
+
+
 async def _path_kind(
         ctx: CondContext,
         val: str | PathSpec) -> tuple[str | None, FileStat | None]:
@@ -112,17 +126,15 @@ async def _path_kind(
     Symlinks are followed first (test -e/-f/-d act on the target); a
     stat that names a directory type answers directly, otherwise a
     readdir probe catches backends whose stat cannot see directories.
+    The probe demands a non-empty listing: prefix stores (s3, gridfs,
+    hf, nextcloud) list a missing path as [] instead of raising, and
+    they cannot hold an empty directory anyway.
 
     Args:
         ctx (CondContext): evaluation context.
         val (str | PathSpec): operand as typed or classified.
     """
-    if isinstance(val, PathSpec):
-        scope = val
-    else:
-        resolved = resolve_path(val, ctx.session.cwd)
-        resolved = resolve_symlinks(resolved, ctx.namespace.symlink_targets())
-        scope = _to_scope(resolved)
+    scope = _operand_scope(ctx, val)
     try:
         stat, _ = await ctx.dispatch("stat", scope)
     except (FileNotFoundError, ValueError, NotADirectoryError):
@@ -132,10 +144,12 @@ async def _path_kind(
             return "dir", stat
         return "file", stat
     try:
-        await ctx.dispatch("readdir", scope)
-        return "dir", None
+        entries, _ = await ctx.dispatch("readdir", scope)
     except (FileNotFoundError, ValueError, NotADirectoryError):
         return None, None
+    if entries:
+        return "dir", None
+    return None, None
 
 
 async def _apply_unary(ctx: CondContext, op: str, val: str | PathSpec) -> bool:
@@ -169,9 +183,13 @@ async def _apply_unary(ctx: CondContext, op: str, val: str | PathSpec) -> bool:
                 return True
             if kind != "file" or stat is None:
                 return False
-            # Unknown API-backed sizes count as non-empty: the file
-            # exists and hydration would be a full fetch per test.
-            return stat.size is None or stat.size > 0
+            if stat.size is not None:
+                return stat.size > 0
+            # API backends (dropbox, gdrive, box) stat freshly written
+            # empty files as size-unknown; only a read can answer, and
+            # the prefetch TTL cache keeps repeat tests cheap.
+            data, _ = await ctx.dispatch("read", _operand_scope(ctx, val))
+            return len(await materialize(data)) > 0
         if op in ("-r", "-w"):
             # Mirage has no per-user access model: whatever exists in a
             # mount is readable and writable through it.

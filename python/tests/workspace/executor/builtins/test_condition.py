@@ -12,9 +12,89 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from typing import Any, cast
+
 import pytest
 
 from mirage import MountMode, RAMResource, Workspace
+from mirage.io import IOResult
+from mirage.types import FileStat, FileType, PathSpec
+from mirage.workspace.executor.builtins.condition import (CondContext,
+                                                          eval_flat)
+from mirage.workspace.mount.namespace import Namespace
+from mirage.workspace.session import Session
+
+
+class _StubNamespace:
+    """Namespace stand-in with no symlinks."""
+
+    def symlink_targets(self) -> dict[str, str]:
+        return {}
+
+    def is_link(self, path: str) -> bool:
+        return False
+
+
+class _StubSession:
+    """Session stand-in exposing only what the evaluator touches."""
+
+    cwd = "/data"
+    env: dict[str, str] = {}
+    arrays: dict[str, list[str]] = {}
+
+
+class _PrefixStoreDispatch:
+    """Mimics a prefix store (s3/gridfs/hf/nextcloud): stat never sees
+    directories and readdir answers a missing path with a listing
+    instead of raising.
+
+    Args:
+        listing (list[str]): what readdir returns for every path.
+    """
+
+    def __init__(self, listing: list[str]) -> None:
+        self.listing = listing
+
+    async def __call__(self, op: str, scope: PathSpec,
+                       **kwargs: Any) -> tuple[Any, IOResult]:
+        if op == "stat":
+            raise FileNotFoundError(scope.virtual)
+        if op == "readdir":
+            return self.listing, IOResult()
+        raise AssertionError(op)
+
+
+class _UnknownSizeDispatch:
+    """Mimics an API backend (dropbox/gdrive/box) whose stat reports
+    size-unknown for a regular file.
+
+    Args:
+        content (bytes): what read returns.
+    """
+
+    def __init__(self, content: bytes) -> None:
+        self.content = content
+
+    async def __call__(self, op: str, scope: PathSpec,
+                       **kwargs: Any) -> tuple[Any, IOResult]:
+        if op == "stat":
+            stat = FileStat(name="x", size=None, type=FileType.TEXT)
+            return stat, IOResult()
+        if op == "read":
+            return self.content, IOResult()
+        raise AssertionError(op)
+
+
+def _stub_ctx(dispatch: Any) -> CondContext:
+    """Build a CondContext around a stub dispatch.
+
+    Args:
+        dispatch (Any): fake op dispatcher.
+    """
+    return CondContext(dispatch=dispatch,
+                       namespace=cast(Namespace, _StubNamespace()),
+                       session=cast(Session, _StubSession()),
+                       name="test")
 
 
 async def _workspace() -> Workspace:
@@ -110,6 +190,37 @@ async def test_s_empty_file_false():
     ws = await _workspace()
     await ws.execute("printf '' > /data/zero.txt")
     assert await _rc(ws, "[ -s /data/zero.txt ]") == 1
+
+
+@pytest.mark.asyncio
+async def test_e_missing_on_prefix_store_false():
+    ctx = _stub_ctx(_PrefixStoreDispatch([]))
+    assert await eval_flat(ctx, ["-e", "/data/znope"]) is False
+    assert await eval_flat(ctx, ["-d", "/data/znope"]) is False
+    assert await eval_flat(ctx, ["-s", "/data/znope"]) is False
+
+
+@pytest.mark.asyncio
+async def test_d_nonempty_listing_on_prefix_store_true():
+    ctx = _stub_ctx(_PrefixStoreDispatch(["a.txt"]))
+    assert await eval_flat(ctx, ["-e", "/data/sub"]) is True
+    assert await eval_flat(ctx, ["-d", "/data/sub"]) is True
+
+
+@pytest.mark.asyncio
+async def test_s_unknown_size_reads_content():
+    empty = _stub_ctx(_UnknownSizeDispatch(b""))
+    assert await eval_flat(empty, ["-s", "/data/zte.txt"]) is False
+    full = _stub_ctx(_UnknownSizeDispatch(b"x"))
+    assert await eval_flat(full, ["-s", "/data/zt.txt"]) is True
+
+
+@pytest.mark.asyncio
+async def test_e_unknown_size_no_read():
+    # -e/-f must answer from stat alone; only -s may hydrate.
+    ctx = _stub_ctx(_UnknownSizeDispatch(b""))
+    assert await eval_flat(ctx, ["-e", "/data/zte.txt"]) is True
+    assert await eval_flat(ctx, ["-f", "/data/zte.txt"]) is True
 
 
 @pytest.mark.asyncio
