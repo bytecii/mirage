@@ -188,6 +188,7 @@ all = [
     "mirage-ai[hdf5]",
     "mirage-ai[pdf]",
     "mirage-ai[langfuse]",
+    "mirage-ai[mem0]",
     "mirage-ai[chroma]",
     "mirage-ai[qdrant]",
     "mirage-ai[anthropic]",
@@ -201,6 +202,9 @@ all = [
 ]
 lancedb = [
     "lancedb>=0.33.0",
+]
+mem0 = [
+    "mem0ai>=2.0.6",
 ]
 
 [tool.uv]
