@@ -20,7 +20,8 @@ from mirage.shell.errors import ExitSignal
 from mirage.shell.types import ERREXIT_EXEMPT_TYPES
 from mirage.shell.types import NodeType as NT
 from mirage.utils.errors import format_fs_error
-from mirage.workspace.executor.control import BreakSignal, ContinueSignal
+from mirage.workspace.executor.control import (BreakSignal, ContinueSignal,
+                                               ReturnSignal)
 from mirage.workspace.executor.jobs import handle_background
 from mirage.workspace.types import ExecutionNode
 
@@ -78,6 +79,20 @@ async def execute_program(
                 last_exec = ExecutionNode(command="exit",
                                           exit_code=sig.exit_code,
                                           stderr=sig.stderr)
+                break
+            except ReturnSignal as sig:
+                # `return` inside a sourced file ends the source; the
+                # file's status becomes the return's. Anywhere else the
+                # signal belongs to an enclosing function call.
+                if session.source_depth <= 0:
+                    raise
+                if sig.stderr:
+                    merged_io = await merged_io.merge(
+                        IOResult(stderr=sig.stderr))
+                merged_io.exit_code = sig.exit_code
+                session.last_exit_code = sig.exit_code
+                last_exec = ExecutionNode(command="return",
+                                          exit_code=sig.exit_code)
                 break
             except (BreakSignal, ContinueSignal) as sig:
                 # break/continue with a level beyond the loop nesting

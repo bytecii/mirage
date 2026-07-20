@@ -68,7 +68,7 @@ import type { MountRegistry } from '../mount/registry.ts'
 import type { Session } from '../session/session.ts'
 import { ExecutionNode } from '../types.ts'
 import { resolveGlobs } from '../expand/globs.ts'
-import { expandTestExpr } from './test_expr.ts'
+import { expandDoubleBracket, expandTestExpr } from './test_expr.ts'
 import { executeProgram } from './program.ts'
 import { executeCommand } from './command_dispatch.ts'
 import { traceAssignment } from '../../shell/xtrace.ts'
@@ -528,8 +528,13 @@ export async function executeNode(
   }
 
   if (kind === NodeKind.TEST) {
+    const opener = node.children[0]?.type ?? '['
+    if (opener === '[[') {
+      const tree = await expandDoubleBracket(node, session, executeFn, callStack)
+      return handleTest(dispatch, deps.namespace, tree, session, '[[')
+    }
     const expanded = await expandTestExpr(node, session, executeFn, callStack)
-    return handleTest(dispatch, expanded, session)
+    return handleTest(dispatch, deps.namespace, expanded, session, '[')
   }
 
   if (kind === NodeKind.NEGATED) {

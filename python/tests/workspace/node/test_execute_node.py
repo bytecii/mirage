@@ -464,7 +464,8 @@ def test_trap():
 # ── return ──────────────────────────────────────
 
 
-def test_return_raises():
+def test_return_raises_inside_function_frame():
+    from mirage.shell.call_stack import CallStack
     from mirage.workspace.executor.control import ReturnSignal
 
     dispatch = _mock_dispatch()
@@ -473,14 +474,31 @@ def test_return_raises():
     execute_fn = AsyncMock(return_value=IOResult())
     session = _session()
     node = parse("return 42")
+    cs = CallStack()
+    cs.push([], function_name="f")
 
     try:
         _run(
             execute_node(dispatch, reg, job_table, execute_fn, "agent-1", node,
-                         session))
+                         session, None, cs))
         assert False, "should have raised ReturnSignal"
     except ReturnSignal as e:
         assert e.exit_code == 42
+
+
+def test_return_top_level_fails_and_continues():
+    dispatch = _mock_dispatch()
+    reg, _ = _mock_registry()
+    job_table = JobTable()
+    execute_fn = AsyncMock(return_value=IOResult())
+    session = _session()
+    node = parse("return 42")
+
+    _, io, _ = _run(
+        execute_node(dispatch, reg, job_table, execute_fn, "agent-1", node,
+                     session))
+    assert io.exit_code == 2
+    assert b"can only `return'" in io.stderr
 
 
 # ── break / continue ───────────────────────────

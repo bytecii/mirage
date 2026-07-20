@@ -230,8 +230,25 @@ export function handleTrap(_session: Session): Result {
   return [null, new IOResult(), new ExecutionNode({ command: 'trap', exitCode: 0 })]
 }
 
-/** Return from a function, with bash's argument check. */
-export function handleReturn(args: readonly string[]): Result {
+/** Return from a function or sourced script, with bash's checks. */
+export function handleReturn(
+  args: readonly string[],
+  session: Session,
+  callStack: CallStack | null = null,
+): Result {
+  const inFunction = callStack !== null && callStack.depth > 1
+  if (!inFunction && session.sourceDepth === 0) {
+    // bash prints the diagnostic, sets $? to 2, and carries on with
+    // the rest of the line.
+    const err = new TextEncoder().encode(
+      "return: can only `return' from a function or sourced script\n",
+    )
+    return [
+      null,
+      new IOResult({ exitCode: 2, stderr: err }),
+      new ExecutionNode({ command: 'return', exitCode: 2, stderr: err }),
+    ]
+  }
   const first = args[0]
   if (first !== undefined && !isShiftCount(first)) {
     // bash prints the error and the function returns 2.
@@ -240,7 +257,18 @@ export function handleReturn(args: readonly string[]): Result {
       new TextEncoder().encode(`return: ${first}: numeric argument required\n`),
     )
   }
-  throw new ReturnSignal(first !== undefined ? Number(first) : 0)
+  if (args.length > 1) {
+    const err = new TextEncoder().encode('return: too many arguments\n')
+    return [
+      null,
+      new IOResult({ exitCode: 1, stderr: err }),
+      new ExecutionNode({ command: 'return', exitCode: 1, stderr: err }),
+    ]
+  }
+  // A bare return propagates the status of the last command executed.
+  throw new ReturnSignal(
+    first !== undefined ? ((Number(first) % 256) + 256) % 256 : session.lastExitCode,
+  )
 }
 
 /** Exit the shell, with bash's argument checks. */

@@ -45,7 +45,8 @@ from mirage.workspace.mount import MountRegistry
 from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.node.command_dispatch import execute_command
 from mirage.workspace.node.program import execute_program
-from mirage.workspace.node.test_expr import expand_test_expr
+from mirage.workspace.node.test_expr import (expand_double_bracket,
+                                             expand_test_expr)
 from mirage.workspace.session import Session
 from mirage.workspace.types import ExecutionNode
 
@@ -461,9 +462,20 @@ async def execute_node(
 
     # ── test ([ ] or [[ ]]) ─────────────────────
     if kind == NodeKind.TEST:
-        expanded = await expand_test_expr(node, session, execute_fn, cs,
-                                          registry)
-        return await handle_test(dispatch, expanded, session)
+        opener = node.children[0].type if node.children else "["
+        if opener == "[[":
+            tree = await expand_double_bracket(node, session, execute_fn, cs)
+            return await handle_test(dispatch,
+                                     namespace,
+                                     tree,
+                                     session,
+                                     name="[[")
+        test_argv = await expand_test_expr(node, session, execute_fn, cs)
+        return await handle_test(dispatch,
+                                 namespace,
+                                 test_argv,
+                                 session,
+                                 name="[")
 
     # ── negated command ─────────────────────────
     if kind == NodeKind.NEGATED:

@@ -28,7 +28,7 @@ import {
 } from '../../shell/helpers.ts'
 import type { JobTable } from '../../shell/job_table.ts'
 import { NodeType as NT, ShellBuiltin as SB } from '../../shell/types.ts'
-import { PathSpec } from '../../types.ts'
+import { PathSpec, wordText } from '../../types.ts'
 import { classifyBarePath } from '../expand/classify/index.ts'
 import type { Argv } from '../expand/argv.ts'
 import { expandArgv } from '../expand/argv.ts'
@@ -524,7 +524,22 @@ async function runArgv(
   }
   if (name === SB.TRAP) return handleTrap(session)
   if (name === SB.TEST || name === SB.BRACKET || name === SB.DOUBLE_BRACKET) {
-    return handleTest(dispatch, operands, session)
+    let testArgs = [...operands]
+    const testName = name === SB.BRACKET ? '[' : 'test'
+    if (name === SB.BRACKET) {
+      const last = testArgs[testArgs.length - 1]
+      if (last !== undefined && wordText(last) === ']') {
+        testArgs = testArgs.slice(0, -1)
+      } else {
+        const err = new TextEncoder().encode("[: missing `]'\n")
+        return [
+          null,
+          new IOResult({ exitCode: 2, stderr: err }),
+          new ExecutionNode({ command: '[', exitCode: 2, stderr: err }),
+        ]
+      }
+    }
+    return handleTest(dispatch, namespace, testArgs, session, testName)
   }
   if (name === SB.ECHO) {
     return handleEcho(args)
@@ -539,7 +554,7 @@ async function runArgv(
     return handleSource(dispatch, executeFn, target, session)
   }
   if (name === SB.RETURN) {
-    return handleReturn(args)
+    return handleReturn(args, session, callStack)
   }
   if (name === SB.EXIT) {
     return handleExit(args, session)

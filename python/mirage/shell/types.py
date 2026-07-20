@@ -61,6 +61,7 @@ class NodeType(StrEnum):
     RAW_STRING = "raw_string"
     PROCESS_SUBSTITUTION = "process_substitution"
     EXTGLOB_PATTERN = "extglob_pattern"
+    REGEX = "regex"
     DO_GROUP = "do_group"
     ELIF_CLAUSE = "elif_clause"
     ELSE_CLAUSE = "else_clause"

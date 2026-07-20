@@ -23,7 +23,7 @@ from mirage.runtime.route import RoutingDecision
 from mirage.shell.types import NodeType as NT
 from mirage.shell.types import ShellBuiltin as SB
 from mirage.shell.xtrace import trace_command
-from mirage.types import PathSpec
+from mirage.types import PathSpec, word_text
 from mirage.utils.path import CycleError
 from mirage.workspace.executor.command import handle_command
 from mirage.workspace.executor.control import BreakSignal, ContinueSignal
@@ -391,7 +391,22 @@ async def _run_argv(
         return await handle_trap(session)
 
     if name in (SB.TEST, SB.BRACKET, SB.DOUBLE_BRACKET):
-        return await handle_test(dispatch, operands, session)
+        test_args = list(operands)
+        test_name = "[" if name == SB.BRACKET else "test"
+        if name == SB.BRACKET:
+            if test_args and word_text(test_args[-1]) == "]":
+                test_args = test_args[:-1]
+            else:
+                err = b"[: missing `]'\n"
+                return None, IOResult(exit_code=2,
+                                      stderr=err), ExecutionNode(command="[",
+                                                                 exit_code=2,
+                                                                 stderr=err)
+        return await handle_test(dispatch,
+                                 namespace,
+                                 test_args,
+                                 session,
+                                 name=test_name)
 
     if name == SB.ECHO:
         return await handle_echo(args)
@@ -403,7 +418,7 @@ async def _run_argv(
         return await handle_sleep(args, cancel=cancel)
 
     if name == SB.RETURN:
-        return await handle_return(args)
+        return await handle_return(args, session, call_stack)
 
     if name == SB.EXIT:
         return await handle_exit(args, session)

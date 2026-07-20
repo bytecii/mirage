@@ -20,6 +20,7 @@ import type { JobTable } from '../../shell/job_table.ts'
 import { ERREXIT_EXEMPT_TYPES, NodeType as NT } from '../../shell/types.ts'
 import type { TSNodeLike } from '../expand/variable.ts'
 import { errorVirtualPath, gnuStrerror } from '../../utils/errors.ts'
+import { ReturnSignal } from '../executor/command.ts'
 import { BreakSignal, ContinueSignal } from '../executor/control.ts'
 import { handleBackground } from '../executor/jobs.ts'
 import type { Session } from '../session/session.ts'
@@ -106,6 +107,19 @@ export async function executeProgram(
             exitCode: err.exitCode,
             stderr: err.stderr,
           })
+          break
+        }
+        if (err instanceof ReturnSignal) {
+          // `return` inside a sourced file ends the source; the file's
+          // status becomes the return's. Anywhere else the signal
+          // belongs to an enclosing function call.
+          if (session.sourceDepth <= 0) throw err
+          if (err.stderr.byteLength > 0) {
+            mergedIo = await mergedIo.merge(new IOResult({ stderr: err.stderr }))
+          }
+          mergedIo.exitCode = err.exitCode
+          session.lastExitCode = err.exitCode
+          lastExec = new ExecutionNode({ command: 'return', exitCode: err.exitCode })
           break
         }
         if (err instanceof BreakSignal || err instanceof ContinueSignal) {

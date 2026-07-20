@@ -770,6 +770,252 @@
         "stdout": "12\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "blt_disown_unsupported",
+      "seq": 502700,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "disown; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n",
+        "stderr": "mirage: unsupported builtin: disown\n"
+      }
+    },
+    {
+      "id": "blt_complete_unsupported",
+      "seq": 502701,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "complete; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n",
+        "stderr": "mirage: unsupported builtin: complete\n"
+      }
+    },
+    {
+      "id": "blt_compgen_unsupported",
+      "seq": 502702,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "compgen -c; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n",
+        "stderr": "mirage: unsupported builtin: compgen\n"
+      }
+    },
+    {
+      "id": "blt_return_top_level",
+      "seq": 502703,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "return; echo rc=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "rc=2\n",
+        "stderr": "return: can only `return' from a function or sourced script\n"
+      }
+    },
+    {
+      "id": "blt_return_n",
+      "seq": 502704,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "zf9(){ return 7; }; zf9; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "7\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "blt_return_bare_propagates",
+      "seq": 502705,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "zf8(){ false; return; }; zf8; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "blt_return_in_source",
+      "seq": 502706,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'echo a\\nreturn\\necho b\\n' > /data/zsrc9.sh; . /data/zsrc9.sh; echo after:$?; rm /data/zsrc9.sh",
+      "expect": {
+        "exit": 0,
+        "stdout": "a\nafter:0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "blt_shift_happy_path",
+      "seq": 502707,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "set -- pa pb pc; shift; echo $1 $#; shift 2; echo $#; set --",
+      "expect": {
+        "exit": 0,
+        "stdout": "pb 2\n0\n",
+        "stderr": ""
+      }
     }
   ]
 }

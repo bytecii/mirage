@@ -56,6 +56,9 @@ export class Session {
   // came from a short-circuited &&/|| branch or a `!`-negated command,
   // which bash exempts from errexit. Reset on every node execution.
   errexitImmune: boolean
+  // Depth of nested `source`/`.` execution: `return` is legal and the
+  // program loop absorbs its signal only while a file is being sourced.
+  sourceDepth = 0
   stdinBuffer: AsyncLineIterator | null = null
   stdinSource: unknown = null
   localVars: Map<string, string | null> | null = null
