@@ -34,7 +34,7 @@ def load_targets(root: Path) -> dict:
 def discover_case_files(root: Path) -> list[Path]:
     files: list[Path] = []
     for name in CASE_DIRS:
-        files.extend(sorted((root / name).glob("*.json")))
+        files.extend(sorted((root / name).rglob("*.json")))
     return files
 
 
