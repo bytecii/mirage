@@ -44,6 +44,7 @@ import {
   followPaths,
   handleBash,
   handleCd,
+  handleCommandBuiltin,
   handleEcho,
   handleEval,
   handleExport,
@@ -561,6 +562,10 @@ async function runArgv(
   }
   if (name === SB.BREAK) throw new BreakSignal(null, new IOResult(), loopLevels(args))
   if (name === SB.CONTINUE) throw new ContinueSignal(null, new IOResult(), loopLevels(args))
+
+  if (name === SB.COMMAND) {
+    return handleCommandBuiltin(executeFn, args, session, registry, stdin)
+  }
 
   if (name === SB.XARGS) {
     return handleXargs(executeFn, args, session, stdin)
