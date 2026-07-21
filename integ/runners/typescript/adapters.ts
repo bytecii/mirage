@@ -28,6 +28,8 @@ import {
   BackblazeResource,
   BoxResource,
   CephResource,
+  DatabricksVolumeResource,
+  DifyResource,
   DigitalOceanResource,
   DiskResource,
   DropboxResource,
@@ -77,6 +79,7 @@ const S3_ENDPOINT = process.env.S3_ENDPOINT
 const S3_REGION = process.env.S3_REGION ?? 'us-east-1'
 const S3_ACCESS = process.env.AWS_ACCESS_KEY_ID ?? 'testing'
 const S3_SECRET = process.env.AWS_SECRET_ACCESS_KEY ?? 'testing'
+const DATABRICKS_ENDPOINT = process.env.DATABRICKS_ENDPOINT
 const NEXTCLOUD_URL = process.env.NEXTCLOUD_URL
 const NEXTCLOUD_USERNAME = process.env.NEXTCLOUD_USERNAME ?? 'admin'
 const NEXTCLOUD_PASSWORD = process.env.NEXTCLOUD_PASSWORD ?? 'admin123'
@@ -197,6 +200,37 @@ async function openGridfs(target: Target): Promise<Open> {
     }
   }
   return { ws: ws as unknown as ExecWorkspace, cleanup }
+}
+
+async function openDatabricksVolume(target: Target): Promise<Open> {
+  if (DATABRICKS_ENDPOINT === undefined || DATABRICKS_ENDPOINT === '') {
+    throw new Error('databricks target requires DATABRICKS_ENDPOINT')
+  }
+  const endpoint = DATABRICKS_ENDPOINT
+  const id = runId()
+  const token = 'integ-token'
+  const mounts: Record<string, DatabricksVolumeResource> = {}
+  for (const m of target.mounts) {
+    const volume = `mirage-integ-${id}-${String(m.volume)}`
+    const rootPath = m.prefix ?? '/'
+    const root = `/Volumes/main/default/${volume}${rootPath === '/' ? '' : `/${rootPath}`}`
+    const created = await fetch(`${endpoint}/api/2.0/fs/directories${root}`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!created.ok) throw new Error(`databricks mkdir root failed: ${String(created.status)}`)
+    mounts[m.path] = await DatabricksVolumeResource.create({
+      catalog: 'main',
+      schema: 'default',
+      volume,
+      rootPath,
+      host: endpoint,
+      token,
+      timeout: 30,
+    })
+  }
+  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
 
 function objectStorageResource(name: string, bucket: string, keyPrefix: string | undefined): S3Resource {
@@ -766,6 +800,21 @@ async function openSlack(target: Target): Promise<Open> {
   return { ws: ws as unknown as ExecWorkspace, cleanup }
 }
 
+async function openDify(target: Target): Promise<Open> {
+  const endpoint = process.env.DIFY_ENDPOINT
+  if (!endpoint) throw new Error('dify target requires DIFY_ENDPOINT')
+  const mounts: Record<string, DifyResource> = {}
+  for (const m of target.mounts) {
+    mounts[m.path] = new DifyResource({
+      apiKey: 'integ-key',
+      baseUrl: endpoint,
+      datasetId: target.dataset ?? 'kb-7f3a',
+    })
+  }
+  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
+}
+
 async function openTrello(target: Target): Promise<Open> {
   const endpoint = process.env.TRELLO_ENDPOINT
   if (!endpoint) throw new Error('trello target requires TRELLO_ENDPOINT')
@@ -809,6 +858,7 @@ export const ADAPTERS: Record<string, (target: Target) => Promise<Open>> = {
   redis: openRedis,
   opfs: openOpfs,
   s3: openS3,
+  databricks_volume: openDatabricksVolume,
   nextcloud: openNextcloud,
   gridfs: openGridfs,
   ssh: openSsh,
@@ -824,4 +874,5 @@ export const ADAPTERS: Record<string, (target: Target) => Promise<Open>> = {
   slack: openSlack,
   trello: openTrello,
   linear: openLinear,
+  dify: openDify,
 }

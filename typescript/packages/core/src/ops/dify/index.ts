@@ -12,16 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { invalidateAfterWrite } from '../../cache/context.ts'
-import { PathSpec } from '../../types.ts'
+import { DIFY_IO } from '../../commands/builtin/dify/io.ts'
+import { ResourceName } from '../../types.ts'
+import { makeGenericOps } from '../generic/factory.ts'
+import type { RegisteredOp } from '../registry.ts'
 
-// Dropbox materializes missing parent folders on upload/create_folder
-// and removes emptied ones on delete of the last child in some flows,
-// so ancestor listings must refresh after any mutation (mirrors hf).
-export async function invalidateAncestors(path: PathSpec): Promise<void> {
-  let parent = path.mountPath.slice(0, path.mountPath.lastIndexOf('/'))
-  while (parent !== '') {
-    await invalidateAfterWrite(PathSpec.fromStrPath(parent))
-    parent = parent.slice(0, parent.lastIndexOf('/'))
-  }
-}
+export const DIFY_OPS: readonly RegisteredOp[] = makeGenericOps(ResourceName.DIFY, DIFY_IO)

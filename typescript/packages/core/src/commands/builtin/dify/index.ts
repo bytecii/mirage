@@ -12,15 +12,20 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { PathSpec, invalidateAfterWrite } from '@struktoai/mirage-core'
+import type { DifyAccessor } from '../../../accessor/dify.ts'
+import { ResourceName } from '../../../types.ts'
+import type { RegisteredCommand } from '../../config.ts'
+import { makeGenericCommands } from '../generic_bind/index.ts'
+import { DIFY_FIND } from './find.ts'
+import { DIFY_IO } from './io.ts'
+import { DIFY_SEARCH } from './search.ts'
 
-// Buckets have no directory markers, so a write or delete materializes or
-// removes directories arbitrarily far up the tree; backends with markers
-// refresh ancestors through their marker writes instead.
-export async function invalidateAncestors(path: PathSpec): Promise<void> {
-  let parent = path.mountPath.slice(0, path.mountPath.lastIndexOf('/'))
-  while (parent !== '') {
-    await invalidateAfterWrite(PathSpec.fromStrPath(parent))
-    parent = parent.slice(0, parent.lastIndexOf('/'))
-  }
-}
+const DIFY_OVERRIDES = new Set(['find', 'search'])
+
+export const DIFY_COMMANDS: readonly RegisteredCommand[] = [
+  ...makeGenericCommands<DifyAccessor>(ResourceName.DIFY, DIFY_IO, {
+    overrides: DIFY_OVERRIDES,
+  }),
+  ...DIFY_FIND,
+  ...DIFY_SEARCH,
+]
