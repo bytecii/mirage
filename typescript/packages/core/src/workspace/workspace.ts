@@ -1114,7 +1114,8 @@ export class Workspace {
       // the typed line's decision (runtime argument, route, or scripts).
       if (routingDecision !== null) innerOpts.routingDecision = routingDecision
       // `command NAME` re-runs the inner line and must forward the pipe
-      // stdin so `... | command cat` filters the upstream output.
+      // stdin so `... | command cat` filters the upstream output; the same
+      // path carries `echo hi | bash -c 'cat'` into the inner line.
       if (opts.stdin !== undefined && opts.stdin !== null) innerOpts.stdin = opts.stdin
       const res = await this.execute(cmd, innerOpts)
       return new IOResult({
