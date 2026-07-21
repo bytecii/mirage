@@ -122,15 +122,15 @@ export function loadCases(root: string): Case[] {
   const cases: Case[] = []
   for (const name of CASE_DIRS) {
     const dir = join(root, name)
-    let entries: string[]
+    let files: string[]
     try {
-      entries = readdirSync(dir).filter((f) => f.endsWith('.json')).sort()
+      files = walkFiles(dir).filter((f) => f.endsWith('.json')).sort()
     } catch {
       continue
     }
-    for (const file of entries) {
-      const rel = join(name, file)
-      const data = JSON.parse(readFileSync(join(dir, file), 'utf8')) as { cases: Case[] }
+    for (const file of files) {
+      const rel = relative(root, file)
+      const data = JSON.parse(readFileSync(file, 'utf8')) as { cases: Case[] }
       for (const c of data.cases) {
         c._source = rel
         cases.push(c)
