@@ -989,6 +989,37 @@
         "stdout": "apple\nbanana\ncherry\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "ctl_bash_c_stdin",
+      "seq": 502131,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "echo hi | bash -c 'cat'",
+      "expect": {
+        "exit": 0,
+        "stdout": "hi\n",
+        "stderr": ""
+      }
     }
   ]
 }
