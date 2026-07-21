@@ -813,6 +813,13 @@ jobs:
       - name: Run declarative battery on nextcloud
         run: ./python/.venv/bin/python integ/runners/python/main.py --target nextcloud
 
+      - name: Run watch battery on nextcloud
+        env:
+          NEXTCLOUD_URL: http://localhost:8080/remote.php/dav/files/admin/
+          NEXTCLOUD_USERNAME: admin
+          NEXTCLOUD_PASSWORD: admin123
+        run: ./python/.venv/bin/python integ/watch/run.py
+
   integ-fuse:
     needs: changes
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.fuse == 'true') }}
