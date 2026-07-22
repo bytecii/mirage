@@ -42,6 +42,7 @@ import { LN_BUILDER } from './ln.ts'
 import { LOOK_BUILDER } from './look.ts'
 import { LS_BUILDER } from './ls.ts'
 import { MD5_BUILDER } from './md5.ts'
+import { MD5SUM_BUILDER } from './md5sum.ts'
 import { MKDIR_BUILDER } from './mkdir.ts'
 import { MKTEMP_BUILDER } from './mktemp.ts'
 import { MV_BUILDER } from './mv.ts'
@@ -53,8 +54,12 @@ import { REALPATH_BUILDER } from './realpath.ts'
 import { REV_BUILDER } from './rev.ts'
 import { RG_BUILDER } from './rg.ts'
 import { RM_BUILDER } from './rm.ts'
+import { RMDIR_BUILDER } from './rmdir.ts'
 import { SED_BUILDER } from './sed.ts'
+import { SHA1SUM_BUILDER } from './sha1sum.ts'
 import { SHA256SUM_BUILDER } from './sha256sum.ts'
+import { SHA384SUM_BUILDER } from './sha384sum.ts'
+import { SHA512SUM_BUILDER } from './sha512sum.ts'
 import { SHUF_BUILDER } from './shuf.ts'
 import { SORT_BUILDER } from './sort.ts'
 import { SPLIT_BUILDER } from './split.ts'
@@ -70,6 +75,7 @@ import { TREE_BUILDER } from './tree.ts'
 import { TSORT_BUILDER } from './tsort.ts'
 import { UNEXPAND_BUILDER } from './unexpand.ts'
 import { UNIQ_BUILDER } from './uniq.ts'
+import { UNLINK_BUILDER } from './unlink.ts'
 import { UNZIP_BUILDER } from './unzip.ts'
 import { WC_BUILDER } from './wc.ts'
 import { XXD_BUILDER } from './xxd.ts'
@@ -107,6 +113,7 @@ export const BUILDERS: readonly Builder[] = [
   LOOK_BUILDER,
   LS_BUILDER,
   MD5_BUILDER,
+  MD5SUM_BUILDER,
   MKDIR_BUILDER,
   MKTEMP_BUILDER,
   MV_BUILDER,
@@ -118,8 +125,12 @@ export const BUILDERS: readonly Builder[] = [
   REV_BUILDER,
   RG_BUILDER,
   RM_BUILDER,
+  RMDIR_BUILDER,
   SED_BUILDER,
+  SHA1SUM_BUILDER,
   SHA256SUM_BUILDER,
+  SHA384SUM_BUILDER,
+  SHA512SUM_BUILDER,
   SHUF_BUILDER,
   SORT_BUILDER,
   SPLIT_BUILDER,
@@ -135,6 +146,7 @@ export const BUILDERS: readonly Builder[] = [
   TSORT_BUILDER,
   UNEXPAND_BUILDER,
   UNIQ_BUILDER,
+  UNLINK_BUILDER,
   UNZIP_BUILDER,
   WC_BUILDER,
   XXD_BUILDER,

@@ -335,6 +335,11 @@ export const BUILTIN_SPECS: Readonly<Record<string, CommandSpec>> = Object.freez
     ],
     rest: new Operand({ kind: OperandKind.PATH }),
   }),
+  rmdir: new CommandSpec({
+    options: [new Option({ short: '-v' })],
+    rest: new Operand({ kind: OperandKind.PATH }),
+  }),
+  unlink: new CommandSpec({ rest: new Operand({ kind: OperandKind.PATH }) }),
   sed: new CommandSpec({
     options: [
       new Option({ short: '-i' }),
@@ -489,7 +494,23 @@ export const BUILTIN_SPECS: Readonly<Record<string, CommandSpec>> = Object.freez
     ],
     positional: [new Operand({ kind: OperandKind.PATH })],
   }),
+  md5sum: new CommandSpec({
+    options: [new Option({ short: '-c' })],
+    rest: new Operand({ kind: OperandKind.PATH }),
+  }),
+  sha1sum: new CommandSpec({
+    options: [new Option({ short: '-c' })],
+    rest: new Operand({ kind: OperandKind.PATH }),
+  }),
   sha256sum: new CommandSpec({
+    options: [new Option({ short: '-c' })],
+    rest: new Operand({ kind: OperandKind.PATH }),
+  }),
+  sha384sum: new CommandSpec({
+    options: [new Option({ short: '-c' })],
+    rest: new Operand({ kind: OperandKind.PATH }),
+  }),
+  sha512sum: new CommandSpec({
     options: [new Option({ short: '-c' })],
     rest: new Operand({ kind: OperandKind.PATH }),
   }),
