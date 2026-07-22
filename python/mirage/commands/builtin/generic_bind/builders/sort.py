@@ -33,7 +33,7 @@ async def sort(
     n: bool = False,
     u: bool = False,
     f: bool = False,
-    k: str | None = None,
+    k: str | list[str] | None = None,
     t: str | None = None,
     h: bool = False,
     V: bool = False,
@@ -44,6 +44,12 @@ async def sort(
     **kwargs,
 ) -> tuple[ByteSource | None, IOResult]:
     paths = await resolve_or_empty(ops, accessor, paths, index)
+    if k is None:
+        key_defs: list[str] = []
+    elif isinstance(k, list):
+        key_defs = [item for item in k if isinstance(item, str)]
+    else:
+        key_defs = [k]
     return await generic_sort(
         paths,
         read_bytes=bound_op(ops.read_bytes, accessor, index),
@@ -52,12 +58,13 @@ async def sort(
         numeric=n,
         unique=u,
         fold_case=f,
-        key_field=int(k) if k is not None else None,
+        key_defs=key_defs,
         field_separator=t,
         human_numeric=h,
         version_sort=V,
         month_sort=M,
         ignore_blanks=b,
+        stable=s,
     )
 
 

@@ -383,7 +383,7 @@ def test_sort_spec():
     spec = SPECS["sort"]
     parsed = parse_command(spec, ["-k", "2", "-t", ",", "-rn", "data.csv"],
                            cwd="/")
-    assert parsed.flag("-k") == "2"
+    assert parsed.flag("-k") == ["2"]
     assert parsed.flag("-t") == ","
     assert parsed.flag("-r") is True
     assert parsed.flag("-n") is True

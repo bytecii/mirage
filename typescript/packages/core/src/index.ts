@@ -307,12 +307,16 @@ export type {
   AsyncStatFn,
 } from './commands/builtin/utils/types.ts'
 export {
-  compareKeys,
-  parseKeyOptions,
-  sortAndDedupe,
-  sortKey,
+  buildConfig as buildSortConfig,
+  computeFields as computeSortFields,
+  extract as extractSortKey,
+  type Key as SortKey,
+  type KeyMods as SortKeyMods,
+  parseKeydef as parseSortKeydef,
+  type SortConfig,
+  SortKeyError,
+  sortLines,
   splitSortLines,
-  type SortKeyOptions,
 } from './commands/builtin/sort_helper.ts'
 export { countNewlines, parseN, tailBytes } from './commands/builtin/tail_helper.ts'
 export { AsyncLineIterator } from './io/async_line_iterator.ts'

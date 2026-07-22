@@ -75,7 +75,7 @@
       "description": null,
       "long": null,
       "numeric_shorthand": false,
-      "repeatable": false,
+      "repeatable": true,
       "short": "-k",
       "value_kind": "text",
       "value_optional": false

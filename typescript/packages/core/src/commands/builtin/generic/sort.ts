@@ -15,7 +15,7 @@
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { parseKeyOptions, sortAndDedupe, splitSortLines } from '../sort_helper.ts'
+import { buildConfig, SortKeyError, sortLines, splitSortLines } from '../sort_helper.ts'
 import { readStdinAsync } from '../utils/stream.ts'
 
 const ENC = new TextEncoder()
@@ -26,9 +26,18 @@ export async function sortGeneric(
   opts: CommandOpts,
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
 ): Promise<CommandFnResult> {
-  const keyOpts = parseKeyOptions(opts.flags)
-  const reverse = opts.flags.r === true
-  const unique = opts.flags.u === true
+  let cfg
+  try {
+    cfg = buildConfig(opts.flags)
+  } catch (err) {
+    if (err instanceof SortKeyError) {
+      return [
+        new Uint8Array(0),
+        new IOResult({ stderr: ENC.encode(`sort: ${err.message}\n`), exitCode: 2 }),
+      ]
+    }
+    throw err
+  }
   let allLines: string[] = []
   if (paths.length > 0) {
     for (const p of paths) {
@@ -39,7 +48,7 @@ export async function sortGeneric(
     const raw = await readStdinAsync(opts.stdin)
     allLines = splitSortLines(DEC.decode(raw ?? new Uint8Array(0)))
   }
-  const sorted = sortAndDedupe(allLines, keyOpts, reverse, unique)
+  const sorted = sortLines(allLines, cfg)
   const out: ByteSource =
     sorted.length === 0 ? new Uint8Array(0) : ENC.encode(sorted.join('\n') + '\n')
   return [out, new IOResult()]
