@@ -262,7 +262,7 @@ export const BUILTIN_SPECS: Readonly<Record<string, CommandSpec>> = Object.freez
       new Option({ short: '-n' }),
       new Option({ short: '-u' }),
       new Option({ short: '-f' }),
-      new Option({ short: '-k', valueKind: OperandKind.TEXT }),
+      new Option({ short: '-k', valueKind: OperandKind.TEXT, repeatable: true }),
       new Option({ short: '-t', valueKind: OperandKind.TEXT }),
       new Option({ short: '-h' }),
       new Option({ short: '-V' }),

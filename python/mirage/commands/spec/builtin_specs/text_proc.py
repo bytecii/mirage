@@ -34,7 +34,7 @@ SPECS: dict[str, CommandSpec] = {
             Option(short="-n"),
             Option(short="-u"),
             Option(short="-f"),
-            Option(short="-k", value_kind=OperandKind.TEXT),
+            Option(short="-k", value_kind=OperandKind.TEXT, repeatable=True),
             Option(short="-t", value_kind=OperandKind.TEXT),
             Option(short="-h"),
             Option(short="-V"),

@@ -83,7 +83,7 @@ class TestSortKeyField:
     @pytest.mark.asyncio
     async def test_key_field_numeric(self):
         result = await sort_lines(b"a 10\nb 2\nc 30",
-                                  key_field=2,
+                                  key_defs=["2"],
                                   numeric=True)
         assert result == ["b 2", "a 10", "c 30"]
 
@@ -94,7 +94,7 @@ class TestSortFieldSep:
     async def test_field_sep_with_key(self):
         result = await sort_lines(b"a:10\nb:2\nc:30",
                                   field_separator=":",
-                                  key_field=2,
+                                  key_defs=["2"],
                                   numeric=True)
         assert result == ["b:2", "a:10", "c:30"]
 
