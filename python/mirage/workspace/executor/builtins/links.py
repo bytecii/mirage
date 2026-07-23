@@ -65,10 +65,18 @@ async def handle_ln(
     target_typed = word_text(operands[0])
     if "r" in flags:
         # --relative: rewrite the target relative to the link's own
-        # directory so the link stays valid addressed from anywhere.
+        # directory so the link stays valid addressed from anywhere. GNU
+        # canonicalizes existing symlink components of both ends first, so
+        # an aliased directory resolves to its real path (the link survives
+        # the alias being moved/removed); fall back to lexical on a loop.
         link_dir = posixpath.dirname(link_abs) or "/"
-        target_typed = posixpath.relpath(abs_path(operands[0], session.cwd),
-                                         link_dir)
+        target_abs = abs_path(operands[0], session.cwd)
+        try:
+            target_abs = namespace.follow(target_abs)
+            link_dir = namespace.follow(link_dir)
+        except CycleError:
+            pass
+        target_typed = posixpath.relpath(target_abs, link_dir)
     exists = namespace.is_link(link_abs) and "f" not in flags
     if namespace.is_mount_root(link_abs) or exists:
         return fail(

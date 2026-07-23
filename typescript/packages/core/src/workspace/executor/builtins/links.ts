@@ -112,9 +112,19 @@ export async function handleLn(
   let targetTyped = wordText(targetArg)
   if (flags.has('r')) {
     // --relative: rewrite the target relative to the link's own directory
-    // so the link stays valid addressed from anywhere.
-    const linkDir = gnuDirname(linkAbs)
-    targetTyped = posixRelative(abs(targetArg, session.cwd), linkDir)
+    // so the link stays valid addressed from anywhere. GNU canonicalizes
+    // existing symlink components of both ends first, so an aliased
+    // directory resolves to its real path (the link survives the alias
+    // being moved/removed); fall back to lexical on a loop.
+    let linkDir = gnuDirname(linkAbs)
+    let targetAbs = abs(targetArg, session.cwd)
+    try {
+      targetAbs = namespace.follow(targetAbs)
+      linkDir = namespace.follow(linkDir)
+    } catch (err) {
+      if (!(err instanceof CycleError)) throw err
+    }
+    targetTyped = posixRelative(targetAbs, linkDir)
   }
   const exists = namespace.isLink(linkAbs) && !flags.has('f')
   if (namespace.isMountRoot(linkAbs) || exists) {
