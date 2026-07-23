@@ -71,11 +71,9 @@
       "value_optional": false
     }
   ],
-  "positional": [
-    {
-      "kind": "path",
-      "provided_by": []
-    }
-  ],
-  "rest": null
+  "positional": [],
+  "rest": {
+    "kind": "path",
+    "provided_by": []
+  }
 }

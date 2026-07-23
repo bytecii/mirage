@@ -1083,6 +1083,6 @@ export const BUILTIN_SPECS: Readonly<Record<string, CommandSpec>> = Object.freez
       new Option({ short: '-N', long: '--read-bytes', valueKind: OperandKind.TEXT }),
       new Option({ short: '-t', long: '--format', valueKind: OperandKind.TEXT, repeatable: true }),
     ],
-    positional: [new Operand({ kind: OperandKind.PATH })],
+    rest: new Operand({ kind: OperandKind.PATH }),
   }),
 })
