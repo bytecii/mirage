@@ -52,6 +52,7 @@ import {
   handleExport,
   handleHistory,
   handleChgrp,
+  handleDf,
   handleChmod,
   handleChown,
   handleLn,
@@ -612,6 +613,12 @@ async function runArgv(
   }
   if (name === 'touch') {
     return handleTouch(namespace, dispatch, session, operands)
+  }
+
+  // Capacity (registry-routed: enumerates mounts, reports per-mount statfs;
+  // never fabricates numbers).
+  if (name === 'df') {
+    return handleDf(registry, session, operands)
   }
 
   // Symlink-aware dispatch: reads follow links (open(2)); rm/mv act on

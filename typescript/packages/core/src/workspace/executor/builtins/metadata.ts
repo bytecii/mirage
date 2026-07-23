@@ -123,7 +123,7 @@ function nowIso(): string {
   return isoNoMs(new Date())
 }
 
-interface SplitValueFlags {
+export interface SplitValueFlags {
   flags: Set<string>
   values: Map<string, string>
   operands: (string | PathSpec)[]
@@ -131,7 +131,7 @@ interface SplitValueFlags {
 }
 
 // Split leading flags where some take a value (`-t STAMP`).
-function splitValueFlags(
+export function splitValueFlags(
   args: readonly (string | PathSpec)[],
   boolean: string,
   valued: string,
