@@ -7,7 +7,7 @@ from mirage.io.types import ByteSource, IOResult
 
 _SUFFIX_ORDER = ("", "K", "M", "G", "T", "P", "E", "Z", "Y", "R", "Q")
 # SI spells kilo lowercase; every larger unit and all of IEC stay uppercase.
-_SI_DISPLAY = ("", "k", "M", "G", "T", "P", "E", "Z", "Y", "R", "Q")
+_SI_DISPLAY = ("", "k", *_SUFFIX_ORDER[2:])
 _FIRST_FIELD_RE = re.compile(r"(\s*)(\S+)([\s\S]*)")
 
 

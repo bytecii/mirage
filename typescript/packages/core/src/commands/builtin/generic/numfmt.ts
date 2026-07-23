@@ -6,7 +6,7 @@ const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { fatal: false })
 const SUFFIXES = ['', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y', 'R', 'Q'] as const
 // SI spells kilo lowercase; every larger unit and all of IEC stay uppercase.
-const SI_DISPLAY = ['', 'k', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y', 'R', 'Q'] as const
+const SI_DISPLAY: readonly string[] = ['', 'k', ...SUFFIXES.slice(2)]
 
 function parseNumber(value: string, fromMode: string): number {
   const match = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+))([A-Za-z]*)$/.exec(value)
