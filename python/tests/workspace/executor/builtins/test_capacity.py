@@ -159,3 +159,55 @@ async def test_disk_statfs_real_quota(tmp_path):
     assert cap.total and cap.total > 0
     assert cap.available is not None and cap.available >= 0
     assert cap.inodes and cap.inodes > 0
+
+
+@pytest.mark.asyncio
+async def test_df_rejects_zero_block_size():
+    # GNU df rejects -B0 with a CLI error rather than dividing by zero.
+    ws = _ws()
+    code, out = await _run(ws, "df -B0 /q")
+    assert code == 1
+    assert out == ""
+    err = await (await ws.execute("df -B0 /q")).stderr_str()
+    assert err == "df: invalid -B argument '0'\n"
+
+
+@pytest.mark.asyncio
+async def test_df_last_size_format_wins():
+    # -h/-H/-k/-B are mutually overriding; GNU lets the last one win.
+    ws = _ws()
+    _, hb = await _run(ws, "df -h -B1M /q")
+    assert hb.splitlines()[0].split()[1] == "1M-blocks"
+    _, bh = await _run(ws, "df -B1M -h /q")
+    assert bh.splitlines()[0].split()[1] == "Size"
+    _, hk = await _run(ws, "df -h -k /q")
+    assert hk.splitlines()[0].split()[1] == "1K-blocks"
+    _, kh = await _run(ws, "df -k -h /q")
+    assert kh.splitlines()[0].split()[1] == "Size"
+
+
+@pytest.mark.asyncio
+async def test_df_missing_file_operand_errors():
+    # GNU df errors on a missing FILE; an existing path (and the mount root)
+    # report normally.
+    ws = _ws()
+    await ws.execute("mkdir -p /mem/sub")
+    await ws.execute("sh -c 'echo hi > /mem/sub/f.txt'")
+    assert (await _run(ws, "df /mem/sub/f.txt"))[0] == 0
+    assert (await _run(ws, "df /mem"))[0] == 0
+    code, out = await _run(ws, "df /mem/missing")
+    assert code == 1
+    assert out == ""
+    err = await (await ws.execute("df /mem/missing")).stderr_str()
+    assert err == "df: /mem/missing: No such file or directory\n"
+
+
+@pytest.mark.asyncio
+async def test_df_follows_symlink_to_target_mount():
+    # GNU df follows a FILE operand, so a symlink reports the mount of its
+    # target, not the mount holding the link.
+    ws = _ws()
+    await ws.execute("ln -s /q /mem/link")
+    code, out = await _run(ws, "df /mem/link")
+    assert code == 0
+    assert out.splitlines()[-1].split()[-1] == "/q"

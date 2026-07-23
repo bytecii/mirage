@@ -474,7 +474,17 @@ async def _run_argv(
     # ── capacity (registry-routed: enumerates mounts, reports per-mount
     #    statfs; never fabricates numbers) ──
     if name == "df":
-        return await handle_df(registry, session, operands)
+        if namespace.nodes:
+            try:
+                operands = follow_paths(namespace, operands)
+            except CycleError as exc:
+                err = (f"df: {exc}: "
+                       f"Too many levels of symbolic links\n").encode()
+                return None, IOResult(exit_code=1,
+                                      stderr=err), ExecutionNode(command="df",
+                                                                 exit_code=1,
+                                                                 stderr=err)
+        return await handle_df(registry, session, dispatch, operands)
 
     # ── symlink-aware dispatch: reads follow links (open(2)); rm/mv act
     #    on the link entry itself (lstat semantics) ──

@@ -14,9 +14,11 @@
 
 import { humanSize } from '../../../commands/builtin/utils/formatting.ts'
 import { IOResult } from '../../../io/types.ts'
-import { CapacityState, PathSpec } from '../../../types.ts'
+import { CapacityState, FileStat, PathSpec } from '../../../types.ts'
 import type { CapacityResult } from '../../../types.ts'
 import { resolvePath } from '../../../utils/path.ts'
+import { rstripSlash } from '../../../utils/slash.ts'
+import type { DispatchFn } from '../cross_mount.ts'
 import type { MountEntry } from '../../mount/mount.ts'
 import type { MountRegistry } from '../../mount/registry.ts'
 import type { Session } from '../../session/session.ts'
@@ -55,13 +57,55 @@ function parseBlock(text: string): [number, string] | null {
   const t = text.trim()
   if (t.length === 0) return null
   const suffix = t.slice(-1).toUpperCase()
+  let value: number
   if (suffix in BLOCK_SUFFIX) {
     const head = t.slice(0, -1) || '1'
     if (!/^\d+$/.test(head)) return null
-    return [parseInt(head, 10) * (BLOCK_SUFFIX[suffix] ?? 1), t]
+    value = parseInt(head, 10) * (BLOCK_SUFFIX[suffix] ?? 1)
+  } else if (/^\d+$/.test(t)) {
+    value = parseInt(t, 10)
+  } else {
+    return null
   }
-  if (!/^\d+$/.test(t)) return null
-  return [parseInt(t, 10), t]
+  // GNU rejects a zero (or non-positive) block size rather than scaling.
+  if (value <= 0) return null
+  return [value, t]
+}
+
+// The last size-format flag (-h/-H/-k/-B) in the leading option run. GNU df
+// lets a later size flag override the earlier ones (`df -h -B1M` prints a
+// block header, `df -B1M -h` prints `Size`), so the display format is
+// whichever appears last. Returns the flag letter, or null when none appear.
+function lastFormat(args: (string | PathSpec)[]): string | null {
+  let last: string | null = null
+  let i = 0
+  while (i < args.length) {
+    const arg = args[i]
+    const s = typeof arg === 'string' ? arg : ''
+    if (s === '--' || !(s.length >= 2 && s.startsWith('-') && s[1] !== '-')) break
+    const body = s.slice(1)
+    for (let j = 0; j < body.length; j++) {
+      const c = body[j]
+      if (c === 'h' || c === 'H' || c === 'k' || c === 'B') last = c
+      if (c === 'B') {
+        if (body.slice(j + 1).length === 0) i += 1
+        break
+      }
+    }
+    i += 1
+  }
+  return last
+}
+
+// Whether a path resolves to an existing entry; GNU df errors on a missing
+// FILE operand, so a deeper path is statted before its mount is accepted.
+async function pathExists(dispatch: DispatchFn, spec: PathSpec): Promise<boolean> {
+  try {
+    const [stat] = await dispatch('stat', spec)
+    return stat instanceof FileStat
+  } catch {
+    return false
+  }
 }
 
 // Human-readable size in powers of 1000 (df -H), mirroring the 1024
@@ -132,17 +176,20 @@ function pctCell(cap: CapacityResult, inodes: boolean): string {
 // Resolve df operands to the mounts to report, deduped and ordered. No
 // operand (or the workspace root `/`) reports every mount; a path operand
 // reports the mount containing it. Null when an operand maps to no mount.
-function targetMounts(
+async function targetMounts(
   registry: MountRegistry,
+  dispatch: DispatchFn,
   session: Session,
   operands: (string | PathSpec)[],
-): MountEntry[] | { missing: string } {
+): Promise<MountEntry[] | { missing: string }> {
   const ordered = [...registry.allMounts()].sort((a, b) => a.prefix.localeCompare(b.prefix))
   if (operands.length === 0) return ordered
   const seen = new Set<string>()
   const out: MountEntry[] = []
   for (const op of operands) {
     const virtual = op instanceof PathSpec ? op.virtual : resolvePath(op, session.cwd)
+    const label = op instanceof PathSpec ? op.rawPath : op
+    const spec = op instanceof PathSpec ? op : PathSpec.fromStrPath(virtual)
     if (virtual === '' || virtual === '/') {
       for (const m of ordered) {
         if (!seen.has(m.prefix)) {
@@ -154,7 +201,13 @@ function targetMounts(
     }
     const mount = registry.mountFor(virtual)
     if (mount === null) {
-      return { missing: op instanceof PathSpec ? op.rawPath : op }
+      return { missing: label }
+    }
+    // The mount root is the filesystem itself (always present); a deeper
+    // path must exist, matching GNU df's per-FILE check.
+    const root = rstripSlash(mount.prefix) || '/'
+    if (rstripSlash(virtual) !== root && !(await pathExists(dispatch, spec))) {
+      return { missing: label }
     }
     if (!seen.has(mount.prefix)) {
       seen.add(mount.prefix)
@@ -196,28 +249,36 @@ function renderTable(header: string[], rows: string[][], showType: boolean): str
 export async function handleDf(
   registry: MountRegistry,
   session: Session,
+  dispatch: DispatchFn,
   args: (string | PathSpec)[],
 ): Promise<Result> {
   const { flags, values, operands, bad } = splitValueFlags(args, 'hHkiaTP', 'B')
   if (bad !== null) return errorResult(`df: invalid option -- '${bad}'\n`, 2)
 
   const posix = flags.has('P')
-  let block = 1024
-  let blockLabel = posix ? '1024-blocks' : '1K-blocks'
   const bArg = values.get('B')
+  let bParsed: [number, string] | null = null
   if (bArg !== undefined) {
-    const parsed = parseBlock(bArg)
-    if (parsed === null) return errorResult(`df: invalid --block-size argument '${bArg}'\n`, 1)
-    block = parsed[0]
-    blockLabel = `${parsed[1]}-blocks`
+    bParsed = parseBlock(bArg)
+    if (bParsed === null) return errorResult(`df: invalid -B argument '${bArg}'\n`, 1)
   }
 
-  const si = flags.has('H')
-  const human = si || flags.has('h')
+  // GNU resolves the mutually overriding size flags last-wins, so -h/-H
+  // (human) or -k/-B (block) is chosen by whichever appears last.
+  const lf = lastFormat(args)
+  const si = lf === 'H'
+  const human = lf === 'h' || lf === 'H'
+  let block = 1024
+  let blockLabel = posix ? '1024-blocks' : '1K-blocks'
+  if (lf === 'B' && bParsed !== null) {
+    block = bParsed[0]
+    blockLabel = `${bParsed[1]}-blocks`
+  }
+
   const inodes = flags.has('i')
   const showType = flags.has('T')
 
-  const mounts = targetMounts(registry, session, operands)
+  const mounts = await targetMounts(registry, dispatch, session, operands)
   if (!Array.isArray(mounts)) {
     return errorResult(`df: ${mounts.missing}: No such file or directory\n`, 1)
   }

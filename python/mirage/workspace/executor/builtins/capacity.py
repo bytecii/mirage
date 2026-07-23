@@ -13,11 +13,13 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import math
+from typing import Any, Callable
 
 from mirage.commands.builtin.utils.formatting import _human_size
 from mirage.types import CapacityResult, CapacityState, PathSpec
 from mirage.utils.path import resolve_path
 from mirage.workspace.executor.builtins.shared import (Result, fail, ok,
+                                                       operand_text,
                                                        split_value_flags)
 from mirage.workspace.mount.mount import MountEntry
 from mirage.workspace.mount.registry import MountRegistry
@@ -44,10 +46,44 @@ def _parse_block(text: str) -> tuple[int, str] | None:
         head = t[:-1] or "1"
         if not head.isdigit():
             return None
-        return int(head) * _BLOCK_SUFFIX[suffix], t
-    if not t.isdigit():
+        value = int(head) * _BLOCK_SUFFIX[suffix]
+    elif t.isdigit():
+        value = int(t)
+    else:
         return None
-    return int(t), t
+    # GNU rejects a zero (or non-positive) block size rather than scaling.
+    if value <= 0:
+        return None
+    return value, t
+
+
+def _last_format(args: list[str | PathSpec]) -> str | None:
+    """The last size-format flag (-h/-H/-k/-B) in the leading option run.
+
+    GNU df lets a later size flag override the earlier ones (``df -h -B1M``
+    prints a block header, ``df -B1M -h`` prints ``Size``), so the display
+    format is whichever of these appears last rather than a fixed
+    precedence. Returns the flag letter, or None when none are present.
+
+    Args:
+        args (list[str | PathSpec]): args after the command name.
+    """
+    last: str | None = None
+    i = 0
+    while i < len(args):
+        s = operand_text(args[i])
+        if s == "--" or not (len(s) >= 2 and s[0] == "-" and s[1] != "-"):
+            break
+        body = s[1:]
+        for j, c in enumerate(body):
+            if c in "hHkB":
+                last = c
+            if c == "B":
+                if not body[j + 1:]:
+                    i += 1
+                break
+        i += 1
+    return last
 
 
 def _human_si(n: int) -> str:
@@ -143,16 +179,36 @@ def _pct_cell(cap: CapacityResult, inodes: bool) -> str:
     return _use_pct(cap.used or 0, cap.available or 0)
 
 
-def _target_mounts(registry: MountRegistry, session: Session,
-                   operands: list[str | PathSpec]) -> list[MountEntry]:
+async def _path_exists(dispatch: Callable[..., Any], spec: PathSpec) -> bool:
+    """Whether a path resolves to an existing entry.
+
+    GNU df errors on a missing FILE operand, so a deeper path is statted
+    before its mount is accepted; a missing entry maps to False.
+
+    Args:
+        dispatch (Callable): op dispatcher.
+        spec (PathSpec): the operand to stat.
+    """
+    try:
+        await dispatch("stat", spec)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+async def _target_mounts(registry: MountRegistry, dispatch: Callable[..., Any],
+                         session: Session,
+                         operands: list[str | PathSpec]) -> list[MountEntry]:
     """Resolve df operands to the mounts to report, deduped and ordered.
 
     No operand (or the workspace root ``/``) reports every mount; a path
-    operand reports the mount that contains it. Mirrors GNU df, which maps
-    each FILE to its filesystem and lists all filesystems with no args.
+    operand reports the mount that contains it, and a missing FILE raises
+    ``FileNotFoundError`` carrying the operand as typed. Mirrors GNU df,
+    which maps each FILE to its filesystem and lists all with no args.
 
     Args:
         registry (MountRegistry): mount registry.
+        dispatch (Callable): op dispatcher (FILE existence check).
         session (Session): session providing cwd for relative operands.
         operands (list[str | PathSpec]): path operands.
     """
@@ -162,15 +218,28 @@ def _target_mounts(registry: MountRegistry, session: Session,
     seen: set[str] = set()
     out: list[MountEntry] = []
     for op in operands:
-        virtual = (op.virtual if isinstance(op, PathSpec) else resolve_path(
-            str(op), session.cwd))
+        if isinstance(op, PathSpec):
+            virtual, label, spec = op.virtual, op.raw_path, op
+        else:
+            virtual = resolve_path(str(op), session.cwd)
+            label, spec = str(op), PathSpec.from_str_path(virtual)
         if virtual in ("", "/"):
             for m in ordered:
                 if m.prefix not in seen:
                     seen.add(m.prefix)
                     out.append(m)
             continue
-        mount = registry.mount_for(virtual)
+        try:
+            mount = registry.mount_for(virtual)
+        except (KeyError, ValueError, FileNotFoundError):
+            raise FileNotFoundError(label) from None
+        # GNU df maps each FILE to its filesystem and errors on a missing
+        # one. The mount root is the filesystem itself (always present); a
+        # deeper path must exist, so stat it before accepting the mount.
+        root = mount.prefix.rstrip("/") or "/"
+        if virtual.rstrip("/") != root and not await _path_exists(
+                dispatch, spec):
+            raise FileNotFoundError(label)
         if mount.prefix not in seen:
             seen.add(mount.prefix)
             out.append(mount)
@@ -214,6 +283,7 @@ def _render_table(header: list[str], rows: list[list[str]],
 async def handle_df(
     registry: MountRegistry,
     session: Session,
+    dispatch: Callable[..., Any],
     args: list[str | PathSpec],
 ) -> Result:
     """df [OPTION]... [FILE]...: report per-mount capacity.
@@ -227,6 +297,7 @@ async def handle_df(
     Args:
         registry (MountRegistry): mount registry (mount enumeration).
         session (Session): session providing cwd for relative operands.
+        dispatch (Callable): op dispatcher (FILE existence check).
         args (list[str | PathSpec]): args after the command name.
     """
     flags, values, operands, bad = split_value_flags(args, "hHkiaTP", "B")
@@ -234,28 +305,30 @@ async def handle_df(
         return fail("df", f"df: invalid option -- '{bad}'\n", 2)
 
     posix = "P" in flags
-    block = 1024
-    block_label = "1024-blocks" if posix else "1K-blocks"
+    b_parsed = None
     if "B" in values:
-        parsed = _parse_block(values["B"])
-        if parsed is None:
-            return fail(
-                "df", f"df: invalid --block-size argument '{values['B']}'\n",
-                1)
-        block, block_label = parsed[0], f"{parsed[1]}-blocks"
+        b_parsed = _parse_block(values["B"])
+        if b_parsed is None:
+            return fail("df", f"df: invalid -B argument '{values['B']}'\n", 1)
 
-    si = "H" in flags
-    human = si or "h" in flags
+    # GNU resolves the mutually overriding size flags last-wins, so -h/-H
+    # (human) or -k/-B (block) is chosen by whichever appears last.
+    last_fmt = _last_format(args)
+    si = last_fmt == "H"
+    human = last_fmt in ("h", "H")
+    if last_fmt == "B" and b_parsed is not None:
+        block, block_label = b_parsed[0], f"{b_parsed[1]}-blocks"
+    else:
+        block = 1024
+        block_label = "1024-blocks" if posix else "1K-blocks"
+
     inodes = "i" in flags
     show_type = "T" in flags
 
     try:
-        mounts = _target_mounts(registry, session, operands)
-    except (FileNotFoundError, KeyError, ValueError):
-        target = operands[0] if operands else ""
-        label = target.raw_path if isinstance(target,
-                                              PathSpec) else str(target)
-        return fail("df", f"df: {label}: No such file or directory\n", 1)
+        mounts = await _target_mounts(registry, dispatch, session, operands)
+    except FileNotFoundError as exc:
+        return fail("df", f"df: {exc}: No such file or directory\n", 1)
 
     if inodes:
         num_headers = ["Inodes", "IUsed", "IFree"]

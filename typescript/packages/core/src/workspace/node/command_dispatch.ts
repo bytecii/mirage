@@ -618,7 +618,24 @@ async function runArgv(
   // Capacity (registry-routed: enumerates mounts, reports per-mount statfs;
   // never fabricates numbers).
   if (name === 'df') {
-    return handleDf(registry, session, operands)
+    if (namespace.nodes.size > 0) {
+      try {
+        operands = followPaths(namespace, operands)
+      } catch (err) {
+        if (err instanceof CycleError) {
+          const errBytes = new TextEncoder().encode(
+            `df: ${err.path}: Too many levels of symbolic links\n`,
+          )
+          return [
+            null,
+            new IOResult({ exitCode: 1, stderr: errBytes }),
+            new ExecutionNode({ command: 'df', exitCode: 1, stderr: errBytes }),
+          ]
+        }
+        throw err
+      }
+    }
+    return handleDf(registry, session, dispatch, operands)
   }
 
   // Symlink-aware dispatch: reads follow links (open(2)); rm/mv act on

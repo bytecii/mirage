@@ -152,4 +152,47 @@ describe('df', () => {
     expect(code).toBe(2)
     await ws.close()
   })
+
+  it('rejects a zero block size', async () => {
+    const ws = await makeWs()
+    const r = await ws.execute('df -B0 /q')
+    expect(r.exitCode).toBe(1)
+    expect(r.stderrText).toBe("df: invalid -B argument '0'\n")
+    await ws.close()
+  })
+
+  it('last size-format flag wins', async () => {
+    const ws = await makeWs()
+    const [, hb] = await run(ws, 'df -h -B1M /q')
+    expect(cols(hb, 0)[1]).toBe('1M-blocks')
+    const [, bh] = await run(ws, 'df -B1M -h /q')
+    expect(cols(bh, 0)[1]).toBe('Size')
+    const [, hk] = await run(ws, 'df -h -k /q')
+    expect(cols(hk, 0)[1]).toBe('1K-blocks')
+    const [, kh] = await run(ws, 'df -k -h /q')
+    expect(cols(kh, 0)[1]).toBe('Size')
+    await ws.close()
+  })
+
+  it('errors on a missing FILE operand', async () => {
+    const ws = await makeWs()
+    await ws.execute('mkdir -p /mem/sub')
+    await ws.execute("sh -c 'echo hi > /mem/sub/f.txt'")
+    expect((await run(ws, 'df /mem/sub/f.txt'))[0]).toBe(0)
+    expect((await run(ws, 'df /mem'))[0]).toBe(0)
+    const r = await ws.execute('df /mem/missing')
+    expect(r.exitCode).toBe(1)
+    expect(r.stderrText).toBe('df: /mem/missing: No such file or directory\n')
+    await ws.close()
+  })
+
+  it('follows a symlink to the target mount', async () => {
+    const ws = await makeWs()
+    await ws.execute('ln -s /q /mem/link')
+    const [code, out] = await run(ws, 'df /mem/link')
+    expect(code).toBe(0)
+    const last = out.trimEnd().split('\n').pop() ?? ''
+    expect(last.split(/\s+/).pop()).toBe('/q')
+    await ws.close()
+  })
 })
