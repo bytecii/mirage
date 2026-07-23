@@ -46,7 +46,7 @@
       "command": "printf '1000 foo\\n2000   bar baz\\n' | numfmt --to=si",
       "expect": {
         "exit": 0,
-        "stdout": "1K foo\n2K   bar baz\n",
+        "stdout": "1.0k foo\n2.0k   bar baz\n",
         "stderr": ""
       },
       "flags": [

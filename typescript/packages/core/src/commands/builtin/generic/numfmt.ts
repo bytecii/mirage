@@ -5,32 +5,68 @@ import { resolveSource } from '../utils/stream.ts'
 const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { fatal: false })
 const SUFFIXES = ['', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y', 'R', 'Q'] as const
+// SI spells kilo lowercase; every larger unit and all of IEC stay uppercase.
+const SI_DISPLAY: readonly string[] = ['', 'k', ...SUFFIXES.slice(2)]
 
 function parseNumber(value: string, fromMode: string): number {
   const match = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+))([A-Za-z]*)$/.exec(value)
   if (match === null) throw new Error(`numfmt: invalid number: '${value}'`)
   const number = Number(match[1])
-  const suffix = (match[2] ?? '').replace(/i?B$/, '').replace(/i$/, '')
+  const suffix = (match[2] ?? '').replace(/i?B$/, '').replace(/i$/, '').toUpperCase()
   if (suffix === '' || fromMode === 'none') return number
   const exponent = SUFFIXES.indexOf(suffix as (typeof SUFFIXES)[number])
   if (exponent < 0) throw new Error(`numfmt: invalid suffix in input: '${value}'`)
   return number * (fromMode === 'si' ? 1000 : 1024) ** exponent
 }
 
+// Round away from zero at `places` decimals. The epsilon absorbs binary
+// representation error so 1.5 * 10 does not creep above 15 and round to 16.
+function roundAwayFromZero(value: number, places: number): number {
+  const factor = 10 ** places
+  const scaled = Math.abs(value) * factor
+  return Math.sign(value) * (Math.ceil(scaled - 1e-9) / factor)
+}
+
+// printf("%.*f") rounds half to even, which is why an unscaled 2.5 prints 2.
+function toFixedHalfEven(value: number, places: number): string {
+  const factor = 10 ** places
+  const scaled = value * factor
+  const floor = Math.floor(scaled)
+  const diff = scaled - floor
+  let unit: number
+  if (diff > 0.5 + 1e-9) unit = floor + 1
+  else if (diff < 0.5 - 1e-9) unit = floor
+  else unit = floor % 2 === 0 ? floor : floor + 1
+  return (unit / factor).toFixed(places)
+}
+
+// GNU rounds away from zero, keeping one decimal only while the scaled value
+// is below 10. That rounding can push a value back over the base
+// (999.4 -> 1000 -> 1.0k), so the unit is re-checked afterwards.
 function formatNumber(value: number, toMode: string, grouping: boolean): string {
-  let number = value
-  let exponent = 0
-  if (toMode !== 'none') {
-    const base = toMode === 'si' ? 1000 : 1024
-    while (Math.abs(number) >= base && exponent < SUFFIXES.length - 1) {
-      number /= base
-      exponent += 1
-    }
+  if (toMode === 'none') {
+    return grouping ? value.toLocaleString('en-US', { maximumFractionDigits: 20 }) : String(value)
   }
-  const rounded = Number.isInteger(number) ? number.toFixed(0) : number.toFixed(1)
-  const body = grouping ? Number(rounded).toLocaleString('en-US') : rounded
-  const suffix = `${SUFFIXES[exponent] ?? ''}${toMode === 'iec-i' && exponent > 0 ? 'i' : ''}`
-  return body + suffix
+  const base = toMode === 'si' ? 1000 : 1024
+  const display = toMode === 'si' ? SI_DISPLAY : SUFFIXES
+  let number = value
+  let power = 0
+  while (Math.abs(number) >= base && power < display.length - 1) {
+    number /= base
+    power += 1
+  }
+  number = roundAwayFromZero(number, Math.abs(number) < 10 ? 1 : 0)
+  if (Math.abs(number) >= base && power < display.length - 1) {
+    number /= base
+    power += 1
+  }
+  const places = power > 0 && Math.abs(number) < 10 ? 1 : 0
+  const body = toFixedHalfEven(number, places)
+  const grouped = grouping
+    ? Number(body).toLocaleString('en-US', { minimumFractionDigits: places })
+    : body
+  const suffix = `${display[power] ?? ''}${toMode === 'iec-i' && power > 0 ? 'i' : ''}`
+  return grouped + suffix
 }
 
 function convertField(

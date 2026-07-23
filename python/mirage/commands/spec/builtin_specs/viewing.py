@@ -183,6 +183,6 @@ SPECS: dict[str, CommandSpec] = {
                    value_kind=OperandKind.TEXT,
                    repeatable=True),
         ),
-        positional=(Operand(kind=OperandKind.PATH), ),
+        rest=Operand(kind=OperandKind.PATH),
     ),
 }

@@ -1,11 +1,13 @@
 import re
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, ROUND_UP, Decimal, InvalidOperation
 
 from mirage.commands.builtin.utils.lines import split_lines
 from mirage.commands.builtin.utils.stream import _read_stdin_async
 from mirage.io.types import ByteSource, IOResult
 
-_SI_SUFFIXES = ("", "K", "M", "G", "T", "P", "E", "Z", "Y", "R", "Q")
+_SUFFIX_ORDER = ("", "K", "M", "G", "T", "P", "E", "Z", "Y", "R", "Q")
+# SI spells kilo lowercase; every larger unit and all of IEC stay uppercase.
+_SI_DISPLAY = ("", "k", *_SUFFIX_ORDER[2:])
 _FIRST_FIELD_RE = re.compile(r"(\s*)(\S+)([\s\S]*)")
 
 
@@ -17,30 +19,49 @@ def _parse_number(value: str, from_mode: str) -> Decimal:
     suffix = match.group(2)
     if not suffix or from_mode == "none":
         return number
-    normalized = suffix.removesuffix("i").removesuffix("B")
-    if normalized not in _SI_SUFFIXES:
+    normalized = suffix.removesuffix("i").removesuffix("B").upper()
+    if normalized not in _SUFFIX_ORDER:
         raise InvalidOperation(value)
-    exponent = _SI_SUFFIXES.index(normalized)
+    exponent = _SUFFIX_ORDER.index(normalized)
     base = 1000 if from_mode == "si" else 1024
     return number * (Decimal(base)**exponent)
 
 
 def _format_number(number: Decimal, to_mode: str, grouping: bool) -> str:
-    suffix = ""
-    if to_mode != "none":
-        base = Decimal(1000 if to_mode == "si" else 1024)
-        exponent = 0
-        while abs(number) >= base and exponent < len(_SI_SUFFIXES) - 1:
-            number /= base
-            exponent += 1
-        suffix = _SI_SUFFIXES[exponent]
-        if to_mode == "iec-i" and exponent:
-            suffix += "i"
-    rounded = number.quantize(
-        Decimal("1")) if number == number.to_integral() else number.quantize(
-            Decimal("0.1"))
-    text = format(rounded, ",f" if grouping else "f")
-    return text + suffix
+    """Render a value the way GNU numfmt does for the given --to mode.
+
+    GNU rounds away from zero, keeping one decimal only while the scaled
+    value is below 10. That rounding can push a value back over the base
+    (999.4 -> 1000 -> 1.0k), so the unit is re-checked afterwards. The final
+    render goes through printf, which rounds half-even, which is why an
+    unscaled 2.5 prints as 2.
+
+    Args:
+        number (Decimal): Value to render, already --from scaled.
+        to_mode (str): One of ``none``, ``si``, ``iec`` or ``iec-i``.
+        grouping (bool): Whether to group thousands.
+    """
+    if to_mode == "none":
+        return format(number.normalize(), ",f" if grouping else "f")
+    base = Decimal(1000 if to_mode == "si" else 1024)
+    display = _SI_DISPLAY if to_mode == "si" else _SUFFIX_ORDER
+    power = 0
+    while abs(number) >= base and power < len(display) - 1:
+        number /= base
+        power += 1
+    step = Decimal("0.1") if abs(number) < 10 else Decimal(1)
+    number = number.quantize(step, rounding=ROUND_UP)
+    if abs(number) >= base and power < len(display) - 1:
+        number /= base
+        power += 1
+    places = 1 if power and abs(number) < 10 else 0
+    number = number.quantize(Decimal(1).scaleb(-places),
+                             rounding=ROUND_HALF_EVEN)
+    suffix = display[power]
+    if to_mode == "iec-i" and power:
+        suffix += "i"
+    spec = f",.{places}f" if grouping else f".{places}f"
+    return format(number, spec) + suffix
 
 
 def _convert_field(value: str, to_mode: str, from_mode: str, suffix: str,

@@ -19,7 +19,7 @@ describe.each(NATIVE_BACKENDS)('native numfmt (%s backend)', (kind) => {
   it('scales units and supports suffix grouping', async () => {
     const env = makeEnv(kind)
     try {
-      expect(await env.mirage('numfmt --to=si 1000')).toBe('1K\n')
+      expect(await env.mirage('numfmt --to=si 1000')).toBe('1.0k\n')
       expect(await env.mirage('numfmt --from=iec-i 1Ki')).toBe('1024\n')
       expect(await env.mirage('numfmt --grouping --suffix=B 1234B')).toBe('1,234B\n')
     } finally {

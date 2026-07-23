@@ -96,6 +96,19 @@ export const BUILTIN_SPECS: Readonly<Record<string, CommandSpec>> = Object.freez
     ],
     rest: new Operand({ kind: OperandKind.PATH }),
   }),
+  df: new CommandSpec({
+    options: [
+      new Option({ short: '-h' }),
+      new Option({ short: '-H' }),
+      new Option({ short: '-k' }),
+      new Option({ short: '-i' }),
+      new Option({ short: '-a' }),
+      new Option({ short: '-T' }),
+      new Option({ short: '-P' }),
+      new Option({ short: '-B', valueKind: OperandKind.TEXT }),
+    ],
+    rest: new Operand({ kind: OperandKind.PATH }),
+  }),
   cat: new CommandSpec({
     options: [
       new Option({ short: '-n', long: '--number' }),
@@ -1083,6 +1096,6 @@ export const BUILTIN_SPECS: Readonly<Record<string, CommandSpec>> = Object.freez
       new Option({ short: '-N', long: '--read-bytes', valueKind: OperandKind.TEXT }),
       new Option({ short: '-t', long: '--format', valueKind: OperandKind.TEXT, repeatable: true }),
     ],
-    positional: [new Operand({ kind: OperandKind.PATH })],
+    rest: new Operand({ kind: OperandKind.PATH }),
   }),
 })
