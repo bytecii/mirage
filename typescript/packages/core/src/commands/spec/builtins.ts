@@ -366,6 +366,17 @@ export const BUILTIN_SPECS: Readonly<Record<string, CommandSpec>> = Object.freez
       new Option({ short: '-f' }),
       new Option({ short: '-v' }),
       new Option({ short: '-d' }),
+      // Non-interactive control plane: -i/-I are accepted no-ops (there is
+      // no prompt; removal always proceeds).
+      new Option({ short: '-i' }),
+      new Option({ short: '-I' }),
+      // Mount roots (and /) are structurally protected and never removable,
+      // so the root failsafe is always on and cannot be disabled; both
+      // spellings are accepted no-ops. Recursion never crosses a mount
+      // boundary either, so --one-file-system already matches the default.
+      new Option({ long: '--preserve-root' }),
+      new Option({ long: '--no-preserve-root' }),
+      new Option({ long: '--one-file-system' }),
     ],
     rest: new Operand({ kind: OperandKind.PATH }),
   }),
