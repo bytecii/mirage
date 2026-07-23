@@ -25,6 +25,7 @@ export {
 } from './links.ts'
 export { handleChgrp, handleChmod, handleChown, handleTouch } from './metadata.ts'
 export {
+  handleEnv,
   handleExit,
   handleExport,
   handleGetopts,
