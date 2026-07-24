@@ -59,7 +59,7 @@ function permTriplet(bits: number, special?: string): string {
 export function lsModeString(s: FileStat): string {
   const isDir = s.type === FileType.DIRECTORY
   const typeChar = isDir ? 'd' : '-'
-  const mode = s.mode !== null ? s.mode : isDir ? 0o755 : 0o644
+  const mode = s.mode ?? (isDir ? 0o755 : 0o644)
   return (
     typeChar +
     permTriplet(mode >> 6, mode & 0o4000 ? 's' : undefined) +

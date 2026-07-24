@@ -108,7 +108,7 @@ function directiveValue(spec: string, s: FileStat, name: string): string {
   if (spec === 'r' || spec === 'R' || spec === 't' || spec === 'T') return '0'
   // %Hr/%Lr are rdev major/minor (0, like %r); %Hd/%Ld are device
   // major/minor, which a VFS has no truthful value for.
-  if (spec.length === 2 && (spec[0] === 'H' || spec[0] === 'L')) {
+  if (spec.length === 2 && (spec.startsWith('H') || spec.startsWith('L'))) {
     return spec[1] === 'r' || spec[1] === 'R' ? '0' : '?'
   }
   return '?'
