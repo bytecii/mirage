@@ -1234,10 +1234,14 @@ async def open_target(
     run_id = uuid.uuid4().hex[:8]
     service = await make_service(target, run_id)
     mounts, cleanups = build_mounts(target, run_id, service)
+    agent_id = target.get("agentId")
     if consistency is not None:
-        ws = Workspace(mounts, mode=MountMode.WRITE, consistency=consistency)
+        ws = Workspace(mounts,
+                       mode=MountMode.WRITE,
+                       consistency=consistency,
+                       agent_id=agent_id)
     else:
-        ws = Workspace(mounts, mode=MountMode.WRITE)
+        ws = Workspace(mounts, mode=MountMode.WRITE, agent_id=agent_id)
     return ws, functools.partial(teardown_target, [ws], cleanups, service)
 
 

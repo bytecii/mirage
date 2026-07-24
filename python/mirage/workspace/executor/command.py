@@ -238,14 +238,28 @@ def _scalar_find_flags(flag_kwargs: dict[str, object]) -> dict[str, Any]:
 
 def _namespace_stat_overlay(namespace: Namespace, virtual: str,
                             stat: FileStat) -> FileStat:
-    """Merge namespace attr overlays into one stat row (ls rendering).
+    """Merge namespace attr overlays into one stat row (ls/stat rendering).
+
+    A path never chown'd defaults its owner to the workspace user (the
+    launch agent, what ``whoami`` reports), so ``ls -l`` and ``stat -c``
+    agree on ownership. An unclaimed workspace leaves uid/gid None and the
+    formatters fall back to the neutral ``user`` placeholder.
 
     Args:
         namespace (Namespace): addressing authority holding the overlay.
         virtual (str): absolute virtual path of the statted entry.
         stat (FileStat): backend stat result.
     """
-    return merge_overlay_stat(namespace.meta_for(virtual), stat)
+    merged = merge_overlay_stat(namespace.meta_for(virtual), stat)
+    user = namespace.user
+    if user is None:
+        return merged
+    update: dict[str, Any] = {}
+    if merged.uid is None:
+        update["uid"] = user
+    if merged.gid is None:
+        update["gid"] = user
+    return merged.model_copy(update=update) if update else merged
 
 
 async def run_on_mount(
@@ -309,11 +323,12 @@ async def run_on_mount(
     if cmd_name == "find":
         flag_kwargs = _scalar_find_flags(flag_kwargs)
 
-    # ls renders stat rows from the backend's own stat, which never sees
-    # namespace attr overlays (chmod/chown/touch on overlay backends);
-    # inject the merge so ls -l and the ops facade agree.
+    # ls/stat render stat rows from the backend's own stat, which never
+    # sees namespace attr overlays (chmod/chown/touch on overlay backends)
+    # or the default owner; inject the merge so ls -l and stat -c agree.
     stat_overlay = (functools.partial(_namespace_stat_overlay, namespace)
-                    if cmd_name == "ls" and namespace is not None else None)
+                    if cmd_name in ("ls", "stat") and namespace is not None
+                    else None)
 
     line_runtime, denial = _line_runtime(cmd_name, registry, routing_decision)
     if denial is not None:

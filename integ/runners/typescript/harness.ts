@@ -45,6 +45,7 @@ export interface Target {
   apps?: string
   mail?: string
   dataset?: string
+  agentId?: string
   mounts: Mount[]
 }
 
