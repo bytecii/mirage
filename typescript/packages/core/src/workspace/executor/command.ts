@@ -55,6 +55,7 @@ import { resolveAcrossMounts, resolveSafeguard } from '../../commands/safeguard.
 import type { ExecuteNodeFn } from './jobs.ts'
 import { handleFg, handleJobs, handleKill, handlePs, handleWait } from './jobs.ts'
 import { UsageError } from '../../commands/errors.ts'
+import { versionRequest } from '../../commands/config.ts'
 import { formatFsError } from '../../utils/errors.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 
@@ -69,6 +70,33 @@ interface RunOnMountCtx {
   ensureOpen?: (resource: Resource) => Promise<void>
   runtimeBindings?: Record<string, Runtime>
   routingDecision?: RoutingDecision
+}
+
+function pathFlagScopes(cmdName: string, argv: string[], cwd: string): PathSpec[] {
+  const spec = SPECS[cmdName]
+  if (spec === undefined) return []
+  return parseCommand(spec, argv, cwd).pathFlagValues.map(
+    (value) =>
+      new PathSpec({
+        virtual: value,
+        directory: value,
+        resourcePath: '',
+        rawPath: value,
+      }),
+  )
+}
+
+/** Combine positional and path-flag scopes, keeping operand order. */
+function mergeScopes(positional: PathSpec[], flagScopes: PathSpec[]): PathSpec[] {
+  const merged = [...positional]
+  const seen = new Set(merged.map((p) => p.virtual))
+  for (const scope of flagScopes) {
+    if (!seen.has(scope.virtual)) {
+      seen.add(scope.virtual)
+      merged.push(scope)
+    }
+  }
+  return merged
 }
 
 /** The 126 result for a command no runtime accepted. */
@@ -381,6 +409,22 @@ export async function handleCommand(
     ]
   }
 
+  // --version answers from the package, never from a backend, so it is
+  // served before mount permission checks and cross-mount routing:
+  // otherwise `rm --version /ro/x` hits the read-only refusal and
+  // `cat --version /ram/a /disk/b` parses against the shared spec, which
+  // carries no injected --version, and fails as an unknown option.
+  const cmdMount = registry.mountForCommand(cmdName)
+  const versionOut = versionRequest(cmdName, cmdMount?.specFor(cmdName) ?? null, rawArgv)
+  if (versionOut !== null) {
+    return [versionOut, new IOResult(), new ExecutionNode({ command: cmdStr, exitCode: 0 })]
+  }
+
+  // Path-valued flags (e.g. shuf --output=/dst/out) own a mount just like
+  // positional operands, so they join routing and mount validation instead of
+  // being dropped whenever a positional path is also present.
+  const routingScopes = mergeScopes(pathScopes, pathFlagScopes(cmdName, rawArgv, session.cwd))
+
   let findExprTokens: string[] | null = null
   if (cmdName === 'find') {
     findExprTokens = findExprTail(rawArgv)
@@ -473,9 +517,11 @@ export async function handleCommand(
     return [maybeWithTimeout(csStdout, csIo.safeguard, cmdName), csIo, csExec]
   }
 
-  if (pathScopes.length >= 2) {
+  // Path-flag targets count: a command bound to one mount cannot write its
+  // output through another.
+  if (routingScopes.length >= 2) {
     const mountPrefixes = new Set<string>()
-    for (const s of pathScopes) {
+    for (const s of routingScopes) {
       const m = registry.mountFor(s.virtual)
       if (m !== null) mountPrefixes.add(m.prefix)
     }
@@ -494,7 +540,7 @@ export async function handleCommand(
 
   let mount: MountEntry | null
   try {
-    mount = await registry.resolveMount(cmdName, pathScopes, session.cwd)
+    mount = await registry.resolveMount(cmdName, routingScopes, session.cwd)
   } catch (err) {
     if (err instanceof MountCommandUnsupported) {
       const errBytes = new TextEncoder().encode(`${err.message}\n`)
@@ -593,7 +639,7 @@ export async function handleCommand(
   const [rawStdout, io] = await runOnMount(runCtx, cmdName, paths, texts, flagKwargs, {
     stdin,
     mount,
-    resolveHint: pathScopes[0] ?? null,
+    resolveHint: routingScopes[0] ?? null,
   })
   let stdout = rawStdout
   if (warnBytes !== null) {

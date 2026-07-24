@@ -626,7 +626,7 @@ export async function executeNode(
         )
       }
       while (arr.length <= idx) arr.push('')
-      arr[idx] = append ? (arr[idx] ?? '') + val : val
+      arr.splice(idx, 1, append ? (arr[idx] ?? '') + val : val)
       session.arrays[key] = arr
       return [null, new IOResult(), new ExecutionNode({ command: text, exitCode: 0 })]
     }
@@ -644,6 +644,9 @@ export async function executeNode(
       // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
       delete session.arrays[key]
     }
+    // Reassigning OPTIND (even to its current value) restarts the getopts
+    // scan, matching bash's internal char pointer.
+    if (key === 'OPTIND') session.getoptsOptind = null
     const assignIo = new IOResult()
     if (session.shellOptions.xtrace === true) {
       assignIo.stderr = traceAssignment(key, val, append)

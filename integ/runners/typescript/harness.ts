@@ -70,6 +70,8 @@ export interface Case {
   check?: StatCheck
   provision?: boolean
   clear_cache?: boolean
+  consistency?: 'always' | 'lazy'
+  scenario?: unknown[]
   expect: Expect
   _source?: string
 }
