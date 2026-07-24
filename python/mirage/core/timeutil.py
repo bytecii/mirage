@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import math
 from datetime import datetime, timezone
 
 
@@ -26,13 +27,15 @@ def now_iso() -> str:
 def epoch_to_iso(seconds: float) -> str:
     """Convert unix epoch seconds to a second-precision UTC ISO-8601 string.
 
-    Truncated to whole seconds so the Python and TypeScript converters
-    produce byte-identical output.
+    Floored to whole seconds (matching the TypeScript ``Math.floor``) so
+    the two converters produce byte-identical output for negative
+    (pre-1970) fractional timestamps as well.
 
     Args:
         seconds (float): unix epoch seconds (sub-second part is dropped).
     """
-    return to_iso_z(datetime.fromtimestamp(int(seconds), tz=timezone.utc))
+    return to_iso_z(
+        datetime.fromtimestamp(math.floor(seconds), tz=timezone.utc))
 
 
 def iso_to_epoch(iso: str) -> int:
@@ -40,7 +43,9 @@ def iso_to_epoch(iso: str) -> int:
 
     The inverse of epoch_to_iso; a naive stamp (no offset, e.g. a
     ``touch -t`` overlay time) is read as UTC so Python and TypeScript
-    agree. Sub-second precision is truncated to match epoch_to_iso.
+    agree. Floored to whole seconds (matching the TypeScript
+    ``Math.floor``) so a negative fractional epoch yields the same value
+    in both languages.
 
     Args:
         iso (str): ISO-8601 timestamp, with or without a ``Z``/offset.
@@ -48,4 +53,4 @@ def iso_to_epoch(iso: str) -> int:
     dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return int(dt.timestamp())
+    return math.floor(dt.timestamp())

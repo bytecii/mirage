@@ -54,3 +54,10 @@ def test_iso_to_epoch_reads_naive_stamp_as_utc():
 def test_iso_to_epoch_honors_offset_and_truncates_sub_second():
     assert iso_to_epoch("2021-01-01T01:00:00+01:00") == 1609459200
     assert iso_to_epoch("2026-07-22T06:57:48.064802Z") == 1784703468
+
+
+def test_epoch_floors_negative_fractional_like_typescript():
+    # A pre-1970 fractional second floors to -1 (matching Math.floor in TS),
+    # not 0 as int() truncation would give.
+    assert iso_to_epoch("1969-12-31T23:59:59.500Z") == -1
+    assert epoch_to_iso(-0.5) == "1969-12-31T23:59:59Z"

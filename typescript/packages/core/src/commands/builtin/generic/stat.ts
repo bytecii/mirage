@@ -55,10 +55,42 @@ function epoch(iso: string | null): string {
   return Number.isNaN(secs) ? '0' : String(secs)
 }
 
-function replaceSpec(spec: string, s: FileStat, name: string): string {
+const STR_DIRECTIVES = new Set(['n', 'N', 'F'])
+
+// Shell-safe quoting for %N, mirroring GNU's default: a name with no
+// apostrophe is single-quoted; one containing an apostrophe (but no double
+// quote) switches to double quotes; one with both is single-quoted with each
+// apostrophe escaped as '\''.
+function quoteName(name: string): string {
+  if (!name.includes("'")) return `'${name}'`
+  if (!name.includes('"')) return `"${name}"`
+  return "'" + name.replaceAll("'", "'\\''") + "'"
+}
+
+function applyFlags(
+  value: string,
+  flags: string,
+  width: string,
+  precision: string | undefined,
+  spec: string,
+): string {
+  if (flags.includes('#') && spec === 'a' && !value.startsWith('0')) value = '0' + value
+  if (precision !== undefined && STR_DIRECTIVES.has(spec)) {
+    value = precision === '' ? '' : value.slice(0, Number(precision))
+  }
+  if (width !== '' && value.length < Number(width)) {
+    const w = Number(width)
+    if (flags.includes('-')) value = value.padEnd(w)
+    else if (flags.includes('0')) value = value.padStart(w, '0')
+    else value = value.padStart(w)
+  }
+  return value
+}
+
+function directiveValue(spec: string, s: FileStat, name: string): string {
   if (spec === '%') return '%'
   if (spec === 'n') return name
-  if (spec === 'N') return `'${name}'`
+  if (spec === 'N') return quoteName(name)
   if (spec === 's') return String(s.size ?? 0)
   if (spec === 'F') return typeLabel(s)
   if (spec === 'a') return effectiveMode(s).toString(8)
@@ -74,11 +106,26 @@ function replaceSpec(spec: string, s: FileStat, name: string): string {
   if (spec === 'W') return '0'
   if (spec === 'B') return '512'
   if (spec === 'r' || spec === 'R' || spec === 't' || spec === 'T') return '0'
+  // %Hr/%Lr are rdev major/minor (0, like %r); %Hd/%Ld are device
+  // major/minor, which a VFS has no truthful value for.
+  if (spec.length === 2 && (spec[0] === 'H' || spec[0] === 'L')) {
+    return spec[1] === 'r' || spec[1] === 'R' ? '0' : '?'
+  }
   return '?'
 }
 
+// GNU printf-style directive: %[flags][width][.precision]conversion, where the
+// conversion is a letter (optionally H/L-prefixed for device major/minor) or a
+// literal %. Parsing flags/width/precision up front stops them being mistaken
+// for the conversion char (e.g. %04a must not read as directive "0").
+const FORMAT_RE = /%([#0 +-]*)(\d*)(?:\.(\d*))?([HL]?[A-Za-z%])/g
+
 function formatStat(fmt: string, s: FileStat, name: string): string {
-  return fmt.replace(/%([\s\S])/g, (_, spec: string) => replaceSpec(spec, s, name))
+  return fmt.replace(
+    FORMAT_RE,
+    (_m, flags: string, width: string, precision: string | undefined, spec: string) =>
+      applyFlags(directiveValue(spec, s, name), flags, width, precision, spec),
+  )
 }
 
 export async function statGeneric(

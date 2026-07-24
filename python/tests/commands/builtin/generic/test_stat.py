@@ -82,6 +82,44 @@ async def test_mode_directives_directory_default():
 
 
 @pytest.mark.asyncio
+async def test_special_permission_bits_in_A():
+    # setuid/setgid/sticky render as s/S/t/T, matching %a's high octal digit.
+    assert await _render("%A", _fs(mode=0o4755)) == "-rwsr-xr-x"
+    assert await _render("%A", _fs(mode=0o4644)) == "-rwSr--r--"
+    assert await _render("%A", _fs(mode=0o2755)) == "-rwxr-sr-x"
+    assert await _render("%A", _fs(mode=0o1755)) == "-rwxr-xr-t"
+    assert await _render("%A", _fs(mode=0o1644)) == "-rw-r--r-T"
+
+
+@pytest.mark.asyncio
+async def test_printf_flags_width_precision():
+    # The flag/width prefix must not be mistaken for the directive char.
+    assert await _render("%04a", _fs(mode=0o644)) == "0644"
+    assert await _render("%#a", _fs(mode=0o4755)) == "04755"
+    assert await _render("%-8a|", _fs(mode=0o4755)) == "4755    |"
+    assert await _render("%6s", _fs(size=1)) == "     1"
+    assert await _render("%-6s|", _fs(size=1)) == "1     |"
+    # width applies to the sentinel too; precision truncates string values.
+    assert await _render("%5i", _fs()) == "    ?"
+    assert await _render("%.3F", _fs()) == "reg"
+
+
+@pytest.mark.asyncio
+async def test_quoted_name_is_shell_safe():
+    assert await _render("%N", _fs()) == "'/data/f.txt'"
+    # An apostrophe in the path switches to double quotes.
+    ap, _io = await stat([PathSpec.from_str_path("/data/a'b.txt")],
+                         stat_fn=partial(_const_stat, _fs()),
+                         c="%N")
+    assert (await materialize(ap)).decode() == "\"/data/a'b.txt\"\n"
+    # Both quote kinds -> single-quote with escaped apostrophes.
+    both, _io2 = await stat([PathSpec.from_str_path("/data/a'b\"c")],
+                            stat_fn=partial(_const_stat, _fs()),
+                            c="%N")
+    assert (await materialize(both)).decode() == "'/data/a'\\''b\"c'\n"
+
+
+@pytest.mark.asyncio
 async def test_owner_directives():
     owned = _fs(uid=1000, gid="dev")
     assert await _render("%u", owned) == "1000"

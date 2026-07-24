@@ -56,6 +56,16 @@ async function render(fmt: string, s: FileStat): Promise<string> {
   return DEC.decode(await materialize(out)).replace(/\n$/, '')
 }
 
+// Like render, but for a custom operand path and keeping the trailing newline
+// (used to assert %N quoting byte-for-byte).
+async function renderNamed(fmt: string, name: string): Promise<string> {
+  const result = await statGeneric([PathSpec.fromStrPath(name)], opts(fmt), () =>
+    Promise.resolve(fs()),
+  )
+  if (result === null) throw new Error('statGeneric returned null')
+  return DEC.decode(await materialize(result[0]))
+}
+
 class NoSetattrRegistry extends OpsRegistry {
   override register(ro: RegisteredOp): void {
     if (ro.name === 'setattr') return
@@ -95,6 +105,30 @@ describe('stat -c directive formatting', () => {
     expect(await render('%A', d)).toBe('drwxr-xr-x')
     expect(await render('%f', d)).toBe('41ed')
     expect(await render('%s', d)).toBe('0')
+  })
+
+  it('renders setuid/setgid/sticky bits in %A', async () => {
+    expect(await render('%A', fs({ mode: 0o4755 }))).toBe('-rwsr-xr-x')
+    expect(await render('%A', fs({ mode: 0o4644 }))).toBe('-rwSr--r--')
+    expect(await render('%A', fs({ mode: 0o2755 }))).toBe('-rwxr-sr-x')
+    expect(await render('%A', fs({ mode: 0o1755 }))).toBe('-rwxr-xr-t')
+    expect(await render('%A', fs({ mode: 0o1644 }))).toBe('-rw-r--r-T')
+  })
+
+  it('parses printf flags/width/precision, not as the directive', async () => {
+    expect(await render('%04a', fs({ mode: 0o644 }))).toBe('0644')
+    expect(await render('%#a', fs({ mode: 0o4755 }))).toBe('04755')
+    expect(await render('%-8a|', fs({ mode: 0o4755 }))).toBe('4755    |')
+    expect(await render('%6s', fs({ size: 1 }))).toBe('     1')
+    expect(await render('%-6s|', fs({ size: 1 }))).toBe('1     |')
+    expect(await render('%5i', fs())).toBe('    ?')
+    expect(await render('%.3F', fs())).toBe('reg')
+  })
+
+  it('shell-quotes %N safely', async () => {
+    expect(await render('%N', fs())).toBe("'/data/f.txt'")
+    expect(await renderNamed('%N', "/data/a'b.txt")).toBe('"/data/a\'b.txt"\n')
+    expect(await renderNamed('%N', '/data/a\'b"c')).toBe("'/data/a'\\''b\"c'\n")
   })
 
   it('renders owner directives, falling back to "user"', async () => {

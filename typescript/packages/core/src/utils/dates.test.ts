@@ -36,6 +36,10 @@ describe('isoToEpoch', () => {
     expect(isoToEpoch('2021-01-01T01:00:00+01:00')).toBe(1609459200)
     expect(isoToEpoch('2026-07-22T06:57:48.064802Z')).toBe(1784703468)
   })
+  it('floors a negative fractional epoch (parity with Python)', () => {
+    expect(isoToEpoch('1969-12-31T23:59:59.500Z')).toBe(-1)
+    expect(epochToIso(-0.5)).toBe('1969-12-31T23:59:59Z')
+  })
 })
 
 describe('utcDateFolder', () => {
