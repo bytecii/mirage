@@ -48,7 +48,7 @@ function permTriplet(bits: number): string {
   return (bits & 4 ? 'r' : '-') + (bits & 2 ? 'w' : '-') + (bits & 1 ? 'x' : '-')
 }
 
-function lsModeString(s: FileStat): string {
+export function lsModeString(s: FileStat): string {
   const isDir = s.type === FileType.DIRECTORY
   const typeChar = isDir ? 'd' : '-'
   if (s.mode !== null) {

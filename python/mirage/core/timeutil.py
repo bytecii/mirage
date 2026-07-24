@@ -33,3 +33,19 @@ def epoch_to_iso(seconds: float) -> str:
         seconds (float): unix epoch seconds (sub-second part is dropped).
     """
     return to_iso_z(datetime.fromtimestamp(int(seconds), tz=timezone.utc))
+
+
+def iso_to_epoch(iso: str) -> int:
+    """Convert an ISO-8601 string to whole unix epoch seconds.
+
+    The inverse of epoch_to_iso; a naive stamp (no offset, e.g. a
+    ``touch -t`` overlay time) is read as UTC so Python and TypeScript
+    agree. Sub-second precision is truncated to match epoch_to_iso.
+
+    Args:
+        iso (str): ISO-8601 timestamp, with or without a ``Z``/offset.
+    """
+    dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())

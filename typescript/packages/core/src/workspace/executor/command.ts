@@ -25,7 +25,7 @@ import { assertMountAllowed, MountNotAllowedError } from '../../context/session_
 import { CallStack } from '../../shell/call_stack.ts'
 import type { JobTable } from '../../shell/job_table.ts'
 import { ERREXIT_EXEMPT_TYPES } from '../../shell/types.ts'
-import { type FileStat, PathSpec, wordText } from '../../types.ts'
+import { FileStat, PathSpec, wordText } from '../../types.ts'
 import type { MountEntry } from '../mount/mount.ts'
 import type { Namespace } from '../mount/namespace/namespace.ts'
 import { mergeOverlayStat } from '../mount/namespace/overlay.ts'
@@ -127,6 +127,29 @@ function scalarFindFlags(flagKwargs: Flags): Flags {
   return out
 }
 
+// Merge namespace attr overlays into one stat row (ls/stat rendering). A path
+// never chown'd defaults its owner to the workspace user (the launch agent,
+// what whoami reports) so ls -l and stat -c agree; an unclaimed workspace
+// leaves uid/gid null and the formatters fall back to the neutral "user".
+function namespaceStatOverlay(namespace: Namespace, virtual: string, stat: FileStat): FileStat {
+  const merged = mergeOverlayStat(namespace.metaFor(virtual), stat)
+  const user = namespace.user
+  if (user === null || (merged.uid !== null && merged.gid !== null)) return merged
+  return new FileStat({
+    name: merged.name,
+    size: merged.size,
+    modified: merged.modified,
+    fingerprint: merged.fingerprint,
+    revision: merged.revision,
+    type: merged.type,
+    mode: merged.mode,
+    uid: merged.uid ?? user,
+    gid: merged.gid ?? user,
+    atime: merged.atime,
+    extra: merged.extra,
+  })
+}
+
 // Run one already-parsed command on the mount that owns its paths. The shared
 // single-mount execution tail: mount resolution, session-mode checks, executeCmd,
 // filesystem-error formatting, ls/find post-processing, and read/write key
@@ -193,12 +216,12 @@ async function runOnMount(
   const realMount = registry.mountFor(paths[0]?.virtual ?? hint?.virtual ?? session.cwd)
   const safeguardOverride = realMount?.commandSafeguards.get(cmdName) ?? null
 
-  // ls renders stat rows from the backend's own stat, which never sees
-  // namespace attr overlays (chmod/chown/touch on overlay backends);
-  // inject the merge so ls -l and the ops facade agree.
+  // ls/stat render stat rows from the backend's own stat, which never sees
+  // namespace attr overlays (chmod/chown/touch on overlay backends) or the
+  // default owner; inject the merge so ls -l and stat -c agree.
   const statOverlay =
-    cmdName === 'ls' && namespace !== undefined
-      ? (virtual: string, stat: FileStat) => mergeOverlayStat(namespace.metaFor(virtual), stat)
+    (cmdName === 'ls' || cmdName === 'stat') && namespace !== undefined
+      ? (virtual: string, stat: FileStat) => namespaceStatOverlay(namespace, virtual, stat)
       : null
 
   const [lineRuntime, denial] = lineRuntimeFor(

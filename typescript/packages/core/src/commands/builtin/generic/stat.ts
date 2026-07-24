@@ -14,11 +14,15 @@
 
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import { FileType, type FileStat, type PathSpec } from '../../../types.ts'
+import { isoToEpoch } from '../../../utils/dates.ts'
 import { fsErrorLine, isFsError } from '../../../utils/errors.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
+import { lsModeString } from '../utils/formatting.ts'
 import { formatRecords } from '../utils/output.ts'
 
 const ENC = new TextEncoder()
+
+const DEFAULT_OWNER = 'user'
 
 const TYPE_LABELS: Record<string, string> = {
   [FileType.DIRECTORY]: 'directory',
@@ -28,14 +32,53 @@ const TYPE_LABELS: Record<string, string> = {
   [FileType.CSV]: 'regular file',
 }
 
+function typeLabel(s: FileStat): string {
+  return s.type ? (TYPE_LABELS[s.type] ?? 'regular file') : 'regular file'
+}
+
+function effectiveMode(s: FileStat): number {
+  if (s.mode !== null) return s.mode & 0o7777
+  return s.type === FileType.DIRECTORY ? 0o755 : 0o644
+}
+
+function typeBits(s: FileStat): number {
+  return s.type === FileType.DIRECTORY ? 0o040000 : 0o100000
+}
+
+function owner(value: number | string | null): string {
+  return value !== null ? String(value) : DEFAULT_OWNER
+}
+
+function epoch(iso: string | null): string {
+  if (iso === null || iso === '') return '0'
+  const secs = isoToEpoch(iso)
+  return Number.isNaN(secs) ? '0' : String(secs)
+}
+
+function replaceSpec(spec: string, s: FileStat, name: string): string {
+  if (spec === '%') return '%'
+  if (spec === 'n') return name
+  if (spec === 'N') return `'${name}'`
+  if (spec === 's') return String(s.size ?? 0)
+  if (spec === 'F') return typeLabel(s)
+  if (spec === 'a') return effectiveMode(s).toString(8)
+  if (spec === 'A') return lsModeString(s)
+  if (spec === 'f') return (typeBits(s) | effectiveMode(s)).toString(16)
+  if (spec === 'u' || spec === 'U') return owner(s.uid)
+  if (spec === 'g' || spec === 'G') return owner(s.gid)
+  if (spec === 'x') return s.atime ?? s.modified ?? ''
+  if (spec === 'X') return epoch(s.atime ?? s.modified)
+  if (spec === 'y' || spec === 'z') return s.modified ?? ''
+  if (spec === 'Y' || spec === 'Z') return epoch(s.modified)
+  if (spec === 'w') return '-'
+  if (spec === 'W') return '0'
+  if (spec === 'B') return '512'
+  if (spec === 'r' || spec === 'R' || spec === 't' || spec === 'T') return '0'
+  return '?'
+}
+
 function formatStat(fmt: string, s: FileStat, name: string): string {
-  return fmt.replace(/%(.)/g, (_, spec: string) => {
-    if (spec === 'n') return name
-    if (spec === 's') return String(s.size ?? 0)
-    if (spec === 'F') return s.type ? (TYPE_LABELS[s.type] ?? 'regular file') : 'regular file'
-    if (spec === 'y') return s.modified ?? ''
-    return '?'
-  })
+  return fmt.replace(/%([\s\S])/g, (_, spec: string) => replaceSpec(spec, s, name))
 }
 
 export async function statGeneric(

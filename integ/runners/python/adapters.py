@@ -1201,7 +1201,9 @@ async def open_target(
         else:
             mounts[mount["path"]] = resource
         cleanups.append(cleanup)
-    ws = Workspace(mounts, mode=MountMode.WRITE)
+    ws = Workspace(mounts,
+                   mode=MountMode.WRITE,
+                   agent_id=target.get("agentId"))
 
     async def cleanup_all() -> None:
         await ws.close()
