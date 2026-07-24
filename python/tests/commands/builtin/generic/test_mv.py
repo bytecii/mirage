@@ -14,7 +14,7 @@
 
 import pytest
 
-from mirage.commands.builtin.generic.mv import mv
+from mirage.commands.builtin.generic.mv import MvFlags, mv
 from mirage.types import (FileStat, FileType, NativeMove, PathSpec,
                           PrimitiveMove)
 from mirage.utils.errors import enotsup
@@ -30,14 +30,19 @@ def _key(p) -> str:
     return (p.virtual if isinstance(p, PathSpec) else p).rstrip("/")
 
 
-def _make_backend(files: dict[str, bytes], dirs: set[str]):
+def _make_backend(files: dict[str, bytes],
+                  dirs: set[str],
+                  mtimes: dict[str, str] | None = None):
+    stamps = mtimes or {}
 
     async def stat(p) -> FileStat:
         k = _key(p)
         if k in dirs:
             return FileStat(name=k.rsplit("/", 1)[-1], type=FileType.DIRECTORY)
         if k in files:
-            return FileStat(name=k.rsplit("/", 1)[-1], type=FileType.TEXT)
+            return FileStat(name=k.rsplit("/", 1)[-1],
+                            type=FileType.TEXT,
+                            modified=stamps.get(k))
         raise FileNotFoundError(k)
 
     async def rename(src, dst) -> None:
@@ -46,13 +51,15 @@ def _make_backend(files: dict[str, bytes], dirs: set[str]):
     return stat, rename
 
 
-async def _run(files, dirs, paths, **kw):
-    stat, rename = _make_backend(files, dirs)
+async def _run(files, dirs, paths, *, readdir=None, mtimes=None, **kw):
+    stat, rename = _make_backend(files, dirs, mtimes)
+    flags = kw.pop("flags", None) or MvFlags(no_clobber=kw.get("n", False),
+                                             verbose=kw.get("v", False))
     return await mv([_spec(p) for p in paths],
                     strategy=NativeMove(rename=rename),
                     stat=stat,
-                    n=kw.get("n", False),
-                    v=kw.get("v", False))
+                    flags=flags,
+                    readdir=readdir)
 
 
 @pytest.mark.asyncio
@@ -196,13 +203,18 @@ def _make_primitive(files: dict[str, bytes],
     return stat, strategy
 
 
-async def _run_primitive(files, dirs, paths, *, v=False, **fail_kw):
+async def _run_primitive(files,
+                         dirs,
+                         paths,
+                         *,
+                         v=False,
+                         flags=None,
+                         **fail_kw):
     stat, strategy = _make_primitive(files, dirs, **fail_kw)
     return await mv([_spec(p) for p in paths],
                     strategy=strategy,
                     stat=stat,
-                    n=False,
-                    v=v)
+                    flags=flags or MvFlags(verbose=v))
 
 
 @pytest.mark.asyncio
@@ -339,3 +351,228 @@ async def test_primitive_rmdir_unsupported_empty_dir_not_an_error():
     assert io.stderr is None
     assert files["/d/t/x.txt"] == b"X"
     assert "/src/t/x.txt" not in files
+
+
+_OLD = "2020-01-01T00:00:00+00:00"
+_NEW = "2024-01-01T00:00:00+00:00"
+
+
+def _dir_readdir(files, dirs):
+
+    async def readdir(p) -> list[str]:
+        base = _key(p) + "/" if _key(p) != "/" else "/"
+        children = {
+            base + k[len(base):].split("/", 1)[0]
+            for k in set(files) | dirs if k.startswith(base) and k != _key(p)
+        }
+        return sorted(children)
+
+    return readdir
+
+
+@pytest.mark.asyncio
+async def test_update_older_skips_newer_dest_and_keeps_source():
+    files = {"/a.txt": b"SRC", "/b.txt": b"DST"}
+    _, io = await _run(files,
+                       set(), ["/a.txt", "/b.txt"],
+                       mtimes={
+                           "/a.txt": _OLD,
+                           "/b.txt": _NEW
+                       },
+                       flags=MvFlags(update="older"))
+    assert io.exit_code == 0
+    assert files["/a.txt"] == b"SRC"
+    assert files["/b.txt"] == b"DST"
+
+
+@pytest.mark.asyncio
+async def test_update_older_replaces_older_dest():
+    files = {"/a.txt": b"SRC", "/b.txt": b"DST"}
+    await _run(files,
+               set(), ["/a.txt", "/b.txt"],
+               mtimes={
+                   "/a.txt": _NEW,
+                   "/b.txt": _OLD
+               },
+               flags=MvFlags(update="older"))
+    assert files["/b.txt"] == b"SRC"
+    assert "/a.txt" not in files
+
+
+@pytest.mark.asyncio
+async def test_update_none_fail_reports_not_replacing():
+    files = {"/a.txt": b"SRC", "/b.txt": b"DST"}
+    _, io = await _run(files,
+                       set(), ["/a.txt", "/b.txt"],
+                       flags=MvFlags(update="none-fail"))
+    assert io.exit_code == 1
+    assert io.stderr == b"mv: not replacing '/b.txt'\n"
+    assert files["/a.txt"] == b"SRC"
+
+
+@pytest.mark.asyncio
+async def test_backup_renames_dest_away():
+    files = {"/a.txt": b"SRC", "/b.txt": b"DST"}
+    _, io = await _run(files,
+                       set(), ["/a.txt", "/b.txt"],
+                       flags=MvFlags(backup="simple"))
+    assert files["/b.txt"] == b"SRC"
+    assert files["/b.txt~"] == b"DST"
+    assert "/a.txt" not in files
+    assert "/b.txt~" in io.writes
+
+
+@pytest.mark.asyncio
+async def test_verbose_backup_annotation():
+    files = {"/a.txt": b"SRC", "/b.txt": b"DST"}
+    out, _ = await _run(files,
+                        set(), ["/a.txt", "/b.txt"],
+                        flags=MvFlags(verbose=True, backup="simple"))
+    assert out == b"renamed '/a.txt' -> '/b.txt' (backup: '/b.txt~')\n"
+
+
+@pytest.mark.asyncio
+async def test_exchange_swaps_contents():
+    files = {"/a.txt": b"AAA", "/b.txt": b"BBB"}
+    _, io = await _run(files,
+                       set(), ["/a.txt", "/b.txt"],
+                       flags=MvFlags(exchange=True))
+    assert io.exit_code == 0
+    assert files["/a.txt"] == b"BBB"
+    assert files["/b.txt"] == b"AAA"
+    assert set(io.writes) == {"/a.txt", "/b.txt"}
+
+
+@pytest.mark.asyncio
+async def test_exchange_verbose_line():
+    files = {"/a.txt": b"AAA", "/b.txt": b"BBB"}
+    out, _ = await _run(files,
+                        set(), ["/a.txt", "/b.txt"],
+                        flags=MvFlags(exchange=True, verbose=True))
+    assert out == b"exchanged '/a.txt' <-> '/b.txt'\n"
+
+
+@pytest.mark.asyncio
+async def test_exchange_missing_target_errors():
+    # Deliberate divergence: GNU's renameat2 probe reports the unhelpful
+    # 'Unknown error -1' here; the honest errno text is used instead.
+    files = {"/a.txt": b"AAA"}
+    _, io = await _run(files,
+                       set(), ["/a.txt", "/b.txt"],
+                       flags=MvFlags(exchange=True))
+    assert io.exit_code == 1
+    assert io.stderr == (b"mv: cannot exchange '/a.txt' and '/b.txt': "
+                         b"No such file or directory\n")
+    assert files["/a.txt"] == b"AAA"
+
+
+@pytest.mark.asyncio
+async def test_exchange_cross_mount_refused():
+    files = {"/src/a.txt": b"AAA", "/d/b.txt": b"BBB"}
+    _, io = await _run_primitive(files, {"/src", "/d"},
+                                 ["/src/a.txt", "/d/b.txt"],
+                                 flags=MvFlags(exchange=True))
+    assert io.exit_code == 1
+    assert io.stderr == (b"mv: cannot exchange '/src/a.txt' and "
+                         b"'/d/b.txt': Invalid cross-device link\n")
+    assert files["/src/a.txt"] == b"AAA"
+
+
+@pytest.mark.asyncio
+async def test_no_copy_refuses_cross_mount_move():
+    files = {"/src/a.txt": b"AAA", "/d/keep": b"K"}
+    _, io = await _run_primitive(files, {"/src", "/d"}, ["/src/a.txt", "/d"],
+                                 flags=MvFlags(no_copy=True))
+    assert io.exit_code == 1
+    assert io.stderr == (b"mv: cannot move '/src/a.txt' to '/d/a.txt': "
+                         b"Invalid cross-device link\n")
+    assert files["/src/a.txt"] == b"AAA"
+    assert "/d/a.txt" not in files
+
+
+@pytest.mark.asyncio
+async def test_no_copy_native_rename_unaffected():
+    files = {"/a.txt": b"AAA"}
+    _, io = await _run(files,
+                       set(), ["/a.txt", "/b.txt"],
+                       flags=MvFlags(no_copy=True))
+    assert io.exit_code == 0
+    assert files["/b.txt"] == b"AAA"
+
+
+@pytest.mark.asyncio
+async def test_no_target_dir_refuses_nonempty_dir_dest():
+    files = {"/d1/x.txt": b"X", "/d2/y.txt": b"Y"}
+    dirs = {"/d1", "/d2"}
+    _, io = await _run(files,
+                       dirs, ["/d1", "/d2"],
+                       readdir=_dir_readdir(files, dirs),
+                       flags=MvFlags(no_target_dir=True))
+    assert io.exit_code == 1
+    assert io.stderr == b"mv: cannot overwrite '/d2': Directory not empty\n"
+
+
+@pytest.mark.asyncio
+async def test_overwrite_nondir_with_dir_refused():
+    files = {"/f.txt": b"F", "/d/x.txt": b"X"}
+    _, io = await _run(files, {"/d"}, ["/d", "/f.txt"])
+    assert io.exit_code == 1
+    assert io.stderr == (b"mv: cannot overwrite non-directory '/f.txt' "
+                         b"with directory '/d'\n")
+
+
+@pytest.mark.asyncio
+async def test_no_target_dir_refuses_dir_dest_for_file():
+    files = {"/a.txt": b"AAA", "/d/keep": b"K"}
+    _, io = await _run(files, {"/d"}, ["/a.txt", "/d"],
+                       flags=MvFlags(no_target_dir=True))
+    assert io.exit_code == 1
+    assert io.stderr == (b"mv: cannot overwrite directory '/d' with "
+                         b"non-directory '/a.txt'\n")
+
+
+@pytest.mark.asyncio
+async def test_target_dir_moves_into():
+    files = {"/a.txt": b"AAA", "/d/keep": b"K"}
+    _, io = await _run(files, {"/d"}, ["/a.txt"],
+                       flags=MvFlags(target_dir="/d"))
+    assert io.exit_code == 0
+    assert files["/d/a.txt"] == b"AAA"
+    assert "/a.txt" not in files
+
+
+@pytest.mark.asyncio
+async def test_target_dir_missing_fails_whole_command():
+    files = {"/a.txt": b"AAA"}
+    _, io = await _run(files,
+                       set(), ["/a.txt"],
+                       flags=MvFlags(target_dir="/nosuch"))
+    assert io.exit_code == 1
+    assert io.stderr == (b"mv: target directory '/nosuch': "
+                         b"No such file or directory\n")
+    assert files["/a.txt"] == b"AAA"
+
+
+def test_parse_mv_flags_conflicts_and_grammar():
+    from mirage.commands.builtin.generic.mv import parse_mv_flags
+    from mirage.commands.errors import UsageError
+    from mirage.commands.spec import SPECS
+    from mirage.commands.spec.types import FlagView
+
+    def view(bag):
+        return FlagView(bag, spec=SPECS["mv"])
+
+    with pytest.raises(UsageError) as exc:
+        parse_mv_flags(view({"b": True, "exchange": True}))
+    assert "mv: cannot combine --backup with --exchange, -n, or " \
+           "--update=none-fail" in str(exc.value)
+    with pytest.raises(UsageError) as exc:
+        parse_mv_flags(view({"backup": True, "n": True}))
+    assert "cannot combine --backup" in str(exc.value)
+    with pytest.raises(UsageError) as exc:
+        parse_mv_flags(view({"t": "/d", "T": True}))
+    assert "cannot combine --target-directory" in str(exc.value)
+    parsed = parse_mv_flags(view({"u": True, "exchange": True}))
+    assert parsed.update == "older"
+    assert parsed.exchange is True
+    assert parse_mv_flags(view({"no_copy": True})).no_copy is True

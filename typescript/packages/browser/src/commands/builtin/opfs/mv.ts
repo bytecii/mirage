@@ -13,15 +13,16 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
-  IOResult,
   ResourceName,
   command,
   mvGeneric,
+  parseMvFlags,
   specOf,
   type CommandFnResult,
   type CommandOpts,
   type PathSpec,
 } from '@struktoai/mirage-core'
+import { readdir as coreReaddir } from '../../../core/opfs/readdir.ts'
 import { rename as coreRename } from '../../../core/opfs/rename.ts'
 import { stat as coreStat } from '../../../core/opfs/stat.ts'
 import type { OPFSAccessor } from '../../../accessor/opfs.ts'
@@ -32,19 +33,15 @@ function mvCommand(
   _texts: string[],
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
-  if (paths.length < 2) {
-    return Promise.resolve([
-      null,
-      new IOResult({ exitCode: 1, stderr: new TextEncoder().encode('mv: missing operand\n') }),
-    ])
-  }
+  const parsed = parseMvFlags(opts.flags)
   return mvGeneric(
     paths,
     (p: PathSpec) => coreStat(accessor, p),
     { rename: (src: PathSpec, target: PathSpec) => coreRename(accessor, src, target) },
-    opts.flags.n === true,
-    opts.flags.v === true,
+    parsed,
     opts.index ?? undefined,
+    undefined,
+    (p: PathSpec) => coreReaddir(accessor, p),
   )
 }
 

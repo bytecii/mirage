@@ -283,6 +283,18 @@ def test_value_optional_never_consumes_next_token():
     assert parsed.paths() == ["/data"]
 
 
+def test_short_value_false_keeps_short_boolean_and_clusterable():
+    # GNU cp -b never takes an argument: -bv is a cluster, never -b=v.
+    clustered = parse_command(SPECS["cp"], ["-bv", "/a", "/b"], "/")
+    assert clustered.flags["-b"] is True
+    assert clustered.flags["-v"] is True
+    bare = parse_command(SPECS["cp"], ["-u", "/a", "/b"], "/")
+    assert bare.flags["-u"] is True
+    assert bare.paths() == ["/a", "/b"]
+    valued = parse_command(SPECS["cp"], ["--backup=numbered", "/a", "/b"], "/")
+    assert valued.flags["--backup"] == "numbered"
+
+
 def test_short_value_optional_uses_only_attached_value():
     bare = parse_command(SPECS["split"],
                          ["-d", "-l", "2", "/input", "/prefix"], "/")

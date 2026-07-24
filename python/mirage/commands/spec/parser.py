@@ -72,7 +72,7 @@ def parse_command(
 ) -> ParsedArgs:
     bool_flags: set[str] = set()
     value_flags: set[str] = set()
-    optional_value_flags: set[str] = set()
+    attach_value_flags: set[str] = set()
     long_bool_flags: set[str] = set()
     long_value_flags: set[str] = set()
     long_optional_flags: set[str] = set()
@@ -85,7 +85,8 @@ def parse_command(
                 bool_flags.add(opt.short)
             elif opt.value_optional:
                 bool_flags.add(opt.short)
-                optional_value_flags.add(opt.short)
+                if opt.short_value:
+                    attach_value_flags.add(opt.short)
                 value_flag_kinds[opt.short] = opt.value_kind
             else:
                 value_flags.add(opt.short)
@@ -198,7 +199,7 @@ def parse_command(
                 i += 1
                 continue
             matched_optional = False
-            for vf in optional_value_flags:
+            for vf in attach_value_flags:
                 if tok.startswith(vf) and len(tok) > len(vf):
                     _set_value_flag(flags, vf, tok[len(vf):], repeat_flags)
                     i += 1

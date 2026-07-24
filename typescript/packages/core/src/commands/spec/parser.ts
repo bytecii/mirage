@@ -83,7 +83,7 @@ export function parseCommand(spec: CommandSpec, argv: string[], cwd: string): Pa
         boolFlags.add(opt.short)
       } else if (opt.valueOptional) {
         boolFlags.add(opt.short)
-        optionalValueFlags.add(opt.short)
+        if (opt.shortValue) optionalValueFlags.add(opt.short)
         valueFlagKinds.set(opt.short, opt.valueKind)
       } else {
         valueFlags.add(opt.short)

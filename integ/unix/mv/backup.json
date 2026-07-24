@@ -1,0 +1,79 @@
+{
+  "cases": [
+    {
+      "id": "mv_b_renames_dest_away",
+      "seq": 613040,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/mvb1 && printf 'S\\n' > /data/mvb1/s.txt && printf 'D\\n' > /data/mvb1/d.txt && mv -b /data/mvb1/s.txt /data/mvb1/d.txt && cat /data/mvb1/d.txt /data/mvb1/d.txt~ && ls /data/mvb1",
+      "expect": {
+        "exit": 0,
+        "stdout": "S\nD\nd.txt\nd.txt~\n",
+        "stderr": ""
+      },
+      "flags": [
+        "b"
+      ]
+    },
+    {
+      "id": "mv_bv_backup_annotation",
+      "seq": 613041,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/mvb2 && printf 'S\\n' > /data/mvb2/s.txt && printf 'D\\n' > /data/mvb2/d.txt && mv -bv /data/mvb2/s.txt /data/mvb2/d.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "renamed '/data/mvb2/s.txt' -> '/data/mvb2/d.txt' (backup: '/data/mvb2/d.txt~')\n",
+        "stderr": ""
+      },
+      "flags": [
+        "b",
+        "v"
+      ]
+    }
+  ]
+}

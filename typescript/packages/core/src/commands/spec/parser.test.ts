@@ -518,3 +518,23 @@ describe('overflow operand pass-through', () => {
     ])
   })
 })
+
+describe('shortValue: false keeps the short boolean and clusterable', () => {
+  it('clusters cp -bv instead of eating v as the backup control', () => {
+    // GNU cp -b never takes an argument: -bv is a cluster, never -b=v.
+    const clustered = parseCommand(specOf('cp'), ['-bv', '/a', '/b'], '/')
+    expect(clustered.flags['-b']).toBe(true)
+    expect(clustered.flags['-v']).toBe(true)
+  })
+
+  it('keeps bare -u boolean and its operands intact', () => {
+    const bare = parseCommand(specOf('cp'), ['-u', '/a', '/b'], '/')
+    expect(bare.flags['-u']).toBe(true)
+    expect(bare.paths()).toEqual(['/a', '/b'])
+  })
+
+  it('still carries the value on --backup=CONTROL', () => {
+    const valued = parseCommand(specOf('cp'), ['--backup=numbered', '/a', '/b'], '/')
+    expect(valued.flags['--backup']).toBe('numbered')
+  })
+})
