@@ -50,6 +50,30 @@ function node(
   }
 }
 
+// Redirect.targetNode is declared `unknown`, so narrow it once here
+// instead of casting at every assertion.
+function targetTypeOf(redirect: Redirect | undefined): string | undefined {
+  return (redirect?.targetNode as TSNodeLike | null | undefined)?.type
+}
+
+function redirectStatement(
+  targetType: string,
+  targetText: string,
+  op: string = NT.REDIRECT_OUT,
+): TSNodeLike {
+  const command = node(NT.COMMAND, 'echo x', {
+    namedChildren: [node(NT.COMMAND_NAME, 'echo')],
+  })
+  const target = node(targetType, targetText)
+  const redirect = node(NT.FILE_REDIRECT, `${op} ${targetText}`, {
+    children: [node(op, op, { isNamed: false }), target],
+    namedChildren: [target],
+  })
+  return node(NT.REDIRECTED_STATEMENT, `echo x ${op} ${targetText}`, {
+    namedChildren: [command, redirect],
+  })
+}
+
 describe('getText / getCommandName', () => {
   it('getText returns node.text', () => {
     expect(getText(node('word', 'hello'))).toBe('hello')
@@ -138,30 +162,6 @@ describe('getRedirects herestring ordering', () => {
 })
 
 describe('getRedirects quoted targets', () => {
-  const commandName = node(NT.COMMAND_NAME, 'echo')
-  const command = node(NT.COMMAND, 'echo x', { namedChildren: [commandName] })
-
-  // Redirect.targetNode is declared `unknown`, so narrow it once here
-  // instead of casting at every assertion.
-  function targetTypeOf(redirect: Redirect | undefined): string | undefined {
-    return (redirect?.targetNode as TSNodeLike | null | undefined)?.type
-  }
-
-  function statementWith(
-    targetType: string,
-    targetText: string,
-    op: string = NT.REDIRECT_OUT,
-  ): TSNodeLike {
-    const target = node(targetType, targetText)
-    const redirect = node(NT.FILE_REDIRECT, `${op} ${targetText}`, {
-      children: [node(op, op, { isNamed: false }), target],
-      namedChildren: [target],
-    })
-    return node(NT.REDIRECTED_STATEMENT, `echo x ${op} ${targetText}`, {
-      namedChildren: [command, redirect],
-    })
-  }
-
   // Quoting a redirect target is purely syntactic in bash. raw_string
   // (single quotes) was missing from the target-type gate, so the
   // target node was dropped and the target fell back to '', silently
@@ -171,7 +171,7 @@ describe('getRedirects quoted targets', () => {
     [NT.STRING, '"/out.txt"'],
     [NT.WORD, '/out.txt'],
   ])('carries the target node for %s', (targetType, targetText) => {
-    const [, redirects] = getRedirects(statementWith(targetType, targetText))
+    const [, redirects] = getRedirects(redirectStatement(targetType, targetText))
     expect(redirects[0]?.targetNode).not.toBeNull()
     expect(targetTypeOf(redirects[0])).toBe(targetType)
     expect(redirects[0]?.target).toBe(targetText)
@@ -182,7 +182,7 @@ describe('getRedirects quoted targets', () => {
   it.each([NT.REDIRECT_APPEND, NT.REDIRECT_IN, NT.REDIRECT_BOTH])(
     'carries a raw_string target for %s',
     (op) => {
-      const [, redirects] = getRedirects(statementWith(NT.RAW_STRING, "'/out.txt'", op))
+      const [, redirects] = getRedirects(redirectStatement(NT.RAW_STRING, "'/out.txt'", op))
       expect(targetTypeOf(redirects[0])).toBe(NT.RAW_STRING)
     },
   )
