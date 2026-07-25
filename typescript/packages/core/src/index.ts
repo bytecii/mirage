@@ -1237,6 +1237,7 @@ export {
 export {
   eisdir,
   enoent,
+  enoentWithMessage,
   enotdir,
   enotsup,
   errorVirtualPath,
