@@ -11,7 +11,7 @@
       ],
       "command": "ls /data/missing",
       "expect": {
-        "exit": 1,
+        "exit": 2,
         "stdout": "",
         "stderr": "ls: cannot access '/data/missing': No such file or directory\n"
       }
@@ -27,7 +27,7 @@
       ],
       "command": "ls /data/sub/missing",
       "expect": {
-        "exit": 1,
+        "exit": 2,
         "stdout": "",
         "stderr": "ls: cannot access '/data/sub/missing': No such file or directory\n"
       }
@@ -43,7 +43,7 @@
       ],
       "command": "ls /data/missing/deeper",
       "expect": {
-        "exit": 1,
+        "exit": 2,
         "stdout": "",
         "stderr": "ls: cannot access '/data/missing/deeper': No such file or directory\n"
       }
@@ -59,7 +59,7 @@
       ],
       "command": "ls /data/a.txt/x",
       "expect": {
-        "exit": 1,
+        "exit": 2,
         "stdout": "",
         "stderr": "ls: cannot access '/data/a.txt/x': Not a directory\n"
       }
@@ -75,7 +75,7 @@
       ],
       "command": "ls /data/a.txt/x/y",
       "expect": {
-        "exit": 1,
+        "exit": 2,
         "stdout": "",
         "stderr": "ls: cannot access '/data/a.txt/x/y': Not a directory\n"
       }
