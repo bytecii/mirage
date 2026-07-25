@@ -117,15 +117,31 @@ def update_mode(cmd_name: str, fl: FlagView) -> str | None:
         f"Try '{cmd_name} --help' for more information.", 1)
 
 
-def _backup_raw(fl: FlagView) -> object:
+def backup_raw(fl: FlagView) -> str | bool | None:
+    """The raw ``-b``/``--backup`` value, absent shapes reading as None.
+
+    The parser mirrors the two spellings, so either key already carries
+    GNU's last-occurrence-wins value.
+
+    Args:
+        fl (FlagView): Parsed flag view holding ``b``/``backup``.
+    """
     value = fl.raw("backup")
     if value in (None, False):
         value = fl.raw("b")
-    return value
+    if isinstance(value, (str, bool)):
+        return value
+    return None
 
 
-def _target_flags(cmd_name: str,
-                  fl: FlagView) -> tuple[PathSpec | str | None, bool]:
+def target_flags(cmd_name: str,
+                 fl: FlagView) -> tuple[PathSpec | str | None, bool]:
+    """Resolve ``-t``/``--target-directory`` and ``-T``, rejecting both.
+
+    Args:
+        cmd_name (str): Command name for the conflict error.
+        fl (FlagView): Parsed flag view.
+    """
     target_dir: object = fl.raw("t")
     if target_dir is None:
         target_dir = fl.raw("target_directory")
@@ -152,14 +168,14 @@ def parse_cp_flags(fl: FlagView) -> CpFlags:
     """
     update = update_mode("cp", fl)
     suffix = fl.as_str("S") or fl.as_str("suffix")
-    control = backup_control("cp", _backup_raw(fl), suffix)
+    control = backup_control("cp", backup_raw(fl), suffix)
     no_clobber = fl.as_bool("n") or fl.as_bool("no_clobber")
     if control is not None and control != "none" and (no_clobber or update
                                                       == "none-fail"):
         raise UsageError(
             "cp: --backup is mutually exclusive with -n or "
             "--update=none-fail\nTry 'cp --help' for more information.", 1)
-    target_dir, no_target = _target_flags("cp", fl)
+    target_dir, no_target = target_flags("cp", fl)
     return CpFlags(
         recursive=fl.as_bool("r") or fl.as_bool("R") or fl.as_bool("recursive")
         or fl.as_bool("a") or fl.as_bool("archive"),

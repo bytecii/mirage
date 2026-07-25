@@ -29,9 +29,9 @@ from mirage.types import (MoveStrategy, NativeMove, PathSpec, PrimitiveMove,
 from mirage.utils.errors import FS_ERRORS, fs_strerror
 
 from mirage.commands.builtin.generic.cp import (  # isort: skip
-    TransferPolicy, backup_displaces, copy_entries, entry_kind, make_backup,
-    overwrite_gate, overwrite_type_error, split_operands, target_dir_error,
-    update_mode, walk, wrap_target_dir)
+    TransferPolicy, backup_displaces, backup_raw, copy_entries, entry_kind,
+    make_backup, overwrite_gate, overwrite_type_error, split_operands,
+    target_dir_error, target_flags, update_mode, walk, wrap_target_dir)
 
 _logger = logging.getLogger(__name__)
 
@@ -67,10 +67,7 @@ def parse_mv_flags(fl: FlagView) -> MvFlags:
     """
     update = update_mode("mv", fl)
     suffix = fl.as_str("S") or fl.as_str("suffix")
-    backup_value = fl.raw("backup")
-    if backup_value in (None, False):
-        backup_value = fl.raw("b")
-    control = backup_control("mv", backup_value, suffix)
+    control = backup_control("mv", backup_raw(fl), suffix)
     no_clobber = fl.as_bool("n") or fl.as_bool("no_clobber")
     exchange = fl.as_bool("exchange")
     if control is not None and control != "none" and (exchange or no_clobber or
@@ -78,16 +75,7 @@ def parse_mv_flags(fl: FlagView) -> MvFlags:
         raise UsageError(
             "mv: cannot combine --backup with --exchange, -n, or "
             "--update=none-fail\nTry 'mv --help' for more information.", 1)
-    target_dir: object = fl.raw("t")
-    if target_dir is None:
-        target_dir = fl.raw("target_directory")
-    if not isinstance(target_dir, (PathSpec, str)):
-        target_dir = None
-    no_target = fl.as_bool("T") or fl.as_bool("no_target_directory")
-    if target_dir is not None and no_target:
-        raise UsageError(
-            "mv: cannot combine --target-directory (-t) and "
-            "--no-target-directory (-T)", 1)
+    target_dir, no_target = target_flags("mv", fl)
     return MvFlags(
         no_clobber=no_clobber,
         verbose=fl.as_bool("v") or fl.as_bool("verbose"),

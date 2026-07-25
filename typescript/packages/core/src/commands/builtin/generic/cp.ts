@@ -133,10 +133,14 @@ export function updateMode(cmdName: string, flags: Flags): string | null {
   )
 }
 
-export function backupRaw(flags: Flags): unknown {
+// The raw -b/--backup value, absent shapes reading as undefined. The parser
+// mirrors the two spellings, so either key already carries GNU's
+// last-occurrence-wins value.
+export function backupRaw(flags: Flags): string | boolean | undefined {
   let value: unknown = flags.backup
   if (value === undefined || value === false) value = flags.b
-  return value
+  if (typeof value === 'string' || typeof value === 'boolean') return value
+  return undefined
 }
 
 // -t values arrive as PathSpec on the single-mount dispatch path and as

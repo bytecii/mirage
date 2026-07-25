@@ -35,7 +35,7 @@ DEFAULT_BACKUP_SUFFIX = "~"
 _NUMBERED_SUFFIX = re.compile(r"^\.~(\d+)~$")
 
 
-def backup_control(cmd_name: str, value: object,
+def backup_control(cmd_name: str, value: str | bool | None,
                    suffix: str | None) -> str | None:
     """Resolve ``-b``/``--backup[=CONTROL]``/``-S`` into a backup control.
 
@@ -46,9 +46,9 @@ def backup_control(cmd_name: str, value: object,
 
     Args:
         cmd_name (str): Command name for the invalid-argument error.
-        value (object): Raw ``-b``/``--backup`` flag value — ``True`` for
-            the bare spellings, a string for ``--backup=CONTROL``, and
-            ``None``/``False`` when absent.
+        value (str | bool | None): Raw ``-b``/``--backup`` flag value —
+            ``True`` for the bare spellings, a string for
+            ``--backup=CONTROL``, and ``None``/``False`` when absent.
         suffix (str | None): Raw ``-S``/``--suffix`` value, or None.
 
     Returns:

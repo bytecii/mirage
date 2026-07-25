@@ -42,7 +42,7 @@ const NUMBERED_SUFFIX = /^\.~(\d+)~$/
 // requested.
 export function backupControl(
   cmdName: string,
-  value: unknown,
+  value: string | boolean | undefined,
   suffix: string | null,
 ): string | null {
   const enabled = value !== undefined && value !== false
