@@ -1378,6 +1378,34 @@
         "stdout": "next\n",
         "stderr": "NOPEDIR/f: No such file or directory\n"
       }
+    },
+    {
+      "id": "redirect_write_stops_at_first_failure",
+      "seq": 501141,
+      "targets": [
+        "ram",
+        "redis"
+      ],
+      "command": "echo x > NOPEDIR/f > STOPPED; test -e STOPPED || echo skipped",
+      "expect": {
+        "exit": 0,
+        "stdout": "skipped\n",
+        "stderr": "NOPEDIR/f: No such file or directory\n"
+      }
+    },
+    {
+      "id": "redirect_write_keeps_earlier_target",
+      "seq": 501142,
+      "targets": [
+        "ram",
+        "redis"
+      ],
+      "command": "echo y > KEPT > NOPEDIR/g; test -e KEPT && wc -c < KEPT",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n",
+        "stderr": "NOPEDIR/g: No such file or directory\n"
+      }
     }
   ]
 }

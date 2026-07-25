@@ -487,6 +487,53 @@ describe('handleRedirect unwritable > target', () => {
     },
   )
 
+  it('stops at the first failure and skips the later target', async () => {
+    // GNU: `echo x > /nodir/f > /data/out` reports /nodir/f once and
+    // never creates /data/out.
+    const { ws } = await makeIntegrationWS()
+    try {
+      const [exit, , err] = await runResult(ws, 'echo x > /nodir/f > /data/out')
+      expect(exit).toBe(1)
+      expect(err).toBe('/nodir/f: No such file or directory\n')
+      expect(await runExit(ws, 'test -e /data/out')).toBe(1)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('keeps a target opened before the failing one', async () => {
+    // GNU: `echo y > /data/out2 > /nodir/g` already truncated
+    // /data/out2, so it survives as an empty file.
+    const { ws } = await makeIntegrationWS()
+    try {
+      const [exit, , err] = await runResult(ws, 'echo y > /data/out2 > /nodir/g')
+      expect(exit).toBe(1)
+      expect(err).toBe('/nodir/g: No such file or directory\n')
+      expect(await runExit(ws, 'test -e /data/out2')).toBe(0)
+      const [, out] = await runResult(ws, 'cat /data/out2')
+      expect(out).toBe('')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('rethrows a non-filesystem append pre-read error', async () => {
+    // The `>>` pre-read swallows filesystem errors (the write reports
+    // them) but must not hide a backend bug.
+    const dispatch = vi.fn<DispatchFn>((op) => {
+      if (op === 'read') return Promise.reject(new Error('backend exploded'))
+      return Promise.resolve<[unknown, IOResult]>([null, new IOResult()])
+    })
+    const execute: ExecuteNodeFn = () =>
+      Promise.resolve([encode('hi'), new IOResult(), new ExecutionNode()])
+    const redirects = [
+      new Redirect({ fd: 1, target: '/ram/out.txt', kind: RedirectKind.STDOUT, append: true }),
+    ]
+    await expect(
+      handleRedirect(execute, dispatch, STUB_NODE, redirects, new Session({ sessionId: 'test' })),
+    ).rejects.toThrow('backend exploded')
+  })
+
   it('rethrows a non-filesystem write error', async () => {
     const dispatch = vi.fn<DispatchFn>((op) => {
       if (op === 'write') return Promise.reject(new Error('backend exploded'))

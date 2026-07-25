@@ -335,6 +335,35 @@ async def test_write_target_unwritable_runs_or_branch():
 
 
 @pytest.mark.asyncio
+async def test_write_target_unwritable_stops_at_first_failure():
+    # GNU stops processing redirects at the failed open, so the later
+    # target is never created and only one message is emitted:
+    #   $ echo x > /nodir/f > /data/out
+    #   bash: line 1: /nodir/f: No such file or directory   # rc=1
+    #   $ ls /data/out -> No such file or directory
+    ws = await _workspace()
+    io = await ws.execute("echo x > /nodir/f > /data/out")
+    assert io.exit_code == 1
+    assert (io.stderr or b"") == b"/nodir/f: No such file or directory\n"
+    assert (await ws.execute("test -e /data/out")).exit_code == 1
+
+
+@pytest.mark.asyncio
+async def test_write_target_unwritable_keeps_earlier_target():
+    # The mirror case: GNU already opened (and truncated) the earlier
+    # target before the failing one, so it survives as an empty file.
+    #   $ echo y > /data/out2 > /nodir/g
+    #   bash: line 1: /nodir/g: No such file or directory   # rc=1
+    #   $ ls -l /data/out2 -> 0 bytes
+    ws = await _workspace()
+    io = await ws.execute("echo y > /data/out2 > /nodir/g")
+    assert io.exit_code == 1
+    assert (io.stderr or b"") == b"/nodir/g: No such file or directory\n"
+    assert (await ws.execute("test -e /data/out2")).exit_code == 0
+    assert await _out(ws, "cat /data/out2") == ""
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("line", [
     "echo x >> /nodir/f",
     "echo x 2> /nodir/f",

@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import logging
+
 import tree_sitter
 
 from mirage.io import IOResult
@@ -25,6 +27,8 @@ from mirage.utils.errors import FS_ERRORS, fs_strerror
 from mirage.workspace.executor.builtins import _to_scope
 from mirage.workspace.session import Session
 from mirage.workspace.types import ExecutionNode
+
+logger = logging.getLogger(__name__)
 
 _TO_STDOUT = object()
 _TO_STDERR = object()
@@ -53,7 +57,12 @@ async def handle_redirect(
     command error — on both the ``<`` read and the ``>`` write side.
     bash reports it itself and never names the command, so both paths
     render ``<target>: <strerror>`` (see ``_redirect_error_line``) and
-    the rest of the line keeps running.
+    the rest of the line keeps running. bash also stops processing
+    redirects at the first failed open, so later targets are left
+    alone: GNU 5.2.37 answers ``echo x > /nodir/f > /data/out`` with one
+    message and no ``/data/out``, while earlier targets keep the empty
+    file their open already created (``echo y > /data/out2 > /nodir/g``
+    leaves ``/data/out2`` present and empty).
 
     Deliberate divergence from bash: when both streams route to the
     same destination they are concatenated stdout-then-stderr, not
@@ -166,7 +175,7 @@ async def handle_redirect(
         except FS_ERRORS as exc:
             out_stderr += _redirect_error_line(scope, exc)
             io.exit_code = 1
-            continue
+            break
         io.writes[path] = data
 
     result_stdout = bytes(out_stdout)
@@ -230,9 +239,13 @@ async def _read_existing(dispatch, scope) -> bytes:
         existing, _ = await dispatch("read", scope)
         if isinstance(existing, bytes):
             return existing
-    except FileNotFoundError:
-        # appending to a missing file starts from empty
-        pass
+    except FS_ERRORS as exc:
+        # appending starts from empty when the target is missing or
+        # unreadable; the write that follows reports the real failure as
+        # a shell-attributed line. Narrower than FS_ERRORS would let a
+        # PermissionError escape to the workspace-level OSError handler,
+        # which kills the rest of the line and misattributes the message.
+        logger.debug("append pre-read failed for %s: %s", scope.raw_path, exc)
     return b""
 
 

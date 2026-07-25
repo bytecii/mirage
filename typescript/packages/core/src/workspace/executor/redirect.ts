@@ -46,7 +46,12 @@ type FdDest = typeof TO_STDOUT | typeof TO_STDERR | string
  * A redirect target that cannot be opened is a shell error, not a command
  * error — on both the `<` read and the `>` write side. bash reports it itself
  * and never names the command, so both paths render `<target>: <strerror>`
- * (see `redirectErrorLine`) and the rest of the line keeps running.
+ * (see `redirectErrorLine`) and the rest of the line keeps running. bash also
+ * stops processing redirects at the first failed open, so later targets are
+ * left alone: GNU 5.2.37 answers `echo x > /nodir/f > /data/out` with one
+ * message and no `/data/out`, while earlier targets keep the empty file their
+ * open already created (`echo y > /data/out2 > /nodir/g` leaves `/data/out2`
+ * present and empty).
  *
  * Deliberate divergence from bash: when both streams route to the same
  * destination they are concatenated stdout-then-stderr, not temporally
@@ -192,6 +197,7 @@ export async function handleRedirect(
       if (!isFsError(err)) throw err
       outStderr = concat([outStderr, redirectErrorLine(scope, err)])
       io.exitCode = 1
+      break
     }
   }
 
@@ -242,8 +248,11 @@ async function readExisting(dispatch: DispatchFn, scope: PathSpec): Promise<Uint
   try {
     const [existing] = await dispatch('read', scope)
     if (existing instanceof Uint8Array) return existing
-  } catch {
-    // file doesn't exist yet, or not readable — appending starts fresh
+  } catch (err) {
+    // file doesn't exist yet, or not readable — appending starts fresh and
+    // the write that follows reports the real failure as a shell-attributed
+    // line. Non-filesystem errors are bugs and still propagate.
+    if (!isFsError(err)) throw err
   }
   return new Uint8Array()
 }
