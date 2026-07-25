@@ -576,3 +576,150 @@ def test_parse_mv_flags_conflicts_and_grammar():
     assert parsed.update == "older"
     assert parsed.exchange is True
     assert parse_mv_flags(view({"no_copy": True})).no_copy is True
+
+
+def _tree_rename(files: dict[str, bytes], dirs: set[str]):
+    """A rename that carries a whole subtree, like a real backend rename."""
+
+    async def rename(src, dst) -> None:
+        s, d = _key(src), _key(dst)
+        if s in dirs:
+            dirs.discard(s)
+            dirs.add(d)
+            for k in [k for k in files if k.startswith(s + "/")]:
+                files[d + k[len(s):]] = files.pop(k)
+            for k in [k for k in dirs if k.startswith(s + "/")]:
+                dirs.discard(k)
+                dirs.add(d + k[len(s):])
+            return
+        files[d] = files.pop(s)
+
+    return rename
+
+
+@pytest.mark.asyncio
+async def test_exchange_never_clobbers_an_existing_holding_name():
+    # GNU's renameat2(RENAME_EXCHANGE) is atomic and touches nothing else,
+    # so a real file already sitting at the staging name must survive.
+    files = {"/a.txt": b"A", "/b.txt": b"B", "/b.txt.~xchg~": b"PRECIOUS"}
+    _, io = await _run(files,
+                       set(), ["/a.txt", "/b.txt"],
+                       flags=MvFlags(exchange=True))
+    assert io.exit_code == 0
+    assert files["/a.txt"] == b"B"
+    assert files["/b.txt"] == b"A"
+    assert files["/b.txt.~xchg~"] == b"PRECIOUS"
+
+
+@pytest.mark.asyncio
+async def test_exchange_rolls_back_when_second_rename_fails():
+    files = {"/a.txt": b"A", "/b.txt": b"B"}
+    stat, rename = _make_backend(files, set())
+    calls = {"n": 0}
+
+    async def flaky_rename(src, dst) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise PermissionError("boom")
+        await rename(src, dst)
+
+    _, io = await mv([_spec(p) for p in ["/a.txt", "/b.txt"]],
+                     strategy=NativeMove(rename=flaky_rename),
+                     stat=stat,
+                     flags=MvFlags(exchange=True))
+    assert io.exit_code == 1
+    # Both operands are back where they started, and no staging file leaks.
+    assert files == {"/a.txt": b"A", "/b.txt": b"B"}
+    assert b"cannot exchange" in bytes(io.stderr or b"")
+    assert b"left at" not in bytes(io.stderr or b"")
+
+
+@pytest.mark.asyncio
+async def test_exchange_reports_leftover_when_rollback_also_fails():
+    files = {"/a.txt": b"A", "/b.txt": b"B"}
+    stat, rename = _make_backend(files, set())
+    calls = {"n": 0}
+
+    async def flaky_rename(src, dst) -> None:
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise PermissionError("boom")
+        await rename(src, dst)
+
+    _, io = await mv([_spec(p) for p in ["/a.txt", "/b.txt"]],
+                     strategy=NativeMove(rename=flaky_rename),
+                     stat=stat,
+                     flags=MvFlags(exchange=True))
+    assert io.exit_code == 1
+    stderr = bytes(io.stderr or b"")
+    assert b"cannot exchange" in stderr
+    # The source is parked at the staging name; say so instead of losing it.
+    assert b"'/a.txt' left at '/b.txt.~xchg~'" in stderr
+
+
+@pytest.mark.asyncio
+async def test_no_target_dir_backup_displaces_nonempty_dir_dest():
+    # GNU 9.7: mv -b -T renames the nonempty target aside, then installs the
+    # source, instead of refusing with "Directory not empty".
+    files = {"/d1/x.txt": b"X", "/d2/y.txt": b"Y"}
+    dirs = {"/d1", "/d2"}
+    stat, _ = _make_backend(files, dirs)
+    _, io = await mv([_spec(p) for p in ["/d1", "/d2"]],
+                     strategy=NativeMove(rename=_tree_rename(files, dirs)),
+                     stat=stat,
+                     flags=MvFlags(no_target_dir=True, backup="simple"),
+                     readdir=_dir_readdir(files, dirs))
+    assert io.exit_code == 0
+    assert io.stderr is None
+    assert files["/d2/x.txt"] == b"X"
+    assert files["/d2~/y.txt"] == b"Y"
+
+
+@pytest.mark.asyncio
+async def test_no_target_dir_backup_none_still_refuses_nonempty():
+    # --backup=none displaces nothing, so the refusal must still apply.
+    files = {"/d1/x.txt": b"X", "/d2/y.txt": b"Y"}
+    dirs = {"/d1", "/d2"}
+    _, io = await _run(files,
+                       dirs, ["/d1", "/d2"],
+                       readdir=_dir_readdir(files, dirs),
+                       flags=MvFlags(no_target_dir=True, backup="none"))
+    assert io.exit_code == 1
+    assert io.stderr == b"mv: cannot overwrite '/d2': Directory not empty\n"
+
+
+@pytest.mark.asyncio
+async def test_no_target_dir_reports_failed_emptiness_probe():
+    # Reading a failed listing as "empty" would clobber a directory whose
+    # contents could not be verified.
+    files = {"/d1/x.txt": b"X", "/d2/y.txt": b"Y"}
+    dirs = {"/d1", "/d2"}
+
+    async def failing_readdir(p) -> list[str]:
+        raise enotsup("ram", "readdir", p)
+
+    _, io = await _run(files,
+                       dirs, ["/d1", "/d2"],
+                       readdir=failing_readdir,
+                       flags=MvFlags(no_target_dir=True))
+    assert io.exit_code == 1
+    assert io.stderr == (b"mv: cannot overwrite '/d2': "
+                         b"Operation not supported\n")
+    assert files["/d2/y.txt"] == b"Y"
+
+
+@pytest.mark.asyncio
+async def test_primitive_directory_target_backup_transfers_the_tree():
+    # A cross-mount mv -b -T has a directory target: read_bytes cannot copy
+    # it, so the backup walks the tree entry by entry.
+    files = {"/src/x.txt": b"X", "/d/y.txt": b"Y", "/d/sub/z.txt": b"Z"}
+    dirs = {"/src", "/d", "/d/sub"}
+    _, io = await _run_primitive(files,
+                                 dirs, ["/src", "/d"],
+                                 flags=MvFlags(no_target_dir=True,
+                                               backup="simple"))
+    assert io.exit_code == 0
+    assert io.stderr is None
+    assert files["/d~/y.txt"] == b"Y"
+    assert files["/d~/sub/z.txt"] == b"Z"
+    assert files["/d/x.txt"] == b"X"

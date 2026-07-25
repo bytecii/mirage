@@ -18,6 +18,7 @@ import { IOResult, type ByteSource } from '../../../io/types.ts'
 import {
   PathSpec,
   type MoveStrategy,
+  type NativeMove,
   type PrimitiveMove,
   type ReaddirFn,
   type StatFn,
@@ -34,6 +35,7 @@ import {
 import { fsStrerror, isFsError } from '../../../utils/errors.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import {
+  backupDisplaces,
   backupRaw,
   copyEntries,
   cpWalk,
@@ -52,6 +54,9 @@ import {
 } from './cp.ts'
 
 const ENC = new TextEncoder()
+
+// Bound on the --exchange staging-name probe.
+const HOLDING_ATTEMPTS = 100
 
 export interface MvFlags {
   noClobber: boolean
@@ -181,10 +186,49 @@ async function removeEntries(
   return { removedAny, removedAll: failed.length === 0 }
 }
 
-// Atomically swap two entries via three renames (--exchange). Both sides
-// must exist. Deliberate divergence: where GNU's renameat2 probe degrades a
-// missing side to 'Unknown error -1', the honest errno text is reported
-// instead. A cross-mount exchange fails like GNU on a cross-device rename.
+// An unused sibling of `target` to stage a swap through. The name is probed
+// instead of assumed: renames overwrite on most backends, so a fixed
+// `.~xchg~` would silently destroy a real file of that name. null means no
+// free slot was found.
+async function holdingPath(stat: StatFn, target: PathSpec): Promise<PathSpec | null> {
+  for (let attempt = 0; attempt < HOLDING_ATTEMPTS; attempt += 1) {
+    const tag = attempt === 0 ? '.~xchg~' : `.~xchg${String(attempt)}~`
+    const candidate = siblingPath(target, tag)
+    if (!(await pathExists(stat, candidate))) return candidate
+  }
+  return null
+}
+
+// Put a partially completed swap back the way it was. Returns true when the
+// operands are back in their original places.
+async function undoExchange(
+  strategy: NativeMove,
+  src: PathSpec,
+  target: PathSpec,
+  holding: PathSpec,
+  staged: boolean,
+  swapped: boolean,
+): Promise<boolean> {
+  if (!staged) return true
+  try {
+    if (swapped) await strategy.rename(src, target)
+    await strategy.rename(holding, src)
+  } catch (err) {
+    if (!isFsError(err)) throw err
+    return false
+  }
+  return true
+}
+
+// Swap two entries through a staging name (--exchange). Both sides must
+// exist. Deliberate divergence: GNU issues one atomic
+// renameat2(RENAME_EXCHANGE), which no backend exposes, so the swap is
+// staged through an unused sibling of the target and is *not* atomic. The
+// staging name is probed for a free slot so an existing `.~xchg~` is never
+// clobbered, and a failure part-way rolls the operands back. Where GNU's
+// renameat2 probe degrades a missing side to 'Unknown error -1', the honest
+// errno text is reported instead. A cross-mount exchange fails like GNU on a
+// cross-device rename.
 async function exchangePair(
   strategy: MoveStrategy,
   stat: StatFn,
@@ -206,16 +250,29 @@ async function exchangePair(
     )
     return
   }
-  const holding = siblingPath(target, '.~xchg~')
+  const holding = await holdingPath(stat, target)
+  if (holding === null) {
+    errors.push(`mv: cannot exchange '${src.virtual}' and '${target.virtual}': File exists`)
+    return
+  }
+  let staged = false
+  let swapped = false
   try {
     await strategy.rename(src, holding)
+    staged = true
     await strategy.rename(target, src)
+    swapped = true
     await strategy.rename(holding, target)
   } catch (err) {
     if (!isFsError(err)) throw err
+    const restored = await undoExchange(strategy, src, target, holding, staged, swapped)
     errors.push(
       `mv: cannot exchange '${src.virtual}' and '${target.virtual}': ${String(fsStrerror(err))}`,
     )
+    if (!restored) {
+      writes[holding.mountPath] = new Uint8Array()
+      errors.push(`mv: '${src.virtual}' left at '${holding.virtual}' after a failed exchange`)
+    }
     return
   }
   writes[src.mountPath] = new Uint8Array()
@@ -318,13 +375,24 @@ export async function mvGeneric(
       )
       continue
     }
-    if (srcIsDir && targetIsDir && flags.noTargetDir && versionReaddir !== undefined) {
+    // A backup renames the target aside first, so -b -T installs over a
+    // nonempty directory (GNU 9.7) instead of hitting this refusal.
+    if (
+      srcIsDir &&
+      targetIsDir &&
+      flags.noTargetDir &&
+      versionReaddir !== undefined &&
+      !backupDisplaces(flags.backup)
+    ) {
       let children: string[]
       try {
         children = await versionReaddir(target)
       } catch (err) {
         if (!isFsError(err)) throw err
-        children = []
+        // Reading it as "empty" would clobber a directory whose contents
+        // could not be verified.
+        errors.push(`mv: cannot overwrite '${target.virtual}': ${String(fsStrerror(err))}`)
+        continue
       }
       if (children.length > 0) {
         errors.push(`mv: cannot overwrite '${target.virtual}': Directory not empty`)
@@ -332,7 +400,16 @@ export async function mvGeneric(
       }
     }
     if (!(await overwriteGate(policy, stat, src, target, errors))) continue
-    const made = await makeBackup(policy, strategy, stat, versionReaddir, target, writes, errors)
+    const made = await makeBackup(
+      policy,
+      strategy,
+      stat,
+      versionReaddir,
+      target,
+      writes,
+      errors,
+      index,
+    )
     if (!made.ok) continue
     if (isPrimitiveMove(strategy)) {
       const entries = await cpWalk(strategy.readdir, stat, src, index)

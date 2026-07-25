@@ -94,9 +94,11 @@ async def cp(
     parsed = parse_cp_flags(fl)
     paths = await ops.resolve_glob(accessor, paths, index)
     dir_copy = partial(ops.dir_copy, accessor) if ops.dir_copy else None
+    mkdir = partial(ops.mkdir, accessor) if ops.mkdir else None
     strategy = NativeCopy(copy=partial(ops.require(Operation.COPY), accessor),
                           find=_make_find(ops, accessor, index),
-                          dir_copy=dir_copy)
+                          dir_copy=dir_copy,
+                          mkdir=mkdir)
     return await generic_cp(paths,
                             strategy=strategy,
                             find_type="f",

@@ -312,3 +312,24 @@ def test_overflow_operands_pass_through_like_last_slot():
 
     parsed = parse_command(SPECS["tr"], ["a", "b", "extra.txt"], cwd="/data")
     assert [k for _, k in parsed.args] == [OperandKind.TEXT] * 3
+
+
+def test_optional_value_aliases_honor_command_line_order():
+    # GNU treats -u and --update as one option, so the last spelling on the
+    # line decides (pinned against GNU coreutils 9.7).
+    short_last = parse_command(SPECS["cp"], ["--update=all", "-u", "/a", "/b"],
+                               "/")
+    assert short_last.flags["--update"] is True
+    assert short_last.flags["-u"] is True
+    long_last = parse_command(SPECS["cp"], ["-u", "--update=all", "/a", "/b"],
+                              "/")
+    assert long_last.flags["-u"] == "all"
+    assert long_last.flags["--update"] == "all"
+
+
+def test_repeatable_aliases_are_not_mirrored():
+    # sort -k/--key accumulates; mirroring would double every keydef because
+    # the generic concatenates both spellings' lists.
+    parsed = parse_command(SPECS["sort"], ["-k1", "--key=2", "/f"], "/")
+    assert parsed.flags["-k"] == ["1"]
+    assert parsed.flags["--key"] == ["2"]

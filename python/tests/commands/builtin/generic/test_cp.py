@@ -593,3 +593,97 @@ def test_parse_cp_flags_conflicts_and_grammar():
     assert parse_cp_flags(view({"backup": "t"})).backup == "numbered"
     assert parse_cp_flags(view({"backup": "nil"})).backup == "existing"
     assert parse_cp_flags(view({"archive": True})).recursive is True
+
+
+def _typed_backend(files: dict[str, bytes], dirs: set[str]):
+    """Backend whose ``find`` honors ``type`` and whose ``mkdir`` records."""
+    stat, copy, _ = _make_backend(files, dirs)
+
+    async def find(p, type=None) -> list[str]:
+        base = _key(p) + "/"
+        if type == "d":
+            return sorted(k for k in dirs if k.startswith(base))
+        return sorted(k for k in files if k.startswith(base))
+
+    async def mkdir(p) -> None:
+        dirs.add(_key(p))
+
+    return stat, copy, find, mkdir
+
+
+@pytest.mark.asyncio
+async def test_recursive_update_keeps_directories_without_files():
+    # The per-entry policy path cannot use dir_copy, so it must recreate the
+    # tree's directories itself; GNU keeps an empty directory.
+    files = {"/t/f.txt": b"F"}
+    dirs = {"/t", "/t/empt"}
+    stat, copy, find, mkdir = _typed_backend(files, dirs)
+    _, io = await cp([_spec(p) for p in ["/t", "/c"]],
+                     strategy=NativeCopy(copy=copy, find=find, mkdir=mkdir),
+                     find_type="f",
+                     stat=stat,
+                     flags=CpFlags(recursive=True, update="older"))
+    assert io.exit_code == 0
+    assert files["/c/f.txt"] == b"F"
+    assert "/c/empt" in dirs
+
+
+@pytest.mark.asyncio
+async def test_recursive_empty_tree_still_creates_destination():
+    files: dict[str, bytes] = {}
+    dirs = {"/t", "/t/a", "/t/a/b"}
+    stat, copy, find, mkdir = _typed_backend(files, dirs)
+    _, io = await cp([_spec(p) for p in ["/t", "/c"]],
+                     strategy=NativeCopy(copy=copy, find=find, mkdir=mkdir),
+                     find_type="f",
+                     stat=stat,
+                     flags=CpFlags(recursive=True, backup="simple"))
+    assert io.exit_code == 0
+    assert {"/c", "/c/a", "/c/a/b"} <= dirs
+
+
+@pytest.mark.asyncio
+async def test_no_op_policy_modes_keep_the_native_dir_copy():
+    # --update=all and --backup=none decide nothing per entry, so the fast
+    # whole-tree dir_copy must still be used.
+    for flags in (CpFlags(recursive=True,
+                          update="all"), CpFlags(recursive=True,
+                                                 backup="none")):
+        files = {"/t/f.txt": b"F"}
+        dirs = {"/t", "/t/empt"}
+        stat, copy, find, mkdir = _typed_backend(files, dirs)
+        used = {"dir_copy": False}
+
+        async def dir_copy(src, dst) -> None:
+            used["dir_copy"] = True
+            dirs.add(_key(dst))
+
+        _, io = await cp([_spec(p) for p in ["/t", "/c"]],
+                         strategy=NativeCopy(copy=copy,
+                                             find=find,
+                                             dir_copy=dir_copy,
+                                             mkdir=mkdir),
+                         find_type="f",
+                         stat=stat,
+                         flags=flags)
+        assert io.exit_code == 0
+        assert used["dir_copy"], flags
+
+
+@pytest.mark.asyncio
+async def test_backup_version_scan_failure_aborts_the_overwrite():
+    # Reading a failed listing as "no numbered backups" would pick .~1~ and
+    # overwrite backup history, so the transfer must abort instead.
+    files = {"/a.txt": b"NEW", "/b.txt": b"OLD"}
+
+    async def failing_readdir(p) -> list[str]:
+        raise enotsup("ram", "readdir", p)
+
+    _, io = await _run(files,
+                       set(), ["/a.txt", "/b.txt"],
+                       readdir=failing_readdir,
+                       flags=CpFlags(backup="numbered"))
+    assert io.exit_code == 1
+    assert io.stderr == (b"cp: cannot backup '/b.txt': "
+                         b"Operation not supported\n")
+    assert files["/b.txt"] == b"OLD"

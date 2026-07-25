@@ -34,9 +34,17 @@ function mvCommand(
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
   const parsed = parseMvFlags(opts.flags)
+  const overlay = opts.statOverlay
+  // -u freshness must see the namespace attr overlay (touch on overlay
+  // backends, where OPFS has no setattr op), exactly like ls -l does;
+  // the raw OPFS stat only reports the write wall-clock.
+  const stat =
+    overlay !== undefined
+      ? async (p: PathSpec) => overlay(p.virtual, await coreStat(accessor, p))
+      : (p: PathSpec) => coreStat(accessor, p)
   return mvGeneric(
     paths,
-    (p: PathSpec) => coreStat(accessor, p),
+    stat,
     { rename: (src: PathSpec, target: PathSpec) => coreRename(accessor, src, target) },
     parsed,
     opts.index ?? undefined,

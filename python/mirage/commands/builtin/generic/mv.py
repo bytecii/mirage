@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import logging
 from dataclasses import dataclass
 from typing import Callable
 
@@ -23,14 +24,19 @@ from mirage.commands.builtin.utils.copy import (backend_key_default,
 from mirage.commands.errors import UsageError
 from mirage.commands.spec.types import FlagView
 from mirage.io.types import ByteSource, IOResult
-from mirage.types import (MoveStrategy, PathSpec, PrimitiveMove, ReaddirFn,
-                          StatFn)
+from mirage.types import (MoveStrategy, NativeMove, PathSpec, PrimitiveMove,
+                          ReaddirFn, StatFn)
 from mirage.utils.errors import FS_ERRORS, fs_strerror
 
 from mirage.commands.builtin.generic.cp import (  # isort: skip
-    TransferPolicy, copy_entries, entry_kind, make_backup, overwrite_gate,
-    overwrite_type_error, split_operands, target_dir_error, update_mode, walk,
-    wrap_target_dir)
+    TransferPolicy, backup_displaces, copy_entries, entry_kind, make_backup,
+    overwrite_gate, overwrite_type_error, split_operands, target_dir_error,
+    update_mode, walk, wrap_target_dir)
+
+_logger = logging.getLogger(__name__)
+
+# Bound on the --exchange staging-name probe.
+_HOLDING_ATTEMPTS = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +179,54 @@ async def _remove_entries(
     return removed_any, not failed
 
 
+async def _holding_path(stat: StatFn, target: PathSpec) -> PathSpec | None:
+    """An unused sibling of ``target`` to stage a swap through.
+
+    The name is probed instead of assumed: renames overwrite on most
+    backends, so a fixed ``.~xchg~`` would silently destroy a real file
+    of that name. None means no free slot was found.
+
+    Args:
+        stat (StatFn): Stats a path; raises when missing.
+        target (PathSpec): Second operand of the swap.
+    """
+    for attempt in range(_HOLDING_ATTEMPTS):
+        tag = ".~xchg~" if attempt == 0 else f".~xchg{attempt}~"
+        candidate = sibling_path(target, tag)
+        if not await path_exists(stat, candidate):
+            return candidate
+    return None
+
+
+async def _undo_exchange(strategy: NativeMove, src: PathSpec, target: PathSpec,
+                         holding: PathSpec, staged: bool,
+                         swapped: bool) -> bool:
+    """Put a partially completed swap back the way it was.
+
+    Args:
+        strategy (NativeMove): Native rename capability.
+        src (PathSpec): First operand of the swap.
+        target (PathSpec): Second operand of the swap.
+        holding (PathSpec): Staging path the source was parked at.
+        staged (bool): Whether ``src`` reached ``holding``.
+        swapped (bool): Whether ``target`` reached ``src``.
+
+    Returns:
+        bool: True when the operands are back in their original places.
+    """
+    if not staged:
+        return True
+    try:
+        if swapped:
+            await strategy.rename(src, target)
+        await strategy.rename(holding, src)
+    except FS_ERRORS as exc:
+        _logger.debug("mv --exchange rollback failed for %s: %s", src.virtual,
+                      exc)
+        return False
+    return True
+
+
 async def _exchange_pair(
     strategy: MoveStrategy,
     stat: StatFn,
@@ -182,12 +236,16 @@ async def _exchange_pair(
     writes: dict[str, ByteSource],
     lines: list[str] | None,
 ) -> None:
-    """Atomically swap two entries via three renames (``--exchange``).
+    """Swap two entries through a staging name (``--exchange``).
 
-    Both sides must exist. Deliberate divergence: where GNU's renameat2
-    probe degrades a missing side to ``Unknown error -1``, the honest
-    errno text is reported instead. A cross-mount exchange fails like
-    GNU on a cross-device rename.
+    Both sides must exist. Deliberate divergence: GNU issues one atomic
+    ``renameat2(RENAME_EXCHANGE)``, which no backend exposes, so the swap
+    is staged through an unused sibling of the target and is *not* atomic.
+    The staging name is probed for a free slot so an existing ``.~xchg~``
+    is never clobbered, and a failure part-way rolls the operands back.
+    Where GNU's renameat2 probe degrades a missing side to ``Unknown
+    error -1``, the honest errno text is reported instead. A cross-mount
+    exchange fails like GNU on a cross-device rename.
 
     Args:
         strategy (MoveStrategy): Complete native or primitive move
@@ -208,14 +266,28 @@ async def _exchange_pair(
         errors.append(f"mv: cannot exchange '{src.virtual}' and "
                       f"'{target.virtual}': No such file or directory")
         return
-    holding = sibling_path(target, ".~xchg~")
+    holding = await _holding_path(stat, target)
+    if holding is None:
+        errors.append(f"mv: cannot exchange '{src.virtual}' and "
+                      f"'{target.virtual}': File exists")
+        return
+    staged = False
+    swapped = False
     try:
         await strategy.rename(src, holding)
+        staged = True
         await strategy.rename(target, src)
+        swapped = True
         await strategy.rename(holding, target)
     except FS_ERRORS as exc:
+        restored = await _undo_exchange(strategy, src, target, holding, staged,
+                                        swapped)
         errors.append(f"mv: cannot exchange '{src.virtual}' and "
                       f"'{target.virtual}': {fs_strerror(exc)}")
+        if not restored:
+            writes[holding.mount_path] = b""
+            errors.append(f"mv: '{src.virtual}' left at "
+                          f"'{holding.virtual}' after a failed exchange")
         return
     writes[src.mount_path] = b""
     writes[target.mount_path] = b""
@@ -314,12 +386,19 @@ async def mv(
             errors.append(f"mv: cannot move '{src.virtual}' to "
                           f"'{target.virtual}': Invalid cross-device link")
             continue
+        # A backup renames the target aside first, so -b -T installs over a
+        # nonempty directory (GNU 9.7) instead of hitting this refusal.
         if src_is_dir and target_is_dir and flags.no_target_dir \
-                and readdir is not None:
+                and readdir is not None \
+                and not backup_displaces(flags.backup):
             try:
                 children = await readdir(target)
-            except FS_ERRORS:
-                children = []
+            except FS_ERRORS as exc:
+                # Reading it as "empty" would clobber a directory whose
+                # contents could not be verified.
+                errors.append(f"mv: cannot overwrite '{target.virtual}': "
+                              f"{fs_strerror(exc)}")
+                continue
             if children:
                 errors.append(f"mv: cannot overwrite '{target.virtual}': "
                               "Directory not empty")

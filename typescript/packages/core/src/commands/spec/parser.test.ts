@@ -538,3 +538,27 @@ describe('shortValue: false keeps the short boolean and clusterable', () => {
     expect(valued.flags['--backup']).toBe('numbered')
   })
 })
+
+describe('optional-value aliases honor command-line order', () => {
+  it('lets the last spelling win when -u follows --update=all', () => {
+    // GNU treats -u and --update as one option, so the last spelling on the
+    // line decides (pinned against GNU coreutils 9.7).
+    const shortLast = parseCommand(specOf('cp'), ['--update=all', '-u', '/a', '/b'], '/')
+    expect(shortLast.flags['--update']).toBe(true)
+    expect(shortLast.flags['-u']).toBe(true)
+  })
+
+  it('lets the last spelling win when --update=all follows -u', () => {
+    const longLast = parseCommand(specOf('cp'), ['-u', '--update=all', '/a', '/b'], '/')
+    expect(longLast.flags['-u']).toBe('all')
+    expect(longLast.flags['--update']).toBe('all')
+  })
+
+  it('never mirrors repeatable aliases', () => {
+    // sort -k/--key accumulates; mirroring would double every keydef because
+    // the generic concatenates both spellings' lists.
+    const parsed = parseCommand(specOf('sort'), ['-k1', '--key=2', '/f'], '/')
+    expect(parsed.flags['-k']).toEqual(['1'])
+    expect(parsed.flags['--key']).toEqual(['2'])
+  })
+})

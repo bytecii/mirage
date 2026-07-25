@@ -37,7 +37,7 @@ export const CP_BUILDER: Builder = {
   name: 'cp',
   write: true,
   fn: (ops, accessor, paths, _texts, opts) => {
-    const { copy, dirCopy, find, isDirName } = ops
+    const { copy, dirCopy, find, isDirName, mkdir } = ops
     if (copy === undefined) {
       throw new Error('cp: backend provides no copy op')
     }
@@ -67,6 +67,7 @@ export const CP_BUILDER: Builder = {
       ...(dirCopy === undefined
         ? {}
         : { dirCopy: (src: PathSpec, target: PathSpec) => dirCopy(accessor, src, target) }),
+      ...(mkdir === undefined ? {} : { mkdir: (p: PathSpec) => mkdir(accessor, p) }),
     }
     return cpGeneric(
       paths,

@@ -14,8 +14,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -51,8 +49,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -88,8 +84,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -126,8 +120,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -164,8 +156,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -186,6 +176,76 @@
       "flags": [
         "b",
         "v"
+      ]
+    },
+    {
+      "id": "cp_backup_none_makes_no_backup",
+      "seq": 613074,
+      "command": "mkdir -p /data/cpb5 && printf 'S\\n' > /data/cpb5/s.txt && printf 'D\\n' > /data/cpb5/d.txt && cp --backup=none /data/cpb5/s.txt /data/cpb5/d.txt && ls /data/cpb5",
+      "expect": {
+        "exit": 0,
+        "stdout": "d.txt\ns.txt\n",
+        "stderr": ""
+      },
+      "flags": [
+        "backup"
+      ],
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ]
+    },
+    {
+      "id": "cp_suffix_long_spelling",
+      "seq": 613075,
+      "command": "mkdir -p /data/cpb6 && printf 'S\\n' > /data/cpb6/s.txt && printf 'D\\n' > /data/cpb6/d.txt && cp --suffix=.bak /data/cpb6/s.txt /data/cpb6/d.txt && cat /data/cpb6/d.txt.bak && ls /data/cpb6",
+      "expect": {
+        "exit": 0,
+        "stdout": "D\nd.txt\nd.txt.bak\ns.txt\n",
+        "stderr": ""
+      },
+      "flags": [
+        "suffix"
+      ],
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
       ]
     }
   ]

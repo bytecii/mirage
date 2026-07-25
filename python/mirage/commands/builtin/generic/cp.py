@@ -25,8 +25,9 @@ from mirage.commands.errors import UsageError
 from mirage.commands.spec.types import FlagView
 from mirage.commands.spec.usage import extra_operand_error
 from mirage.io.types import ByteSource, IOResult
-from mirage.types import (CopyStrategy, FileType, NativeMove, PathSpec,
-                          PrimitiveCopy, PrimitiveMove, ReaddirFn, StatFn)
+from mirage.types import (CopyStrategy, FileType, NativeCopy, NativeMove,
+                          PathSpec, PrimitiveCopy, PrimitiveMove, ReaddirFn,
+                          StatFn)
 from mirage.utils.dates import iso_timestamp
 from mirage.utils.errors import FS_ERRORS, fs_strerror
 from mirage.utils.key_prefix import mount_prefix_of, rekey
@@ -65,6 +66,29 @@ class TransferPolicy:
     update: str | None = None
     backup: str | None = None
     suffix: str = DEFAULT_BACKUP_SUFFIX
+
+
+def update_gates(mode: str | None) -> bool:
+    """Whether an ``--update`` mode can skip or fail an individual entry.
+
+    ``all`` copies unconditionally, so it needs no per-entry decision and
+    must not cost a target probe or forfeit a whole-tree ``dir_copy``.
+
+    Args:
+        mode (str | None): Update mode from ``update_mode``.
+    """
+    return mode is not None and mode != "all"
+
+
+def backup_displaces(control: str | None) -> bool:
+    """Whether a backup control actually moves an existing target aside.
+
+    ``none`` is a no-op control, so it needs no per-entry decision.
+
+    Args:
+        control (str | None): Canonical control from ``backup_control``.
+    """
+    return control is not None and control != "none"
 
 
 def update_mode(cmd_name: str, fl: FlagView) -> str | None:
@@ -267,7 +291,7 @@ async def overwrite_gate(policy: TransferPolicy, stat: StatFn, src: PathSpec,
     Returns:
         bool: True when the transfer should proceed.
     """
-    if not policy.no_clobber and policy.update is None:
+    if not policy.no_clobber and not update_gates(policy.update):
         # No gating flag: skip the target probe entirely so API-backed
         # mounts pay no extra stat per entry.
         return True
@@ -293,24 +317,54 @@ async def overwrite_gate(policy: TransferPolicy, stat: StatFn, src: PathSpec,
     return True
 
 
-async def _duplicate_for_backup(strategy: CopyStrategy | PrimitiveMove
-                                | NativeMove, target: PathSpec,
-                                backup: PathSpec) -> None:
+async def _duplicate_for_backup(
+    strategy: CopyStrategy | PrimitiveMove | NativeMove,
+    stat: StatFn,
+    target: PathSpec,
+    backup: PathSpec,
+    errors: list[str],
+    cmd_name: str,
+) -> bool:
     """Materialize the backup: mv renames the target away, cp copies it.
+
+    A directory target needs a tree transfer, not a byte copy: the
+    primitive (cross-mount) strategies walk it entry by entry and a native
+    copy defers to ``dir_copy``, while a native rename already carries a
+    whole subtree.
 
     Args:
         strategy: Transfer strategy owning the needed primitives.
+        stat (StatFn): Stats a path; raises when missing.
         target (PathSpec): The destination being replaced.
         backup (PathSpec): The backup destination.
+        errors (list[str]): Collected stderr lines, appended in place.
+        cmd_name (str): Command name for error prefixes.
+
+    Returns:
+        bool: True when the backup landed in full.
     """
-    if isinstance(strategy, (PrimitiveCopy, PrimitiveMove)):
-        data = await strategy.read_bytes(target)
-        await strategy.write(backup, data=data)
-        return
     if isinstance(strategy, NativeMove):
         await strategy.rename(target, backup)
-        return
-    await strategy.copy(target, backup)
+        return True
+    target_is_dir = await is_directory(stat, target)
+    if isinstance(strategy, (PrimitiveCopy, PrimitiveMove)):
+        if not target_is_dir:
+            data = await strategy.read_bytes(target)
+            await strategy.write(backup, data=data)
+            return True
+        entries = await walk(strategy.readdir, stat, target)
+        copied_all, _ = await copy_entries(cmd_name, strategy, stat, target,
+                                           backup, entries, errors)
+        return copied_all
+    if not target_is_dir:
+        await strategy.copy(target, backup)
+        return True
+    if strategy.dir_copy is None:
+        errors.append(f"{cmd_name}: cannot backup '{target.virtual}': "
+                      "Operation not supported")
+        return False
+    await strategy.dir_copy(target, backup)
+    return True
 
 
 async def make_backup(
@@ -341,14 +395,25 @@ async def make_backup(
         return None, True
     if not await path_exists(stat, target):
         return None, True
-    backup = await backup_target(readdir, target, policy.backup, policy.suffix)
-    if backup is None:
-        return None, True
     try:
-        await _duplicate_for_backup(strategy, target, backup)
+        # A failed version scan must not degrade to ".~1~"/the simple
+        # suffix: that would overwrite existing backup history.
+        backup = await backup_target(readdir, target, policy.backup,
+                                     policy.suffix)
     except FS_ERRORS as exc:
         errors.append(f"{policy.cmd_name}: cannot backup "
                       f"'{target.virtual}': {fs_strerror(exc)}")
+        return None, False
+    if backup is None:
+        return None, True
+    try:
+        made = await _duplicate_for_backup(strategy, stat, target, backup,
+                                           errors, policy.cmd_name)
+    except FS_ERRORS as exc:
+        errors.append(f"{policy.cmd_name}: cannot backup "
+                      f"'{target.virtual}': {fs_strerror(exc)}")
+        return None, False
+    if not made:
         return None, False
     writes[backup.mount_path] = b""
     return backup, True
@@ -378,6 +443,52 @@ def mounted_path(root: PathSpec, mount_path: str) -> PathSpec:
     prefix = mount_prefix_of(root.virtual, root.resource_path)
     virtual = prefix + mount_path if prefix else mount_path
     return PathSpec.from_str_path(virtual, mount_path.strip("/"))
+
+
+async def _mirror_dirs(
+    strategy: NativeCopy,
+    stat: StatFn,
+    src: PathSpec,
+    target: PathSpec,
+    src_base: str,
+    dst_base: str,
+    writes: dict[str, ByteSource],
+    errors: list[str],
+) -> None:
+    """Recreate a source tree's directories under the destination root.
+
+    Only needed on the per-entry policy path, where a whole-tree
+    ``dir_copy`` cannot be used: without this, a directory holding no
+    files would never appear at the destination, and an entirely empty
+    tree would copy to nothing. A backend exposing no ``mkdir``
+    (directories are implied by keys) is a no-op. Parents sort before
+    children so a nested tree lands in order.
+
+    Args:
+        strategy (NativeCopy): Native copy capability.
+        stat (StatFn): Stats a path; raises when missing.
+        src (PathSpec): Source root.
+        target (PathSpec): Destination root.
+        src_base (str): Source root's mount path, no trailing slash.
+        dst_base (str): Destination root's mount path, no trailing slash.
+        writes (dict[str, ByteSource]): Recorded writes, updated in place.
+        errors (list[str]): Collected stderr lines, appended in place.
+    """
+    if strategy.mkdir is None:
+        return
+    mounts = [src_base, *await strategy.find(src, type="d")]
+    for entry_mount in sorted(set(mounts), key=len):
+        entry_dst = mounted_path(target,
+                                 dst_base + entry_mount[len(src_base):])
+        if await is_directory(stat, entry_dst):
+            continue
+        try:
+            await strategy.mkdir(entry_dst)
+        except FS_ERRORS as exc:
+            errors.append(f"cp: cannot create directory "
+                          f"'{entry_dst.virtual}': {fs_strerror(exc)}")
+            continue
+        writes[entry_dst.mount_path] = b""
 
 
 async def walk(
@@ -582,7 +693,8 @@ async def cp(
                             update=flags.update,
                             backup=flags.backup,
                             suffix=flags.suffix)
-    per_entry_native = flags.update is not None or flags.backup is not None
+    per_entry_native = update_gates(flags.update) \
+        or backup_displaces(flags.backup)
     writes: dict[str, ByteSource] = {}
     reads: dict[str, ByteSource] = {}
     lines: list[str] = []
@@ -641,6 +753,11 @@ async def cp(
                         lines.append(
                             f"'{entry.virtual}' -> '{entry_dst.virtual}'")
                 continue
+            # Per-entry policy forfeits dir_copy, so the tree's directories
+            # are recreated here: a files-only pass would drop every
+            # directory that holds no files (GNU keeps them).
+            await _mirror_dirs(strategy, stat, src, target, src_base, dst_base,
+                               writes, errors)
             for entry_mount in await strategy.find(src, type=find_type):
                 entry = mounted_path(src, entry_mount)
                 entry_dst = mounted_path(

@@ -14,8 +14,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -51,8 +49,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -88,8 +84,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -125,8 +119,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -162,8 +154,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -184,6 +174,113 @@
       "flags": [
         "t",
         "T"
+      ]
+    },
+    {
+      "id": "cp_long_spellings_verbose_target_dir",
+      "seq": 613076,
+      "command": "mkdir -p /data/cpt3/dir && printf 'A\\n' > /data/cpt3/a.txt && cp --verbose --target-directory=/data/cpt3/dir /data/cpt3/a.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "'/data/cpt3/a.txt' -> '/data/cpt3/dir/a.txt'\n",
+        "stderr": ""
+      },
+      "flags": [
+        "verbose",
+        "target-directory"
+      ],
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ]
+    },
+    {
+      "id": "cp_no_target_directory_long",
+      "seq": 613077,
+      "command": "mkdir -p /data/cpt4 && printf 'A\\n' > /data/cpt4/a.txt && cp --no-target-directory /data/cpt4/a.txt /data/cpt4/b.txt && cat /data/cpt4/b.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "A\n",
+        "stderr": ""
+      },
+      "flags": [
+        "no-target-directory"
+      ],
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ]
+    },
+    {
+      "id": "cp_recursive_long_and_strip_trailing_slashes",
+      "seq": 613078,
+      "command": "mkdir -p /data/cpt5/t && printf 'F\\n' > /data/cpt5/t/f.txt && cp --recursive --strip-trailing-slashes /data/cpt5/t /data/cpt5/c && cat /data/cpt5/c/f.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "F\n",
+        "stderr": ""
+      },
+      "flags": [
+        "recursive",
+        "strip-trailing-slashes"
+      ],
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
       ]
     }
   ]

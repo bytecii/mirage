@@ -14,8 +14,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -51,8 +49,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -88,8 +84,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -125,8 +119,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -146,6 +138,149 @@
       },
       "flags": [
         "update"
+      ]
+    },
+    {
+      "id": "cp_update_all_overwrites_newer",
+      "seq": 613070,
+      "command": "mkdir -p /data/cpu4 && printf 'new\\n' > /data/cpu4/src.txt && printf 'old\\n' > /data/cpu4/dst.txt && touch -d '2020-01-01T00:00:00' /data/cpu4/src.txt && touch -d '2024-01-01T00:00:00' /data/cpu4/dst.txt && cp --update=all /data/cpu4/src.txt /data/cpu4/dst.txt && cat /data/cpu4/dst.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "new\n",
+        "stderr": ""
+      },
+      "flags": [
+        "update"
+      ],
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ]
+    },
+    {
+      "id": "cp_update_last_spelling_wins",
+      "seq": 613071,
+      "command": "mkdir -p /data/cpu5 && printf 'new\\n' > /data/cpu5/src.txt && printf 'old\\n' > /data/cpu5/dst.txt && touch -d '2020-01-01T00:00:00' /data/cpu5/src.txt && touch -d '2024-01-01T00:00:00' /data/cpu5/dst.txt && cp --update=all -u /data/cpu5/src.txt /data/cpu5/dst.txt && cat /data/cpu5/dst.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "old\n",
+        "stderr": ""
+      },
+      "flags": [
+        "u",
+        "update"
+      ],
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ]
+    },
+    {
+      "id": "cp_r_update_keeps_empty_dir",
+      "seq": 613072,
+      "command": "mkdir -p /data/cpu6/t/empt && printf 'F\\n' > /data/cpu6/t/f.txt && cp -r -u /data/cpu6/t /data/cpu6/c && find /data/cpu6/c | sort",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/cpu6/c\n/data/cpu6/c/empt\n/data/cpu6/c/f.txt\n",
+        "stderr": ""
+      },
+      "flags": [
+        "r",
+        "u"
+      ],
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ]
+    },
+    {
+      "id": "cp_r_update_all_keeps_empty_dir",
+      "seq": 613073,
+      "command": "mkdir -p /data/cpu7/t/empt && printf 'F\\n' > /data/cpu7/t/f.txt && cp -r --update=all /data/cpu7/t /data/cpu7/c && find /data/cpu7/c | sort",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/cpu7/c\n/data/cpu7/c/empt\n/data/cpu7/c/f.txt\n",
+        "stderr": ""
+      },
+      "flags": [
+        "r",
+        "update"
+      ],
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
       ]
     }
   ]

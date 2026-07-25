@@ -49,6 +49,7 @@
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-c",
+      "short_value": true,
       "value_kind": "none",
       "value_optional": false
     },
@@ -58,6 +59,7 @@
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-d",
+      "short_value": true,
       "value_kind": "none",
       "value_optional": false
     },
@@ -67,6 +69,7 @@
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-D",
+      "short_value": true,
       "value_kind": "none",
       "value_optional": false
     },
@@ -76,6 +79,7 @@
       "numeric_shorthand": false,
       "repeatable": false,
       "short": null,
+      "short_value": true,
       "value_kind": "text",
       "value_optional": true
     },
@@ -85,6 +89,7 @@
       "numeric_shorthand": false,
       "repeatable": false,
       "short": null,
+      "short_value": true,
       "value_kind": "text",
       "value_optional": true
     },
@@ -94,6 +99,7 @@
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-u",
+      "short_value": true,
       "value_kind": "none",
       "value_optional": false
     },
@@ -103,6 +109,7 @@
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-f",
+      "short_value": true,
       "value_kind": "text",
       "value_optional": false
     },
@@ -112,6 +119,7 @@
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-s",
+      "short_value": true,
       "value_kind": "text",
       "value_optional": false
     },
@@ -121,6 +129,7 @@
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-i",
+      "short_value": true,
       "value_kind": "none",
       "value_optional": false
     },
@@ -130,6 +139,7 @@
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-w",
+      "short_value": true,
       "value_kind": "text",
       "value_optional": false
     },
@@ -139,6 +149,7 @@
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-z",
+      "short_value": true,
       "value_kind": "none",
       "value_optional": false
     }

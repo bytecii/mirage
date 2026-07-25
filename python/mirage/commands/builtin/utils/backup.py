@@ -16,7 +16,6 @@ import re
 
 from mirage.commands.errors import UsageError
 from mirage.types import PathSpec, ReaddirFn
-from mirage.utils.errors import FS_ERRORS
 from mirage.utils.key_prefix import rekey
 
 # GNU version-control names (each canonical control has a legacy alias).
@@ -102,18 +101,19 @@ async def _numbered_versions(readdir: ReaddirFn | None,
                              target: PathSpec) -> list[int]:
     """Existing numbered-backup versions (``name.~N~``) next to a target.
 
+    A listing failure propagates: reading it as "no numbered backups" would
+    pick ``.~1~`` (or fall back to the simple suffix) and silently overwrite
+    backup history that may exist, so the caller aborts the overwrite.
+
     Args:
         readdir (ReaddirFn | None): Lists a directory's full child paths;
-            None (or a failing listing) reads as no numbered backups.
+            None reads as no numbered backups.
         target (PathSpec): The path about to be backed up.
     """
     if readdir is None:
         return []
     base = target.virtual.rstrip("/").rsplit("/", 1)[-1]
-    try:
-        children = await readdir(parent_path(target))
-    except FS_ERRORS:
-        return []
+    children = await readdir(parent_path(target))
     versions: list[int] = []
     for child in children:
         name = child.rstrip("/").rsplit("/", 1)[-1]

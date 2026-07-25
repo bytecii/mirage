@@ -14,7 +14,6 @@
 
 import { UsageError } from '../../errors.ts'
 import { PathSpec, type ReaddirFn } from '../../../types.ts'
-import { isFsError } from '../../../utils/errors.ts'
 import { rekey } from '../../../utils/key_prefix.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 
@@ -85,20 +84,16 @@ export function parentPath(path: PathSpec): PathSpec {
 }
 
 // Existing numbered-backup versions (`name.~N~`) next to a target. A missing
-// lister (or a failing listing) reads as no numbered backups.
+// lister reads as no numbered backups; a failing listing propagates, because
+// reading it as "none" would pick `.~1~` (or fall back to the simple suffix)
+// and silently overwrite backup history that may exist.
 async function numberedVersions(
   readdir: ReaddirFn | undefined,
   target: PathSpec,
 ): Promise<number[]> {
   if (readdir === undefined) return []
   const base = rstripSlash(target.virtual).split('/').pop() ?? ''
-  let children: string[]
-  try {
-    children = await readdir(parentPath(target))
-  } catch (err) {
-    if (!isFsError(err)) throw err
-    return []
-  }
+  const children = await readdir(parentPath(target))
   const versions: number[] = []
   for (const child of children) {
     const name = rstripSlash(child).split('/').pop() ?? ''

@@ -20,6 +20,7 @@ import {
   PathSpec,
   type CopyStrategy,
   type FileStat,
+  type NativeCopy,
   type NativeMove,
   type PrimitiveCopy,
   type PrimitiveMove,
@@ -95,6 +96,19 @@ export function firstStr(...values: unknown[]): string | null {
 
 function isPrimitiveCopy(strategy: CopyStrategy): strategy is PrimitiveCopy {
   return 'readBytes' in strategy
+}
+
+// Whether an --update mode can skip or fail an individual entry. 'all'
+// copies unconditionally, so it needs no per-entry decision and must not
+// cost a target probe or forfeit a whole-tree dirCopy.
+function updateGates(mode: string | null): boolean {
+  return mode !== null && mode !== 'all'
+}
+
+// Whether a backup control actually moves an existing target aside. 'none'
+// is a no-op control, so it needs no per-entry decision.
+export function backupDisplaces(control: string | null): boolean {
+  return control !== null && control !== 'none'
 }
 
 // Resolve -u/--update[=UPDATE] to a GNU update mode.
@@ -275,7 +289,7 @@ export async function overwriteGate(
 ): Promise<boolean> {
   // No gating flag: skip the target probe entirely so API-backed mounts
   // pay no extra stat per entry.
-  if (!policy.noClobber && policy.update === null) return true
+  if (!policy.noClobber && !updateGates(policy.update)) return true
   let targetInfo: FileStat
   try {
     targetInfo = await stat(target)
@@ -301,22 +315,54 @@ export async function overwriteGate(
   return true
 }
 
-// Materialize the backup: mv renames the target away, cp copies it.
+// Materialize the backup: mv renames the target away, cp copies it. A
+// directory target needs a tree transfer, not a byte copy: the primitive
+// (cross-mount) strategies walk it entry by entry and a native copy defers to
+// dirCopy, while a native rename already carries a whole subtree. Returns
+// true when the backup landed in full.
 async function duplicateForBackup(
   strategy: CopyStrategy | PrimitiveMove | NativeMove,
+  stat: StatFn,
   target: PathSpec,
   backup: PathSpec,
-): Promise<void> {
-  if ('readBytes' in strategy) {
-    const data = await strategy.readBytes(target)
-    await strategy.write(backup, data)
-    return
-  }
+  errors: string[],
+  cmdName: string,
+  index?: IndexCacheStore,
+): Promise<boolean> {
   if ('rename' in strategy) {
     await strategy.rename(target, backup)
-    return
+    return true
   }
-  await strategy.copy(target, backup)
+  const targetIsDir = await isDirectory(stat, target, index)
+  if ('readBytes' in strategy) {
+    if (!targetIsDir) {
+      const data = await strategy.readBytes(target)
+      await strategy.write(backup, data)
+      return true
+    }
+    const entries = await cpWalk(strategy.readdir, stat, target, index)
+    const { copiedAll } = await copyEntries(
+      cmdName,
+      strategy,
+      stat,
+      target,
+      backup,
+      entries,
+      errors,
+      index,
+    )
+    return copiedAll
+  }
+  if (!targetIsDir) {
+    await strategy.copy(target, backup)
+    return true
+  }
+  if (strategy.dirCopy === undefined) {
+    errors.push(`${cmdName}: cannot backup '${target.virtual}': Operation not supported`)
+    return false
+  }
+  await strategy.dirCopy(target, backup)
+  return true
 }
 
 // Back up an existing target before it is overwritten. Returns the backup
@@ -330,18 +376,30 @@ export async function makeBackup(
   target: PathSpec,
   writes: Record<string, ByteSource>,
   errors: string[],
+  index?: IndexCacheStore,
 ): Promise<{ backup: PathSpec | null; ok: boolean }> {
   if (policy.backup === null) return { backup: null, ok: true }
   if (!(await pathExists(stat, target))) return { backup: null, ok: true }
-  const backup = await backupTarget(readdir, target, policy.backup, policy.suffix)
-  if (backup === null) return { backup: null, ok: true }
+  let backup: PathSpec | null
   try {
-    await duplicateForBackup(strategy, target, backup)
+    // A failed version scan must not degrade to `.~1~`/the simple suffix:
+    // that would overwrite existing backup history.
+    backup = await backupTarget(readdir, target, policy.backup, policy.suffix)
   } catch (err) {
     if (!isFsError(err)) throw err
     errors.push(`${policy.cmdName}: cannot backup '${target.virtual}': ${String(fsStrerror(err))}`)
     return { backup: null, ok: false }
   }
+  if (backup === null) return { backup: null, ok: true }
+  let made: boolean
+  try {
+    made = await duplicateForBackup(strategy, stat, target, backup, errors, policy.cmdName, index)
+  } catch (err) {
+    if (!isFsError(err)) throw err
+    errors.push(`${policy.cmdName}: cannot backup '${target.virtual}': ${String(fsStrerror(err))}`)
+    return { backup: null, ok: false }
+  }
+  if (!made) return { backup: null, ok: false }
   writes[backup.mountPath] = new Uint8Array()
   return { backup, ok: true }
 }
@@ -361,6 +419,40 @@ function mountedPath(root: PathSpec, mountPath: string): PathSpec {
   const prefix = mountPrefixOf(root.virtual, root.resourcePath)
   const virtual = prefix !== '' ? prefix + mountPath : mountPath
   return PathSpec.fromStrPath(virtual, stripSlash(mountPath))
+}
+
+// Recreate a source tree's directories under the destination root. Only
+// needed on the per-entry policy path, where a whole-tree dirCopy cannot be
+// used: without this, a directory holding no files would never appear at the
+// destination, and an entirely empty tree would copy to nothing. A backend
+// exposing no mkdir (directories are implied by keys) is a no-op. Parents
+// sort before children so a nested tree lands in order.
+async function mirrorDirs(
+  strategy: NativeCopy,
+  stat: StatFn,
+  src: PathSpec,
+  target: PathSpec,
+  srcBase: string,
+  dstBase: string,
+  writes: Record<string, ByteSource>,
+  errors: string[],
+  index?: IndexCacheStore,
+): Promise<void> {
+  if (strategy.mkdir === undefined) return
+  const mounts = [srcBase, ...(await strategy.find(src, { type: 'd' }))]
+  const unique = [...new Set(mounts)].sort((a, b) => a.length - b.length)
+  for (const entryMount of unique) {
+    const entryDst = mountedPath(target, dstBase + entryMount.slice(srcBase.length))
+    if (await isDirectory(stat, entryDst, index)) continue
+    try {
+      await strategy.mkdir(entryDst)
+    } catch (err) {
+      if (!isFsError(err)) throw err
+      errors.push(`cp: cannot create directory '${entryDst.virtual}': ${String(fsStrerror(err))}`)
+      continue
+    }
+    writes[entryDst.mountPath] = new Uint8Array()
+  }
 }
 
 // List a tree as {path, isDir} pairs, parents before children. The type is
@@ -457,6 +549,7 @@ export async function copyEntries(
         entryDstSpec,
         opts.writes ?? {},
         errors,
+        index,
       )
       if (!made.ok) {
         copiedAll = false
@@ -543,7 +636,7 @@ export async function cpGeneric(
     backup: flags.backup,
     suffix: flags.suffix,
   }
-  const perEntryNative = flags.update !== null || flags.backup !== null
+  const perEntryNative = updateGates(flags.update) || backupDisplaces(flags.backup)
   const writes: Record<string, ByteSource> = {}
   const reads: Record<string, Uint8Array> = {}
   const lines: string[] = []
@@ -596,6 +689,10 @@ export async function cpGeneric(
         }
         continue
       }
+      // Per-entry policy forfeits dirCopy, so the tree's directories are
+      // recreated here: a files-only pass would drop every directory that
+      // holds no files (GNU keeps them).
+      await mirrorDirs(strategy, stat, src, target, srcBase, dstBase, writes, errors, index)
       for (const entryMount of await strategy.find(src, { type: 'f' })) {
         const entry = mountedPath(src, entryMount)
         const entryDst = mountedPath(target, dstBase + entryMount.slice(srcBase.length))
@@ -608,6 +705,7 @@ export async function cpGeneric(
           entryDst,
           writes,
           errors,
+          index,
         )
         if (!made.ok) continue
         await strategy.copy(entry, entryDst)
@@ -617,7 +715,16 @@ export async function cpGeneric(
       continue
     }
     if (!(await overwriteGate(policy, stat, src, target, errors))) continue
-    const made = await makeBackup(policy, strategy, stat, versionReaddir, target, writes, errors)
+    const made = await makeBackup(
+      policy,
+      strategy,
+      stat,
+      versionReaddir,
+      target,
+      writes,
+      errors,
+      index,
+    )
     if (!made.ok) continue
     if (isPrimitiveCopy(strategy)) {
       let data: Uint8Array

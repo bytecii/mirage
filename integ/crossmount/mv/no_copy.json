@@ -1,8 +1,8 @@
 {
   "cases": [
     {
-      "id": "mv_u_skips_newer_dest_keeps_source",
-      "seq": 613030,
+      "id": "xm_mv_no_copy_refuses",
+      "seq": 613090,
       "targets": [
         "ram",
         "disk",
@@ -14,6 +14,8 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
+        "hf",
+        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -25,19 +27,19 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "mkdir -p /data/mvu1 && printf 'stale\\n' > /data/mvu1/src.txt && printf 'fresh\\n' > /data/mvu1/dst.txt && touch -d '2020-01-01T00:00:00' /data/mvu1/src.txt && touch -d '2024-01-01T00:00:00' /data/mvu1/dst.txt && mv -u /data/mvu1/src.txt /data/mvu1/dst.txt && cat /data/mvu1/src.txt /data/mvu1/dst.txt",
+      "command": "printf 'NC\\n' > /data/xm_nc.txt && mv --no-copy /data/xm_nc.txt /data2/xm_nc.txt",
       "expect": {
-        "exit": 0,
-        "stdout": "stale\nfresh\n",
-        "stderr": ""
+        "exit": 1,
+        "stdout": "",
+        "stderr": "mv: cannot move '/data/xm_nc.txt' to '/data2/xm_nc.txt': Invalid cross-device link\n"
       },
       "flags": [
-        "u"
+        "no-copy"
       ]
     },
     {
-      "id": "mv_u_replaces_older_dest",
-      "seq": 613031,
+      "id": "xm_mv_no_copy_source_kept",
+      "seq": 613091,
       "targets": [
         "ram",
         "disk",
@@ -49,6 +51,8 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
+        "hf",
+        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -60,19 +64,19 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "mkdir -p /data/mvu2 && printf 'new\\n' > /data/mvu2/src.txt && printf 'old\\n' > /data/mvu2/dst.txt && touch -d '2024-01-01T00:00:00' /data/mvu2/src.txt && touch -d '2020-01-01T00:00:00' /data/mvu2/dst.txt && mv -u /data/mvu2/src.txt /data/mvu2/dst.txt && cat /data/mvu2/dst.txt",
+      "command": "cat /data/xm_nc.txt",
       "expect": {
         "exit": 0,
-        "stdout": "new\n",
+        "stdout": "NC\n",
         "stderr": ""
       },
       "flags": [
-        "u"
+        "no-copy"
       ]
     },
     {
-      "id": "mv_u_source_removed",
-      "seq": 613032,
+      "id": "xm_mv_no_copy_same_mount_ok",
+      "seq": 613092,
       "targets": [
         "ram",
         "disk",
@@ -84,6 +88,8 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
+        "hf",
+        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -95,28 +101,19 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "ls /data/mvu2",
+      "command": "mv --no-copy /data/xm_nc.txt /data/xm_nc2.txt && cat /data/xm_nc2.txt",
       "expect": {
         "exit": 0,
-        "stdout": "dst.txt\n",
+        "stdout": "NC\n",
         "stderr": ""
       },
       "flags": [
-        "u"
+        "no-copy"
       ]
     },
     {
-      "id": "mv_update_none_skips_and_keeps_source",
-      "seq": 613082,
-      "command": "mkdir -p /data/mvu3 && printf 'S\\n' > /data/mvu3/src.txt && printf 'D\\n' > /data/mvu3/dst.txt && mv --update=none /data/mvu3/src.txt /data/mvu3/dst.txt && cat /data/mvu3/dst.txt && ls /data/mvu3",
-      "expect": {
-        "exit": 0,
-        "stdout": "D\ndst.txt\nsrc.txt\n",
-        "stderr": ""
-      },
-      "flags": [
-        "update"
-      ],
+      "id": "xm_mv_exchange_cross_mount_refused",
+      "seq": 613093,
       "targets": [
         "ram",
         "disk",
@@ -128,6 +125,8 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
+        "hf",
+        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -138,6 +137,15 @@
         "gdrive",
         "gdrive-folder",
         "box"
+      ],
+      "command": "printf 'X\\n' > /data/xm_xa.txt && printf 'Y\\n' > /data2/xm_xb.txt && mv --exchange /data/xm_xa.txt /data2/xm_xb.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "mv: cannot exchange '/data/xm_xa.txt' and '/data2/xm_xb.txt': Invalid cross-device link\n"
+      },
+      "flags": [
+        "exchange"
       ]
     }
   ]

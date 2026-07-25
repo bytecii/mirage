@@ -14,8 +14,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -51,8 +49,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -89,8 +85,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -126,8 +120,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -148,6 +140,41 @@
       "flags": [
         "exchange",
         "b"
+      ]
+    },
+    {
+      "id": "mv_exchange_preserves_existing_holding_name",
+      "seq": 613083,
+      "command": "mkdir -p /data/mvx3 && printf 'A\\n' > /data/mvx3/a.txt && printf 'B\\n' > /data/mvx3/b.txt && printf 'PRECIOUS\\n' > /data/mvx3/b.txt.~xchg~ && mv --exchange /data/mvx3/a.txt /data/mvx3/b.txt && cat /data/mvx3/a.txt /data/mvx3/b.txt /data/mvx3/b.txt.~xchg~",
+      "expect": {
+        "exit": 0,
+        "stdout": "B\nA\nPRECIOUS\n",
+        "stderr": ""
+      },
+      "flags": [
+        "exchange"
+      ],
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
       ]
     }
   ]

@@ -694,3 +694,92 @@ describe('parseCpFlags', () => {
     expect(parseCpFlags({ archive: true }).recursive).toBe(true)
   })
 })
+
+// Backend whose find honors `type` and whose mkdir records directories.
+function typedBackend(files: Map<string, Uint8Array>, dirs: Set<string>) {
+  const { stat, copy } = makeBackend(files, dirs)
+  const find = (p: PathSpec, options?: { type?: string }): Promise<string[]> => {
+    const base = key(p) + '/'
+    const source = options?.type === 'd' ? [...dirs] : [...files.keys()]
+    return Promise.resolve(source.filter((k) => k.startsWith(base)).sort())
+  }
+  const mkdir = (p: PathSpec): Promise<void> => {
+    dirs.add(key(p))
+    return Promise.resolve()
+  }
+  return { stat, copy, find, mkdir }
+}
+
+describe('per-entry policy still materializes directories', () => {
+  it('keeps a directory that holds no files under -r -u', async () => {
+    const files = new Map([['/t/f.txt', new Uint8Array([70])]])
+    const dirs = new Set(['/t', '/t/empt'])
+    const { stat, copy, find, mkdir } = typedBackend(files, dirs)
+    const [, io] = await cpGeneric(
+      ['/t', '/c'].map(spec),
+      stat,
+      { copy, find, mkdir },
+      cpFlags({ recursive: true, update: 'older' }),
+    )
+    expect(io.exitCode).toBe(0)
+    expect(files.get('/c/f.txt')).toEqual(new Uint8Array([70]))
+    expect(dirs.has('/c/empt')).toBe(true)
+  })
+
+  it('creates the destination for an entirely empty tree', async () => {
+    const files = new Map<string, Uint8Array>()
+    const dirs = new Set(['/t', '/t/a', '/t/a/b'])
+    const { stat, copy, find, mkdir } = typedBackend(files, dirs)
+    const [, io] = await cpGeneric(
+      ['/t', '/c'].map(spec),
+      stat,
+      { copy, find, mkdir },
+      cpFlags({ recursive: true, backup: 'simple' }),
+    )
+    expect(io.exitCode).toBe(0)
+    expect(dirs.has('/c')).toBe(true)
+    expect(dirs.has('/c/a/b')).toBe(true)
+  })
+
+  it('keeps the native dirCopy for the no-op policy modes', async () => {
+    // --update=all and --backup=none decide nothing per entry.
+    for (const flags of [
+      cpFlags({ recursive: true, update: 'all' }),
+      cpFlags({ recursive: true, backup: 'none' }),
+    ]) {
+      const files = new Map([['/t/f.txt', new Uint8Array([70])]])
+      const dirs = new Set(['/t', '/t/empt'])
+      const { stat, copy, find, mkdir } = typedBackend(files, dirs)
+      let used = false
+      const dirCopy = (_src: PathSpec, dst: PathSpec): Promise<void> => {
+        used = true
+        dirs.add(key(dst))
+        return Promise.resolve()
+      }
+      const [, io] = await cpGeneric(
+        ['/t', '/c'].map(spec),
+        stat,
+        { copy, find, dirCopy, mkdir },
+        flags,
+      )
+      expect(io.exitCode).toBe(0)
+      expect(used).toBe(true)
+    }
+  })
+})
+
+describe('backup version scan failures', () => {
+  it('aborts the overwrite instead of degrading to .~1~', async () => {
+    const files = new Map([
+      ['/a.txt', new Uint8Array([78])],
+      ['/b.txt', new Uint8Array([79])],
+    ])
+    const [, io] = await run(files, new Set(), ['/a.txt', '/b.txt'], {
+      flags: cpFlags({ backup: 'numbered' }),
+      readdir: () => Promise.reject(enotsup('ram', 'readdir', '/')),
+    })
+    expect(io.exitCode).toBe(1)
+    expect(await io.stderrStr()).toContain("cp: cannot backup '/b.txt': Operation not supported")
+    expect(files.get('/b.txt')).toEqual(new Uint8Array([79]))
+  })
+})
