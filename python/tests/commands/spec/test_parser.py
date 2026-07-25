@@ -333,3 +333,19 @@ def test_repeatable_aliases_are_not_mirrored():
     parsed = parse_command(SPECS["sort"], ["-k1", "--key=2", "/f"], "/")
     assert parsed.flags["-k"] == ["1"]
     assert parsed.flags["--key"] == ["2"]
+
+
+def test_attached_short_value_also_mirrors_its_alias():
+    # The attached-value spelling (`-d10`) must mirror too, or last-wins
+    # would hold for `--long=` but not for the short form.
+    attached = parse_command(SPECS["split"], ["-d10", "/in", "/pre"], "/")
+    assert attached.flags["-d"] == "10"
+    assert attached.flags["--numeric-suffixes"] == "10"
+    short_last = parse_command(SPECS["split"],
+                               ["--numeric-suffixes=3", "-d10", "/in", "/p"],
+                               "/")
+    assert short_last.flags["--numeric-suffixes"] == "10"
+    long_last = parse_command(SPECS["split"],
+                              ["-d10", "--numeric-suffixes=3", "/in", "/p"],
+                              "/")
+    assert long_last.flags["-d"] == "3"

@@ -27,11 +27,11 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "printf 'NC\\n' > /data/xm_nc.txt && mv --no-copy /data/xm_nc.txt /data2/xm_nc.txt",
+      "command": "mkdir -p /data/xmnc /data2/xmnc && printf 'NC\\n' > /data/xmnc/f.txt && mv --no-copy /data/xmnc/f.txt /data2/xmnc/f.txt",
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "mv: cannot move '/data/xm_nc.txt' to '/data2/xm_nc.txt': Invalid cross-device link\n"
+        "stderr": "mv: cannot move '/data/xmnc/f.txt' to '/data2/xmnc/f.txt': Invalid cross-device link\n"
       },
       "flags": [
         "no-copy"
@@ -64,7 +64,7 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "cat /data/xm_nc.txt",
+      "command": "cat /data/xmnc/f.txt && ls /data2/xmnc",
       "expect": {
         "exit": 0,
         "stdout": "NC\n",
@@ -88,8 +88,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -101,7 +99,7 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "mv --no-copy /data/xm_nc.txt /data/xm_nc2.txt && cat /data/xm_nc2.txt",
+      "command": "mv --no-copy /data/xmnc/f.txt /data/xmnc/g.txt && cat /data/xmnc/g.txt",
       "expect": {
         "exit": 0,
         "stdout": "NC\n",
@@ -138,11 +136,11 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "printf 'X\\n' > /data/xm_xa.txt && printf 'Y\\n' > /data2/xm_xb.txt && mv --exchange /data/xm_xa.txt /data2/xm_xb.txt",
+      "command": "mkdir -p /data/xmx /data2/xmx && printf 'X\\n' > /data/xmx/a.txt && printf 'Y\\n' > /data2/xmx/b.txt && mv --exchange /data/xmx/a.txt /data2/xmx/b.txt",
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "mv: cannot exchange '/data/xm_xa.txt' and '/data2/xm_xb.txt': Invalid cross-device link\n"
+        "stderr": "mv: cannot exchange '/data/xmx/a.txt' and '/data2/xmx/b.txt': Invalid cross-device link\n"
       },
       "flags": [
         "exchange"

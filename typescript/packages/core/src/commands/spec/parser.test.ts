@@ -562,3 +562,26 @@ describe('optional-value aliases honor command-line order', () => {
     expect(parsed.flags['--key']).toEqual(['2'])
   })
 })
+
+describe('attached short values mirror their alias', () => {
+  it('mirrors -d10 onto --numeric-suffixes and honors order both ways', () => {
+    // Otherwise last-wins would hold for `--long=` but not the short form.
+    const attached = parseCommand(specOf('split'), ['-d10', '/in', '/pre'], '/')
+    expect(attached.flags['-d']).toBe('10')
+    expect(attached.flags['--numeric-suffixes']).toBe('10')
+
+    const shortLast = parseCommand(
+      specOf('split'),
+      ['--numeric-suffixes=3', '-d10', '/in', '/p'],
+      '/',
+    )
+    expect(shortLast.flags['--numeric-suffixes']).toBe('10')
+
+    const longLast = parseCommand(
+      specOf('split'),
+      ['-d10', '--numeric-suffixes=3', '/in', '/p'],
+      '/',
+    )
+    expect(longLast.flags['-d']).toBe('3')
+  })
+})
