@@ -16,6 +16,7 @@ import { mountKey } from '../../../utils/key_prefix.ts'
 import { describe, expect, it } from 'vitest'
 import type { ByteSource, IOResult } from '../../../io/types.ts'
 import { FileStat, FileType, PathSpec, type PrimitiveCopy, type ReaddirFn } from '../../../types.ts'
+import type { FindOptions } from '../../../resource/base.ts'
 import { eacces, enotsup } from '../../../utils/errors.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import { cpFlags, cpGeneric, parseCpFlags, type CpFlags } from './cp.ts'
@@ -698,9 +699,9 @@ describe('parseCpFlags', () => {
 // Backend whose find honors `type` and whose mkdir records directories.
 function typedBackend(files: Map<string, Uint8Array>, dirs: Set<string>) {
   const { stat, copy } = makeBackend(files, dirs)
-  const find = (p: PathSpec, options?: { type?: string }): Promise<string[]> => {
+  const find = (p: PathSpec, options: FindOptions): Promise<string[]> => {
     const base = key(p) + '/'
-    const source = options?.type === 'd' ? [...dirs] : [...files.keys()]
+    const source = options.type === 'd' ? [...dirs] : [...files.keys()]
     return Promise.resolve(source.filter((k) => k.startsWith(base)).sort())
   }
   const mkdir = (p: PathSpec): Promise<void> => {

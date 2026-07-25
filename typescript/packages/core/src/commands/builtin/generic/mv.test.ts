@@ -723,7 +723,7 @@ describe('mv --exchange staging safety', () => {
     let calls = 0
     const flaky = (src: PathSpec, dst: PathSpec): Promise<void> => {
       calls += 1
-      if (calls === 2) return Promise.reject(eacces('rename', dst.virtual))
+      if (calls === 2) return Promise.reject(eacces(dst.virtual))
       return rename(src, dst)
     }
     const [, io] = await mvGeneric(
@@ -748,7 +748,7 @@ describe('mv --exchange staging safety', () => {
     let calls = 0
     const flaky = (src: PathSpec, dst: PathSpec): Promise<void> => {
       calls += 1
-      if (calls >= 2) return Promise.reject(eacces('rename', dst.virtual))
+      if (calls >= 2) return Promise.reject(eacces(dst.virtual))
       return rename(src, dst)
     }
     const [, io] = await mvGeneric(
