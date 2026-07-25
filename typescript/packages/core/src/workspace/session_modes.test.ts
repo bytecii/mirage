@@ -93,6 +93,24 @@ describe('per-session mount grants', () => {
     expect(a.store.files.has('/y.txt')).toBe(false)
   })
 
+  // A mount with no grant at all takes the same shell-attributed line as a
+  // READ-granted one, on `>` and `>>` alike, and the rest of the line keeps
+  // running — matching python, whose guard raises a PermissionError that is
+  // already a member of FS_ERRORS.
+  it.each(['echo leaked > /b/y.txt; echo next', 'echo leaked >> /b/y.txt; echo next'])(
+    'shell-attributes %s for an ungranted mount',
+    async (line) => {
+      const { ws, b } = await makeGrantsWorkspace()
+      ws.createSession('agent', { mounts: { '/a': MountMode.WRITE } })
+
+      const denied = await ws.execute(line, { sessionId: 'agent' })
+      expect(denied.exitCode).toBe(0)
+      expect(stdoutStr(denied)).toBe('next\n')
+      expect(stderrStr(denied)).toBe('/b/y.txt: Permission denied\n')
+      expect(b.store.files.has('/y.txt')).toBe(false)
+    },
+  )
+
   it('write grant allows writes', async () => {
     const { ws, a } = await makeGrantsWorkspace()
     ws.createSession('agent', { mounts: { '/a': MountMode.WRITE } })
