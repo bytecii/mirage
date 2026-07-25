@@ -116,3 +116,34 @@ async def test_readdir_cached(accessor, store, index):
         accessor, PathSpec(resource_path="", virtual="/", directory="/"),
         index)
     assert entries1 == entries2
+
+
+@pytest.mark.asyncio
+async def test_readdir_missing_stays_not_found_at_any_depth(index):
+    s = RAMStore()
+    s.files["/a.txt"] = b"a"
+
+    a = RAMAccessor(s)
+    with pytest.raises(FileNotFoundError):
+        await readdir(
+            a,
+            PathSpec(resource_path="nope/deeper",
+                     virtual="/nope/deeper",
+                     directory="/nope/deeper"), index)
+
+
+@pytest.mark.asyncio
+async def test_readdir_file_component_is_not_a_directory(index):
+    # GNU `ls /a.txt/x` -> "Not a directory": a component exists but is a
+    # file. Only a missing component is ENOENT.
+    s = RAMStore()
+    s.files["/a.txt"] = b"a"
+
+    a = RAMAccessor(s)
+    for virtual in ("/a.txt", "/a.txt/x", "/a.txt/x/y"):
+        with pytest.raises(NotADirectoryError):
+            await readdir(
+                a,
+                PathSpec(resource_path=virtual.lstrip("/"),
+                         virtual=virtual,
+                         directory=virtual), index)

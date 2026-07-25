@@ -113,3 +113,40 @@ async def test_readdir_deep(accessor, index):
                  directory="/sub/deep"), index)
     assert "/sub/deep/e.txt" in entries
     assert len(entries) == 1
+
+
+@pytest.mark.asyncio
+async def test_readdir_file_component_is_not_a_directory(index):
+    # GNU `ls /a.txt/x` -> "Not a directory": a component exists but is a
+    # file. Only a missing component is ENOENT.
+    s = RedisStore(url=REDIS_URL, key_prefix="test:readdir:nd:")
+    await s.clear()
+    await s.add_dir("/")
+    await s.set_file("/a.txt", b"a")
+    a = RedisAccessor(s)
+    for virtual in ("/a.txt", "/a.txt/x", "/a.txt/x/y"):
+        with pytest.raises(NotADirectoryError):
+            await readdir(
+                a,
+                PathSpec(resource_path=virtual.lstrip("/"),
+                         virtual=virtual,
+                         directory=virtual), index)
+    await s.clear()
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_readdir_missing_stays_not_found_at_any_depth(index):
+    s = RedisStore(url=REDIS_URL, key_prefix="test:readdir:nd2:")
+    await s.clear()
+    await s.add_dir("/")
+    await s.set_file("/a.txt", b"a")
+    a = RedisAccessor(s)
+    with pytest.raises(FileNotFoundError):
+        await readdir(
+            a,
+            PathSpec(resource_path="nope/deeper",
+                     virtual="/nope/deeper",
+                     directory="/nope/deeper"), index)
+    await s.clear()
+    await s.close()

@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import errno
+from collections.abc import Awaitable, Callable
 
 from mirage.types import PathSpec
 
@@ -58,6 +59,31 @@ def enotdir(path: object) -> NotADirectoryError:
 
 def eisdir(path: object) -> IsADirectoryError:
     return IsADirectoryError(_virtual_of(path))
+
+
+async def readdir_error(path: str | PathSpec, key: str,
+                        is_file: Callable[[str], Awaitable[bool]]) -> OSError:
+    """The errno a failed directory listing should report.
+
+    ``opendir`` reports ENOTDIR only when a component of the path exists and
+    is not a directory (GNU ``ls /f.txt/x`` -> "Not a directory"); a component
+    that does not exist at all is ENOENT (``ls /nope`` -> "No such file or
+    directory"), however deep it is. Store-backed backends have no kernel to
+    draw that line for them, so they walk the ancestors and ask here instead
+    of collapsing both cases into one errno. Mirrors TS ``readdirError``.
+
+    Args:
+        path (str | PathSpec): The operand; ``virtual`` is the reported
+            spelling.
+        key (str): The mount-local normalized path that was looked up.
+        is_file (Callable[[str], Awaitable[bool]]): Probe reporting whether a
+            mount-local path exists as a non-directory.
+    """
+    segments = [s for s in key.split("/") if s]
+    for i in range(1, len(segments) + 1):
+        if await is_file("/" + "/".join(segments[:i])):
+            return enotdir(path)
+    return enoent(path)
 
 
 def enotsup(resource: str, op_name: str,

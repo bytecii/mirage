@@ -1244,6 +1244,7 @@ export {
   gnuStrerror,
   isMissingOp,
   type MissingOpError,
+  readdirError,
 } from './utils/errors.ts'
 
 export {

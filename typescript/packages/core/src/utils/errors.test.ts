@@ -21,6 +21,7 @@ import {
   formatFsError,
   fsStrerror,
   isFsError,
+  readdirError,
 } from './errors.ts'
 
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes)
@@ -101,5 +102,39 @@ describe('fsStrerror', () => {
     expect(fsStrerror(enoent('/x'))).toBe('No such file or directory')
     expect(fsStrerror(eacces('/x'))).toBe('Permission denied')
     expect(fsStrerror(new Error('nope'))).toBeNull()
+  })
+})
+
+describe('readdirError', () => {
+  const isFile = (key: string): boolean => key === '/data/a.txt'
+
+  it('reports ENOENT for a path that does not exist', async () => {
+    const err = await readdirError('/data/nope', '/data/nope', isFile)
+    expect(err.code).toBe('ENOENT')
+    expect(fsStrerror(err)).toBe('No such file or directory')
+  })
+
+  it('stays ENOENT however deep the missing component is', async () => {
+    // GNU `ls /data/nope/deeper` reports the missing component, not ENOTDIR.
+    const err = await readdirError('/data/nope/deeper', '/data/nope/deeper', isFile)
+    expect(err.code).toBe('ENOENT')
+  })
+
+  it('reports ENOTDIR when a path component is a file', async () => {
+    for (const key of ['/data/a.txt', '/data/a.txt/x', '/data/a.txt/x/y']) {
+      const err = await readdirError(key, key, isFile)
+      expect(err.code, key).toBe('ENOTDIR')
+      expect(fsStrerror(err)).toBe('Not a directory')
+    }
+  })
+
+  it('accepts an async probe and stamps the operand spelling', async () => {
+    const err = await readdirError(
+      { virtual: '/data/nope', rawPath: 'nope' },
+      '/data/nope',
+      (key) => Promise.resolve(isFile(key)),
+    )
+    expect(err.code).toBe('ENOENT')
+    expect(err.virtualPath).toBe('nope')
   })
 })

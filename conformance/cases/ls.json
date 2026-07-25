@@ -38,6 +38,101 @@
         "stdout_text": "deep\nnested.txt\n",
         "stderr_text": ""
       }
+    },
+    {
+      "id": "ls_missing_enoent",
+      "cmd": "ls /data/missing",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram"
+        ]
+      },
+      "expect": {
+        "exit": 1,
+        "stdout_text": "",
+        "stderr_text": "ls: cannot access '/data/missing': No such file or directory\n"
+      }
+    },
+    {
+      "id": "ls_missing_nested_enoent",
+      "cmd": "ls /data/sub/missing",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram"
+        ]
+      },
+      "expect": {
+        "exit": 1,
+        "stdout_text": "",
+        "stderr_text": "ls: cannot access '/data/sub/missing': No such file or directory\n"
+      }
+    },
+    {
+      "id": "ls_missing_parent_enoent",
+      "cmd": "ls /data/missing/deeper",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram"
+        ]
+      },
+      "expect": {
+        "exit": 1,
+        "stdout_text": "",
+        "stderr_text": "ls: cannot access '/data/missing/deeper': No such file or directory\n"
+      }
+    },
+    {
+      "id": "ls_file_component_enotdir",
+      "cmd": "ls /data/a.txt/x",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram"
+        ]
+      },
+      "expect": {
+        "exit": 1,
+        "stdout_text": "",
+        "stderr_text": "ls: cannot access '/data/a.txt/x': Not a directory\n"
+      }
+    },
+    {
+      "id": "ls_file_component_deeper_enotdir",
+      "cmd": "ls /data/a.txt/x/y",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram"
+        ]
+      },
+      "expect": {
+        "exit": 1,
+        "stdout_text": "",
+        "stderr_text": "ls: cannot access '/data/a.txt/x/y': Not a directory\n"
+      }
     }
   ]
 }

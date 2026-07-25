@@ -64,6 +64,27 @@ export function enotempty(path: string | { virtual: string }): FsError {
   return fsError(path, 'ENOTEMPTY')
 }
 
+// The errno a failed directory listing should report. opendir reports ENOTDIR
+// only when a component of the path exists and is not a directory (GNU
+// `ls /f.txt/x` -> 'Not a directory'); a component that does not exist at all
+// is ENOENT (`ls /nope` -> 'No such file or directory'), however deep it is.
+// Store-backed backends have no kernel to draw that line for them, so they
+// walk the ancestors and ask here instead of collapsing both cases into one
+// errno. `key` is the mount-local normalized path that was looked up and
+// isFile probes whether a mount-local path exists as a non-directory.
+// Mirrors Python's readdir_error.
+export async function readdirError(
+  path: string | { virtual: string; rawPath?: string },
+  key: string,
+  isFile: (p: string) => boolean | Promise<boolean>,
+): Promise<FsError> {
+  const segments = key.split('/').filter((s) => s !== '')
+  for (let i = 1; i <= segments.length; i++) {
+    if (await isFile(`/${segments.slice(0, i).join('/')}`)) return enotdir(path)
+  }
+  return enoent(path)
+}
+
 // A missing-op error also names the op the backend did not register, so
 // capability probes (metadata.ts) can test for one specific gap instead of
 // sniffing message text.

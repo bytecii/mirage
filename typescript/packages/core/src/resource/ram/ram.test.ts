@@ -126,9 +126,23 @@ describe('RAMResource readdir', () => {
     expect(await call(registry, 'readdir', ram, '/')).toEqual(['/a', '/b'])
   })
 
-  it('throws when path is not a directory', async () => {
+  it('throws ENOENT when the path does not exist', async () => {
     const { ram, registry } = setup()
     await expect(call(registry, 'readdir', ram, '/missing')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await expect(call(registry, 'readdir', ram, '/missing/deeper')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  })
+
+  it('throws ENOTDIR when a path component is a file', async () => {
+    const { ram, registry } = setup()
+    await call(registry, 'write', ram, '/a.txt', new Uint8Array())
+    await expect(call(registry, 'readdir', ram, '/a.txt')).rejects.toMatchObject({
+      code: 'ENOTDIR',
+    })
+    await expect(call(registry, 'readdir', ram, '/a.txt/x')).rejects.toMatchObject({
       code: 'ENOTDIR',
     })
   })
@@ -169,7 +183,7 @@ describe('RAMResource unlink + rmdir', () => {
     const { ram, registry } = setup()
     await call(registry, 'mkdir', ram, '/d')
     await call(registry, 'rmdir', ram, '/d')
-    await expect(call(registry, 'readdir', ram, '/d')).rejects.toMatchObject({ code: 'ENOTDIR' })
+    await expect(call(registry, 'readdir', ram, '/d')).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
 
