@@ -92,3 +92,114 @@ describe('lsGeneric', () => {
     expect(await run({ t: true, r: true })).toEqual(['Banana.txt', 'CHERRY.txt', 'apple.txt'])
   })
 })
+
+// Mirrors the Python generic ls operand tests: GNU prints file operands first
+// with no header, then names every directory once more than one operand (or -R)
+// is in play, blank-line separated.
+const TREE: Record<string, FileType> = {
+  '/a': FileType.DIRECTORY,
+  '/a/f.txt': FileType.TEXT,
+  '/a/sub': FileType.DIRECTORY,
+  '/b': FileType.DIRECTORY,
+  '/b/g.txt': FileType.TEXT,
+  '/c': FileType.DIRECTORY,
+  '/mfile': FileType.TEXT,
+  '/zfile': FileType.TEXT,
+}
+
+const treeStat = (p: PathSpec): Promise<FileStat> => {
+  const path = key(p)
+  const type = TREE[path]
+  if (type === undefined) return Promise.reject(Object.assign(new Error(path), { code: 'ENOENT' }))
+  return Promise.resolve(
+    new FileStat({ name: path.split('/').pop() ?? '', type, size: type === FileType.TEXT ? 3 : 0 }),
+  )
+}
+
+const treeReaddir = (p: PathSpec): Promise<string[]> => {
+  const path = key(p)
+  const type = TREE[path]
+  if (type === undefined) return Promise.reject(Object.assign(new Error(path), { code: 'ENOENT' }))
+  if (type !== FileType.DIRECTORY) {
+    return Promise.reject(Object.assign(new Error(path), { code: 'ENOTDIR' }))
+  }
+  const prefix = path === '/' ? '/' : `${path}/`
+  return Promise.resolve(
+    Object.keys(TREE).filter((k) => k.startsWith(prefix) && !k.slice(prefix.length).includes('/')),
+  )
+}
+
+async function runTree(
+  paths: string[],
+  flags: Record<string, string | boolean | string[]> = {},
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const result = await lsGeneric(paths.map(spec), opts(flags), treeReaddir, treeStat)
+  if (result === null) return { stdout: '', stderr: '', exitCode: 0 }
+  const [out, io] = result
+  return {
+    stdout: DEC.decode(out as Uint8Array),
+    stderr: io.stderr === null ? '' : DEC.decode(io.stderr as Uint8Array),
+    exitCode: io.exitCode,
+  }
+}
+
+describe('lsGeneric operand headers', () => {
+  it('a single directory operand has no header', async () => {
+    expect((await runTree(['/a'])).stdout).toBe('f.txt\nsub\n')
+  })
+
+  it('two directory operands are headed and blank-line separated', async () => {
+    const r = await runTree(['/a', '/b'])
+    expect(r.stdout).toBe('/a:\nf.txt\nsub\n\n/b:\ng.txt\n')
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('an empty directory operand still gets a header', async () => {
+    expect((await runTree(['/b', '/c'])).stdout).toBe('/b:\ng.txt\n\n/c:\n')
+  })
+
+  it('file operands print first, unheaded, then the directories', async () => {
+    expect((await runTree(['/b', '/zfile', '/a', '/mfile'])).stdout).toBe(
+      '/mfile\n/zfile\n\n/a:\nf.txt\nsub\n\n/b:\ng.txt\n',
+    )
+  })
+
+  it('file operands alone emit no trailing blank line', async () => {
+    expect((await runTree(['/zfile', '/mfile'])).stdout).toBe('/mfile\n/zfile\n')
+  })
+
+  it('operands sort by name, not command-line order', async () => {
+    expect((await runTree(['/b', '/a'])).stdout).toBe('/a:\nf.txt\nsub\n\n/b:\ng.txt\n')
+  })
+
+  it('-r flips both the operand order and the entry order', async () => {
+    expect((await runTree(['/a', '/b'], { r: true })).stdout).toBe(
+      '/b:\ng.txt\n\n/a:\nsub\nf.txt\n',
+    )
+  })
+
+  it('a failed operand still leaves the listed one headed', async () => {
+    const r = await runTree(['/nope', '/a'])
+    expect(r.stdout).toBe('/a:\nf.txt\nsub\n')
+    expect(r.exitCode).toBe(0)
+    expect(r.stderr).toContain('/nope')
+  })
+
+  it('a repeated operand lists twice', async () => {
+    expect((await runTree(['/a', '/a'])).stdout).toBe('/a:\nf.txt\nsub\n\n/a:\nf.txt\nsub\n')
+  })
+
+  it('-R keeps the header on a lone operand', async () => {
+    expect((await runTree(['/a'], { R: true })).stdout).toBe('/a:\nf.txt\nsub\n\n/a/sub:\n')
+  })
+
+  it('-R does not head a file operand', async () => {
+    expect((await runTree(['/a', '/zfile'], { R: true })).stdout).toBe(
+      '/zfile\n\n/a:\nf.txt\nsub\n\n/a/sub:\n',
+    )
+  })
+
+  it('-d sorts its operands and stays unheaded', async () => {
+    expect((await runTree(['/zfile', '/b', '/a'], { d: true })).stdout).toBe('/a\n/b\n/zfile\n')
+  })
+})
