@@ -3,9 +3,10 @@ from typing import cast
 import pytest
 
 from mirage.accessor.s3 import S3Accessor
-from mirage.cache.index import NULL_INDEX
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.s3.stat import stat
 from mirage.io.types import materialize
+from mirage.ops.config import StatOverlay
 from mirage.types import FileStat, FileType, PathSpec
 
 _BACKEND_MTIME = "2020-05-05T05:05:05Z"
@@ -20,14 +21,14 @@ def _backend_stat() -> FileStat:
                     type=FileType.TEXT)
 
 
-async def _fake_stat_core(_accessor: object,
+async def _fake_stat_core(_accessor: S3Accessor,
                           _path: PathSpec,
-                          index: object = None) -> FileStat:
+                          index: IndexCacheStore = NULL_INDEX) -> FileStat:
     return _backend_stat()
 
 
-async def _fake_resolve_glob(_accessor: object, paths: list[PathSpec],
-                             _index: object) -> list[PathSpec]:
+async def _fake_resolve_glob(_accessor: S3Accessor, paths: list[PathSpec],
+                             _index: IndexCacheStore) -> list[PathSpec]:
     return paths
 
 
@@ -42,12 +43,13 @@ def patched_backend(monkeypatch):
     monkeypatch.setitem(globals_, "resolve_glob", _fake_resolve_glob)
 
 
-async def _render(fmt: str, **kw: object) -> tuple[int, str]:
+async def _render(fmt: str,
+                  stat_overlay: StatOverlay | None = None) -> tuple[int, str]:
     out, io = await stat(cast(S3Accessor, object()),
                          [PathSpec.from_str_path("/s3/f.txt")],
                          c=fmt,
                          index=NULL_INDEX,
-                         **kw)
+                         stat_overlay=stat_overlay)
     return io.exit_code, (await materialize(out)).decode()
 
 
