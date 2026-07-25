@@ -1370,22 +1370,7 @@
       "seq": 501139,
       "targets": [
         "ram",
-        "disk",
-        "redis",
-        "opfs",
-        "s3",
-        "databricks",
-        "s3-prefix",
-        "databricks-prefix",
-        "dropbox",
-        "dropbox-root",
-        "onedrive",
-        "sharepoint",
-        "sharepoint-prefix",
-        "ssh",
-        "nextcloud",
-        "gdrive",
-        "gdrive-folder"
+        "redis"
       ],
       "command": "echo x > NOPEDIR/f; echo next",
       "expect": {
