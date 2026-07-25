@@ -21,8 +21,8 @@ class LsWarning:
     """One diagnostic plus how serious GNU ls considers it.
 
     Args:
-        message: The rendered `ls: ...` stderr line.
-        serious: True when the failure was on a command-line operand
+        message (str): The rendered `ls: ...` stderr line.
+        serious (bool): True when the failure was on a command-line operand
             (GNU exit 2); False for problems met while listing or
             recursing below an operand (GNU exit 1).
     """
@@ -36,9 +36,10 @@ class WalkResult:
     """Outcome of listing one directory.
 
     Args:
-        entries: The stats to render for this directory.
-        warnings: Diagnostics collected at or below this directory.
-        listed: False when the directory itself could not be opened, so
+        entries (list[FileStat]): The stats to render for this directory.
+        warnings (list[LsWarning]): Diagnostics collected at or below this
+            directory.
+        listed (bool): False when the directory itself could not be opened, so
             callers skip emitting a `dir:` header for it.
     """
 
@@ -54,7 +55,7 @@ def exit_status_for(warnings: list[LsWarning]) -> int:
     operand) always wins, a minor one only upgrades a clean run.
 
     Args:
-        warnings: Diagnostics gathered over every operand.
+        warnings (list[LsWarning]): Diagnostics gathered over every operand.
 
     Returns:
         0 when clean, 1 for minor problems only, 2 if any was serious.
@@ -283,7 +284,7 @@ async def ls(
     warnings: list[LsWarning] = []
 
     if recursive and not list_dir:
-        for p_idx, p in enumerate(paths):
+        for p in paths:
             groups, sub_ws = await walk_grouped(p,
                                                 readdir=readdir,
                                                 stat=stat,
@@ -292,8 +293,10 @@ async def ls(
                                                 reverse=reverse,
                                                 index=index)
             warnings.extend(sub_ws)
-            for g_idx, (dir_spec, entries) in enumerate(groups):
-                if p_idx > 0 or g_idx > 0:
+            for dir_spec, entries in groups:
+                # An operand that could not be opened renders no group, so
+                # the separator keys off what was actually emitted.
+                if results:
                     results.append("")
                 header = rebase_one(dir_spec.virtual, p.virtual, p.raw_path)
                 results.append(f"{header}:")

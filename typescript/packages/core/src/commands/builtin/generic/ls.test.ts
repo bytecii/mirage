@@ -186,6 +186,12 @@ describe('lsGeneric exit codes', () => {
     expect(out).not.toContain('/bad:')
   })
 
+  it('starts flush left when the first -R operand could not be opened', async () => {
+    const [code, out] = await status(['/bad', '/good'], { R: true })
+    expect(code).toBe(LS_FAILURE)
+    expect(out).toBe('/good:\na.txt\nb.txt\n')
+  })
+
   it('ratchets the status like GNU set_exit_status', () => {
     const minor = { message: "ls: cannot access 'x': Permission denied", serious: false }
     const serious = { message: "ls: cannot access '/nope': No such file", serious: true }

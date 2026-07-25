@@ -1,4 +1,6 @@
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
+from functools import partial
 
 import pytest
 
@@ -44,6 +46,26 @@ def _make_fs_backend(tree: dict[str, FileStat]):
         return sorted(children)
 
     return readdir, stat
+
+
+async def _stat_denying(p: PathSpec,
+                        index=None,
+                        *,
+                        stat: Callable[..., Awaitable[FileStat]],
+                        blocked: str) -> FileStat:
+    if p.virtual == blocked:
+        raise PermissionError(13, "Permission denied")
+    return await stat(p, index)
+
+
+async def _readdir_denying(p: PathSpec,
+                           index=None,
+                           *,
+                           readdir: Callable[..., Awaitable[list[str]]],
+                           blocked: str) -> list[str]:
+    if p.virtual == blocked:
+        raise PermissionError(13, "Permission denied")
+    return await readdir(p, index)
 
 
 def _file(name: str, size: int = 0, modified: str | None = None) -> FileStat:
@@ -283,11 +305,7 @@ async def test_ls_unstattable_entry_is_a_minor_problem():
     }
     readdir, stat = _make_fs_backend(tree)
 
-    async def denying_stat(p: PathSpec, index=None) -> FileStat:
-        if p.virtual == "/dir/locked.txt":
-            raise PermissionError(13, "Permission denied")
-        return await stat(p, index)
-
+    denying_stat = partial(_stat_denying, stat=stat, blocked="/dir/locked.txt")
     output, io = await ls([_spec("/dir")], readdir=readdir, stat=denying_stat)
     assert io.exit_code == LS_MINOR_PROBLEM
     assert output == b"a.txt\n"
@@ -306,11 +324,9 @@ async def test_ls_recursive_unreadable_subdir_is_a_minor_problem():
     }
     readdir, stat = _make_fs_backend(tree)
 
-    async def denying_readdir(p: PathSpec, index=None) -> list[str]:
-        if p.virtual == "/dir/sub":
-            raise PermissionError(13, "Permission denied")
-        return await readdir(p, index)
-
+    denying_readdir = partial(_readdir_denying,
+                              readdir=readdir,
+                              blocked="/dir/sub")
     output, io = await ls([_spec("/dir")],
                           readdir=denying_readdir,
                           stat=stat,
@@ -329,11 +345,9 @@ async def test_ls_serious_problem_outranks_a_minor_one():
     }
     readdir, stat = _make_fs_backend(tree)
 
-    async def denying_readdir(p: PathSpec, index=None) -> list[str]:
-        if p.virtual == "/dir/sub":
-            raise PermissionError(13, "Permission denied")
-        return await readdir(p, index)
-
+    denying_readdir = partial(_readdir_denying,
+                              readdir=readdir,
+                              blocked="/dir/sub")
     _, io = await ls([_spec("/dir"), _spec("/nope")],
                      readdir=denying_readdir,
                      stat=stat,
@@ -352,6 +366,21 @@ async def test_ls_recursive_prints_no_header_for_a_failed_operand():
     assert io.exit_code == LS_FAILURE
     assert b"/nope:" not in output
     assert b"/dir:" in output
+
+
+@pytest.mark.asyncio
+async def test_ls_recursive_failed_operand_first_has_no_leading_blank():
+    """A failed operand renders no group, so the next one still starts the
+    output flush left, the same both operand orders.
+    """
+    tree = {"/dir": _dir("dir"), "/dir/a.txt": _file("a.txt")}
+    readdir, stat = _make_fs_backend(tree)
+    output, io = await ls([_spec("/nope"), _spec("/dir")],
+                          readdir=readdir,
+                          stat=stat,
+                          recursive=True)
+    assert io.exit_code == LS_FAILURE
+    assert output == b"/dir:\na.txt\n"
 
 
 def test_exit_status_for_ratchets_like_gnu():
