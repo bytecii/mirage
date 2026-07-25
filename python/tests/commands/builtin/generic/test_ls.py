@@ -2,7 +2,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from mirage.commands.builtin.generic.ls import format_simple, ls, walk
+from mirage.commands.builtin.generic.ls import (LS_FAILURE, LS_MINOR_PROBLEM,
+                                                LS_OK, LsWarning,
+                                                exit_status_for, format_simple,
+                                                ls, walk)
 from mirage.types import FileStat, FileType, LsSortBy, PathSpec
 
 
@@ -72,7 +75,9 @@ async def test_walk_lists_immediate_children():
         "/dir/b.txt": _file("b.txt", 2),
     }
     readdir, stat = _make_fs_backend(tree)
-    entries, warnings = await walk(_spec("/dir"), readdir=readdir, stat=stat)
+    res = await walk(_spec("/dir"), readdir=readdir, stat=stat)
+    entries = res.entries
+    warnings = [w.message for w in res.warnings]
     assert [e.name for e in entries] == ["a.txt", "b.txt"]
     assert warnings == []
 
@@ -85,12 +90,11 @@ async def test_walk_skips_dotfiles_unless_all_files():
         "/dir/visible.txt": _file("visible.txt", 2),
     }
     readdir, stat = _make_fs_backend(tree)
-    entries, _ = await walk(_spec("/dir"), readdir=readdir, stat=stat)
+    res = await walk(_spec("/dir"), readdir=readdir, stat=stat)
+    entries = res.entries
     assert [e.name for e in entries] == ["visible.txt"]
-    entries, _ = await walk(_spec("/dir"),
-                            readdir=readdir,
-                            stat=stat,
-                            all_files=True)
+    res = await walk(_spec("/dir"), readdir=readdir, stat=stat, all_files=True)
+    entries = res.entries
     assert sorted(e.name for e in entries) == [".hidden", "visible.txt"]
 
 
@@ -102,16 +106,18 @@ async def test_walk_sort_by_size():
         "/dir/small.txt": _file("small.txt", 1),
     }
     readdir, stat = _make_fs_backend(tree)
-    entries, _ = await walk(_spec("/dir"),
-                            readdir=readdir,
-                            stat=stat,
-                            sort_by=LsSortBy.SIZE)
+    res = await walk(_spec("/dir"),
+                     readdir=readdir,
+                     stat=stat,
+                     sort_by=LsSortBy.SIZE)
+    entries = res.entries
     assert [e.name for e in entries] == ["big.txt", "small.txt"]
-    entries, _ = await walk(_spec("/dir"),
-                            readdir=readdir,
-                            stat=stat,
-                            sort_by=LsSortBy.SIZE,
-                            reverse=True)
+    res = await walk(_spec("/dir"),
+                     readdir=readdir,
+                     stat=stat,
+                     sort_by=LsSortBy.SIZE,
+                     reverse=True)
+    entries = res.entries
     assert [e.name for e in entries] == ["small.txt", "big.txt"]
 
 
@@ -125,10 +131,11 @@ async def test_walk_sort_by_time():
         "/dir/b.txt": _file("b.txt", 1, modified=newer),
     }
     readdir, stat = _make_fs_backend(tree)
-    entries, _ = await walk(_spec("/dir"),
-                            readdir=readdir,
-                            stat=stat,
-                            sort_by=LsSortBy.TIME)
+    res = await walk(_spec("/dir"),
+                     readdir=readdir,
+                     stat=stat,
+                     sort_by=LsSortBy.TIME)
+    entries = res.entries
     assert [e.name for e in entries] == ["b.txt", "a.txt"]
 
 
@@ -141,10 +148,8 @@ async def test_walk_recursive_descends_into_dirs():
         "/dir/sub/b.txt": _file("b.txt"),
     }
     readdir, stat = _make_fs_backend(tree)
-    entries, _ = await walk(_spec("/dir"),
-                            readdir=readdir,
-                            stat=stat,
-                            recursive=True)
+    res = await walk(_spec("/dir"), readdir=readdir, stat=stat, recursive=True)
+    entries = res.entries
     names = [e.name for e in entries]
     assert "a.txt" in names
     assert "sub" in names
@@ -158,10 +163,8 @@ async def test_walk_list_dir_returns_only_self():
         "/dir/a.txt": _file("a.txt"),
     }
     readdir, stat = _make_fs_backend(tree)
-    entries, _ = await walk(_spec("/dir"),
-                            readdir=readdir,
-                            stat=stat,
-                            list_dir=True)
+    res = await walk(_spec("/dir"), readdir=readdir, stat=stat, list_dir=True)
+    entries = res.entries
     # GNU ls -d prints the operand as given.
     assert [e.name for e in entries] == ["/dir"]
 
@@ -169,7 +172,9 @@ async def test_walk_list_dir_returns_only_self():
 @pytest.mark.asyncio
 async def test_walk_missing_path_collects_warning():
     readdir, stat = _make_fs_backend({})
-    entries, warnings = await walk(_spec("/nope"), readdir=readdir, stat=stat)
+    res = await walk(_spec("/nope"), readdir=readdir, stat=stat)
+    entries = res.entries
+    warnings = [w.message for w in res.warnings]
     assert entries == []
     assert any("/nope" in w for w in warnings)
 
@@ -232,21 +237,140 @@ async def test_ls_classify_appends_slash_for_dirs():
 
 
 @pytest.mark.asyncio
-async def test_ls_missing_path_returns_warning_and_exit_1():
+async def test_ls_missing_operand_exits_2():
     readdir, stat = _make_fs_backend({})
     output, io = await ls([_spec("/nope")], readdir=readdir, stat=stat)
     assert output == b""
-    assert io.exit_code == 1
+    assert io.exit_code == LS_FAILURE
     assert b"/nope" in (io.stderr or b"")
+
+
+@pytest.mark.asyncio
+async def test_ls_missing_operand_exits_2_even_beside_a_good_one():
+    """GNU ratchets to 2 for any bad command-line operand, and still lists
+    the good ones. Order must not matter.
+    """
+    tree = {"/dir": _dir("dir"), "/dir/a.txt": _file("a.txt")}
+    readdir, stat = _make_fs_backend(tree)
+    for paths in ([_spec("/nope"),
+                   _spec("/dir")], [_spec("/dir"),
+                                    _spec("/nope")]):
+        output, io = await ls(paths, readdir=readdir, stat=stat)
+        assert io.exit_code == LS_FAILURE
+        assert output == b"a.txt\n"
+
+
+@pytest.mark.asyncio
+async def test_ls_missing_operand_under_list_dir_exits_2():
+    tree = {"/dir": _dir("dir")}
+    readdir, stat = _make_fs_backend(tree)
+    _, io = await ls([_spec("/dir"), _spec("/nope")],
+                     readdir=readdir,
+                     stat=stat,
+                     list_dir=True)
+    assert io.exit_code == LS_FAILURE
+
+
+@pytest.mark.asyncio
+async def test_ls_unstattable_entry_is_a_minor_problem():
+    """An entry below the operand is not a command-line arg, so GNU keeps
+    listing its siblings and exits 1.
+    """
+    tree = {
+        "/dir": _dir("dir"),
+        "/dir/a.txt": _file("a.txt"),
+        "/dir/locked.txt": _file("locked.txt"),
+    }
+    readdir, stat = _make_fs_backend(tree)
+
+    async def denying_stat(p: PathSpec, index=None) -> FileStat:
+        if p.virtual == "/dir/locked.txt":
+            raise PermissionError(13, "Permission denied")
+        return await stat(p, index)
+
+    output, io = await ls([_spec("/dir")], readdir=readdir, stat=denying_stat)
+    assert io.exit_code == LS_MINOR_PROBLEM
+    assert output == b"a.txt\n"
+    assert b"locked.txt" in (io.stderr or b"")
+
+
+@pytest.mark.asyncio
+async def test_ls_recursive_unreadable_subdir_is_a_minor_problem():
+    """GNU exits 1 (not 2) when only a directory met while recursing fails,
+    and keeps the parent listing.
+    """
+    tree = {
+        "/dir": _dir("dir"),
+        "/dir/a.txt": _file("a.txt"),
+        "/dir/sub": _dir("sub"),
+    }
+    readdir, stat = _make_fs_backend(tree)
+
+    async def denying_readdir(p: PathSpec, index=None) -> list[str]:
+        if p.virtual == "/dir/sub":
+            raise PermissionError(13, "Permission denied")
+        return await readdir(p, index)
+
+    output, io = await ls([_spec("/dir")],
+                          readdir=denying_readdir,
+                          stat=stat,
+                          recursive=True)
+    assert io.exit_code == LS_MINOR_PROBLEM
+    assert b"/dir:" in output
+    assert b"a.txt" in output
+
+
+@pytest.mark.asyncio
+async def test_ls_serious_problem_outranks_a_minor_one():
+    tree = {
+        "/dir": _dir("dir"),
+        "/dir/a.txt": _file("a.txt"),
+        "/dir/sub": _dir("sub"),
+    }
+    readdir, stat = _make_fs_backend(tree)
+
+    async def denying_readdir(p: PathSpec, index=None) -> list[str]:
+        if p.virtual == "/dir/sub":
+            raise PermissionError(13, "Permission denied")
+        return await readdir(p, index)
+
+    _, io = await ls([_spec("/dir"), _spec("/nope")],
+                     readdir=denying_readdir,
+                     stat=stat,
+                     recursive=True)
+    assert io.exit_code == LS_FAILURE
+
+
+@pytest.mark.asyncio
+async def test_ls_recursive_prints_no_header_for_a_failed_operand():
+    tree = {"/dir": _dir("dir"), "/dir/a.txt": _file("a.txt")}
+    readdir, stat = _make_fs_backend(tree)
+    output, io = await ls([_spec("/dir"), _spec("/nope")],
+                          readdir=readdir,
+                          stat=stat,
+                          recursive=True)
+    assert io.exit_code == LS_FAILURE
+    assert b"/nope:" not in output
+    assert b"/dir:" in output
+
+
+def test_exit_status_for_ratchets_like_gnu():
+    minor = LsWarning("ls: cannot access 'x': Permission denied", False)
+    serious = LsWarning("ls: cannot access '/nope': No such file", True)
+    assert exit_status_for([]) == LS_OK
+    assert exit_status_for([minor]) == LS_MINOR_PROBLEM
+    assert exit_status_for([serious]) == LS_FAILURE
+    assert exit_status_for([minor, serious]) == LS_FAILURE
+    assert exit_status_for([serious, minor]) == LS_FAILURE
 
 
 @pytest.mark.asyncio
 async def test_walk_single_file_lists_itself():
     tree = {"/dir/a.parquet": _file("a.parquet", 5)}
     readdir, stat = _make_fs_backend(tree)
-    entries, warnings = await walk(_spec("/dir/a.parquet"),
-                                   readdir=readdir,
-                                   stat=stat)
+    res = await walk(_spec("/dir/a.parquet"), readdir=readdir, stat=stat)
+    entries = res.entries
+    warnings = [w.message for w in res.warnings]
     # GNU ls prints a file operand as given.
     assert [e.name for e in entries] == ["/dir/a.parquet"]
     assert warnings == []
@@ -265,9 +389,9 @@ async def test_walk_empty_readdir_falls_back_to_file():
     async def readdir(p, _index=None):
         return []
 
-    entries, warnings = await walk(_spec("/data/a.parquet"),
-                                   readdir=readdir,
-                                   stat=stat)
+    res = await walk(_spec("/data/a.parquet"), readdir=readdir, stat=stat)
+    entries = res.entries
+    warnings = [w.message for w in res.warnings]
     assert [e.name for e in entries] == ["/data/a.parquet"]
     assert warnings == []
 
@@ -276,7 +400,9 @@ async def test_walk_empty_readdir_falls_back_to_file():
 async def test_walk_empty_dir_stays_empty():
     tree = {"/empty": _dir("empty")}
     readdir, stat = _make_fs_backend(tree)
-    entries, warnings = await walk(_spec("/empty"), readdir=readdir, stat=stat)
+    res = await walk(_spec("/empty"), readdir=readdir, stat=stat)
+    entries = res.entries
+    warnings = [w.message for w in res.warnings]
     assert entries == []
     assert warnings == []
 
