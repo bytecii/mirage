@@ -65,6 +65,12 @@ describe('parseCommand — value flags', () => {
     expect(p.flags['-o']).toBe('/ram/out.txt')
     expect(p.pathFlagValues).toEqual(['/ram/out.txt'])
   })
+
+  it('routes an attached optional long PATH value', () => {
+    const p = parseCommand(specOf('mktemp'), ['--tmpdir=staging', 'file.XXXX'], '/data')
+    expect(p.flags['--tmpdir']).toBe('/data/staging')
+    expect(p.pathFlagValues).toEqual(['/data/staging'])
+  })
 })
 
 describe('parseCommand — numericShorthand', () => {
@@ -366,6 +372,17 @@ describe('parseCommand — optional-value long options', () => {
   })
 })
 
+describe('parseCommand — optional-value short options', () => {
+  it('uses only an attached value and leaves the next option intact', () => {
+    const bare = parseCommand(specOf('split'), ['-d', '-l', '2', '/input', '/prefix'], '/')
+    const attached = parseCommand(specOf('split'), ['-d10', '/input'], '/')
+    expect(bare.flags['-d']).toBe(true)
+    expect(bare.flags['-l']).toBe('2')
+    expect(bare.paths()).toEqual(['/input', '/prefix'])
+    expect(attached.flags['-d']).toBe('10')
+  })
+})
+
 describe('parseCommand — unknown dash tokens warn and drop', () => {
   it('reports unknown long flags and keeps operands aligned', () => {
     const p = parseCommand(specOf('grep'), ['--bogus', 'pat', '/a.txt'], '/')
@@ -433,6 +450,15 @@ describe('parseCommand — clusters ending in a value flag (getopt)', () => {
   it('find multi-char short flags still work', () => {
     const p = parseCommand(specOf('find'), ['/data', '-name', '*.txt'], '/')
     expect(p.flags['-name']).toEqual(['*.txt'])
+  })
+
+  it('find grouping tokens are not classified as path operands', () => {
+    const p = parseCommand(
+      specOf('find'),
+      ['/data', '(', '-name', 'inner.txt', '-o', '-name', 'deep.txt', ')'],
+      '/',
+    )
+    expect(p.paths()).toEqual(['/data'])
   })
 })
 

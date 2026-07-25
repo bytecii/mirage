@@ -9,9 +9,11 @@
       "databricks_volume",
       "dropbox",
       "gdrive",
+      "onedrive",
       "opfs",
       "ram",
-      "s3"
+      "s3",
+      "sharepoint"
     ]
   },
   "description": null,
@@ -19,7 +21,7 @@
   "options": [
     {
       "description": null,
-      "long": null,
+      "long": "--lines",
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-l",
@@ -28,7 +30,7 @@
     },
     {
       "description": null,
-      "long": null,
+      "long": "--bytes",
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-b",
@@ -37,7 +39,7 @@
     },
     {
       "description": null,
-      "long": null,
+      "long": "--number",
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-n",
@@ -46,19 +48,46 @@
     },
     {
       "description": null,
-      "long": null,
+      "long": "--numeric-suffixes",
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-d",
-      "value_kind": "none",
+      "value_kind": "text",
+      "value_optional": true
+    },
+    {
+      "description": null,
+      "long": "--hex-suffixes",
+      "numeric_shorthand": false,
+      "repeatable": false,
+      "short": "-x",
+      "value_kind": "text",
+      "value_optional": true
+    },
+    {
+      "description": null,
+      "long": "--suffix-length",
+      "numeric_shorthand": false,
+      "repeatable": false,
+      "short": "-a",
+      "value_kind": "text",
       "value_optional": false
     },
     {
       "description": null,
-      "long": null,
+      "long": "--additional-suffix",
       "numeric_shorthand": false,
       "repeatable": false,
-      "short": "-a",
+      "short": null,
+      "value_kind": "text",
+      "value_optional": false
+    },
+    {
+      "description": null,
+      "long": "--separator",
+      "numeric_shorthand": false,
+      "repeatable": false,
+      "short": "-t",
       "value_kind": "text",
       "value_optional": false
     }

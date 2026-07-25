@@ -27,14 +27,17 @@
       "lancedb",
       "langfuse",
       "linear",
+      "mem0",
       "mongodb",
       "nextcloud",
       "notion",
+      "onedrive",
       "postgres",
       "qdrant",
       "ram",
       "redis",
       "s3",
+      "sharepoint",
       "slack",
       "ssh",
       "trello"
@@ -85,6 +88,33 @@
       "numeric_shorthand": false,
       "repeatable": false,
       "short": null,
+      "value_kind": "none",
+      "value_optional": false
+    },
+    {
+      "description": null,
+      "long": "--output-delimiter",
+      "numeric_shorthand": false,
+      "repeatable": false,
+      "short": null,
+      "value_kind": "text",
+      "value_optional": false
+    },
+    {
+      "description": null,
+      "long": "--total",
+      "numeric_shorthand": false,
+      "repeatable": false,
+      "short": null,
+      "value_kind": "none",
+      "value_optional": false
+    },
+    {
+      "description": null,
+      "long": "--zero-terminated",
+      "numeric_shorthand": false,
+      "repeatable": false,
+      "short": "-z",
       "value_kind": "none",
       "value_optional": false
     }

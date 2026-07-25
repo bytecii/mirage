@@ -17,6 +17,8 @@ export {
   CommandSafeguard,
   type CommandSafeguardInit,
   ConsistencyPolicy,
+  CapacityState,
+  type CapacityResult,
   type CopyFn,
   type CopyStrategy,
   DriftPolicy,
@@ -228,7 +230,12 @@ export { gzipGeneric } from './commands/builtin/generic/gzip.ts'
 export { gunzipGeneric } from './commands/builtin/generic/gunzip.ts'
 export { iconvGeneric } from './commands/builtin/generic/iconv.ts'
 export { sedGeneric } from './commands/builtin/generic/sed.ts'
-export { teeGeneric } from './commands/builtin/generic/tee.ts'
+export {
+  teeGeneric,
+  parseTeeFlags,
+  writeOutput,
+  type TeeOptions,
+} from './commands/builtin/generic/tee.ts'
 export { splitGeneric } from './commands/builtin/generic/split.ts'
 export { csplitGeneric } from './commands/builtin/generic/csplit.ts'
 export { mktempGeneric } from './commands/builtin/generic/mktemp.ts'
@@ -307,12 +314,16 @@ export type {
   AsyncStatFn,
 } from './commands/builtin/utils/types.ts'
 export {
-  compareKeys,
-  parseKeyOptions,
-  sortAndDedupe,
-  sortKey,
+  buildConfig as buildSortConfig,
+  computeFields as computeSortFields,
+  extract as extractSortKey,
+  type Key as SortKey,
+  type KeyMods as SortKeyMods,
+  parseKeydef as parseSortKeydef,
+  type SortConfig,
+  SortKeyError,
+  sortLines,
   splitSortLines,
-  type SortKeyOptions,
 } from './commands/builtin/sort_helper.ts'
 export { countNewlines, parseN, tailBytes } from './commands/builtin/tail_helper.ts'
 export { AsyncLineIterator } from './io/async_line_iterator.ts'
@@ -596,6 +607,8 @@ export {
   type S3BrowserSignOptions,
   type S3Config,
   type S3ConfigRedacted,
+  type S3HttpAgentProvider,
+  type S3HttpAgents,
 } from './resource/s3/config.ts'
 export { remapCommandsResource, remapOpsResource } from './resource/s3/remap.ts'
 export { S3_PROMPT } from './resource/s3/prompt.ts'
@@ -882,6 +895,83 @@ export {
 export { readdir as gdriveReaddir } from './core/gdrive/readdir.ts'
 export { stat as gdriveStat } from './core/gdrive/stat.ts'
 export { GDRIVE_PROMPT } from './resource/gdrive/prompt.ts'
+export {
+  type AccessTokenProvider,
+  type MsGraphConfig,
+  type MsGraphConfigResolved,
+  resolveMsGraphConfig,
+} from './core/msgraph/config.ts'
+export {
+  GRAPH_API,
+  MAX_BACKOFF as MSGRAPH_MAX_BACKOFF,
+  RETRY_STATUSES as MSGRAPH_RETRY_STATUSES,
+  GraphError,
+  graphDelete,
+  graphGet,
+  graphGetBytes,
+  graphHeaders,
+  graphList,
+  graphPatch,
+  graphPost,
+  graphPostMonitor,
+  graphPutBytes,
+  graphStream,
+  pollMonitor,
+  uploadChunk,
+} from './core/msgraph/client.ts'
+export { DriveLoc } from './core/msgraph/drive.ts'
+export {
+  OneDriveAccessor,
+  type OneDriveConfig,
+  type OneDriveConfigRedacted,
+  type OneDriveConfigResolved,
+  OneDriveConfigSchema,
+  normalizeOneDriveConfig,
+  oneDriveBase,
+  oneDriveItemUrl,
+  oneDriveRefPath,
+  redactOneDriveConfig,
+  resolveOneDriveConfig,
+} from './accessor/onedrive.ts'
+export { ONEDRIVE_COMMANDS } from './commands/builtin/onedrive/index.ts'
+export { ONEDRIVE_OPS } from './ops/onedrive/index.ts'
+export * as onedrive from './core/onedrive/index.ts'
+export { OneDriveResource } from './resource/onedrive/onedrive.ts'
+export { ONEDRIVE_PROMPT } from './resource/onedrive/prompt.ts'
+export {
+  SharePointAccessor,
+  type SharePointConfig,
+  type SharePointConfigRedacted,
+  type SharePointConfigResolved,
+  SharePointConfigSchema,
+  type ResolvedSharePointPath,
+  normalizeSharePointConfig,
+  redactSharePointConfig,
+  resolveSharePointConfig,
+  sharePointItemUrl,
+  sharePointRefPath,
+} from './accessor/sharepoint.ts'
+export { SHAREPOINT_COMMANDS } from './commands/builtin/sharepoint/index.ts'
+export { SHAREPOINT_OPS } from './ops/sharepoint/index.ts'
+export * as sharepoint from './core/sharepoint/index.ts'
+export { SharePointResource } from './resource/sharepoint/sharepoint.ts'
+export { SHAREPOINT_PROMPT } from './resource/sharepoint/prompt.ts'
+export { Mem0Accessor } from './accessor/mem0.ts'
+export { MEM0_COMMANDS } from './commands/builtin/mem0/index.ts'
+export { MEM0_OPS } from './ops/mem0/index.ts'
+export * as mem0 from './core/mem0/index.ts'
+export {
+  type Mem0Config,
+  type Mem0ConfigRedacted,
+  type Mem0ConfigResolved,
+  Mem0ConfigSchema,
+  type Mem0ScopeKind,
+  normalizeMem0Config,
+  redactMem0Config,
+  resolveMem0Config,
+} from './resource/mem0/config.ts'
+export { Mem0Resource } from './resource/mem0/mem0.ts'
+export { MEM0_PROMPT } from './resource/mem0/prompt.ts'
 export {
   DROPBOX_API_BASE,
   DROPBOX_CONTENT_BASE,

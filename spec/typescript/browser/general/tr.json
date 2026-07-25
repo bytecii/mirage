@@ -21,13 +21,16 @@
       "lancedb",
       "langfuse",
       "linear",
+      "mem0",
       "mongodb",
       "notion",
+      "onedrive",
       "opfs",
       "postgres",
       "qdrant",
       "ram",
       "s3",
+      "sharepoint",
       "slack",
       "trello"
     ]
@@ -37,7 +40,7 @@
   "options": [
     {
       "description": null,
-      "long": null,
+      "long": "--delete",
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-d",
@@ -46,7 +49,7 @@
     },
     {
       "description": null,
-      "long": null,
+      "long": "--squeeze-repeats",
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-s",
@@ -55,10 +58,28 @@
     },
     {
       "description": null,
-      "long": null,
+      "long": "--complement",
       "numeric_shorthand": false,
       "repeatable": false,
       "short": "-c",
+      "value_kind": "none",
+      "value_optional": false
+    },
+    {
+      "description": null,
+      "long": null,
+      "numeric_shorthand": false,
+      "repeatable": false,
+      "short": "-C",
+      "value_kind": "none",
+      "value_optional": false
+    },
+    {
+      "description": null,
+      "long": "--truncate-set1",
+      "numeric_shorthand": false,
+      "repeatable": false,
+      "short": "-t",
       "value_kind": "none",
       "value_optional": false
     }

@@ -38,14 +38,14 @@ from mirage.shell.helpers import (  # isort: skip
     ProcessSubDirection, get_command_name, get_parts, get_process_sub_body,
     get_process_sub_direction, get_text, split_env_prefix)
 from mirage.workspace.executor.builtins import (  # isort: skip
-    follow_paths, handle_bash, handle_cd, handle_chmod, handle_chown,
-    handle_command_builtin, handle_echo, handle_eval, handle_exit,
-    handle_export, handle_history, handle_ln, handle_local, handle_man,
-    handle_printenv, handle_printf, handle_read, handle_readlink,
-    handle_return, handle_set, handle_shift, handle_sleep, handle_source,
-    handle_test, handle_timeout, handle_touch, handle_trap, handle_type,
-    handle_unset, handle_whoami, handle_xargs, link_flags, prepare_mv,
-    strip_link_operands)
+    follow_paths, handle_bash, handle_cd, handle_chgrp, handle_chmod,
+    handle_chown, handle_command_builtin, handle_df, handle_echo, handle_env,
+    handle_eval, handle_exit, handle_export, handle_getopts, handle_history,
+    handle_ln, handle_local, handle_man, handle_printenv, handle_printf,
+    handle_read, handle_readlink, handle_return, handle_set, handle_shift,
+    handle_sleep, handle_source, handle_test, handle_timeout, handle_touch,
+    handle_trap, handle_type, handle_unset, handle_whoami, handle_xargs,
+    link_flags, prepare_mv, strip_link_operands)
 
 _CdArgs = list[str | PathSpec]
 
@@ -376,6 +376,9 @@ async def _run_argv(
         var_name = args[0] if args else None
         return await handle_printenv(var_name, session)
 
+    if name == SB.ENV:
+        return await handle_env(execute_fn, args, session, stdin)
+
     if name == SB.WHOAMI:
         return await handle_whoami(namespace)
 
@@ -390,6 +393,9 @@ async def _run_argv(
 
     if name == SB.SHIFT:
         return await handle_shift(args, call_stack, session=session)
+
+    if name == SB.GETOPTS:
+        return await handle_getopts(args, session, call_stack)
 
     if name == SB.TRAP:
         return await handle_trap(session)
@@ -448,7 +454,7 @@ async def _run_argv(
 
     # ── symlinks (namespace-backed; not bash builtins, not mount
     #    commands: they mutate the addressing layer) ──
-    if name == "ln" and "s" in link_flags(operands, "sfnv"):
+    if name == "ln" and "s" in link_flags(operands, "sfnvrT"):
         return await handle_ln(namespace, session, operands)
 
     if name == "readlink":
@@ -460,8 +466,25 @@ async def _run_argv(
         return await handle_chmod(namespace, dispatch, operands)
     if name == "chown":
         return await handle_chown(namespace, dispatch, operands)
+    if name == "chgrp":
+        return await handle_chgrp(namespace, dispatch, operands)
     if name == "touch":
         return await handle_touch(namespace, dispatch, session, operands)
+
+    # ── capacity (registry-routed: enumerates mounts, reports per-mount
+    #    statfs; never fabricates numbers) ──
+    if name == "df":
+        if namespace.nodes:
+            try:
+                operands = follow_paths(namespace, operands)
+            except CycleError as exc:
+                err = (f"df: {exc}: "
+                       f"Too many levels of symbolic links\n").encode()
+                return None, IOResult(exit_code=1,
+                                      stderr=err), ExecutionNode(command="df",
+                                                                 exit_code=1,
+                                                                 stderr=err)
+        return await handle_df(registry, session, dispatch, operands)
 
     # ── symlink-aware dispatch: reads follow links (open(2)); rm/mv act
     #    on the link entry itself (lstat semantics) ──
