@@ -248,8 +248,8 @@ def parse_command(
             matched_optional = False
             for vf in attach_value_flags:
                 if tok.startswith(vf) and len(tok) > len(vf):
-                    _set_value_flag(flags, vf, tok[len(vf):],
-                                    repeat_flags, alias)
+                    _set_value_flag(flags, vf, tok[len(vf):], repeat_flags,
+                                    alias)
                     i += 1
                     matched_optional = True
                     break
@@ -265,8 +265,8 @@ def parse_command(
                     matched_value = True
                     break
                 if tok.startswith(vf) and len(tok) > len(vf):
-                    _set_value_flag(flags, vf, tok[len(vf):],
-                                    repeat_flags, alias)
+                    _set_value_flag(flags, vf, tok[len(vf):], repeat_flags,
+                                    alias)
                     i += 1
                     matched_value = True
                     break
