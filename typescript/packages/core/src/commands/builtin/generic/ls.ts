@@ -26,6 +26,18 @@ type Readdir = (p: PathSpec) => Promise<string[]>
 type Stat = (p: PathSpec) => Promise<FileStat>
 type SortBy = 'time' | 'size' | 'name'
 
+export const LS_OK = 0
+export const LS_MINOR_PROBLEM = 1
+export const LS_FAILURE = 2
+
+// One diagnostic plus how serious GNU ls considers it: `serious` marks a
+// failure on a command-line operand (exit 2); everything met while listing
+// or recursing below an operand is a minor problem (exit 1).
+interface LsWarning {
+  message: string
+  serious: boolean
+}
+
 interface WalkOpts {
   all: boolean
   sortBy: SortBy
@@ -42,6 +54,20 @@ interface Operand {
   readonly path: PathSpec
   readonly row: FileStat | null
   readonly groups: [PathSpec, FileStat[]][]
+}
+
+function errText(err: unknown): string {
+  return (
+    gnuStrerror((err as { code?: string }).code) ??
+    (err instanceof Error ? err.message : String(err))
+  )
+}
+
+// GNU ratchets the status upward: a serious problem always wins, a minor one
+// only upgrades a clean run.
+export function exitStatusFor(warnings: readonly LsWarning[]): number {
+  if (warnings.some((w) => w.serious)) return LS_FAILURE
+  return warnings.length > 0 ? LS_MINOR_PROBLEM : LS_OK
 }
 
 function childSpec(entryPath: string, prefix: string): PathSpec {
@@ -72,27 +98,28 @@ function appendListing(
   for (const s of stats) lines.push(formatShort(s, classify))
 }
 
+function primaryValue(entry: FileStat, sortBy: SortBy): string | number {
+  return sortBy === 'time' ? (entry.modified ?? '') : (entry.size ?? 0)
+}
+
+// GNU's -t/-S comparators fall back to the name when the timestamps or sizes
+// tie, so the order is total. `-r` negates the whole comparison, tie-break
+// included, which is why callers fold the sign into this comparator instead of
+// reversing the finished array.
 function compareStats(a: FileStat, b: FileStat, sortBy: SortBy): number {
-  if (sortBy === 'time') {
-    const am = a.modified ?? ''
-    const bm = b.modified ?? ''
-    return am < bm ? 1 : am > bm ? -1 : 0
+  if (sortBy !== 'name') {
+    const av = primaryValue(a, sortBy)
+    const bv = primaryValue(b, sortBy)
+    // -t and -S list newest/largest first.
+    if (av < bv) return 1
+    if (av > bv) return -1
   }
-  if (sortBy === 'size') return (b.size ?? 0) - (a.size ?? 0)
   return a.name < b.name ? -1 : a.name > b.name ? 1 : 0
 }
 
 function sortStats(stats: readonly FileStat[], sortBy: SortBy, reverse: boolean): FileStat[] {
-  const sorted = [...stats].sort((a, b) => compareStats(a, b, sortBy))
-  if (reverse) sorted.reverse()
-  return sorted
-}
-
-function errorMessage(err: unknown): string {
-  return (
-    gnuStrerror((err as { code?: string }).code) ??
-    (err instanceof Error ? err.message : String(err))
-  )
+  const sign = reverse ? -1 : 1
+  return [...stats].sort((a, b) => sign * compareStats(a, b, sortBy))
 }
 
 // A file operand whose readdir came back empty: backends without real
@@ -128,16 +155,34 @@ function asOperand(s: FileStat, path: PathSpec): FileStat {
   })
 }
 
+// An entry that cannot be stat'd is skipped with its own diagnostic rather
+// than failing the whole directory: GNU keeps listing the siblings and exits
+// 1. Mirrors the per-entry tolerance of Python ls `_stat_entries`.
 async function listDir(
   readdir: Readdir,
   stat: Stat,
   dir: PathSpec,
   all: boolean,
+  warnings: LsWarning[],
 ): Promise<FileStat[]> {
   const entries = await readdir(dir)
-  const stats = await Promise.all(
-    entries.map((p) => stat(childSpec(p, mountPrefixOf(dir.virtual, dir.resourcePath)))),
-  )
+  const prefix = mountPrefixOf(dir.virtual, dir.resourcePath)
+  const settled = await Promise.allSettled(entries.map((p) => stat(childSpec(p, prefix))))
+  const stats: FileStat[] = []
+  for (let i = 0; i < settled.length; i++) {
+    const outcome = settled[i]
+    const entry = entries[i]
+    if (outcome === undefined || entry === undefined) continue
+    if (outcome.status === 'rejected') {
+      // An entry below an operand is never a command-line arg.
+      warnings.push({
+        message: `ls: cannot access '${entry}': ${errText(outcome.reason)}`,
+        serious: false,
+      })
+      continue
+    }
+    stats.push(outcome.value)
+  }
   return all ? stats : stats.filter((s) => !s.name.startsWith('.'))
 }
 
@@ -147,15 +192,19 @@ async function probeOperand(
   stat: Stat,
   path: PathSpec,
   opts: WalkOpts,
-  warnings: string[],
+  warnings: LsWarning[],
+  commandLineArg: boolean,
 ): Promise<Operand> {
   let stats: FileStat[]
   try {
-    stats = await listDir(readdir, stat, path, opts.all)
+    stats = await listDir(readdir, stat, path, opts.all, warnings)
   } catch (err) {
     const row = await fileEntry(stat, path)
     if (row !== null) return { path, row, groups: [] }
-    warnings.push(`ls: cannot access '${path.rawPath}': ${errorMessage(err)}`)
+    warnings.push({
+      message: `ls: cannot access '${path.rawPath}': ${errText(err)}`,
+      serious: commandLineArg,
+    })
     return { path, row: null, groups: [] }
   }
   if (stats.length === 0) {
@@ -174,8 +223,13 @@ async function probeOperand(
         childSpec(childPath, mountPrefixOf(path.virtual, path.resourcePath)),
         opts,
         warnings,
+        false,
       )
-      groups.push(...child.groups)
+      // Appended one at a time: `push(...child.groups)` would spread the
+      // child's whole pre-order subtree as call arguments and overflow the
+      // engine's argument limit on a very wide tree. Mirrors Python's
+      // `groups.extend(child.groups)`.
+      for (const group of child.groups) groups.push(group)
     }
   }
   return { path, row: null, groups }
@@ -206,18 +260,17 @@ async function sortOperands(
   for (const operand of operands) {
     keyed.push({ key: await operandKey(operand, sortBy, stat), operand })
   }
-  keyed.sort((a, b) => compareStats(a.key, b.key, sortBy))
-  if (reverse) keyed.reverse()
+  const sign = reverse ? -1 : 1
+  keyed.sort((a, b) => sign * compareStats(a.key, b.key, sortBy))
   return keyed.map((k) => k.operand)
 }
 
-// Exit 1 only when nothing could be listed at all; directory headers are
-// output, not evidence that an operand succeeded.
-function finish(lines: string[], warnings: string[], listed: boolean): CommandFnResult {
+function finish(lines: string[], warnings: readonly LsWarning[]): CommandFnResult {
   const out: ByteSource = formatRecords(lines)
-  const exitCode = warnings.length > 0 && !listed ? 1 : 0
+  const exitCode = exitStatusFor(warnings)
   if (warnings.length > 0) {
-    return [out, new IOResult({ stderr: formatRecords(warnings), exitCode })]
+    const stderr = formatRecords(warnings.map((w) => w.message))
+    return [out, new IOResult({ stderr, exitCode })]
   }
   return [out, new IOResult({ exitCode })]
 }
@@ -247,7 +300,7 @@ export async function lsGeneric(
   const recursive = opts.flags.R === true
   const listDirItself = opts.flags.d === true
   const sortBy: SortBy = opts.flags.t === true ? 'time' : opts.flags.S === true ? 'size' : 'name'
-  const warnings: string[] = []
+  const warnings: LsWarning[] = []
   const lines: string[] = []
 
   if (listDirItself) {
@@ -259,18 +312,21 @@ export async function lsGeneric(
         // GNU ls -d prints the operand as given.
         collected.push(asOperand(await stat(p), p))
       } catch (err) {
-        warnings.push(`ls: cannot access '${p.rawPath}': ${errorMessage(err)}`)
+        warnings.push({
+          message: `ls: cannot access '${p.rawPath}': ${errText(err)}`,
+          serious: true,
+        })
       }
     }
     const rows = collected.length > 1 ? sortStats(collected, sortBy, reverse) : collected
     appendListing(rows, long, human, classify, lines)
-    return finish(lines, warnings, rows.length > 0)
+    return finish(lines, warnings)
   }
 
   const walkOpts: WalkOpts = { all, sortBy, reverse, recursive }
   const probed: Operand[] = []
   for (const p of targets) {
-    probed.push(await probeOperand(readdir, stat, p, walkOpts, warnings))
+    probed.push(await probeOperand(readdir, stat, p, walkOpts, warnings, true))
   }
   const operands = probed.length > 1 ? await sortOperands(probed, sortBy, reverse, stat) : probed
 
@@ -291,6 +347,5 @@ export async function lsGeneric(
     }
   }
 
-  const listed = operands.some((o) => o.row !== null || o.groups.length > 0)
-  return finish(lines, warnings, listed)
+  return finish(lines, warnings)
 }

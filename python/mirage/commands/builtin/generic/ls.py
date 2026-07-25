@@ -1,5 +1,5 @@
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.utils.formatting import format_ls_long
@@ -13,6 +13,25 @@ from mirage.utils.path import rebase_one
 
 Readdir = Callable[[PathSpec, IndexCacheStore | None], Awaitable[list[str]]]
 Stat = Callable[[PathSpec, IndexCacheStore | None], Awaitable[FileStat]]
+
+LS_OK = 0
+LS_MINOR_PROBLEM = 1
+LS_FAILURE = 2
+
+
+@dataclass(frozen=True, slots=True)
+class LsWarning:
+    """One diagnostic plus how serious GNU ls considers it.
+
+    Args:
+        message (str): The rendered `ls: ...` stderr line.
+        serious (bool): True when the failure was on a command-line operand
+            (GNU exit 2); False for problems met while listing or
+            recursing below an operand (GNU exit 1).
+    """
+
+    message: str
+    serious: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +49,40 @@ class Operand:
     groups: list[tuple[PathSpec, list[FileStat]]]
 
 
+@dataclass(frozen=True, slots=True)
+class WalkResult:
+    """Outcome of listing one directory.
+
+    Args:
+        entries (list[FileStat]): The stats to render for this directory.
+        warnings (list[LsWarning]): Diagnostics collected at or below this
+            directory.
+        listed (bool): False when the directory itself could not be opened, so
+            callers skip emitting a `dir:` header for it.
+    """
+
+    entries: list[FileStat] = field(default_factory=list)
+    warnings: list[LsWarning] = field(default_factory=list)
+    listed: bool = True
+
+
+def exit_status_for(warnings: list[LsWarning]) -> int:
+    """Collapse diagnostics into a GNU ls exit status.
+
+    GNU ratchets the status upward: a serious problem (bad command-line
+    operand) always wins, a minor one only upgrades a clean run.
+
+    Args:
+        warnings (list[LsWarning]): Diagnostics gathered over every operand.
+
+    Returns:
+        0 when clean, 1 for minor problems only, 2 if any was serious.
+    """
+    if any(w.serious for w in warnings):
+        return LS_FAILURE
+    return LS_MINOR_PROBLEM if warnings else LS_OK
+
+
 def format_simple(entries: list[FileStat],
                   *,
                   classify: bool = False) -> list[str]:
@@ -40,7 +93,7 @@ def format_simple(entries: list[FileStat],
     return out
 
 
-def _sort_value(entry: FileStat, sort_by: LsSortBy) -> str | int:
+def _primary_value(entry: FileStat, sort_by: LsSortBy) -> str | int:
     if sort_by is LsSortBy.TIME:
         return entry.modified or ""
     if sort_by is LsSortBy.SIZE:
@@ -48,16 +101,33 @@ def _sort_value(entry: FileStat, sort_by: LsSortBy) -> str | int:
     return entry.name
 
 
-def _descending(sort_by: LsSortBy, reverse: bool) -> bool:
-    # -t and -S list newest/largest first, so -r flips them back to last.
-    return reverse if sort_by is LsSortBy.NAME else not reverse
+def _order_rows(rows: list[FileStat], sort_by: LsSortBy,
+                reverse: bool) -> list[int]:
+    """Indices of ``rows`` in GNU ls order.
+
+    GNU's `-t`/`-S` comparators fall back to the name when the timestamps or
+    sizes tie, and `-r` negates the whole comparison, tie-break included. A
+    stable name sort followed by the primary key reproduces the first half;
+    reversing the finished order reproduces the second.
+
+    Args:
+        rows (list[FileStat]): The stats to order.
+        sort_by (LsSortBy): The active sort key.
+        reverse (bool): Whether `-r` is in effect.
+    """
+    order = sorted(range(len(rows)), key=lambda i: rows[i].name)
+    if sort_by is not LsSortBy.NAME:
+        # -t and -S list newest/largest first.
+        order.sort(key=lambda i: _primary_value(rows[i], sort_by),
+                   reverse=True)
+    if reverse:
+        order.reverse()
+    return order
 
 
 def sort_stats(entries: list[FileStat], sort_by: LsSortBy,
                reverse: bool) -> list[FileStat]:
-    return sorted(entries,
-                  key=lambda s: _sort_value(s, sort_by),
-                  reverse=_descending(sort_by, reverse))
+    return [entries[i] for i in _order_rows(entries, sort_by, reverse)]
 
 
 async def _file_entry(
@@ -67,7 +137,7 @@ async def _file_entry(
 ) -> FileStat | None:
     try:
         s = await stat(path, index)
-    except (FileNotFoundError, ValueError):
+    except (OSError, ValueError):
         return None
     if s.type == FileType.DIRECTORY:
         return None
@@ -92,9 +162,9 @@ async def _stat_entries(
     stat: Stat,
     all_files: bool,
     index: IndexCacheStore,
-) -> tuple[list[FileStat], list[str]]:
+) -> tuple[list[FileStat], list[LsWarning]]:
     stats: list[FileStat] = []
-    warnings: list[str] = []
+    warnings: list[LsWarning] = []
     for entry in names:
         entry_spec = PathSpec(virtual=entry,
                               directory=entry,
@@ -103,9 +173,13 @@ async def _stat_entries(
                                                   path.resource_path, entry))
         try:
             s = await stat(entry_spec, index)
-        except (FileNotFoundError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
+            # An entry below an operand is never a command-line arg, so
+            # GNU treats it as a minor problem (exit 1).
             warnings.append(
-                f"ls: cannot access '{entry}': {fs_strerror(exc) or exc}")
+                LsWarning(
+                    f"ls: cannot access '{entry}': {fs_strerror(exc) or exc}",
+                    False))
             continue
         if not all_files and s.name.startswith("."):
             continue
@@ -122,8 +196,9 @@ async def probe_operand(
     sort_by: LsSortBy = LsSortBy.NAME,
     reverse: bool = False,
     recursive: bool = False,
+    command_line_arg: bool = True,
     index: IndexCacheStore = NULL_INDEX,
-) -> tuple[Operand, list[str]]:
+) -> tuple[Operand, list[LsWarning]]:
     """List one operand and report whether it turned out to be a directory.
 
     Args:
@@ -134,17 +209,21 @@ async def probe_operand(
         sort_by (LsSortBy): active sort key.
         reverse (bool): reverse the sort.
         recursive (bool): descend, emitting one group per directory (-R).
+        command_line_arg (bool): False below an operand, where GNU downgrades
+            a failure to a minor problem (exit 1).
         index (IndexCacheStore): listing cache.
     """
-    warnings: list[str] = []
+    warnings: list[LsWarning] = []
     try:
         names = await readdir(path, index)
-    except (FileNotFoundError, ValueError, NotADirectoryError) as exc:
+    except (OSError, ValueError) as exc:
         row = await _file_entry(path, stat, index)
         if row is not None:
             return Operand(path, row, []), warnings
         warnings.append(
-            f"ls: cannot access '{path.raw_path}': {fs_strerror(exc) or exc}")
+            LsWarning(
+                f"ls: cannot access '{path.raw_path}': "
+                f"{fs_strerror(exc) or exc}", command_line_arg))
         return Operand(path, None, []), warnings
 
     if not names:
@@ -172,6 +251,7 @@ async def probe_operand(
                                                   sort_by=sort_by,
                                                   reverse=reverse,
                                                   recursive=True,
+                                                  command_line_arg=False,
                                                   index=index)
             groups.extend(child.groups)
             warnings.extend(child_ws)
@@ -188,8 +268,9 @@ async def walk(
     reverse: bool = False,
     recursive: bool = False,
     list_dir: bool = False,
+    command_line_arg: bool = True,
     index: IndexCacheStore = NULL_INDEX,
-) -> tuple[list[FileStat], list[str]]:
+) -> WalkResult:
     """Flat listing for one operand: a directory's entries, or the operand
     itself when it is not one. ``recursive`` flattens the whole subtree in
     ``ls -R`` order.
@@ -203,16 +284,22 @@ async def walk(
         reverse (bool): reverse the sort.
         recursive (bool): descend into subdirectories.
         list_dir (bool): stat the operand itself instead of listing it (-d).
+        command_line_arg (bool): False below an operand, where GNU downgrades
+            a failure to a minor problem (exit 1).
         index (IndexCacheStore): listing cache.
     """
     if list_dir:
         try:
             listed = await stat(path, index)
-        except (FileNotFoundError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             detail = fs_strerror(exc) or exc
-            return [], [f"ls: cannot access '{path.raw_path}': {detail}"]
+            return WalkResult(warnings=[
+                LsWarning(f"ls: cannot access '{path.raw_path}': {detail}",
+                          command_line_arg)
+            ],
+                              listed=False)
         # GNU ls -d prints the operand as given.
-        return [listed.model_copy(update={"name": path.raw_path})], []
+        return WalkResult([listed.model_copy(update={"name": path.raw_path})])
 
     operand, warnings = await probe_operand(path,
                                             readdir=readdir,
@@ -221,10 +308,12 @@ async def walk(
                                             sort_by=sort_by,
                                             reverse=reverse,
                                             recursive=recursive,
+                                            command_line_arg=command_line_arg,
                                             index=index)
     if operand.row is not None:
-        return [operand.row], warnings
-    return [e for _, entries in operand.groups for e in entries], warnings
+        return WalkResult([operand.row], warnings)
+    entries = [e for _, group in operand.groups for e in group]
+    return WalkResult(entries, warnings, listed=bool(operand.groups))
 
 
 async def _operand_key(
@@ -241,7 +330,7 @@ async def _operand_key(
         return FileStat(name=operand.path.raw_path, type=FileType.DIRECTORY)
     try:
         s = await stat(operand.path, index)
-    except (FileNotFoundError, ValueError):
+    except (OSError, ValueError):
         # The stat only supplies a sort key; an operand that cannot be
         # statted sorts as if it had none rather than failing the listing.
         return FileStat(name=operand.path.raw_path, type=FileType.DIRECTORY)
@@ -256,11 +345,11 @@ async def _sorted_operands(
     stat: Stat,
     index: IndexCacheStore,
 ) -> list[Operand]:
-    keyed = [(await _operand_key(o, sort_by=sort_by, stat=stat,
-                                 index=index), o) for o in operands]
-    keyed.sort(key=lambda pair: _sort_value(pair[0], sort_by),
-               reverse=_descending(sort_by, reverse))
-    return [o for _, o in keyed]
+    keys = [
+        await _operand_key(o, sort_by=sort_by, stat=stat, index=index)
+        for o in operands
+    ]
+    return [operands[i] for i in _order_rows(keys, sort_by, reverse)]
 
 
 def _render_group(
@@ -278,13 +367,11 @@ def _render_group(
         results.extend(format_simple(entries, classify=classify))
 
 
-def _finish(results: list[str], warnings: list[str], *,
-            listed: bool) -> tuple[bytes, IOResult]:
-    # Exit 1 only when nothing could be listed at all; directory headers
-    # are output, not evidence that an operand succeeded.
-    exit_code = 1 if warnings and not listed else 0
+def _finish(results: list[str],
+            warnings: list[LsWarning]) -> tuple[bytes, IOResult]:
+    stderr = format_optional_records([w.message for w in warnings])
     return format_records(results), IOResult(
-        stderr=format_optional_records(warnings), exit_code=exit_code)
+        stderr=stderr, exit_code=exit_status_for(warnings))
 
 
 async def ls(
@@ -304,20 +391,20 @@ async def ls(
     index: IndexCacheStore = NULL_INDEX,
 ) -> tuple[bytes, IOResult]:
     results: list[str] = []
-    warnings: list[str] = []
+    warnings: list[LsWarning] = []
 
     if list_dir:
         # -d turns every operand into a plain row, sorted together and
         # printed with no headers.
         rows: list[FileStat] = []
         for p in paths:
-            entries, p_ws = await walk(p,
-                                       readdir=readdir,
-                                       stat=stat,
-                                       list_dir=True,
-                                       index=index)
-            rows.extend(entries)
-            warnings.extend(p_ws)
+            result = await walk(p,
+                                readdir=readdir,
+                                stat=stat,
+                                list_dir=True,
+                                index=index)
+            rows.extend(result.entries)
+            warnings.extend(result.warnings)
         if len(rows) > 1:
             rows = sort_stats(rows, sort_by, reverse)
         _render_group(results,
@@ -326,7 +413,7 @@ async def ls(
                       one_per_line=one_per_line,
                       human=human,
                       classify=classify)
-        return _finish(results, warnings, listed=bool(rows))
+        return _finish(results, warnings)
 
     operands: list[Operand] = []
     for p in paths:
@@ -374,12 +461,17 @@ async def ls(
                           classify=classify)
             printed = True
 
-    listed = any(o.row is not None or o.groups for o in operands)
-    return _finish(results, warnings, listed=listed)
+    return _finish(results, warnings)
 
 
 __all__ = [
+    "LS_FAILURE",
+    "LS_MINOR_PROBLEM",
+    "LS_OK",
+    "LsWarning",
     "Operand",
+    "WalkResult",
+    "exit_status_for",
     "format_simple",
     "ls",
     "probe_operand",

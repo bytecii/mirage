@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest'
 import { FileStat, FileType, PathSpec } from '../../../types.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import type { CommandOpts } from '../../config.ts'
-import { lsGeneric } from './ls.ts'
+import { LS_FAILURE, LS_MINOR_PROBLEM, LS_OK, exitStatusFor, lsGeneric } from './ls.ts'
 
 const DEC = new TextDecoder()
 
@@ -181,7 +181,9 @@ describe('lsGeneric operand headers', () => {
   it('a failed operand still leaves the listed one headed', async () => {
     const r = await runTree(['/nope', '/a'])
     expect(r.stdout).toBe('/a:\nf.txt\nsub\n')
-    expect(r.exitCode).toBe(0)
+    // The header is output, not evidence of success: the bad operand still
+    // ratchets the status to 2.
+    expect(r.exitCode).toBe(LS_FAILURE)
     expect(r.stderr).toContain('/nope')
   })
 
@@ -201,5 +203,166 @@ describe('lsGeneric operand headers', () => {
 
   it('-d sorts its operands and stays unheaded', async () => {
     expect((await runTree(['/zfile', '/b', '/a'], { d: true })).stdout).toBe('/a\n/b\n/zfile\n')
+  })
+})
+
+// GNU's -t/-S comparators fall back to the name when the primary key ties, and
+// -r negates the whole comparison, tie-break included. Pinned with
+// `docker run --rm debian:stable-slim` (coreutils 9.7).
+const TIED = ['/a', '/b', '/c']
+
+const tiedStat = (p: PathSpec): Promise<FileStat> => {
+  const path = key(p)
+  if (!TIED.includes(path)) {
+    return Promise.reject(Object.assign(new Error(path), { code: 'ENOENT' }))
+  }
+  return Promise.resolve(
+    new FileStat({
+      name: path.slice(1),
+      type: FileType.TEXT,
+      size: 2,
+      modified: '2024-01-01T00:00:00Z',
+    }),
+  )
+}
+
+const tiedReaddir = (p: PathSpec): Promise<string[]> =>
+  key(p) === '/'
+    ? Promise.resolve(TIED)
+    : Promise.reject(Object.assign(new Error(), { code: 'ENOTDIR' }))
+
+async function runTied(
+  paths: string[],
+  flags: Record<string, string | boolean | string[]>,
+): Promise<string> {
+  const result = await lsGeneric(paths.map(spec), opts(flags), tiedReaddir, tiedStat)
+  if (result === null) return ''
+  return DEC.decode(result[0] as Uint8Array)
+}
+
+describe('lsGeneric tie-breaks', () => {
+  for (const sort of ['t', 'S']) {
+    it(`-${sort} breaks tied operands on the name`, async () => {
+      expect(await runTied(['/c', '/a', '/b'], { [sort]: true })).toBe('/a\n/b\n/c\n')
+    })
+
+    it(`-${sort}r flips the tie-break too`, async () => {
+      expect(await runTied(['/c', '/a', '/b'], { [sort]: true, r: true })).toBe('/c\n/b\n/a\n')
+    })
+
+    it(`-${sort} breaks tied entries on the name`, async () => {
+      expect(await runTied(['/'], { [sort]: true })).toBe('a\nb\nc\n')
+      expect(await runTied(['/'], { [sort]: true, r: true })).toBe('c\nb\na\n')
+    })
+  }
+})
+
+// GNU coreutils 9.7 exit codes: 0 ok, 1 minor problem (trouble met below an
+// operand), 2 serious trouble (a command-line operand could not be accessed).
+// Pinned with `docker run --rm debian:stable-slim`.
+const enoent = (): Promise<never> =>
+  Promise.reject(Object.assign(new Error('nope'), { code: 'ENOENT' }))
+
+const eacces = (): Promise<never> =>
+  Promise.reject(Object.assign(new Error('denied'), { code: 'EACCES' }))
+
+// `/good` lists two entries; `/bad` does not exist; `/half` lists one entry
+// whose stat is denied.
+const codeReaddir = (p: PathSpec): Promise<string[]> => {
+  const k = key(p)
+  if (k === '/good') return Promise.resolve(['/good/a.txt', '/good/b.txt'])
+  if (k === '/half') return Promise.resolve(['/half/locked.txt'])
+  if (k === '/deep') return Promise.resolve(['/deep/sub'])
+  if (k === '/deep/sub') return eacces()
+  return enoent()
+}
+
+const codeStat = (p: PathSpec): Promise<FileStat> => {
+  const k = key(p)
+  if (k === '/half/locked.txt') return eacces()
+  if (k === '/bad' || k.startsWith('/bad/')) return enoent()
+  const dir = k === '/good' || k === '/half' || k === '/deep' || k === '/deep/sub'
+  return Promise.resolve(
+    new FileStat({
+      name: k.split('/').pop() ?? '',
+      type: dir ? FileType.DIRECTORY : FileType.TEXT,
+    }),
+  )
+}
+
+async function status(
+  paths: string[],
+  flags: Record<string, string | boolean | string[]> = {},
+): Promise<[number, string]> {
+  const result = await lsGeneric(paths.map(spec), opts(flags), codeReaddir, codeStat)
+  if (result === null) return [-1, '']
+  const [out, io] = result
+  return [io.exitCode, DEC.decode((out ?? new Uint8Array()) as Uint8Array)]
+}
+
+describe('lsGeneric exit codes', () => {
+  it('exits 0 when every operand lists cleanly', async () => {
+    const [code] = await status(['/good'])
+    expect(code).toBe(LS_OK)
+  })
+
+  it('exits 2 for a missing command-line operand', async () => {
+    const [code] = await status(['/bad'])
+    expect(code).toBe(LS_FAILURE)
+  })
+
+  it('exits 2 when only one of several operands is missing', async () => {
+    expect((await status(['/bad', '/good']))[0]).toBe(LS_FAILURE)
+    expect((await status(['/good', '/bad']))[0]).toBe(LS_FAILURE)
+  })
+
+  it('still lists the good operand while exiting 2', async () => {
+    const [code, out] = await status(['/bad', '/good'])
+    expect(code).toBe(LS_FAILURE)
+    expect(out).toContain('a.txt')
+  })
+
+  it('exits 2 for a missing operand under -d', async () => {
+    expect((await status(['/bad'], { d: true }))[0]).toBe(LS_FAILURE)
+    expect((await status(['/good', '/bad'], { d: true }))[0]).toBe(LS_FAILURE)
+  })
+
+  it('exits 1 when an entry below the operand cannot be stat', async () => {
+    const [code, out] = await status(['/half'])
+    expect(code).toBe(LS_MINOR_PROBLEM)
+    // The unreadable entry is skipped, not fatal: the listing still renders.
+    expect(out).not.toContain('locked.txt')
+  })
+
+  it('exits 1 when -R cannot open a subdirectory, keeping parent output', async () => {
+    const [code, out] = await status(['/deep'], { R: true })
+    expect(code).toBe(LS_MINOR_PROBLEM)
+    expect(out).toContain('/deep:')
+  })
+
+  it('lets a serious problem outrank a minor one', async () => {
+    expect((await status(['/half', '/bad']))[0]).toBe(LS_FAILURE)
+  })
+
+  it('prints no header for a -R operand it cannot open', async () => {
+    const [code, out] = await status(['/good', '/bad'], { R: true })
+    expect(code).toBe(LS_FAILURE)
+    expect(out).not.toContain('/bad:')
+  })
+
+  it('starts flush left when the first -R operand could not be opened', async () => {
+    const [code, out] = await status(['/bad', '/good'], { R: true })
+    expect(code).toBe(LS_FAILURE)
+    expect(out).toBe('/good:\na.txt\nb.txt\n')
+  })
+
+  it('ratchets the status like GNU set_exit_status', () => {
+    const minor = { message: "ls: cannot access 'x': Permission denied", serious: false }
+    const serious = { message: "ls: cannot access '/nope': No such file", serious: true }
+    expect(exitStatusFor([])).toBe(LS_OK)
+    expect(exitStatusFor([minor])).toBe(LS_MINOR_PROBLEM)
+    expect(exitStatusFor([serious])).toBe(LS_FAILURE)
+    expect(exitStatusFor([minor, serious])).toBe(LS_FAILURE)
+    expect(exitStatusFor([serious, minor])).toBe(LS_FAILURE)
   })
 })

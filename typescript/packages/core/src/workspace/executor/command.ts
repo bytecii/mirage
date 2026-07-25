@@ -22,6 +22,7 @@ import type { ByteSource } from '../../io/types.ts'
 import { IOResult, materialize } from '../../io/types.ts'
 import type { Resource } from '../../resource/base.ts'
 import { assertMountAllowed, MountNotAllowedError } from '../../context/session_context.ts'
+import type { ShellArray } from '../../shell/array.ts'
 import { CallStack } from '../../shell/call_stack.ts'
 import type { JobTable } from '../../shell/job_table.ts'
 import { ERREXIT_EXEMPT_TYPES } from '../../shell/types.ts'
@@ -36,6 +37,7 @@ import type { RoutingDecision } from './route/index.ts'
 import type { Session } from '../session/session.ts'
 import { ExecutionNode } from '../types.ts'
 import { asyncChain } from '../../io/stream.ts'
+import { LS_FAILURE } from '../../commands/builtin/generic/ls.ts'
 import { strategyFor } from '../../commands/builtin/generic/crossmount/detect.ts'
 import type { Cmd } from '../../commands/builtin/generic/crossmount/types.ts'
 import { Strategy } from '../../commands/builtin/generic/crossmount/types.ts'
@@ -275,7 +277,10 @@ async function runOnMount(
       safeguardOverride,
     })
     let stdout = initialStdout
-    if (cmdName === 'ls' && io.exitCode === 0) {
+    // A minor problem (exit 1: an entry below the operand could not be
+    // stat'd) still lists the directory, so the mount and link rows belong in
+    // that output; only a failed operand (exit 2) has nothing to augment.
+    if (cmdName === 'ls' && io.exitCode !== LS_FAILURE) {
       stdout = await injectChildMounts(stdout, registry, paths, flags, session.cwd)
       if (namespace?.hasLinks() === true) {
         stdout = await injectLinks(stdout, namespace, paths, flags, session.cwd)
@@ -935,7 +940,9 @@ async function executeShellFunction(
   const textArgs = restParts.map(wordText)
   cs.push(textArgs, cmdName)
   const savedLocals = new Map<string, string | null>()
+  const savedArrays = new Map<string, ShellArray | null>()
   session.localVars = savedLocals
+  session.localArrays = savedArrays
   const allStdout: (ByteSource | null)[] = []
   let mergedIo = new IOResult()
   let lastExec = new ExecutionNode({ command: cmdName, exitCode: 0 })
@@ -981,7 +988,16 @@ async function executeShellFunction(
         session.env[key] = oldVal
       }
     }
+    for (const [key, oldArr] of savedArrays) {
+      if (oldArr === null) {
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        delete session.arrays[key]
+      } else {
+        session.arrays[key] = oldArr
+      }
+    }
     session.localVars = null
+    session.localArrays = null
   }
 
   const combined = allStdout.length > 0 ? asyncChain(...allStdout) : null
