@@ -42,7 +42,7 @@ async def readdir(
         return listing.entries
     p = norm(path)
     if not await store.has_dir(p):
-        raise await readdir_error(virtual, p, store.has_file)
+        raise await readdir_error(virtual, p, store.has_file, store.has_dir)
     dir_prefix = p.rstrip("/") + "/"
     seen: set[str] = set()
     all_files = await store.list_files()

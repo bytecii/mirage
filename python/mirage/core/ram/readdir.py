@@ -27,6 +27,10 @@ async def _is_file(store: RAMStore, key: str) -> bool:
     return key in store.files
 
 
+async def _is_dir(store: RAMStore, key: str) -> bool:
+    return key in store.dirs
+
+
 async def readdir(accessor: RAMAccessor,
                   path: PathSpec,
                   index: IndexCacheStore = NULL_INDEX) -> list[str]:
@@ -41,7 +45,8 @@ async def readdir(accessor: RAMAccessor,
         return listing.entries
     p = norm(target.resource_path)
     if p not in store.dirs:
-        raise await readdir_error(path, p, partial(_is_file, store))
+        raise await readdir_error(path, p, partial(_is_file, store),
+                                  partial(_is_dir, store))
     dir_prefix = p.rstrip("/") + "/"
     seen: set[str] = set()
     for key in list(store.files) + list(store.dirs):

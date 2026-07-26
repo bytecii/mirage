@@ -62,7 +62,8 @@ def eisdir(path: object) -> IsADirectoryError:
 
 
 async def readdir_error(path: str | PathSpec, key: str,
-                        is_file: Callable[[str], Awaitable[bool]]) -> OSError:
+                        is_file: Callable[[str], Awaitable[bool]],
+                        is_dir: Callable[[str], Awaitable[bool]]) -> OSError:
     """The errno a failed directory listing should report.
 
     ``opendir`` reports ENOTDIR only when a component of the path exists and
@@ -70,7 +71,13 @@ async def readdir_error(path: str | PathSpec, key: str,
     that does not exist at all is ENOENT (``ls /nope`` -> "No such file or
     directory"), however deep it is. Store-backed backends have no kernel to
     draw that line for them, so they walk the ancestors and ask here instead
-    of collapsing both cases into one errno. Mirrors TS ``readdirError``.
+    of collapsing both cases into one errno.
+
+    The walk stops at the first component that resolves to neither a
+    directory nor a file, the way the kernel stops resolving there: a store
+    can hold a key whose parent is not a directory, and looking past that
+    gap would report ENOTDIR for a path the kernel never reaches.
+    Mirrors TS ``readdirError``.
 
     Args:
         path (str | PathSpec): The operand; ``virtual`` is the reported
@@ -78,11 +85,16 @@ async def readdir_error(path: str | PathSpec, key: str,
         key (str): The mount-local normalized path that was looked up.
         is_file (Callable[[str], Awaitable[bool]]): Probe reporting whether a
             mount-local path exists as a non-directory.
+        is_dir (Callable[[str], Awaitable[bool]]): Probe reporting whether a
+            mount-local path exists as a directory.
     """
     segments = [s for s in key.split("/") if s]
     for i in range(1, len(segments) + 1):
-        if await is_file("/" + "/".join(segments[:i])):
+        component = "/" + "/".join(segments[:i])
+        if await is_file(component):
             return enotdir(path)
+        if not await is_dir(component):
+            return enoent(path)
     return enoent(path)
 
 

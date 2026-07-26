@@ -70,17 +70,24 @@ export function enotempty(path: string | { virtual: string }): FsError {
 // is ENOENT (`ls /nope` -> 'No such file or directory'), however deep it is.
 // Store-backed backends have no kernel to draw that line for them, so they
 // walk the ancestors and ask here instead of collapsing both cases into one
-// errno. `key` is the mount-local normalized path that was looked up and
-// isFile probes whether a mount-local path exists as a non-directory.
+// errno. `key` is the mount-local normalized path that was looked up, isFile
+// probes whether a mount-local path exists as a non-directory and isDir
+// whether it exists as a directory. The walk stops at the first component
+// that is neither, the way the kernel stops resolving there: a store can hold
+// a key whose parent is not a directory, and looking past that gap would
+// report ENOTDIR for a path the kernel never reaches.
 // Mirrors Python's readdir_error.
 export async function readdirError(
   path: string | { virtual: string; rawPath?: string },
   key: string,
   isFile: (p: string) => boolean | Promise<boolean>,
+  isDir: (p: string) => boolean | Promise<boolean>,
 ): Promise<FsError> {
   const segments = key.split('/').filter((s) => s !== '')
   for (let i = 1; i <= segments.length; i++) {
-    if (await isFile(`/${segments.slice(0, i).join('/')}`)) return enotdir(path)
+    const component = `/${segments.slice(0, i).join('/')}`
+    if (await isFile(component)) return enotdir(path)
+    if (!(await isDir(component))) return enoent(path)
   }
   return enoent(path)
 }

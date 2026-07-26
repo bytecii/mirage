@@ -42,7 +42,12 @@ export async function readdir(
   const store = accessor.store
   const p = norm(virtual)
   if (!(await store.hasDir(p))) {
-    throw await readdirError(path, p, (k) => store.hasFile(k))
+    throw await readdirError(
+      path,
+      p,
+      (k) => store.hasFile(k),
+      (k) => store.hasDir(k),
+    )
   }
   const dirPrefix = p === '/' ? '/' : `${p}/`
   const seen = new Set<string>()

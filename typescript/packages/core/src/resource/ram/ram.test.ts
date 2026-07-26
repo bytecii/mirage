@@ -146,6 +146,20 @@ describe('RAMResource readdir', () => {
       code: 'ENOTDIR',
     })
   })
+
+  it('throws ENOENT for an orphan whose parent directory is missing', async () => {
+    // rename stores the destination key without adding its ancestors, so the
+    // store can hold a file under a parent that is not a directory. The walk
+    // must stop at /missing, the way the kernel would.
+    const { ram, registry } = setup()
+    await call(registry, 'write', ram, '/a.txt', new Uint8Array())
+    await call(registry, 'rename', ram, '/a.txt', PathSpec.fromStrPath('/missing/a.txt'))
+    for (const p of ['/missing', '/missing/a.txt/x', '/missing/a.txt/x/y']) {
+      await expect(call(registry, 'readdir', ram, p)).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+    }
+  })
 })
 
 describe('RAMResource stat', () => {

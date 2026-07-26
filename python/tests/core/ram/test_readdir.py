@@ -147,3 +147,22 @@ async def test_readdir_file_component_is_not_a_directory(index):
                 PathSpec(resource_path=virtual.lstrip("/"),
                          virtual=virtual,
                          directory=virtual), index)
+
+
+@pytest.mark.asyncio
+async def test_readdir_orphan_below_a_missing_dir_is_not_found(index):
+    # `mv /a.txt /missing/a.txt` stores the key without adding /missing to
+    # dirs, so the store holds a file whose parent is not a directory. The
+    # walk must stop at /missing, the way the kernel would, instead of
+    # reaching the orphan and reporting ENOTDIR.
+    s = RAMStore()
+    s.files["/missing/a.txt"] = b"a"
+
+    a = RAMAccessor(s)
+    for virtual in ("/missing", "/missing/a.txt/x", "/missing/a.txt/x/y"):
+        with pytest.raises(FileNotFoundError):
+            await readdir(
+                a,
+                PathSpec(resource_path=virtual.lstrip("/"),
+                         virtual=virtual,
+                         directory=virtual), index)
