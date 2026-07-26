@@ -43,6 +43,13 @@ _FS_STRERROR: list[tuple[type[OSError], str]] = [
 # set and the strerror table can never drift apart (mirrors TS isFsError).
 FS_ERRORS: tuple[type[OSError], ...] = tuple(t for t, _ in _FS_STRERROR)
 
+# What a tree walk over a user operand tolerates: every recoverable
+# filesystem error, plus the ValueError store backends raise for "not a
+# directory". Catch sites that warn and keep walking (tree, grep -r, rg) use
+# this so an errno split like ENOENT/ENOTDIR cannot make one of them abort
+# while its siblings keep going.
+WALK_ERRORS: tuple[type[Exception], ...] = (*FS_ERRORS, ValueError)
+
 
 def _virtual_of(path: object) -> str:
     original = getattr(path, "virtual", None)
