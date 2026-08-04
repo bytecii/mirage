@@ -17,7 +17,7 @@ import { RAMFileCacheStore } from '../../cache/file/ram.ts'
 import type { Resource } from '../../resource/base.ts'
 import { EVENT_CLEAR, EVENT_COMMAND, EVENT_DELETE } from '../../observe/log_entry.ts'
 import type { EventDict } from '../../observe/observer.ts'
-import { RAMResource, type RAMResourceState } from '../../resource/ram/ram.ts'
+import { RAMResource } from '../../resource/ram/ram.ts'
 import { z } from 'zod'
 
 import type { CLIInstall } from '../cli/types.ts'
@@ -54,7 +54,6 @@ import type {
   JobSnapshot,
   MountSnapshot,
   NodeMetaSnapshot,
-  ResourceState,
   SessionSnapshot,
   WorkspaceStateDict,
 } from './types.ts'
@@ -69,11 +68,10 @@ export async function toStateDict(ws: Workspace): Promise<WorkspaceStateDict> {
   for (let i = 0; i < mounts.length; i++) {
     const m = mounts[i]
     if (m === undefined) continue
-    const resource = m.resource as unknown as {
-      kind: string
-      getState: () => ResourceState | Promise<ResourceState>
-    }
-    const state = await Promise.resolve(resource.getState())
+    const resource = m.resource
+    // Python's BaseResource.get_state defaults to the bare type tag; a
+    // resource with no state of its own simply does not define one.
+    const state = await Promise.resolve(resource.getState?.() ?? { type: resource.kind })
     mountSnapshots.push({
       index: i,
       prefix: m.prefix,
@@ -243,10 +241,8 @@ export async function applyStateDict(ws: Workspace, state: WorkspaceStateDict): 
     if (resourceStateRequiresOverride(m.resource_state)) continue
     const mount = ws.registry.mountFor(m.prefix)
     if (mount === null) continue
-    const resource = mount.resource as unknown as {
-      loadState: (state: ResourceState) => void | Promise<void>
-    }
-    await Promise.resolve(resource.loadState(m.resource_state as RAMResourceState))
+    // Python's BaseResource.load_state is a no-op by default.
+    await Promise.resolve(mount.resource.loadState?.(m.resource_state))
   }
   await restoreSessions(ws, state)
   // current_agent_id is not restored separately: TS models a single

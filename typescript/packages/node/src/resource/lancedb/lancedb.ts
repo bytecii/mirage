@@ -14,6 +14,7 @@
 
 import {
   BaseResource,
+  REDACTED_SECRET,
   type FileStat,
   LANCEDB_COMMANDS,
   LANCEDB_OPS,
@@ -28,6 +29,7 @@ import {
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
+  type ResourceState,
   ResourceName,
   resolveLanceDBConfig,
 } from '@struktoai/mirage-core'
@@ -86,5 +88,24 @@ export class LanceDBResource extends BaseResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return lanceStat(this.accessor, p, this.index)
+  }
+
+  // Mirrors Python's `config_state(self.config)`: apiKey is replaced with
+  // the redaction marker, which is what makes
+  // `resourceStateRequiresOverride` demand a fresh config at load time
+  // rather than silently substituting an empty RAMResource.
+  getState(): ResourceState {
+    const config: Record<string, unknown> = { ...this.config }
+    if (config.apiKey !== undefined && config.apiKey !== null) config.apiKey = REDACTED_SECRET
+    return {
+      type: this.kind,
+      needs_override: true,
+      redacted_fields: ['apiKey'],
+      config,
+    }
+  }
+
+  loadState(_state: ResourceState): Promise<void> {
+    return Promise.resolve()
   }
 }

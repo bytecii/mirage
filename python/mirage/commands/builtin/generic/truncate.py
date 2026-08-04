@@ -1,5 +1,7 @@
+import re
 from collections.abc import Awaitable, Callable
 
+from mirage.commands.errors import UsageError
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileStat, PathSpec
 
@@ -14,14 +16,29 @@ _UNITS = {
     "TB": 1000**4,
 }
 
+# GNU rejects anything strtol would not consume whole, so `1x`, ` 5` and
+# `1_0` are all `Invalid number` rather than a silently truncated read.
+_DIGITS = re.compile(r"\d+")
+
 
 def parse_size(value: str, current: int) -> int:
+    """Resolve a GNU ``truncate -s`` spec against a file's current size.
+
+    Args:
+        value (str): the ``-s`` operand, e.g. ``10K``, ``+1M``, ``/512``.
+        current (int): the file's current size in bytes.
+    """
     operation = value[:1] if value[:1] in {"+", "-", "<", ">", "/", "%"
                                            } else ""
     raw = value[1:] if operation else value
     suffix = next((unit for unit in sorted(_UNITS, key=len, reverse=True)
                    if raw.endswith(unit)), "")
-    number = int(raw[:-len(suffix)] if suffix else raw) * _UNITS.get(suffix, 1)
+    digits = raw[:-len(suffix)] if suffix else raw
+    if _DIGITS.fullmatch(digits) is None:
+        raise UsageError(f"truncate: Invalid number: '{value}'", 1)
+    number = int(digits) * _UNITS.get(suffix, 1)
+    if number == 0 and operation in {"/", "%"}:
+        raise UsageError("truncate: division by zero", 1)
     if operation == "+":
         return current + number
     if operation == "-":

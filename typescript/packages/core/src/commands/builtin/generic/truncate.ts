@@ -1,6 +1,7 @@
 import { IOResult } from '../../../io/types.ts'
 import type { FileStat, PathSpec } from '../../../types.ts'
 import type { CommandFnResult } from '../../config.ts'
+import { UsageError } from '../../errors.ts'
 
 const UNITS: Readonly<Record<string, number>> = {
   K: 1024,
@@ -13,6 +14,13 @@ const UNITS: Readonly<Record<string, number>> = {
   TB: 1000 ** 4,
 }
 
+// GNU rejects anything strtol would not consume whole, so `1x`, ` 5` and
+// `1_0` are all `Invalid number` rather than a silently truncated read.
+// parseInt would take the numeric prefix of `1x` and hand back NaN for
+// `abc`, and NaN reaches the backend truncate op as a length, where
+// `new Uint8Array(NaN)` empties the file.
+const DIGITS = /^\d+$/
+
 function parseSize(value: string, current: number): number {
   const first = value.slice(0, 1)
   const operation = ['+', '-', '<', '>', '/', '%'].includes(first) ? first : ''
@@ -21,7 +29,11 @@ function parseSize(value: string, current: number): number {
     .sort((a, b) => b.length - a.length)
     .find((unit) => raw.endsWith(unit))
   const numeric = suffix === undefined ? raw : raw.slice(0, -suffix.length)
+  if (!DIGITS.test(numeric)) throw new UsageError(`truncate: Invalid number: '${value}'`, 1)
   const number = Number.parseInt(numeric, 10) * (suffix === undefined ? 1 : (UNITS[suffix] ?? 1))
+  if (number === 0 && (operation === '/' || operation === '%')) {
+    throw new UsageError('truncate: division by zero', 1)
+  }
   if (operation === '+') return current + number
   if (operation === '-') return Math.max(0, current - number)
   if (operation === '<') return Math.min(current, number)

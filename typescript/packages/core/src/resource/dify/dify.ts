@@ -23,6 +23,8 @@ import { DIFY_OPS } from '../../ops/dify/index.ts'
 import type { RegisteredOp } from '../../ops/registry.ts'
 import { ResourceName, type FileStat, type PathSpec } from '../../types.ts'
 import { BaseResource, type Resource } from '../base.ts'
+import { REDACTED_SECRET } from '../secrets.ts'
+import type { ResourceState } from '../../workspace/snapshot/types.ts'
 import { resolveDifyConfig, type DifyConfig, type DifyConfigResolved } from './config.ts'
 import { DIFY_PROMPT } from './prompt.ts'
 
@@ -77,5 +79,23 @@ export class DifyResource extends BaseResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return difyStat(this.accessor, p, this.index)
+  }
+
+  // Mirrors Python's get_state: apiKey is replaced with the redaction
+  // marker, which is also what makes `resourceStateRequiresOverride`
+  // demand a fresh config at load time.
+  getState(): ResourceState {
+    const config: Record<string, unknown> = { ...this.config }
+    if (config.apiKey !== undefined && config.apiKey !== null) config.apiKey = REDACTED_SECRET
+    return {
+      type: this.kind,
+      needs_override: true,
+      redacted_fields: ['apiKey'],
+      config,
+    }
+  }
+
+  loadState(_state: ResourceState): Promise<void> {
+    return Promise.resolve()
   }
 }

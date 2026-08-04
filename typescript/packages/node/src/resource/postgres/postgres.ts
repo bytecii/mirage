@@ -14,6 +14,7 @@
 
 import {
   BaseResource,
+  REDACTED_SECRET,
   POSTGRES_COMMANDS,
   POSTGRES_OPS,
   POSTGRES_PROMPT,
@@ -33,6 +34,7 @@ import {
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
+  type ResourceState,
 } from '@struktoai/mirage-core'
 import { PostgresStore } from './store.ts'
 
@@ -106,5 +108,24 @@ export class PostgresResource extends BaseResource implements Resource {
           )
         : paths
     return resolvePostgresGlob(this.accessor, effective, this.index)
+  }
+
+  // Mirrors Python's `config_state(self.config)`: dsn is replaced with
+  // the redaction marker, which is what makes
+  // `resourceStateRequiresOverride` demand a fresh config at load time
+  // rather than silently substituting an empty RAMResource.
+  getState(): ResourceState {
+    const config: Record<string, unknown> = { ...this.config }
+    if (config.dsn !== undefined && config.dsn !== null) config.dsn = REDACTED_SECRET
+    return {
+      type: this.kind,
+      needs_override: true,
+      redacted_fields: ['dsn'],
+      config,
+    }
+  }
+
+  loadState(_state: ResourceState): Promise<void> {
+    return Promise.resolve()
   }
 }
