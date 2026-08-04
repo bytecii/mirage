@@ -35,14 +35,7 @@ describe('sizeSuffixes', () => {
   })
 
   it('preserves case instead of folding it', () => {
-    expect(Object.keys(sizeSuffixes('kK')).sort()).toEqual([
-      'K',
-      'KB',
-      'KiB',
-      'k',
-      'kB',
-      'kiB',
-    ])
+    expect(Object.keys(sizeSuffixes('kK')).sort()).toEqual(['K', 'KB', 'KiB', 'k', 'kB', 'kiB'])
   })
 
   it('rejects an unknown letter', () => {
