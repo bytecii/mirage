@@ -13,9 +13,12 @@ _UNITS = size_suffixes("bkKmMGTPE")
 # report as too-large rather than as unknown suffixes.
 _OVERFLOW_UNITS = size_suffixes("QRYZ")
 _UINTMAX = 2**64 - 1
-# strtoumax base 0: 0x… is hex, a leading 0 is octal, else decimal; the
-# unconsumed remainder is the suffix.
-_NUMBER = re.compile(r"^(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)(.*)$")
+# strtoumax base 0: leading whitespace is skipped and one '+' is allowed, then
+# 0x… is hex, a leading 0 is octal, else decimal; the unconsumed remainder is
+# the suffix. The sign stays outside group 1 so the radix is picked from the
+# digits alone (`-N +0x10` is hex, `-N +010` is octal).
+_NUMBER = re.compile(
+    r"^[ \t\n\v\f\r]*\+?(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)(.*)$")
 
 
 def parse_count(value: str, flag: str) -> int:

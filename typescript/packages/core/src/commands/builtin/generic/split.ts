@@ -32,37 +32,47 @@ const ENC = new TextEncoder()
 // base-10 only: hex and octal spellings are invalid numbers.
 const BYTE_UNITS = sizeSuffixes('bkKmMEGPQRTYZ')
 const BYTE_SUFFIXES = Object.keys(BYTE_UNITS).sort((a, b) => b.length - a.length)
-const DIGITS = /^\d+$/
+// Counts go through xstrtoumax: leading whitespace is skipped and one '+' is
+// allowed, so `-b +10` and `-b " 10"` are valid. Suffix start values do NOT --
+// coreutils 9.7 rejects both `--numeric-suffixes=+5` and `=" 5"` -- so they
+// keep the strict digits-only grammar.
+const COUNT = /^[ \t\n\v\f\r]*\+?[0-9]+$/
+const DIGITS = /^[0-9]+$/
 const HEX_DIGITS = /^[0-9a-fA-F]+$/
 const TRY_HELP = "\nTry 'split --help' for more information."
 
 function parseBytesValue(value: string): number {
   const suffix = BYTE_SUFFIXES.find((u) => value.endsWith(u))
   const digits = suffix === undefined ? value : value.slice(0, -suffix.length)
-  if (!DIGITS.test(digits) || Number.parseInt(digits, 10) === 0) {
+  if (!COUNT.test(digits) || Number.parseInt(digits, 10) === 0) {
     throw new UsageError(`split: invalid number of bytes: '${value}'`, 1)
   }
   return Number.parseInt(digits, 10) * (suffix === undefined ? 1 : (BYTE_UNITS[suffix] ?? 1))
 }
 
 function parseLinesValue(value: string): number {
-  if (!DIGITS.test(value) || Number.parseInt(value, 10) === 0) {
+  if (!COUNT.test(value) || Number.parseInt(value, 10) === 0) {
     throw new UsageError(`split: invalid number of lines: '${value}'`, 1)
   }
   return Number.parseInt(value, 10)
 }
 
-// GNU quotes only the N of an `l/N` or `K/N` chunk spec in the error.
+// A malformed head (the l/r kind letter or the K component) quotes the
+// whole spec; a malformed trailing N quotes only N (GNU).
 function parseChunksValue(value: string): number {
-  const tail = value.split('/').at(-1) ?? value
-  if (!DIGITS.test(tail) || Number.parseInt(tail, 10) === 0) {
+  const parts = value.split('/')
+  if (parts.slice(0, -1).some((part) => part !== 'l' && part !== 'r' && !COUNT.test(part))) {
+    throw new UsageError(`split: invalid number of chunks: '${value}'`, 1)
+  }
+  const tail = parts.at(-1) ?? value
+  if (!COUNT.test(tail) || Number.parseInt(tail, 10) === 0) {
     throw new UsageError(`split: invalid number of chunks: '${tail}'`, 1)
   }
   return Number.parseInt(tail, 10)
 }
 
 function parseSuffixLength(value: string): number {
-  if (!DIGITS.test(value)) {
+  if (!COUNT.test(value)) {
     throw new UsageError(`split: invalid suffix length: '${value}'`, 1)
   }
   return Number.parseInt(value, 10)

@@ -14,7 +14,13 @@ from mirage.types import PathSpec
 # lowercase k/m only (pinned against coreutils 9.7). Unlike od, split is
 # base-10 only: hex and octal spellings are invalid numbers.
 _BYTE_UNITS = size_suffixes("bkKmMEGPQRTYZ")
-_DIGITS = re.compile(r"\d+")
+# Counts go through xstrtoumax: leading whitespace is skipped and one '+' is
+# allowed, so `-b +10` and `-b " 10"` are valid. Suffix start values do NOT --
+# coreutils 9.7 rejects both `--numeric-suffixes=+5` and `=" 5"` -- so they
+# keep the strict digits-only grammar. `[0-9]` not `\d`: GNU is ASCII-only,
+# while python's `\d` would accept other Unicode decimal digits.
+_COUNT = re.compile(r"[ \t\n\v\f\r]*\+?[0-9]+")
+_DIGITS = re.compile(r"[0-9]+")
 _HEX_DIGITS = re.compile(r"[0-9a-fA-F]+")
 _TRY_HELP = "\nTry 'split --help' for more information."
 
@@ -28,7 +34,7 @@ def parse_bytes_value(value: str) -> int:
     suffix = next((u for u in sorted(_BYTE_UNITS, key=len, reverse=True)
                    if value.endswith(u)), "")
     digits = value[:-len(suffix)] if suffix else value
-    if _DIGITS.fullmatch(digits) is None or int(digits) == 0:
+    if _COUNT.fullmatch(digits) is None or int(digits) == 0:
         raise UsageError(f"split: invalid number of bytes: '{value}'", 1)
     return int(digits) * _BYTE_UNITS.get(suffix, 1)
 
@@ -39,19 +45,25 @@ def parse_lines_value(value: str) -> int:
     Args:
         value (str): the raw flag value.
     """
-    if _DIGITS.fullmatch(value) is None or int(value) == 0:
+    if _COUNT.fullmatch(value) is None or int(value) == 0:
         raise UsageError(f"split: invalid number of lines: '{value}'", 1)
     return int(value)
 
 
 def parse_chunks_value(value: str) -> int:
-    """GNU ``split -n`` chunk count; quotes only the N of an ``l/N`` spec.
+    """GNU ``split -n`` chunk count for ``N`` and ``KIND/K/N`` specs.
 
     Args:
-        value (str): the raw flag value, e.g. ``4`` or ``l/4``.
+        value (str): the raw flag value, e.g. ``4``, ``l/4``, ``2/3``.
     """
-    tail = value.rsplit("/", 1)[-1]
-    if _DIGITS.fullmatch(tail) is None or int(tail) == 0:
+    # A malformed head (the l/r kind letter or the K component) quotes the
+    # whole spec; a malformed trailing N quotes only N (GNU).
+    parts = value.split("/")
+    if any(part not in ("l", "r") and _COUNT.fullmatch(part) is None
+           for part in parts[:-1]):
+        raise UsageError(f"split: invalid number of chunks: '{value}'", 1)
+    tail = parts[-1]
+    if _COUNT.fullmatch(tail) is None or int(tail) == 0:
         raise UsageError(f"split: invalid number of chunks: '{tail}'", 1)
     return int(tail)
 
@@ -62,7 +74,7 @@ def parse_suffix_length(value: str) -> int:
     Args:
         value (str): the raw flag value.
     """
-    if _DIGITS.fullmatch(value) is None:
+    if _COUNT.fullmatch(value) is None:
         raise UsageError(f"split: invalid suffix length: '{value}'", 1)
     return int(value)
 

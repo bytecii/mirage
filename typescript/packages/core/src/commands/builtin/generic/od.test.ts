@@ -35,11 +35,22 @@ describe('od parseCount', () => {
     expect(parseCount('010K', '-N')).toBe(8192)
   })
 
-  it.each(['abc', '', 'x10'])("junk number '%s' uses the invalid-argument message", (value) => {
-    expect(() => parseCount(value, '-N')).toThrow(
-      new UsageError(`od: invalid -N argument '${value}'`, 1),
-    )
+  it('skips leading whitespace and one + while keeping the radix', () => {
+    expect(parseCount('+10', '-N')).toBe(10)
+    expect(parseCount(' 10', '-N')).toBe(10)
+    expect(parseCount('+0x10', '-N')).toBe(16)
+    expect(parseCount('+010', '-j')).toBe(8)
+    expect(parseCount('+10K', '-N')).toBe(10240)
   })
+
+  it.each(['abc', '', 'x10', '++10', '-10', '+ 10'])(
+    "junk number '%s' uses the invalid-argument message",
+    (value) => {
+      expect(() => parseCount(value, '-N')).toThrow(
+        new UsageError(`od: invalid -N argument '${value}'`, 1),
+      )
+    },
+  )
 
   // GNU distinguishes an unparseable number from an unknown suffix; 08 is
   // octal-0 followed by the junk suffix "8", matching strtoumax.
@@ -54,6 +65,8 @@ describe('od parseCount', () => {
 
   it('reports uintmax overflow as too large', () => {
     // Q/R/Y/Z are in GNU's suffix set but always overflow uintmax.
-    expect(() => parseCount('1Q', '-N')).toThrow(new UsageError("od: -N argument '1Q' too large", 1))
+    expect(() => parseCount('1Q', '-N')).toThrow(
+      new UsageError("od: -N argument '1Q' too large", 1),
+    )
   })
 })

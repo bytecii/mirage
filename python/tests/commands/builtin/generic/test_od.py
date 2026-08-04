@@ -37,7 +37,17 @@ def test_size_suffixes():
     assert parse_count("010K", "-N") == 8192
 
 
-@pytest.mark.parametrize("value", ["abc", "", "x10"])
+def test_signed_and_spaced_counts_keep_their_radix():
+    # strtoumax skips leading whitespace and allows one '+'; the radix is still
+    # chosen from the digits, so +0x10 is hex and +010 is octal.
+    assert parse_count("+10", "-N") == 10
+    assert parse_count(" 10", "-N") == 10
+    assert parse_count("+0x10", "-N") == 16
+    assert parse_count("+010", "-j") == 8
+    assert parse_count("+10K", "-N") == 10240
+
+
+@pytest.mark.parametrize("value", ["abc", "", "x10", "++10", "-10", "+ 10"])
 def test_junk_number_uses_invalid_argument_message(value):
     with pytest.raises(UsageError) as exc:
         parse_count(value, "-N")

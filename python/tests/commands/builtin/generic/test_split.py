@@ -35,6 +35,29 @@ def test_bytes_accepts_gnu_suffixes():
     assert parse_bytes_value("010") == 10
 
 
+def test_counts_accept_one_leading_plus_and_whitespace():
+    # xstrtoumax skips leading whitespace and allows a single '+', so `-b +10`
+    # and `-b " 10"` are valid (pinned against coreutils 9.7). Suffix start
+    # values are the exception -- see the strict cases below.
+    assert parse_bytes_value("+10") == 10
+    assert parse_bytes_value(" 10") == 10
+    assert parse_bytes_value("+10K") == 10240
+    assert parse_lines_value("+2") == 2
+    assert parse_chunks_value("l/+2") == 2
+    assert parse_suffix_length("+2") == 2
+    # -a is the one count GNU lets be zero, signed or not.
+    assert parse_suffix_length("+0") == 0
+
+
+@pytest.mark.parametrize("value", ["+0", "++10", "-10", "+ 10", "10 ", "١٢"])
+def test_bytes_rejects_bad_signs_and_non_ascii_digits(value):
+    # '+' does not license zero, a second sign, a gap before the digits, or
+    # trailing space; python's `\d` would have accepted Arabic-Indic digits.
+    with pytest.raises(UsageError) as exc:
+        parse_bytes_value(value)
+    assert str(exc.value) == f"split: invalid number of bytes: '{value}'"
+
+
 @pytest.mark.parametrize("value",
                          ["abc", "", "1x1b", "0x10", "0", "0K", "1g", "5c"])
 def test_bytes_rejects_junk_zero_and_foreign_radix(value):
@@ -63,12 +86,37 @@ def test_chunks_quotes_only_the_count_of_a_spec():
     assert str(exc.value) == "split: invalid number of chunks: '0'"
 
 
+def test_chunks_validates_the_head_components():
+    # The head takes an l/r kind letter or a signed K, never a signed kind:
+    # `+2/3` and `l/+2/3` parse, while `+l/2` and `x/3` quote the whole
+    # spec (pinned against coreutils 9.7).
+    assert parse_chunks_value("2/3") == 3
+    assert parse_chunks_value("+2/3") == 3
+    assert parse_chunks_value("l/+2/3") == 3
+    with pytest.raises(UsageError) as exc:
+        parse_chunks_value("+l/2")
+    assert str(exc.value) == "split: invalid number of chunks: '+l/2'"
+    with pytest.raises(UsageError) as exc:
+        parse_chunks_value("x/3")
+    assert str(exc.value) == "split: invalid number of chunks: 'x/3'"
+
+
 def test_suffix_length_rejects_junk_but_allows_zero():
     assert parse_suffix_length("3") == 3
     assert parse_suffix_length("0") == 0
     with pytest.raises(UsageError) as exc:
         parse_suffix_length("1k")
     assert str(exc.value) == "split: invalid suffix length: '1k'"
+
+
+@pytest.mark.parametrize("value", ["+5", " 5"])
+def test_suffix_start_rejects_signs_and_whitespace(value):
+    # Unlike the counts, GNU validates start values itself rather than through
+    # xstrtoumax: `--numeric-suffixes=+5` and `=" 5"` are both errors.
+    with pytest.raises(UsageError) as exc:
+        parse_suffix_start(value, False, 2)
+    assert str(exc.value) == (f"split: '{value}': invalid start value "
+                              "for numerical suffix" + _TRY)
 
 
 def test_suffix_start_parses_hex_in_hex_mode():

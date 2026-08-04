@@ -66,11 +66,33 @@ describe('split flag values', () => {
     expect(Object.keys(written).sort()).toEqual(['xaa', 'xab'])
   })
 
+  // xstrtoumax skips leading whitespace and allows a single '+', so these are
+  // valid counts (pinned against coreutils 9.7).
+  it.each([
+    [{ bytes: '+3' }, 'signed bytes'],
+    [{ bytes: ' 3' }, 'spaced bytes'],
+    [{ lines: '+1' }, 'signed lines'],
+    [{ number: 'l/+2' }, 'signed chunk spec'],
+    [{ number: '+2/3' }, 'signed chunk K'],
+    [{ suffix_length: '+3', lines: '1' }, 'signed suffix length'],
+  ] as [CommandOpts['flags'], string][])('accepts %j (%s)', async (flags) => {
+    const written = await runSplit(flags, 'ab\ncd\n')
+    expect(Object.keys(written).length).toBeGreaterThan(0)
+  })
+
   // Regression: a junk -b fell through to line mode with lines_per_file=0
   // and wrote one output file per input line; junk -l swallowed the whole
   // input into a single file; junk -a collided every chunk onto one path.
   it.each([
     [{ bytes: 'abc' }, "split: invalid number of bytes: 'abc'"],
+    [{ bytes: '+0' }, "split: invalid number of bytes: '+0'"],
+    [{ bytes: '++10' }, "split: invalid number of bytes: '++10'"],
+    [{ bytes: '-10' }, "split: invalid number of bytes: '-10'"],
+    [{ bytes: '+ 10' }, "split: invalid number of bytes: '+ 10'"],
+    [
+      { numeric_suffixes: '+5', lines: '1' },
+      `split: '+5': invalid start value for numerical suffix${TRY}`,
+    ],
     [{ bytes: '0x10' }, "split: invalid number of bytes: '0x10'"],
     [{ bytes: '0' }, "split: invalid number of bytes: '0'"],
     [{ bytes: '1g' }, "split: invalid number of bytes: '1g'"],
@@ -79,6 +101,9 @@ describe('split flag values', () => {
     [{ lines: '1k' }, "split: invalid number of lines: '1k'"],
     [{ number: 'l/abc' }, "split: invalid number of chunks: 'abc'"],
     [{ number: '0' }, "split: invalid number of chunks: '0'"],
+    // A malformed head (signed kind letter, junk kind) quotes the whole spec.
+    [{ number: '+l/2' }, "split: invalid number of chunks: '+l/2'"],
+    [{ number: 'x/3' }, "split: invalid number of chunks: 'x/3'"],
     [{ suffix_length: 'abc', lines: '1' }, "split: invalid suffix length: 'abc'"],
     [
       { numeric_suffixes: 'zz', lines: '1' },
