@@ -2,17 +2,12 @@ import { IOResult } from '../../../io/types.ts'
 import type { FileStat, PathSpec } from '../../../types.ts'
 import type { CommandFnResult } from '../../config.ts'
 import { UsageError } from '../../errors.ts'
+import { sizeSuffixes } from '../utils/size_suffix.ts'
 
-const UNITS: Readonly<Record<string, number>> = {
-  K: 1024,
-  KB: 1000,
-  M: 1024 ** 2,
-  MB: 1000 ** 2,
-  G: 1024 ** 3,
-  GB: 1000 ** 3,
-  T: 1024 ** 4,
-  TB: 1000 ** 4,
-}
+// GNU truncate's letter set differs from split's and od's: lowercase
+// g/k/m/t are accepted, b is not (pinned against coreutils 9.7).
+const UNITS = sizeSuffixes('EGKMPQRTYZgkmt')
+const OFF_T_MAX = 2 ** 63 - 1
 
 // GNU rejects anything strtol would not consume whole, so `1x`, ` 5` and
 // `1_0` are all `Invalid number` rather than a silently truncated read.
@@ -31,6 +26,12 @@ function parseSize(value: string, current: number): number {
   const numeric = suffix === undefined ? raw : raw.slice(0, -suffix.length)
   if (!DIGITS.test(numeric)) throw new UsageError(`truncate: Invalid number: '${value}'`, 1)
   const number = Number.parseInt(numeric, 10) * (suffix === undefined ? 1 : (UNITS[suffix] ?? 1))
+  if (number > OFF_T_MAX) {
+    throw new UsageError(
+      `truncate: Invalid number: '${value}': Value too large for defined data type`,
+      1,
+    )
+  }
   if (number === 0 && (operation === '/' || operation === '%')) {
     throw new UsageError('truncate: division by zero', 1)
   }

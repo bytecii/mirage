@@ -1,20 +1,15 @@
 import re
 from collections.abc import Awaitable, Callable
 
+from mirage.commands.builtin.utils.size_suffix import size_suffixes
 from mirage.commands.errors import UsageError
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileStat, PathSpec
 
-_UNITS = {
-    "K": 1024,
-    "KB": 1000,
-    "M": 1024**2,
-    "MB": 1000**2,
-    "G": 1024**3,
-    "GB": 1000**3,
-    "T": 1024**4,
-    "TB": 1000**4,
-}
+# GNU truncate's letter set differs from split's and od's: lowercase
+# g/k/m/t are accepted, b is not (pinned against coreutils 9.7).
+_UNITS = size_suffixes("EGKMPQRTYZgkmt")
+_OFF_T_MAX = 2**63 - 1
 
 # GNU rejects anything strtol would not consume whole, so `1x`, ` 5` and
 # `1_0` are all `Invalid number` rather than a silently truncated read.
@@ -37,6 +32,10 @@ def parse_size(value: str, current: int) -> int:
     if _DIGITS.fullmatch(digits) is None:
         raise UsageError(f"truncate: Invalid number: '{value}'", 1)
     number = int(digits) * _UNITS.get(suffix, 1)
+    if number > _OFF_T_MAX:
+        raise UsageError(
+            f"truncate: Invalid number: '{value}': "
+            "Value too large for defined data type", 1)
     if number == 0 and operation in {"/", "%"}:
         raise UsageError("truncate: division by zero", 1)
     if operation == "+":

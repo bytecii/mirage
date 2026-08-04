@@ -22,9 +22,66 @@ import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { resolveSource } from '../utils/stream.ts'
 import { extraOperandError } from '../../spec/usage.ts'
 import { CommandName } from '../../spec/types.ts'
-import { parseCount } from './od.ts'
+import { UsageError } from '../../errors.ts'
+import { sizeSuffixes } from '../utils/size_suffix.ts'
 
 const ENC = new TextEncoder()
+
+// GNU split's letter set: every uppercase power letter plus b, and
+// lowercase k/m only (pinned against coreutils 9.7). Unlike od, split is
+// base-10 only: hex and octal spellings are invalid numbers.
+const BYTE_UNITS = sizeSuffixes('bkKmMEGPQRTYZ')
+const BYTE_SUFFIXES = Object.keys(BYTE_UNITS).sort((a, b) => b.length - a.length)
+const DIGITS = /^\d+$/
+const HEX_DIGITS = /^[0-9a-fA-F]+$/
+const TRY_HELP = "\nTry 'split --help' for more information."
+
+function parseBytesValue(value: string): number {
+  const suffix = BYTE_SUFFIXES.find((u) => value.endsWith(u))
+  const digits = suffix === undefined ? value : value.slice(0, -suffix.length)
+  if (!DIGITS.test(digits) || Number.parseInt(digits, 10) === 0) {
+    throw new UsageError(`split: invalid number of bytes: '${value}'`, 1)
+  }
+  return Number.parseInt(digits, 10) * (suffix === undefined ? 1 : (BYTE_UNITS[suffix] ?? 1))
+}
+
+function parseLinesValue(value: string): number {
+  if (!DIGITS.test(value) || Number.parseInt(value, 10) === 0) {
+    throw new UsageError(`split: invalid number of lines: '${value}'`, 1)
+  }
+  return Number.parseInt(value, 10)
+}
+
+// GNU quotes only the N of an `l/N` or `K/N` chunk spec in the error.
+function parseChunksValue(value: string): number {
+  const tail = value.split('/').at(-1) ?? value
+  if (!DIGITS.test(tail) || Number.parseInt(tail, 10) === 0) {
+    throw new UsageError(`split: invalid number of chunks: '${tail}'`, 1)
+  }
+  return Number.parseInt(tail, 10)
+}
+
+function parseSuffixLength(value: string): number {
+  if (!DIGITS.test(value)) {
+    throw new UsageError(`split: invalid suffix length: '${value}'`, 1)
+  }
+  return Number.parseInt(value, 10)
+}
+
+function parseSuffixStart(value: string, hexMode: boolean, suffixLen: number): number {
+  if (!(hexMode ? HEX_DIGITS : DIGITS).test(value)) {
+    const kind = hexMode ? 'hexadecimal' : 'numerical'
+    throw new UsageError(`split: '${value}': invalid start value for ${kind} suffix${TRY_HELP}`, 1)
+  }
+  const start = Number.parseInt(value, hexMode ? 16 : 10)
+  if (start.toString(hexMode ? 16 : 10).length > suffixLen) {
+    throw new UsageError(
+      `split: numerical suffix start value is too large for the suffix length${TRY_HELP}`,
+      1,
+    )
+  }
+  return start
+}
 
 function alphaSuffix(index: number, length: number): string {
   const chars: string[] = []
@@ -137,11 +194,15 @@ export async function splitGeneric(
   const aFlag = typeof lengthValue === 'string' ? lengthValue : null
   const dFlag = numericValue !== undefined
   const xFlag = hexValue !== undefined
+  const suffixLenRaw = aFlag !== null ? parseSuffixLength(aFlag) : 2
+  // GNU reads an explicit `-a 0` as "revert to auto width", which for
+  // fixed-width naming is the default length of 2.
+  const suffixLen = suffixLenRaw === 0 ? 2 : suffixLenRaw
   const suffixStart =
     typeof numericValue === 'string'
-      ? Number.parseInt(numericValue, 10)
+      ? parseSuffixStart(numericValue, false, suffixLen)
       : typeof hexValue === 'string'
-        ? Number.parseInt(hexValue, 10)
+        ? parseSuffixStart(hexValue, true, suffixLen)
         : 0
   const additionalSuffix = fl.asStr('additional_suffix') ?? ''
   const separator =
@@ -151,14 +212,9 @@ export async function splitGeneric(
         ? (ENC.encode(separatorValue)[0] ?? 0x0a)
         : 0x0a
   const linesPerFile =
-    linesFlag !== null
-      ? Number.parseInt(linesFlag, 10)
-      : bFlag === null && nFlag === null
-        ? 1000
-        : 0
-  const byteLimit = bFlag !== null ? parseCount(bFlag) : 0
-  const nChunks = nFlag !== null ? Number.parseInt(nFlag.split('/').at(-1) ?? nFlag, 10) : 0
-  const suffixLen = aFlag !== null ? Number.parseInt(aFlag, 10) : 2
+    linesFlag !== null ? parseLinesValue(linesFlag) : bFlag === null && nFlag === null ? 1000 : 0
+  const byteLimit = bFlag !== null ? parseBytesValue(bFlag) : 0
+  const nChunks = nFlag !== null ? parseChunksValue(nFlag) : 0
   const suffixFn = xFlag ? hexSuffix : dFlag ? numericSuffix : alphaSuffix
 
   let source: AsyncIterable<Uint8Array>

@@ -1,11 +1,92 @@
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 
+from mirage.commands.builtin.utils.size_suffix import size_suffixes
 from mirage.commands.builtin.utils.stream import _resolve_source
+from mirage.commands.errors import UsageError
 from mirage.commands.spec.types import CommandName
 from mirage.commands.spec.usage import extra_operand_error
 from mirage.io.async_line_iterator import AsyncLineIterator
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
+
+# GNU split's letter set: every uppercase power letter plus b, and
+# lowercase k/m only (pinned against coreutils 9.7). Unlike od, split is
+# base-10 only: hex and octal spellings are invalid numbers.
+_BYTE_UNITS = size_suffixes("bkKmMEGPQRTYZ")
+_DIGITS = re.compile(r"\d+")
+_HEX_DIGITS = re.compile(r"[0-9a-fA-F]+")
+_TRY_HELP = "\nTry 'split --help' for more information."
+
+
+def parse_bytes_value(value: str) -> int:
+    """GNU ``split -b`` byte count: base-10 digits plus a size suffix.
+
+    Args:
+        value (str): the raw flag value, e.g. ``4``, ``1K``, ``2GiB``.
+    """
+    suffix = next((u for u in sorted(_BYTE_UNITS, key=len, reverse=True)
+                   if value.endswith(u)), "")
+    digits = value[:-len(suffix)] if suffix else value
+    if _DIGITS.fullmatch(digits) is None or int(digits) == 0:
+        raise UsageError(f"split: invalid number of bytes: '{value}'", 1)
+    return int(digits) * _BYTE_UNITS.get(suffix, 1)
+
+
+def parse_lines_value(value: str) -> int:
+    """GNU ``split -l`` line count: base-10 digits, no suffixes.
+
+    Args:
+        value (str): the raw flag value.
+    """
+    if _DIGITS.fullmatch(value) is None or int(value) == 0:
+        raise UsageError(f"split: invalid number of lines: '{value}'", 1)
+    return int(value)
+
+
+def parse_chunks_value(value: str) -> int:
+    """GNU ``split -n`` chunk count; quotes only the N of an ``l/N`` spec.
+
+    Args:
+        value (str): the raw flag value, e.g. ``4`` or ``l/4``.
+    """
+    tail = value.rsplit("/", 1)[-1]
+    if _DIGITS.fullmatch(tail) is None or int(tail) == 0:
+        raise UsageError(f"split: invalid number of chunks: '{tail}'", 1)
+    return int(tail)
+
+
+def parse_suffix_length(value: str) -> int:
+    """GNU ``split -a`` suffix length: base-10 digits, 0 means auto.
+
+    Args:
+        value (str): the raw flag value.
+    """
+    if _DIGITS.fullmatch(value) is None:
+        raise UsageError(f"split: invalid suffix length: '{value}'", 1)
+    return int(value)
+
+
+def parse_suffix_start(value: str, hex_mode: bool, suffix_len: int) -> int:
+    """GNU ``--numeric-suffixes=``/``--hex-suffixes=`` start value.
+
+    Args:
+        value (str): the raw start value; hex digits when ``hex_mode``.
+        hex_mode (bool): parse base 16 (``--hex-suffixes``) or base 10.
+        suffix_len (int): the effective suffix width the start must fit.
+    """
+    pattern = _HEX_DIGITS if hex_mode else _DIGITS
+    if pattern.fullmatch(value) is None:
+        kind = "hexadecimal" if hex_mode else "numerical"
+        raise UsageError(
+            f"split: '{value}': invalid start value for {kind} suffix" +
+            _TRY_HELP, 1)
+    start = int(value, 16 if hex_mode else 10)
+    if len(format(start, "x" if hex_mode else "d")) > suffix_len:
+        raise UsageError(
+            "split: numerical suffix start value is too large "
+            "for the suffix length" + _TRY_HELP, 1)
+    return start
 
 
 def _alpha_suffix(index: int, length: int) -> str:
