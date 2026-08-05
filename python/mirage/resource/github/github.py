@@ -40,9 +40,6 @@ class GitHubResource(BaseResource):
     # blob read returns those same bytes, and submodule gitlinks (which
     # have no size and no blob) are excluded from the tree.
     SIZES_ALWAYS_KNOWN: bool = True
-    # stat() stamps the blob sha as the fingerprint, which is exactly what
-    # snapshot+replay drift detection needs. Mirrors the TypeScript resource.
-    SUPPORTS_SNAPSHOT: bool = True
     # An API-backed tree that changes rarely; a day-long index spares the
     # provider a full re-walk every 10 minutes. Mirrors the TypeScript
     # resource.
