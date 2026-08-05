@@ -1,24 +1,13 @@
-import re
 import struct
 from collections.abc import AsyncIterator, Callable
 
-from mirage.commands.builtin.utils.size_suffix import size_suffixes
+from mirage.commands.builtin.constants import (OD_COUNT_PATTERN,
+                                               OD_OVERFLOW_UNITS,
+                                               OD_SIZE_UNITS, UINTMAX)
 from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.errors import UsageError
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-
-_UNITS = size_suffixes("bkKmMGTPE")
-# Q/R/Y/Z are in GNU od's suffix set but always overflow uintmax, so they
-# report as too-large rather than as unknown suffixes.
-_OVERFLOW_UNITS = size_suffixes("QRYZ")
-_UINTMAX = 2**64 - 1
-# strtoumax base 0: leading whitespace is skipped and one '+' is allowed, then
-# 0x… is hex, a leading 0 is octal, else decimal; the unconsumed remainder is
-# the suffix. The sign stays outside group 1 so the radix is picked from the
-# digits alone (`-N +0x10` is hex, `-N +010` is octal).
-_NUMBER = re.compile(
-    r"^[ \t\n\v\f\r]*\+?(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)(.*)$")
 
 
 def parse_count(value: str, flag: str) -> int:
@@ -28,11 +17,11 @@ def parse_count(value: str, flag: str) -> int:
         value (str): the raw flag value, e.g. ``0x10``, ``010``, ``1K``.
         flag (str): the flag spelling used in error messages (``-j``/``-N``).
     """
-    match = _NUMBER.match(value)
+    match = OD_COUNT_PATTERN.match(value)
     if match is None:
         raise UsageError(f"od: invalid {flag} argument '{value}'", 1)
     number, suffix = match.group(1), match.group(2)
-    multiplier = _UNITS.get(suffix) or _OVERFLOW_UNITS.get(suffix)
+    multiplier = (OD_SIZE_UNITS.get(suffix) or OD_OVERFLOW_UNITS.get(suffix))
     if suffix and multiplier is None:
         raise UsageError(f"od: invalid suffix in {flag} argument '{value}'", 1)
     if number[:2].lower() == "0x":
@@ -42,7 +31,7 @@ def parse_count(value: str, flag: str) -> int:
     else:
         base = 10
     count = int(number, base) * (multiplier or 1)
-    if count > _UINTMAX:
+    if count > UINTMAX:
         raise UsageError(f"od: {flag} argument '{value}' too large", 1)
     return count
 

@@ -1,27 +1,16 @@
 import { IOResult, materialize } from '../../../io/types.ts'
 import type { CommandFnResult } from '../../config.ts'
 import { UsageError } from '../../errors.ts'
-import { sizeSuffixes } from '../utils/size_suffix.ts'
+import { OD_COUNT_PATTERN, OD_OVERFLOW_UNITS, OD_SIZE_UNITS, UINTMAX } from '../constants.ts'
 
 const ENC = new TextEncoder()
 
-const UNITS = sizeSuffixes('bkKmMGTPE')
-// Q/R/Y/Z are in GNU od's suffix set but always overflow uintmax, so they
-// report as too-large rather than as unknown suffixes.
-const OVERFLOW_UNITS = sizeSuffixes('QRYZ')
-const UINTMAX = 2 ** 64 - 1
-// strtoumax base 0: leading whitespace is skipped and one '+' is allowed, then
-// 0x… is hex, a leading 0 is octal, else decimal; the unconsumed remainder is
-// the suffix. The sign stays outside group 1 so the radix is picked from the
-// digits alone (`-N +0x10` is hex, `-N +010` is octal).
-const NUMBER = /^[ \t\n\v\f\r]*\+?(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)(.*)$/
-
 export function parseCount(value: string, flag: string): number {
-  const match = NUMBER.exec(value)
+  const match = OD_COUNT_PATTERN.exec(value)
   if (match === null) throw new UsageError(`od: invalid ${flag} argument '${value}'`, 1)
   const number = match[1] ?? ''
   const suffix = match[2] ?? ''
-  const multiplier = UNITS[suffix] ?? OVERFLOW_UNITS[suffix]
+  const multiplier = OD_SIZE_UNITS[suffix] ?? OD_OVERFLOW_UNITS[suffix]
   if (suffix !== '' && multiplier === undefined) {
     throw new UsageError(`od: invalid suffix in ${flag} argument '${value}'`, 1)
   }

@@ -23,35 +23,28 @@ import { resolveSource } from '../utils/stream.ts'
 import { extraOperandError } from '../../spec/usage.ts'
 import { CommandName } from '../../spec/types.ts'
 import { UsageError } from '../../errors.ts'
-import { sizeSuffixes } from '../utils/size_suffix.ts'
+import {
+  SPLIT_BYTE_SUFFIXES,
+  SPLIT_BYTE_UNITS,
+  SPLIT_COUNT_PATTERN,
+  SPLIT_DIGITS,
+  SPLIT_HEX_DIGITS,
+  SPLIT_TRY_HELP,
+} from '../constants.ts'
 
 const ENC = new TextEncoder()
 
-// GNU split's letter set: every uppercase power letter plus b, and
-// lowercase k/m only (pinned against coreutils 9.7). Unlike od, split is
-// base-10 only: hex and octal spellings are invalid numbers.
-const BYTE_UNITS = sizeSuffixes('bkKmMEGPQRTYZ')
-const BYTE_SUFFIXES = Object.keys(BYTE_UNITS).sort((a, b) => b.length - a.length)
-// Counts go through xstrtoumax: leading whitespace is skipped and one '+' is
-// allowed, so `-b +10` and `-b " 10"` are valid. Suffix start values do NOT --
-// coreutils 9.7 rejects both `--numeric-suffixes=+5` and `=" 5"` -- so they
-// keep the strict digits-only grammar.
-const COUNT = /^[ \t\n\v\f\r]*\+?[0-9]+$/
-const DIGITS = /^[0-9]+$/
-const HEX_DIGITS = /^[0-9a-fA-F]+$/
-const TRY_HELP = "\nTry 'split --help' for more information."
-
 function parseBytesValue(value: string): number {
-  const suffix = BYTE_SUFFIXES.find((u) => value.endsWith(u))
+  const suffix = SPLIT_BYTE_SUFFIXES.find((u) => value.endsWith(u))
   const digits = suffix === undefined ? value : value.slice(0, -suffix.length)
-  if (!COUNT.test(digits) || Number.parseInt(digits, 10) === 0) {
+  if (!SPLIT_COUNT_PATTERN.test(digits) || Number.parseInt(digits, 10) === 0) {
     throw new UsageError(`split: invalid number of bytes: '${value}'`, 1)
   }
-  return Number.parseInt(digits, 10) * (suffix === undefined ? 1 : (BYTE_UNITS[suffix] ?? 1))
+  return Number.parseInt(digits, 10) * (suffix === undefined ? 1 : (SPLIT_BYTE_UNITS[suffix] ?? 1))
 }
 
 function parseLinesValue(value: string): number {
-  if (!COUNT.test(value) || Number.parseInt(value, 10) === 0) {
+  if (!SPLIT_COUNT_PATTERN.test(value) || Number.parseInt(value, 10) === 0) {
     throw new UsageError(`split: invalid number of lines: '${value}'`, 1)
   }
   return Number.parseInt(value, 10)
@@ -61,32 +54,39 @@ function parseLinesValue(value: string): number {
 // whole spec; a malformed trailing N quotes only N (GNU).
 function parseChunksValue(value: string): number {
   const parts = value.split('/')
-  if (parts.slice(0, -1).some((part) => part !== 'l' && part !== 'r' && !COUNT.test(part))) {
+  if (
+    parts
+      .slice(0, -1)
+      .some((part) => part !== 'l' && part !== 'r' && !SPLIT_COUNT_PATTERN.test(part))
+  ) {
     throw new UsageError(`split: invalid number of chunks: '${value}'`, 1)
   }
   const tail = parts.at(-1) ?? value
-  if (!COUNT.test(tail) || Number.parseInt(tail, 10) === 0) {
+  if (!SPLIT_COUNT_PATTERN.test(tail) || Number.parseInt(tail, 10) === 0) {
     throw new UsageError(`split: invalid number of chunks: '${tail}'`, 1)
   }
   return Number.parseInt(tail, 10)
 }
 
 function parseSuffixLength(value: string): number {
-  if (!COUNT.test(value)) {
+  if (!SPLIT_COUNT_PATTERN.test(value)) {
     throw new UsageError(`split: invalid suffix length: '${value}'`, 1)
   }
   return Number.parseInt(value, 10)
 }
 
 function parseSuffixStart(value: string, hexMode: boolean, suffixLen: number): number {
-  if (!(hexMode ? HEX_DIGITS : DIGITS).test(value)) {
+  if (!(hexMode ? SPLIT_HEX_DIGITS : SPLIT_DIGITS).test(value)) {
     const kind = hexMode ? 'hexadecimal' : 'numerical'
-    throw new UsageError(`split: '${value}': invalid start value for ${kind} suffix${TRY_HELP}`, 1)
+    throw new UsageError(
+      `split: '${value}': invalid start value for ${kind} suffix${SPLIT_TRY_HELP}`,
+      1,
+    )
   }
   const start = Number.parseInt(value, hexMode ? 16 : 10)
   if (start.toString(hexMode ? 16 : 10).length > suffixLen) {
     throw new UsageError(
-      `split: numerical suffix start value is too large for the suffix length${TRY_HELP}`,
+      `split: numerical suffix start value is too large for the suffix length${SPLIT_TRY_HELP}`,
       1,
     )
   }

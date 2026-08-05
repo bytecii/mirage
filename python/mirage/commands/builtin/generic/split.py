@@ -1,7 +1,9 @@
-import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 
-from mirage.commands.builtin.utils.size_suffix import size_suffixes
+from mirage.commands.builtin.constants import (SPLIT_BYTE_UNITS,
+                                               SPLIT_COUNT_PATTERN,
+                                               SPLIT_DIGITS, SPLIT_HEX_DIGITS,
+                                               SPLIT_TRY_HELP)
 from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.errors import UsageError
 from mirage.commands.spec.types import CommandName
@@ -10,20 +12,6 @@ from mirage.io.async_line_iterator import AsyncLineIterator
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
-# GNU split's letter set: every uppercase power letter plus b, and
-# lowercase k/m only (pinned against coreutils 9.7). Unlike od, split is
-# base-10 only: hex and octal spellings are invalid numbers.
-_BYTE_UNITS = size_suffixes("bkKmMEGPQRTYZ")
-# Counts go through xstrtoumax: leading whitespace is skipped and one '+' is
-# allowed, so `-b +10` and `-b " 10"` are valid. Suffix start values do NOT --
-# coreutils 9.7 rejects both `--numeric-suffixes=+5` and `=" 5"` -- so they
-# keep the strict digits-only grammar. `[0-9]` not `\d`: GNU is ASCII-only,
-# while python's `\d` would accept other Unicode decimal digits.
-_COUNT = re.compile(r"[ \t\n\v\f\r]*\+?[0-9]+")
-_DIGITS = re.compile(r"[0-9]+")
-_HEX_DIGITS = re.compile(r"[0-9a-fA-F]+")
-_TRY_HELP = "\nTry 'split --help' for more information."
-
 
 def parse_bytes_value(value: str) -> int:
     """GNU ``split -b`` byte count: base-10 digits plus a size suffix.
@@ -31,12 +19,12 @@ def parse_bytes_value(value: str) -> int:
     Args:
         value (str): the raw flag value, e.g. ``4``, ``1K``, ``2GiB``.
     """
-    suffix = next((u for u in sorted(_BYTE_UNITS, key=len, reverse=True)
+    suffix = next((u for u in sorted(SPLIT_BYTE_UNITS, key=len, reverse=True)
                    if value.endswith(u)), "")
     digits = value[:-len(suffix)] if suffix else value
-    if _COUNT.fullmatch(digits) is None or int(digits) == 0:
+    if SPLIT_COUNT_PATTERN.fullmatch(digits) is None or int(digits) == 0:
         raise UsageError(f"split: invalid number of bytes: '{value}'", 1)
-    return int(digits) * _BYTE_UNITS.get(suffix, 1)
+    return int(digits) * SPLIT_BYTE_UNITS.get(suffix, 1)
 
 
 def parse_lines_value(value: str) -> int:
@@ -45,7 +33,7 @@ def parse_lines_value(value: str) -> int:
     Args:
         value (str): the raw flag value.
     """
-    if _COUNT.fullmatch(value) is None or int(value) == 0:
+    if SPLIT_COUNT_PATTERN.fullmatch(value) is None or int(value) == 0:
         raise UsageError(f"split: invalid number of lines: '{value}'", 1)
     return int(value)
 
@@ -59,11 +47,12 @@ def parse_chunks_value(value: str) -> int:
     # A malformed head (the l/r kind letter or the K component) quotes the
     # whole spec; a malformed trailing N quotes only N (GNU).
     parts = value.split("/")
-    if any(part not in ("l", "r") and _COUNT.fullmatch(part) is None
-           for part in parts[:-1]):
+    kinds = ("l", "r")
+    if any(p not in kinds and SPLIT_COUNT_PATTERN.fullmatch(p) is None
+           for p in parts[:-1]):
         raise UsageError(f"split: invalid number of chunks: '{value}'", 1)
     tail = parts[-1]
-    if _COUNT.fullmatch(tail) is None or int(tail) == 0:
+    if SPLIT_COUNT_PATTERN.fullmatch(tail) is None or int(tail) == 0:
         raise UsageError(f"split: invalid number of chunks: '{tail}'", 1)
     return int(tail)
 
@@ -74,7 +63,7 @@ def parse_suffix_length(value: str) -> int:
     Args:
         value (str): the raw flag value.
     """
-    if _COUNT.fullmatch(value) is None:
+    if SPLIT_COUNT_PATTERN.fullmatch(value) is None:
         raise UsageError(f"split: invalid suffix length: '{value}'", 1)
     return int(value)
 
@@ -87,17 +76,17 @@ def parse_suffix_start(value: str, hex_mode: bool, suffix_len: int) -> int:
         hex_mode (bool): parse base 16 (``--hex-suffixes``) or base 10.
         suffix_len (int): the effective suffix width the start must fit.
     """
-    pattern = _HEX_DIGITS if hex_mode else _DIGITS
+    pattern = SPLIT_HEX_DIGITS if hex_mode else SPLIT_DIGITS
     if pattern.fullmatch(value) is None:
         kind = "hexadecimal" if hex_mode else "numerical"
         raise UsageError(
             f"split: '{value}': invalid start value for {kind} suffix" +
-            _TRY_HELP, 1)
+            SPLIT_TRY_HELP, 1)
     start = int(value, 16 if hex_mode else 10)
     if len(format(start, "x" if hex_mode else "d")) > suffix_len:
         raise UsageError(
             "split: numerical suffix start value is too large "
-            "for the suffix length" + _TRY_HELP, 1)
+            "for the suffix length" + SPLIT_TRY_HELP, 1)
     return start
 
 
