@@ -23,7 +23,6 @@ import type { RegisteredOp } from '../ops/registry.ts'
 import type { CapacityResult, FileStat, PathSpec } from '../types.ts'
 import { CapacityState } from '../types.ts'
 import type { DeltaHook } from '../watch/base.ts'
-import type { ResourceState } from '../workspace/snapshot/types.ts'
 
 export interface FindOptions {
   name?: string | null
@@ -87,18 +86,6 @@ export interface Resource {
   setIndex?(config?: IndexConfig): void
   open(): Promise<void>
   close(): Promise<void>
-  /**
-   * Snapshot this resource's reconstructable state. Optional, with the
-   * same defaults Python's `BaseResource` supplies: absent `getState`
-   * means `{type: kind}` and absent `loadState` is a no-op, applied by
-   * `toStateDict`/`applyStateDict`. Before those defaults existed,
-   * `toStateDict` called `getState` through a cast on every mount, so a
-   * resource that did not define it failed `Workspace.save()` at runtime
-   * with `resource.getState is not a function` — after earlier mounts had
-   * already been serialized.
-   */
-  getState?(): ResourceState | Promise<ResourceState>
-  loadState?(state: ResourceState): void | Promise<void>
   ops?(): readonly RegisteredOp[]
   commands?(): readonly RegisteredCommand[]
 

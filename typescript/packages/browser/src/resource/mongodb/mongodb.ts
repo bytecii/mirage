@@ -28,11 +28,9 @@ import {
   mongoStat,
   PathSpec,
   RAMIndexCacheStore,
-  REDACTED_SECRET,
   type RegisteredCommand,
   type RegisteredOp,
   type Resource,
-  type ResourceState,
   resolveMongoDBConfig,
   makeResolveGlob,
   ResourceName,
@@ -114,24 +112,5 @@ export class MongoDBResource implements Resource {
           )
         : paths
     return resolveMongoGlob(this.accessor, effective, this.index)
-  }
-
-  // Mirrors Python's `config_state(self.config)`: uri is replaced with
-  // the redaction marker, which is what makes
-  // `resourceStateRequiresOverride` demand a fresh config at load time
-  // rather than silently substituting an empty RAMResource.
-  getState(): ResourceState {
-    const config: Record<string, unknown> = { ...this.config }
-    if (config.uri !== undefined && config.uri !== null) config.uri = REDACTED_SECRET
-    return {
-      type: this.kind,
-      needs_override: true,
-      redacted_fields: ['uri'],
-      config,
-    }
-  }
-
-  loadState(_state: ResourceState): Promise<void> {
-    return Promise.resolve()
   }
 }

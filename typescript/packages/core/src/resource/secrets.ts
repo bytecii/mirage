@@ -52,12 +52,6 @@ export function hasRedactedSecret(value: unknown): boolean {
 
 export function resourceStateRequiresOverride(state: unknown): boolean {
   if (!isRecord(state)) return false
-  // Python sets an explicit `needs_override` for resources whose client
-  // cannot be rebuilt from a snapshot even when nothing was redacted —
-  // chroma is the case with no secret at all. Sniffing only for the
-  // redaction marker would let such a mount load without an override and
-  // be silently replaced with an empty RAMResource.
-  if (state.needs_override === true) return true
   return hasRedactedSecret(state.config)
 }
 

@@ -12,7 +12,6 @@ import type { RegisteredOp } from '../../ops/registry.ts'
 import { ResourceName, type FileStat, type PathSpec } from '../../types.ts'
 import type { RegisteredCommand } from '../../commands/config.ts'
 import { BaseResource, type Resource } from '../base.ts'
-import type { ResourceState } from '../../workspace/snapshot/types.ts'
 import { ONEDRIVE_PROMPT } from './prompt.ts'
 
 const resolveGlob = makeResolveGlob(readdir)
@@ -68,12 +67,12 @@ export class OneDriveResource extends BaseResource implements Resource {
     return stat(this.accessor, path, this.index)
   }
 
-  getState(): ResourceState {
+  getState(): Record<string, unknown> {
     const config: OneDriveConfigRedacted = redactOneDriveConfig(this.config)
     return { type: this.kind, config }
   }
 
-  loadState(_state: ResourceState): Promise<void> {
+  loadState(_state: Record<string, unknown>): Promise<void> {
     return Promise.resolve()
   }
 }

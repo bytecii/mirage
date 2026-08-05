@@ -23,7 +23,6 @@ import { CHROMA_OPS } from '../../ops/chroma/index.ts'
 import type { RegisteredOp } from '../../ops/registry.ts'
 import { ResourceName, type FileStat, type PathSpec } from '../../types.ts'
 import { BaseResource, type Resource } from '../base.ts'
-import type { ResourceState } from '../../workspace/snapshot/types.ts'
 import { resolveChromaConfig, type ChromaConfig, type ChromaConfigResolved } from './config.ts'
 import { CHROMA_PROMPT } from './prompt.ts'
 
@@ -82,21 +81,5 @@ export class ChromaResource extends BaseResource implements Resource {
 
   stat(p: PathSpec): Promise<FileStat> {
     return chromaStat(this.accessor, p, this.index)
-  }
-
-  // Mirrors Python's ChromaResource.get_state: the config carries no
-  // secret, but the client cannot be rebuilt from a snapshot alone, so
-  // the mount is flagged as needing a fresh config at load time.
-  getState(): ResourceState {
-    return {
-      type: this.kind,
-      needs_override: true,
-      redacted_fields: [],
-      config: { ...this.config },
-    }
-  }
-
-  loadState(_state: ResourceState): Promise<void> {
-    return Promise.resolve()
   }
 }
