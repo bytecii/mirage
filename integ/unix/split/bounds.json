@@ -1,0 +1,28 @@
+{
+  "cases": [
+    {
+      "id": "split_bounds_suffix_length_overflow",
+      "seq": 910051,
+      "targets": ["ram", "disk"],
+      "command": "mkdir -p /data/t2splita && printf 'ab' > /data/t2splita/in && split -a 18446744073709551616 /data/t2splita/in /data/t2splita/x",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "split: invalid suffix length: '18446744073709551616': Value too large for defined data type\n"
+      },
+      "flags": ["a"]
+    },
+    {
+      "id": "split_bounds_byte_count_saturates",
+      "seq": 910052,
+      "targets": ["ram", "disk"],
+      "command": "mkdir -p /data/t2splity && printf 'hello' > /data/t2splity/in && split -b 1Y /data/t2splity/in /data/t2splity/x- && cat /data/t2splity/x-aa",
+      "expect": {
+        "exit": 0,
+        "stdout": "hello",
+        "stderr": ""
+      },
+      "flags": ["b"]
+    }
+  ]
+}
