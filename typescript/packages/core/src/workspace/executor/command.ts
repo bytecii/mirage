@@ -26,8 +26,8 @@ import type { Namespace } from '../mount/namespace/namespace.ts'
 import { MountCommandUnsupported, type MountRegistry } from '../mount/registry.ts'
 import { makeStorageKey } from '../mount/storage.ts'
 import { Consumer, JOB_BUILTINS, route } from '../route/index.ts'
-import { type Runtime } from './runtime.ts'
-import type { PolicyDecision } from './policy/index.ts'
+import { type Runtime } from '../../runtime/base.ts'
+import type { PolicyDecision } from '../../runtime/policy/index.ts'
 import type { Session } from '../session/session.ts'
 import { ExecutionNode } from '../types.ts'
 import { strategyFor } from '../../commands/builtin/generic/crossmount/detect.ts'
@@ -50,6 +50,8 @@ import { handleFg, handleJobs, handleKill, handlePs, handleWait } from './jobs.t
 import { versionRequest } from '../../commands/config.ts'
 
 import { handleCli } from './command/cli.ts'
+import { pathStat } from './builtins/links.ts'
+import { dropServiceCaches, mountRootOf } from './command/run.ts'
 import { optionError, parseFlags } from './command/flags.ts'
 import { executeShellFunction } from './command/functions.ts'
 import {
@@ -122,9 +124,23 @@ export async function handleCommand(
   // Installed CLIs: dispatch by name, never by operand path. Sits
   // below functions (a user can wrap an installed CLI, bash-style)
   // and above every mount branch (a CLI consults no mount).
+  // A CLI that works on files rather than an API (`git`) reaches the mount
+  // through the facts below; the rest never read them.
   const cliInstall = registry.clis.get(cmdName)
   if (cliInstall !== null) {
-    return handleCli(cliInstall, parts, session, stdin)
+    return handleCli(
+      cliInstall,
+      parts,
+      session,
+      stdin,
+      {
+        entries: registry.runtimeEntries,
+        dispatch,
+        statPath: (path: string) => pathStat(dispatch, path, null),
+        mountRoot: (path: string) => mountRootOf(registry, path),
+      },
+      () => dropServiceCaches(registry, cliInstall.spec.serves),
+    )
   }
 
   if (cmdName in CWD_DEFAULT_RAW) {

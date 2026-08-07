@@ -12,40 +12,33 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  FlagView,
-  IOResult,
-  type ByteSource,
-  type CLIVerbOpts,
-  type CommandFnResult,
-  type PathSpec,
-} from '@struktoai/mirage-core'
+import { FlagView, type CLIInvocation, type CommandFnResult } from '@struktoai/mirage-core'
 import { EmailAccessor } from '../../../../accessor/email.ts'
 import { fetchMessage } from '../../../../core/email/_client.ts'
-import { replyAllMessage, replyMessage } from '../../../../core/email/send.ts'
 import type { EmailConfig } from '../../../../core/email/config.ts'
+import { firstText, route } from './util.ts'
 
-const ENC = new TextEncoder()
-
-export async function reply(
-  config: unknown,
-  _paths: PathSpec[],
-  _texts: string[],
-  opts: CLIVerbOpts,
-): Promise<CommandFnResult> {
-  const fl = new FlagView(opts.flags)
-  const cfg = config as EmailConfig
-  const accessor = new EmailAccessor(cfg)
+export async function reply(inv: CLIInvocation): Promise<CommandFnResult> {
+  const fl = new FlagView(inv.flags)
+  const uid = firstText(inv.texts, 'message id')
+  const mailbox = fl.asStr('mailbox') ?? 'INBOX'
+  const accessor = new EmailAccessor(inv.config as EmailConfig)
   let original
   try {
-    original = await fetchMessage(accessor, fl.asStr('folder') ?? '', fl.asStr('uid') ?? '')
+    original = await fetchMessage(accessor, mailbox, uid)
   } finally {
     await accessor.close()
   }
-  const body = fl.asStr('body') ?? ''
-  const result = fl.asBool('all')
-    ? await replyAllMessage(cfg, original, body)
-    : await replyMessage(cfg, original, body)
-  const out: ByteSource = ENC.encode(JSON.stringify(result))
-  return [out, new IOResult()]
+  return route(
+    inv.config as EmailConfig,
+    fl,
+    inv.stdin,
+    {
+      message: original,
+      mode: 'reply',
+      postingStyle: fl.asStr('posting_style') === 'bottom' ? 'bottom' : 'top',
+      quoteHeadline: fl.asStr('quote_headline') ?? '',
+    },
+    inv.ops,
+  )
 }

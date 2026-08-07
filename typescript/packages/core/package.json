@@ -48,7 +48,7 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@pydantic/monty": "0.0.19-beta.4",
+    "@pydantic/monty": "0.0.19",
     "@qdrant/js-client-rest": "^1.18.0",
     "chromadb": "^3.4.3",
     "pyodide": "^0.29.3",
@@ -62,13 +62,14 @@
     "@aws-sdk/client-s3": "^3.0.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "bson": "^6.10.4",
+    "isomorphic-git": "^1.38.1",
     "jq-wasm": "1.1.0-jq-1.8.1",
     "uuid": "^14.0.1",
     "web-tree-sitter": "^0.26.8",
     "zod": "^4.3.6"
   },
   "peerDependencies": {
-    "@pydantic/monty": ">=0.0.19-beta.4",
+    "@pydantic/monty": ">=0.0.19",
     "@qdrant/js-client-rest": "^1.18.0",
     "chromadb": "^3.4.3",
     "pyodide": "^0.29.0",

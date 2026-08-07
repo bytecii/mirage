@@ -17,15 +17,16 @@ import { IOResult, materialize } from '../../../io/types.ts'
 import type { Resource } from '../../../resource/base.ts'
 import { assertMountAllowed, MountNotAllowedError } from '../../../context/session_context.ts'
 import type { PathSpec } from '../../../types.ts'
-import type { FileStat } from '../../../types.ts'
+import type { FileStat, ResourceName } from '../../../types.ts'
 import type { MountEntry } from '../../mount/mount.ts'
 import type { LinkView, StatOverlay, StatPath } from '../../../ops/types.ts'
 import type { Namespace } from '../../mount/namespace/namespace.ts'
 import { linkTargetStat, pathExists, pathStat } from '../builtins/links.ts'
 import { mergeOverlayStat } from '../../mount/namespace/overlay.ts'
 import { MountCommandUnsupported, type MountRegistry } from '../../mount/registry.ts'
-import { VfsRuntime, type Runtime } from '../runtime.ts'
-import type { PolicyDecision } from '../policy/index.ts'
+import type { Runtime } from '../../../runtime/base.ts'
+import { VFSRuntime } from '../../../runtime/table.ts'
+import type { PolicyDecision } from '../../../runtime/policy/index.ts'
 import type { Session } from '../../session/session.ts'
 import { LS_FAILURE } from '../../../commands/builtin/generic/ls.ts'
 import type { DispatchFn } from '../cross_mount.ts'
@@ -63,7 +64,7 @@ function admissionDenial(cmdName: string): IOResult {
  * Resolve a command against the line's routing decision. With no
  * decision, the static bindings apply. With one, the command's runtime
  * is looked up in the decision: its binding, or the decision's
- * fallback when no entry captures it. A resolved VfsRuntime means the
+ * fallback when no entry captures it. A resolved VFSRuntime means the
  * executor serves the command itself (the vfs runtime has no
  * interpreter door); null means no runtime accepted it: exit 126,
  * "no runtime accepted this line", like a shell refusing to exec.
@@ -75,7 +76,7 @@ function lineRuntimeFor(
   routingDecision: PolicyDecision | undefined,
 ): [Runtime | undefined, IOResult | null] {
   if (routingDecision === undefined) {
-    const restricted = vfs instanceof VfsRuntime && vfs.restricted
+    const restricted = vfs instanceof VFSRuntime && vfs.restricted
     const runtime = runtimeBindings?.[cmdName]
     if (runtime !== undefined && runtime === vfs) return [undefined, null]
     if (runtime === undefined && restricted) return [undefined, admissionDenial(cmdName)]
@@ -85,7 +86,7 @@ function lineRuntimeFor(
     ? routingDecision.bindings[cmdName]
     : routingDecision.fallback
   if (runtime === null || runtime === undefined) return [undefined, admissionDenial(cmdName)]
-  if (runtime instanceof VfsRuntime) return [undefined, null]
+  if (runtime instanceof VFSRuntime) return [undefined, null]
   return [runtime, null]
 }
 
@@ -112,6 +113,48 @@ function namespaceStatOverlay(namespace: Namespace, virtual: string, stat: FileS
   const user = namespace.user
   if (user === null || (merged.uid !== null && merged.gid !== null)) return merged
   return merged.with({ uid: merged.uid ?? user, gid: merged.gid ?? user })
+}
+
+/**
+ * The mount prefix serving a virtual path, "/" when none does.
+ *
+ * A mount boundary is a filesystem boundary, which is what a caller walking up a
+ * tree needs in order to stop: `git` looks for a `.git` no further than the
+ * mount root, the way real git stops discovery at a filesystem boundary. A path
+ * under no mount answers "/" so the walk still terminates.
+ */
+export function mountRootOf(registry: MountRegistry, virtual: string): string {
+  return registry.mountFor(virtual)?.prefix ?? '/'
+}
+
+/**
+ * Drop cached listings and bodies for the mounts a CLI's service backs.
+ *
+ * An account CLI mutates its service by id, so no vfs path can be derived from
+ * the call and per-path invalidation has nothing to aim at: after
+ * `gws sheets spreadsheets create` the new file has no cache entry to expire,
+ * which is exactly the case that matters. What is known is the service, so the
+ * mounts it backs drop their caches and the next read refetches.
+ *
+ * Both caches go, because the two hide different writes. A stale listing hides
+ * a create or a delete; a stale body hides an edit, and these resources cache
+ * reads, so a `cat` after `gws docs documents batchUpdate` would otherwise keep
+ * serving the pre-edit content without ever reaching Google.
+ *
+ * Scoped by the spec's declared `serves` rather than a blanket reset, so a
+ * Slack or S3 mount alongside keeps its cache.
+ */
+export async function dropServiceCaches(
+  registry: MountRegistry,
+  serves: readonly ResourceName[],
+): Promise<void> {
+  if (serves.length === 0) return
+  const wanted = new Set<string>(serves)
+  for (const mount of registry.allMounts()) {
+    if (!wanted.has(mount.resource.kind)) continue
+    await mount.resource.index?.clear()
+    await mount.cacheManager?.dropPrefix()
+  }
 }
 
 // Run one already-parsed command on the mount that owns its paths. The shared

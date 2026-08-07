@@ -12,11 +12,12 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { Runtime } from '../executor/runtime.ts'
-import type { PolicyDecision } from '../executor/policy/index.ts'
+import type { Runtime } from '../../runtime/base.ts'
+import type { PolicyDecision } from '../../runtime/policy/index.ts'
 import { mergeSignals } from '../abort.ts'
 import { type ByteSource, IOResult, materialize } from '../../io/types.ts'
 import type { Resource } from '../../resource/base.ts'
+import { encodeText } from '../../shell/bytes.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
 import {
   ProcessSubDirection,
@@ -34,7 +35,7 @@ import { classifyBarePath } from '../expand/classify/index.ts'
 import type { Argv } from '../expand/argv.ts'
 import { expandArgv } from '../expand/argv.ts'
 import { type ExecuteFn, expandNode } from '../expand/node.ts'
-import type { TSNodeLike } from '../expand/variable.ts'
+import type { TSNodeLike } from '../../shell/types.ts'
 import { handleCommand } from '../executor/command.ts'
 import { pathFlagScopes } from '../executor/command/routing.ts'
 import { runWithTimeout } from '../../commands/builtin/utils/limit.ts'
@@ -48,6 +49,7 @@ import {
   handleCd,
   handleCommandBuiltin,
   handleType,
+  handleWhich,
   handleEcho,
   handleEnv,
   handleEval,
@@ -272,7 +274,7 @@ async function runCommandBody(
       if (child.type === NT.HERESTRING_REDIRECT) {
         for (const sc of child.namedChildren) {
           const content = await expandNode(sc, session, executeFn, callStack)
-          stdin = new TextEncoder().encode(`${content}\n`)
+          stdin = encodeText(`${content}\n`)
           break
         }
       }
@@ -629,6 +631,10 @@ async function runArgv(
 
   if (name === SB.TYPE) {
     return handleType(args, session, registry)
+  }
+
+  if (name === SB.WHICH) {
+    return handleWhich(args, session, registry)
   }
 
   if (name === SB.XARGS) {

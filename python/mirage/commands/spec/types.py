@@ -18,6 +18,7 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from mirage.commands.spec.constants import flag_kwarg_name
+from mirage.types import PathSpec
 
 
 class CommandName(StrEnum):
@@ -86,6 +87,16 @@ class Option:
             instead of last-wins (argparse append / click multiple, e.g.
             grep -e). Textual values arrive as list[str]; "path" values
             are each resolved and routed and arrive as list[PathSpec].
+        pair (bool): the option consumes two tokens, not one (jq's
+            ``--arg name value``; click's ``nargs=2``). Occurrences always
+            accumulate, flattened, so ``--arg a 1 --arg b 2`` arrives as
+            ``["a", "1", "b", "2"]`` and the command reads it in twos.
+            The first token of each pair names the value and is always
+            textual; ``type`` describes the second, so a "path" pair
+            (``--rawfile name file``) resolves and routes only the file.
+            An ``=`` form is not accepted (neither does jq), and a
+            trailing occurrence missing either token is the usual
+            "requires an argument" refusal.
         value_optional (bool): GNU optional-argument long option (e.g.
             ``--color[=WHEN]``): bare ``--color`` parses as True,
             ``--color=auto`` parses as the string, and a detached next
@@ -115,6 +126,7 @@ class Option:
     numeric_shorthand: bool = False
     count: bool = False
     multiple: bool = False
+    pair: bool = False
     value_optional: bool = False
     short_value: bool = True
     choices: tuple[str, ...] = ()
@@ -131,6 +143,11 @@ class Operand:
         type (ValueType): "path" operands are cwd-resolved and routed for
             mount dispatch; textual operands pass through verbatim
             (never "bool": an operand is a value by definition).
+        text_when (tuple[str, ...]): flags that make this slot textual
+            even though it is declared "path". jq's ``--args`` turns the
+            operands after the program into positional string values
+            rather than input files, which is a property of the line, not
+            of the slot, so it cannot be spelled in the type alone.
         provided_by (tuple[str, ...]): flags that supply this operand's
             value. When any is present the slot is skipped and remaining
             args classify as rest (e.g. grep's pattern with -e/-f). This is
@@ -142,6 +159,7 @@ class Operand:
     """
     type: ValueType = "path"
     provided_by: tuple[str, ...] = ()
+    text_when: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -225,6 +243,17 @@ class FlagView:
         if isinstance(value, list):
             return [item for item in value if isinstance(item, str)]
         if isinstance(value, str):
+            return [value]
+        return []
+
+    def as_paths(self, name: str) -> list[PathSpec]:
+        # PATH-typed flag values arrive as PathSpec in the python
+        # executor; the TypeScript flag bag carries their resolved
+        # virtual-path strings, so its counterpart is asList.
+        value = self._flags.get(self._key(name))
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, PathSpec)]
+        if isinstance(value, PathSpec):
             return [value]
         return []
 

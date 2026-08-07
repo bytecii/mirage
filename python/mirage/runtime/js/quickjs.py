@@ -19,11 +19,12 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Callable, ClassVar
 
-from mirage.runtime.base import Runtime
 from mirage.runtime.config import HomeConfig, RuntimeConfig
 from mirage.runtime.errors import EvalError
+from mirage.runtime.js.base import JsRuntime
 from mirage.runtime.mixin import EvaluatorMixin
-from mirage.runtime.types import (EvalResult, EvalValue, RunArgs, RunResult,
+from mirage.runtime.types import (DispatchFn, EvalResult, EvalValue,
+                                  PrefixSource, RunArgs, RunResult,
                                   ScriptSource)
 from mirage.runtime.wasm import GuestFs, SyncDispatch, WasmRuntime
 
@@ -73,7 +74,7 @@ std.out.puts('\\n{sentinel}' + JSON.stringify(__mirage_payload) + '\\n');
 """
 
 
-class QuickJsRuntime(Runtime, EvaluatorMixin):
+class QuickJsRuntime(JsRuntime, EvaluatorMixin):
     """Run JavaScript on a WASI quickjs-ng under wasmtime, in-process.
 
     A bare modern JS engine (ES2023 syntax, ES modules, `JSON`, regex,
@@ -99,7 +100,6 @@ class QuickJsRuntime(Runtime, EvaluatorMixin):
 
     name = "quickjs"
     captures = ("node", "js")
-    eval_language = "js"
 
     config_cls: ClassVar[type[RuntimeConfig]] = HomeConfig
     config: HomeConfig
@@ -122,12 +122,12 @@ class QuickJsRuntime(Runtime, EvaluatorMixin):
         if not self._wasm.is_file():
             raise FileNotFoundError(
                 f"no {_WASM_NAME} under {root}; {_BUILD_HINT}")
-        self._dispatch: Callable[..., Any] | None = None
-        self._mount_prefixes: Callable[[], list[str]] | None = None
+        self._dispatch: DispatchFn | None = None
+        self._mount_prefixes: PrefixSource | None = None
         self._runtime = WasmRuntime(self._wasm, "js")
 
-    def attach(self, dispatch: Callable[..., Any],
-               mount_prefixes: Callable[[], list[str]]) -> None:
+    def attach(self, dispatch: DispatchFn,
+               mount_prefixes: PrefixSource) -> None:
         if self._dispatch is None:
             self._dispatch = dispatch
             self._mount_prefixes = mount_prefixes
@@ -138,7 +138,11 @@ class QuickJsRuntime(Runtime, EvaluatorMixin):
         argv = ["qjs", "--std"]
         if args.flags.get("module"):
             argv.append("-m")
-        argv += ["-e", args.code, *args.args]
+        # A named program takes scriptArgs[0], the slot qjs fills with a
+        # script's path when it runs a file; unnamed -e leaves the args
+        # alone, so the js command keeps its spelling.
+        named = [args.prog] if args.prog else []
+        argv += ["-e", args.code, *named, *args.args]
         bridge = (SyncDispatch(self._dispatch, asyncio.get_running_loop())
                   if self._dispatch is not None else None)
         fs = GuestFs(bridge=bridge, mount_prefixes=self._mount_prefixes)

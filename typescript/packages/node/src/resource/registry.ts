@@ -184,7 +184,7 @@ const REGISTRY: Record<string, ResourceFactory> = {
   },
   slack: async (config) => {
     const { SlackResource } = await import('./slack/slack.ts')
-    const { normalizeSlackConfig } = await import('./slack/config.ts')
+    const { normalizeSlackConfig } = await import('@struktoai/mirage-core')
     return new SlackResource(normalizeSlackConfig(config))
   },
   ssh: async (config) => {
@@ -199,7 +199,7 @@ const REGISTRY: Record<string, ResourceFactory> = {
   },
   discord: async (config) => {
     const { DiscordResource } = await import('./discord/discord.ts')
-    const { normalizeDiscordConfig } = await import('./discord/config.ts')
+    const { normalizeDiscordConfig } = await import('@struktoai/mirage-core')
     return new DiscordResource(normalizeDiscordConfig(config))
   },
   trello: async (config) => {
@@ -209,12 +209,12 @@ const REGISTRY: Record<string, ResourceFactory> = {
   },
   linear: async (config) => {
     const { LinearResource } = await import('./linear/linear.ts')
-    const { normalizeLinearConfig } = await import('./linear/config.ts')
+    const { normalizeLinearConfig } = await import('@struktoai/mirage-core')
     return new LinearResource(normalizeLinearConfig(config))
   },
   notion: async (config) => {
     const { NotionResource } = await import('./notion/notion.ts')
-    const { normalizeNotionConfig } = await import('./notion/config.ts')
+    const { normalizeNotionConfig } = await import('@struktoai/mirage-core')
     return new NotionResource(normalizeNotionConfig(config))
   },
   langfuse: async (config) => {

@@ -12,8 +12,12 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, Protocol, TypeAlias
+
+from mirage.io import IOResult
+from mirage.types import PathSpec
 
 # The value contract of eval: never richer than JSON plus bytes, so any
 # evaluator (in-process or remote over a serialized transport) can carry
@@ -24,6 +28,30 @@ EvalValue: TypeAlias = (None | bool | int | float | str | bytes
 # "incomplete" is console semantics: the source needs a continuation
 # line (session mode only). "exit" is an explicit exit() call.
 EvalStatus: TypeAlias = Literal["complete", "incomplete", "exit"]
+
+# The languages a runtime can interpret, one name for both doors (run
+# and eval). A Literal, not str, so a typo is a type error instead of a
+# selector that silently matches nothing and reports "no runtime".
+Language: TypeAlias = Literal["python", "js"]
+
+
+class DispatchFn(Protocol):
+    """The workspace op dispatch: run ``op`` against the mount owning
+    ``path`` and return its result with the accounting IOResult.
+
+    The contract a sandboxed runtime's file I/O rides: defined here,
+    on the consumer side, because runtimes receive it (attach) while
+    the workspace provides it, and the runtime package imports no
+    workspace module."""
+
+    def __call__(self, op: str, path: PathSpec,
+                 **kwargs: Any) -> Awaitable[tuple[Any, IOResult]]:
+        ...
+
+
+# Live view of the workspace mount prefixes, read per run so mounts
+# added or removed after construction are always picked up.
+PrefixSource: TypeAlias = Callable[[], list[str]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,13 +66,21 @@ class ScriptSource:
 
     Args:
         source (str): the script program.
-        language (str): the script's language ("python" or "js"),
+        language (Language): the script's language ("python" or "js"),
             stamped from the file extension at config load; the
             programmatic default is "python".
+        module (bool): the source is an ES module (a ``.mjs`` file), so
+            a js engine must run it in module mode or ``import`` and
+            top-level ``await`` fail. Stamped from the extension at
+            load beside ``language``, since the path is gone once the
+            source is embedded. Inert for policy scripts: a module has
+            no completion value, and their contract is the last
+            expression.
     """
 
     source: str
-    language: str = "python"
+    language: Language = "python"
+    module: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +90,13 @@ class RunArgs:
     Args:
         code (str): the source to run (script body or -c/-e payload).
         args (list[str]): argv exposed to the script.
+        prog (str | None): the program's own name, for the argv slot a
+            program reads to prefix its messages. Set by the CLI script
+            tier (the installed head word, so a renamed install names
+            itself), None for the interpreter commands, which keep
+            their engine's own spelling. A runtime that assembles argv
+            itself fills slot 0 with it; where a real interpreter
+            defines that slot (CPython under ``-c``) it cannot apply.
         env (dict[str, str]): extra environment merged over the
             runtime's own.
         stdin (bytes | None): bytes fed to the interpreter's stdin.
@@ -64,6 +107,7 @@ class RunArgs:
 
     code: str
     args: list[str] = field(default_factory=list)
+    prog: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     stdin: bytes | None = None
     flags: dict[str, Any] = field(default_factory=dict)

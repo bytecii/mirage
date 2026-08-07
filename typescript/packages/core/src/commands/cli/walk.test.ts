@@ -13,9 +13,10 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
+import { ScriptSource } from '../../runtime/policy/types.ts'
 import { Option } from '../spec/types.ts'
 import { CLISpec, type CLIVerbFn } from './types.ts'
-import { walk } from './walk.ts'
+import { findChild, findNode, nodeHelp, ownsArgv, walk } from './walk.ts'
 
 const verb: CLIVerbFn = () => null
 
@@ -350,5 +351,98 @@ describe('walk float-typed group options', () => {
     const ok = walk('tool', spec, ['--ratio', '2.5', 'run'])
     expect(ok.leaf).not.toBeNull()
     expect(ok.groupFlags).toEqual({ '--ratio': '2.5' })
+  })
+})
+
+describe('findChild / findNode', () => {
+  it('matches a subcommand by name or alias', () => {
+    const spec = new CLISpec({
+      name: 'gws',
+      subcommands: [new CLISpec({ name: 'checkout', aliases: ['co'], fn: verb })],
+    })
+    expect(findChild(spec, 'checkout')?.name).toBe('checkout')
+    expect(findChild(spec, 'co')?.name).toBe('checkout')
+    expect(findChild(spec, 'nope')).toBeNull()
+  })
+
+  it('returns the node and its canonical path', () => {
+    const found = findNode(tree(), ['gmail', 'send'])
+    expect(found?.node.name).toBe('send')
+    expect(found?.path).toEqual(['gmail', 'send'])
+  })
+
+  it('is the root with no verbs and null on an unknown verb', () => {
+    const spec = tree()
+    expect(findNode(spec, [])).toEqual({ node: spec, path: [] })
+    expect(findNode(spec, ['gmail', 'bogus'])).toBeNull()
+    expect(findNode(spec, ['bogus'])).toBeNull()
+  })
+})
+
+describe('a script root', () => {
+  it('terminates the walk with argv verbatim', () => {
+    // A script node is a terminal leaf like an fn node: the walk hands
+    // back every token so the program can re-parse argv natively.
+    const spec = new CLISpec({ name: 'pager', script: new ScriptSource("print('hi')") })
+    const result = walk('pager', spec, ['--frobnicate', 'report.txt'])
+    expect(result.leaf).toBe(spec)
+    expect(result.path).toEqual([])
+    expect(result.argv).toEqual(['--frobnicate', 'report.txt'])
+    expect(result.exitCode).toBe(0)
+  })
+
+  it('owns its argv only when it declares no grammar', () => {
+    const script = new ScriptSource("print('hi')")
+    expect(ownsArgv(new CLISpec({ name: 'pager', script }))).toBe(true)
+    const declared = new CLISpec({
+      name: 'pager',
+      script,
+      options: [new Option({ long: '--width', type: 'int' })],
+    })
+    expect(ownsArgv(declared)).toBe(false)
+    expect(ownsArgv(new CLISpec({ name: 'prog', fn: verb }))).toBe(false)
+  })
+
+  it('promises no --help in its manual', () => {
+    // man renders from the spec, so it must not advertise a --help the
+    // program answers itself.
+    const text = nodeHelp('pager', new CLISpec({ name: 'pager', script: new ScriptSource('1') }))
+    expect(text.startsWith('pager\n')).toBe(true)
+    expect(text).not.toContain('--help')
+  })
+})
+
+describe('walk path-typed group options', () => {
+  it('resolves a relative value against the working directory', () => {
+    // A group option declared 'path' has to mean what it means on a leaf, or
+    // the type is a lie at exactly one level of the tree.
+    const spec = new CLISpec({
+      name: 'tool',
+      options: [new Option({ short: '-C', type: 'path' })],
+      subcommands: [new CLISpec({ name: 'run', fn: verb })],
+    })
+    const relative = walk('tool', spec, ['-C', 'build', 'run'], '/repo/src')
+    expect(relative.groupFlags).toEqual({ '-C': '/repo/src/build' })
+    const absolute = walk('tool', spec, ['-C', '/other', 'run'], '/repo/src')
+    expect(absolute.groupFlags).toEqual({ '-C': '/other' })
+  })
+
+  it('lands a default as the working directory', () => {
+    const spec = new CLISpec({
+      name: 'tool',
+      options: [new Option({ short: '-C', type: 'path', default: '.' })],
+      subcommands: [new CLISpec({ name: 'run', fn: verb })],
+    })
+    expect(walk('tool', spec, ['run'], '/repo/src').groupFlags).toEqual({ '-C': '/repo/src' })
+  })
+
+  it('resolves every value of a repeated option', () => {
+    const spec = new CLISpec({
+      name: 'tool',
+      options: [new Option({ long: '--dir', type: 'path', multiple: true })],
+      subcommands: [new CLISpec({ name: 'run', fn: verb })],
+    })
+    const result = walk('tool', spec, ['--dir', 'a', '--dir', '/b', 'run'], '/w')
+    expect(result.groupFlags).toEqual({ '--dir': ['/w/a', '/b'] })
   })
 })

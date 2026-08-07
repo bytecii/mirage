@@ -12,34 +12,31 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import json
-
 from mirage.accessor.email import EmailAccessor
+from mirage.commands.cli.builtin.himalaya.builder import Source
+from mirage.commands.cli.builtin.himalaya.util import first_text, route
+from mirage.commands.cli.types import CLIInvocation
 from mirage.commands.spec.types import FlagView
 from mirage.core.email._client import fetch_message
 from mirage.core.email.config import EmailConfig
-from mirage.core.email.send import forward_message
-from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
-from mirage.types import PathSpec
 
 
 async def forward(
-    config: EmailConfig,
-    paths: list[PathSpec],
-    *texts: str,
-    **flags: object,
-) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(flags)
-    uid = fl.as_str("uid") or ""
-    folder = fl.as_str("folder") or ""
-    to = fl.as_str("to") or ""
-    accessor = EmailAccessor(config)
+        inv: CLIInvocation[EmailConfig]) -> tuple[ByteSource | None, IOResult]:
+    fl = FlagView(inv.flags)
+    uid = first_text(inv.texts, "message id")
+    mailbox = fl.as_str("mailbox") or "INBOX"
+    accessor = EmailAccessor(inv.config)
     try:
-        original = await fetch_message(accessor, folder, uid)
+        original = await fetch_message(accessor, mailbox, uid)
     finally:
         await accessor.close()
-    result = await forward_message(config, original, to)
-    out = json.dumps(result, ensure_ascii=False,
-                     separators=(",", ":")).encode()
-    return yield_bytes(out), IOResult()
+    source = Source(
+        message=original,
+        mode="forward",
+        posting_style=("bottom"
+                       if fl.as_str("posting_style") == "bottom" else "top"),
+        quote_headline=fl.as_str("quote_headline") or "",
+    )
+    return await route(inv.config, fl, inv.stdin, source, inv.ops)

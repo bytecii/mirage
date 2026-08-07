@@ -27,6 +27,7 @@ import uuid  # noqa: E402
 from typing import Any  # noqa: E402
 
 from mirage import MountMode, Workspace  # noqa: E402
+from mirage.commands.cli.types import CLISpec  # noqa: E402
 from mirage.policy import Policy  # noqa: E402
 from mirage.policy.types import CommandContext  # noqa: E402
 from mirage.policy.types import Deny  # noqa: E402
@@ -34,9 +35,10 @@ from mirage.policy.types import ExecuteResultContext  # noqa: E402
 from mirage.policy.types import OpsContext  # noqa: E402
 from mirage.policy.types import OpsResultContext  # noqa: E402
 from mirage.runtime.base import Runtime  # noqa: E402
+from mirage.runtime.mixin import LineExecutorMixin  # noqa: E402
 from mirage.runtime.policy import ScriptSource  # noqa: E402
 from mirage.runtime.table import build_runtime  # noqa: E402
-from mirage.runtime.types import RunArgs, RunResult  # noqa: E402
+from mirage.runtime.types import RunResult  # noqa: E402
 from mirage.types import Limit, PathSpec  # noqa: E402
 
 HOST = "python"
@@ -49,15 +51,11 @@ _s3_endpoint: str | None = None
 _mongo_seeded = False
 
 
-class EchoBox(Runtime):
+class EchoBox(Runtime, LineExecutorMixin):
     """A test-only whole-line runtime: echoes the raw line back."""
 
     name = "echobox"
     captures = ("nvidia-smi", )
-    runs_lines = True
-
-    async def run(self, args: RunArgs) -> RunResult:
-        raise AssertionError("whole-line runtimes take lines")
 
     async def run_line(self, line: str, stdin: bytes | None,
                        env: dict[str, str], cwd: str) -> RunResult:
@@ -315,6 +313,27 @@ def _build_entry(entry: Any) -> Any:
     return build_runtime(name, **options)
 
 
+def _install_clis(ws: Workspace, clis: dict[str, Any]) -> None:
+    """Install the world's script CLIs, the yaml ``clis:`` shape inline.
+
+    Each entry embeds its program instead of naming a file, the same
+    way a runtime entry embeds a policy script here; cli.sh writes them
+    back out to files to drive the yaml path.
+
+    Args:
+        ws (Workspace): the workspace being built.
+        clis (dict[str, Any]): head word -> {script, language, runtime,
+            config}.
+    """
+    for name, entry in clis.items():
+        spec = CLISpec(name=name,
+                       script=ScriptSource(entry["script"],
+                                           language=entry.get(
+                                               "language", "python")),
+                       runtime=entry.get("runtime"))
+        ws.register_cli(name, spec, entry.get("config"))
+
+
 async def _build_workspace(world: dict[str, Any], run_id: str) -> Workspace:
     mounts: dict[str, Any] = {}
     seeds: list[tuple[str, str, bytes]] = []
@@ -337,6 +356,8 @@ async def _build_workspace(world: dict[str, Any], run_id: str) -> Workspace:
     if "policies" in world:
         kwargs["policies"] = [_build_policy(s) for s in world["policies"]]
     ws = Workspace(mounts, mode=MountMode.EXEC, **kwargs)
+    if "clis" in world:
+        _install_clis(ws, world["clis"])
     for prefix, name, data in seeds:
         await ws.dispatch("write",
                           PathSpec.from_str_path(f"{prefix}/{name}"),

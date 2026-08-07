@@ -16,30 +16,30 @@ import {
   FlagView,
   IOResult,
   type ByteSource,
-  type CLIVerbOpts,
+  type CLIInvocation,
   type CommandFnResult,
-  type PathSpec,
 } from '@struktoai/mirage-core'
 import { EmailAccessor } from '../../../../accessor/email.ts'
-import { fetchMessage } from '../../../../core/email/_client.ts'
+import { fetchMessage, fetchRawMessage } from '../../../../core/email/_client.ts'
 import type { EmailConfig } from '../../../../core/email/config.ts'
+import { firstText } from './util.ts'
 
 const ENC = new TextEncoder()
 
-export async function read(
-  config: unknown,
-  _paths: PathSpec[],
-  _texts: string[],
-  opts: CLIVerbOpts,
-): Promise<CommandFnResult> {
-  const fl = new FlagView(opts.flags)
-  const accessor = new EmailAccessor(config as EmailConfig)
-  let processed
+export async function read(inv: CLIInvocation): Promise<CommandFnResult> {
+  const fl = new FlagView(inv.flags)
+  const uid = firstText(inv.texts, 'message id')
+  const mailbox = fl.asStr('mailbox') ?? 'INBOX'
+  const accessor = new EmailAccessor(inv.config as EmailConfig)
   try {
-    processed = await fetchMessage(accessor, fl.asStr('folder') ?? '', fl.asStr('uid') ?? '')
+    if (fl.asBool('raw')) {
+      const raw: ByteSource = await fetchRawMessage(accessor, mailbox, uid)
+      return [raw, new IOResult()]
+    }
+    const processed = await fetchMessage(accessor, mailbox, uid)
+    const out: ByteSource = ENC.encode(JSON.stringify(processed))
+    return [out, new IOResult()]
   } finally {
     await accessor.close()
   }
-  const out: ByteSource = ENC.encode(JSON.stringify(processed))
-  return [out, new IOResult()]
 }

@@ -16,6 +16,7 @@ import { HELP_OPTION } from '../config.ts'
 import { compileSpec, type CompiledSpec, expandLong } from '../spec/compile.ts'
 import { FLOAT_VALUE, INT_VALUE } from '../spec/constants.ts'
 import { renderHelp } from '../spec/help.ts'
+import { resolvePath } from '../../utils/path.ts'
 import { CommandSpec } from '../spec/types.ts'
 import { WalkResult, type CLISpec, type WalkFlagBag } from './types.ts'
 
@@ -26,6 +27,54 @@ const ENC = new TextEncoder()
 /** A subcommand's row label: `name (alias, ...)` like argparse. */
 function verbDisplay(child: CLISpec): string {
   return child.aliases.length > 0 ? `${child.name} (${child.aliases.join(', ')})` : child.name
+}
+
+/** The subcommand a word names, by canonical name or alias. */
+export function findChild(node: CLISpec, word: string): CLISpec | null {
+  return node.subcommands.find((c) => c.name === word || c.aliases.includes(word)) ?? null
+}
+
+/**
+ * Descend a tree by verb words, null if a word names no subcommand.
+ *
+ * Returns the node and its canonical path, so an alias renders under the
+ * name it resolves to, the attribution rule `walk` uses. This is
+ * introspection only (`man`): no options are parsed and no usage error is
+ * produced, so a caller gets the node or nothing.
+ */
+export function findNode(
+  spec: CLISpec,
+  verbs: readonly string[],
+): { node: CLISpec; path: string[] } | null {
+  let node = spec
+  const path: string[] = []
+  for (const word of verbs) {
+    const child = findChild(node, word)
+    if (child === null) return null
+    node = child
+    path.push(child.name)
+  }
+  return { node, path }
+}
+
+/**
+ * True when the node parses its own command line instead of mirage.
+ *
+ * A script root that declares no grammar is the only such node: the
+ * embedded program is the parser, so its flags are not mirage's to
+ * recognize, and a generated help page would document nothing. Mirage
+ * forwards the whole line to it (a pass-through rest operand) and leaves
+ * `--help` to the program. A script root that does declare options or
+ * operands opts back into the ordinary machinery, which then renders
+ * truthful help and refuses undeclared flags.
+ */
+export function ownsArgv(node: CLISpec): boolean {
+  return (
+    node.script !== null &&
+    node.options.length === 0 &&
+    node.positional.length === 0 &&
+    node.rest === null
+  )
 }
 
 /**
@@ -42,11 +91,14 @@ export function nodeHelp(name: string, node: CLISpec): string {
   ])
   // --help is a registered option everywhere (argparse add_help, click
   // add_help_option, withHelpSupport for leaves), so the listing shows it
-  // unless the node declares its own.
-  const listed = node.options.some((option) => option.long === '--help')
-    ? node
-    : // eslint-disable-next-line @typescript-eslint/no-misused-spread -- init wants a plain field bag
-      new CommandSpec({ ...node, options: [...node.options, HELP_OPTION] })
+  // unless the node declares its own or answers the flag itself
+  // (ownsArgv), where advertising it would promise a page mirage no
+  // longer renders.
+  const listed =
+    node.options.some((option) => option.long === '--help') || ownsArgv(node)
+      ? node
+      : // eslint-disable-next-line @typescript-eslint/no-misused-spread -- init wants a plain field bag
+        new CommandSpec({ ...node, options: [...node.options, HELP_OPTION] })
   return renderHelp(name, listed, rows)
 }
 
@@ -161,21 +213,50 @@ function expandGroupLong(node: CLISpec, cs: CompiledSpec, spelling: string): rea
 }
 
 /**
+ * Resolve PATH-typed group values against the working directory.
+ *
+ * A group option declared `type: 'path'` has to mean what it means on a leaf,
+ * or the type is a lie at exactly one level of the tree. The flat parser
+ * resolves PATH values right after defaults land, so a `-C` that defaults to
+ * `'.'` becomes the session cwd and a relative `-C build` becomes absolute; do
+ * the same here rather than handing a leaf a raw relative string it has no cwd
+ * to interpret.
+ *
+ * Resolved to absolute strings, not PathSpec: a group flag never picks a mount
+ * (CLI dispatch consults none), so the routing half of the leaf's PATH recovery
+ * has nothing to do here.
+ */
+function resolveGroupPaths(cs: CompiledSpec, flags: WalkFlagBag, cwd: string): void {
+  for (const [dest, kind] of cs.kindByDest) {
+    if (kind !== 'path' || !(dest in flags)) continue
+    const value = flags[dest]
+    if (Array.isArray(value)) {
+      flags[dest] = value.map((part) => resolvePath(part, cwd))
+    } else if (typeof value === 'string') {
+      flags[dest] = resolvePath(value, cwd)
+    }
+  }
+}
+
+/**
  * Apply a node's declarative option rules after its scan: defaults land as
- * if typed, then choices and required are enforced, the same order the
- * flat parser uses. Returns a rendered refusal or null when satisfied.
+ * if typed and PATH values resolve, then choices and required are enforced,
+ * the same order the flat parser uses. Returns a rendered refusal or null when
+ * satisfied.
  */
 function finishNode(
   name: string,
   node: CLISpec,
   cs: CompiledSpec,
   flags: WalkFlagBag,
+  cwd: string,
 ): WalkResult | null {
   for (const [dest, value] of cs.defaults) {
     if (!(dest in flags)) {
       flags[dest] = cs.multipleDests.has(dest) ? [value] : value
     }
   }
+  resolveGroupPaths(cs, flags, cwd)
   // Numeric-typed values before choices, argparse's order; wording is
   // git's parse-options refusal (`--depth` on a non-integer), one phrase
   // for int and float alike.
@@ -221,15 +302,20 @@ function finishNode(
  * on stderr with exit 1, and group-level option errors refuse on stderr
  * with exit 129. The leaf's own argv is not parsed here; it rides the
  * ordinary spec machinery. `head` is the installed head word, used in
- * every rendering so a renamed install prints its own name.
+ * every rendering so a renamed install prints its own name, and `cwd` is the
+ * working directory PATH-typed group values resolve against, so a group option
+ * resolves the way a leaf option does.
  */
-export function walk(head: string, spec: CLISpec, argv: readonly string[]): WalkResult {
+export function walk(head: string, spec: CLISpec, argv: readonly string[], cwd = '/'): WalkResult {
   let node = spec
   let path: string[] = []
   const flags: WalkFlagBag = {}
   let i = 0
   for (;;) {
-    if (node.fn !== null) {
+    // A script node terminates the walk exactly like an fn leaf: its
+    // remaining argv rides the ordinary spec machinery for validation,
+    // then passes to the program verbatim.
+    if (node.fn !== null || node.script !== null) {
       return new WalkResult({ leaf: node, path, groupFlags: flags, argv: argv.slice(i) })
     }
     const name = [head, ...path].join(' ')
@@ -340,13 +426,13 @@ export function walk(head: string, spec: CLISpec, argv: readonly string[]): Walk
         i += 1
         continue
       }
-      const refused = finishNode(name, node, cs, flags)
+      const refused = finishNode(name, node, cs, flags, cwd)
       if (refused !== null) return refused
       // An alias resolves to its canonical node; the path records the
       // canonical name (argparse prog attribution: errors under `gws co`
       // render as `gws checkout`).
-      const child = node.subcommands.find((c) => c.name === token || c.aliases.includes(token))
-      if (child === undefined) {
+      const child = findChild(node, token)
+      if (child === null) {
         return unknownVerb(head, name, token)
       }
       node = child
@@ -356,7 +442,7 @@ export function walk(head: string, spec: CLISpec, argv: readonly string[]): Walk
       break
     }
     if (descended) continue
-    const refused = finishNode(name, node, cs, flags)
+    const refused = finishNode(name, node, cs, flags, cwd)
     if (refused !== null) return refused
     return new WalkResult({
       output: ENC.encode(nodeHelp(name, node)),

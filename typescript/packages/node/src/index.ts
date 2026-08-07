@@ -253,7 +253,7 @@ export {
   redactSlackConfig,
   type SlackConfig,
   type SlackConfigRedacted,
-} from './resource/slack/config.ts'
+} from '@struktoai/mirage-core'
 export { SSHResource, type SSHResourceState } from './resource/ssh/ssh.ts'
 export {
   normalizeSshConfig,
@@ -283,7 +283,7 @@ export {
   redactDiscordConfig,
   type DiscordConfig,
   type DiscordConfigRedacted,
-} from './resource/discord/config.ts'
+} from '@struktoai/mirage-core'
 export { TrelloResource, type TrelloResourceState } from './resource/trello/trello.ts'
 export {
   normalizeTrelloConfig,
@@ -297,14 +297,14 @@ export {
   redactLinearConfig,
   type LinearConfig,
   type LinearConfigRedacted,
-} from './resource/linear/config.ts'
+} from '@struktoai/mirage-core'
 export { NotionResource, type NotionResourceState } from './resource/notion/notion.ts'
 export {
   normalizeNotionConfig,
   redactNotionConfig,
   type NotionConfig,
   type NotionConfigRedacted,
-} from './resource/notion/config.ts'
+} from '@struktoai/mirage-core'
 export { LangfuseResource, type LangfuseResourceState } from './resource/langfuse/langfuse.ts'
 export { JaegerResource, type JaegerResourceState } from './resource/jaeger/jaeger.ts'
 export {
@@ -399,13 +399,13 @@ export { EmailAccessor } from './accessor/email.ts'
 export { EMAIL_COMMANDS } from './commands/builtin/email/index.ts'
 export { HIMALAYA } from './commands/cli/builtin/himalaya/index.ts'
 export { EMAIL_OPS } from './ops/email/index.ts'
-export { DaytonaRuntime } from './workspace/runtime/daytona/runtime.ts'
-export { LocalRuntime } from './workspace/runtime/local/runtime.ts'
-export { DAYTONA_CONFIG_KEYS, type DaytonaConfig } from './workspace/runtime/daytona/config.ts'
-export { E2BRuntime } from './workspace/runtime/e2b/runtime.ts'
-export { E2B_CONFIG_KEYS, type E2BConfig } from './workspace/runtime/e2b/config.ts'
-export { DockerRuntime } from './workspace/runtime/docker/runtime.ts'
-export { DOCKER_CONFIG_KEYS, type DockerConfig } from './workspace/runtime/docker/config.ts'
+export { DaytonaRuntime } from './runtime/sandbox/daytona/runtime.ts'
+export { LocalRuntime } from './runtime/python/local.ts'
+export { DAYTONA_CONFIG_KEYS, type DaytonaConfig } from './runtime/sandbox/daytona/config.ts'
+export { E2BRuntime } from './runtime/sandbox/e2b/runtime.ts'
+export { E2B_CONFIG_KEYS, type E2BConfig } from './runtime/sandbox/e2b/config.ts'
+export { DockerRuntime } from './runtime/sandbox/docker/runtime.ts'
+export { DOCKER_CONFIG_KEYS, type DockerConfig } from './runtime/sandbox/docker/config.ts'
 export {
   buildResource,
   knownResources,

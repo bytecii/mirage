@@ -22,6 +22,7 @@ from mirage.commands.spec.compile import (CompiledSpec, compile_spec,
                                           expand_long)
 from mirage.commands.spec.constants import FLOAT_VALUE, INT_VALUE
 from mirage.commands.spec.help import render_help
+from mirage.utils.path import resolve_path
 
 
 def _verb_display(child: CLISpec) -> str:
@@ -33,6 +34,61 @@ def _verb_display(child: CLISpec) -> str:
     if child.aliases:
         return f"{child.name} ({', '.join(child.aliases)})"
     return child.name
+
+
+def find_child(node: CLISpec, word: str) -> CLISpec | None:
+    """The subcommand a word names, by canonical name or alias.
+
+    Args:
+        node (CLISpec): the group being descended.
+        word (str): the verb word as typed.
+    """
+    return next(
+        (c for c in node.subcommands if word == c.name or word in c.aliases),
+        None)
+
+
+def find_node(spec: CLISpec,
+              verbs: Sequence[str]) -> tuple[CLISpec, tuple[str, ...]] | None:
+    """Descend a tree by verb words, None if a word names no subcommand.
+
+    Returns the node and its canonical path, so an alias renders under
+    the name it resolves to, the attribution rule ``walk`` uses. This is
+    introspection only (``man``): no options are parsed and no usage
+    error is produced, so a caller gets the node or nothing.
+
+    Args:
+        spec (CLISpec): the root of the tree.
+        verbs (Sequence[str]): verb words after the head, aliases
+            allowed.
+    """
+    node = spec
+    path: tuple[str, ...] = ()
+    for word in verbs:
+        child = find_child(node, word)
+        if child is None:
+            return None
+        node = child
+        path = path + (child.name, )
+    return node, path
+
+
+def owns_argv(node: CLISpec) -> bool:
+    """True when the node parses its own command line instead of mirage.
+
+    A script root that declares no grammar is the only such node: the
+    embedded program is the parser, so its flags are not mirage's to
+    recognize, and a generated help page would document nothing. Mirage
+    forwards the whole line to it (a pass-through rest operand) and
+    leaves ``--help`` to the program. A script root that does declare
+    options or operands opts back into the ordinary machinery, which
+    then renders truthful help and refuses undeclared flags.
+
+    Args:
+        node (CLISpec): the node whose line is about to be parsed.
+    """
+    return (node.script is not None and not node.options
+            and not node.positional and node.rest is None)
 
 
 def node_help(name: str, node: CLISpec) -> str:
@@ -53,8 +109,11 @@ def node_help(name: str, node: CLISpec) -> str:
             for child in node.subcommands]
     # --help is a registered option everywhere (argparse add_help, click
     # add_help_option, withHelpSupport for leaves), so the listing shows
-    # it unless the node declares its own.
-    if any(option.long == "--help" for option in node.options):
+    # it unless the node declares its own or answers the flag itself
+    # (owns_argv), where advertising it would promise a page mirage no
+    # longer renders.
+    if any(option.long == "--help"
+           for option in node.options) or owns_argv(node):
         listed = node
     else:
         listed = replace(node, options=node.options + (HELP_OPTION, ))
@@ -191,19 +250,49 @@ def _expand_group_long(node: CLISpec, cs: CompiledSpec,
     return candidates
 
 
-def _finish_node(name: str, node: CLISpec, cs: CompiledSpec,
-                 flags: FlagBag) -> WalkResult | None:
+def _resolve_group_paths(cs: CompiledSpec, flags: FlagBag, cwd: str) -> None:
+    """Resolve PATH-typed group values against the working directory.
+
+    A group option declared ``type="path"`` has to mean what it means on
+    a leaf, or the type is a lie at exactly one level of the tree. The
+    flat parser resolves PATH values right after defaults land, so a
+    ``-C`` that defaults to ``"."`` becomes the session cwd and a
+    relative ``-C build`` becomes absolute; do the same here rather than
+    handing a leaf a raw relative string it has no cwd to interpret.
+
+    Resolved to absolute strings, not PathSpec: a group flag never picks
+    a mount (CLI dispatch consults none), so the routing half of the
+    leaf's PATH recovery has nothing to do here.
+
+    Args:
+        cs (CompiledSpec): the node's compiled tables.
+        flags (FlagBag): accumulated group flags, updated in place.
+        cwd (str): current working directory.
+    """
+    for dest, kind in cs.kind_by_dest.items():
+        if kind != "path" or dest not in flags:
+            continue
+        value = flags[dest]
+        if isinstance(value, list):
+            flags[dest] = [resolve_path(part, cwd) for part in value]
+        elif isinstance(value, str):
+            flags[dest] = resolve_path(value, cwd)
+
+
+def _finish_node(name: str, node: CLISpec, cs: CompiledSpec, flags: FlagBag,
+                 cwd: str) -> WalkResult | None:
     """Apply a node's declarative option rules after its scan.
 
-    Defaults land as if typed, then choices and required are enforced,
-    the same order the flat parser uses. Returns a rendered refusal or
-    None when the node is satisfied.
+    Defaults land as if typed and PATH values resolve, then choices and
+    required are enforced, the same order the flat parser uses. Returns
+    a rendered refusal or None when the node is satisfied.
 
     Args:
         name (str): display path walked so far.
         node (CLISpec): the group node just scanned.
         cs (CompiledSpec): the node's compiled tables.
         flags (FlagBag): accumulated group flags.
+        cwd (str): current working directory, for PATH values.
     """
     for dest, default in cs.defaults.items():
         if dest not in flags:
@@ -211,6 +300,7 @@ def _finish_node(name: str, node: CLISpec, cs: CompiledSpec,
                 flags[dest] = [default]
             else:
                 flags[dest] = default
+    _resolve_group_paths(cs, flags, cwd)
     # Numeric-typed values before choices, argparse's order; wording is
     # git's parse-options refusal (`--depth` on a non-integer), one
     # phrase for int and float alike.
@@ -241,7 +331,10 @@ def _finish_node(name: str, node: CLISpec, cs: CompiledSpec,
     return None
 
 
-def walk(head: str, spec: CLISpec, argv: Sequence[str]) -> WalkResult:
+def walk(head: str,
+         spec: CLISpec,
+         argv: Sequence[str],
+         cwd: str = "/") -> WalkResult:
     """Resolve one command line against a CLI tree.
 
     Each level consumes its own options in POSIX order (stop at the
@@ -258,13 +351,18 @@ def walk(head: str, spec: CLISpec, argv: Sequence[str]) -> WalkResult:
             renamed install prints its own name.
         spec (CLISpec): the root of the tree.
         argv (Sequence[str]): the words after the head.
+        cwd (str): working directory for PATH-typed group values, so a
+            group option resolves the way a leaf option does.
     """
     node = spec
     path: tuple[str, ...] = ()
     flags: FlagBag = {}
     i = 0
     while True:
-        if node.fn is not None:
+        # A script node terminates the walk exactly like an fn leaf:
+        # its remaining argv rides the ordinary spec machinery for
+        # validation, then passes to the program verbatim.
+        if node.fn is not None or node.script is not None:
             return WalkResult(leaf=node,
                               path=path,
                               group_flags=flags,
@@ -367,14 +465,13 @@ def walk(head: str, spec: CLISpec, argv: Sequence[str]) -> WalkResult:
                     return _usage_error(name, node, error)
                 i += 1
                 continue
-            refused = _finish_node(name, node, cs, flags)
+            refused = _finish_node(name, node, cs, flags, cwd)
             if refused is not None:
                 return refused
             # An alias resolves to its canonical node; the path records
             # the canonical name (argparse prog attribution: errors under
             # `gws co` render as `gws checkout`).
-            child = next((c for c in node.subcommands
-                          if token == c.name or token in c.aliases), None)
+            child = find_child(node, token)
             if child is None:
                 return _unknown_verb(head, name, token)
             node = child
@@ -384,7 +481,7 @@ def walk(head: str, spec: CLISpec, argv: Sequence[str]) -> WalkResult:
             break
         if descended:
             continue
-        refused = _finish_node(name, node, cs, flags)
+        refused = _finish_node(name, node, cs, flags, cwd)
         if refused is not None:
             return refused
         return WalkResult(output=node_help(name, node).encode(),

@@ -12,7 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { Runtime } from '../runtime.ts'
+import { runOutput } from '../../../commands/builtin/general/interpreter.ts'
+import type { LanguageRuntime } from '../../../runtime/language.ts'
 import { CommandTimeoutError } from '../../../commands/builtin/utils/limit.ts'
 import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import type { ByteSource } from '../../../io/types.ts'
@@ -20,13 +21,13 @@ import { IOResult, materialize } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import type { DispatchFn } from '../cross_mount.ts'
 import { ExecutionNode } from '../../types.ts'
-import { MontyUnavailableError } from './runtimes/monty.ts'
-import { PyodideUnavailableError } from './types.ts'
+import { MontyUnavailableError } from '../../../runtime/python/monty.ts'
+import { PyodideUnavailableError } from '../../../runtime/python/types.ts'
 
 type Result = [ByteSource | null, IOResult, ExecutionNode]
 
 export interface HandlePythonDeps {
-  runtime: Runtime
+  runtime: LanguageRuntime
 }
 
 function readAllBytes(data: unknown): Promise<Uint8Array> {
@@ -98,11 +99,8 @@ export async function handlePython(
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
       ...(opts.timeoutSeconds !== undefined ? { timeoutSeconds: opts.timeoutSeconds } : {}),
     })
-    return [
-      result.stdout.length > 0 ? result.stdout : null,
-      new IOResult({ exitCode: result.exitCode, stderr: result.stderr }),
-      new ExecutionNode({ command: cmdStr, exitCode: result.exitCode }),
-    ]
+    const [stdout, io] = runOutput(result)
+    return [stdout, io, new ExecutionNode({ command: cmdStr, exitCode: result.exitCode })]
   } catch (err) {
     // An in-VM limit interrupt is a timeout, not an interpreter
     // failure: let it reach the workspace's 124 handler.

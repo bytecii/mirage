@@ -1256,6 +1256,119 @@
       ]
     },
     {
+      "id": "cli-gws-scoped",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "gws",
+      "facet": "cli",
+      "clis": [
+        "gws"
+      ],
+      "cli_scope": "/data",
+      "mounts": [
+        {
+          "path": "/data",
+          "resource": "gdrive",
+          "backend": "gdrive",
+          "root": "team/scope"
+        }
+      ]
+    },
+    {
+      "id": "cli-slack",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "slack",
+      "facet": "cli",
+      "clis": [
+        "slack"
+      ],
+      "mounts": [
+        {
+          "path": "/slack",
+          "resource": "slack"
+        },
+        {
+          "path": "/scratch",
+          "resource": "ram",
+          "backend": "memory"
+        }
+      ]
+    },
+    {
+      "id": "cli-discord",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "discord",
+      "facet": "cli",
+      "clis": [
+        "discord"
+      ],
+      "mounts": [
+        {
+          "path": "/discord",
+          "resource": "discord"
+        },
+        {
+          "path": "/scratch",
+          "resource": "ram",
+          "backend": "memory"
+        }
+      ]
+    },
+    {
+      "id": "cli-ntn",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "notion",
+      "facet": "cli",
+      "clis": [
+        "ntn"
+      ],
+      "mounts": [
+        {
+          "path": "/notion",
+          "resource": "notion"
+        },
+        {
+          "path": "/scratch",
+          "resource": "ram",
+          "backend": "memory"
+        }
+      ]
+    },
+    {
+      "id": "cli-linear",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "linear",
+      "facet": "cli",
+      "clis": [
+        "linear"
+      ],
+      "mounts": [
+        {
+          "path": "/issues",
+          "resource": "linear"
+        },
+        {
+          "path": "/scratch",
+          "resource": "ram",
+          "backend": "memory"
+        }
+      ]
+    },
+    {
       "id": "slack",
       "hosts": [
         "python",
@@ -1652,6 +1765,42 @@
           "resource": "arg_error",
           "backend": "trello",
           "mode": "read"
+        }
+      ]
+    },
+    {
+      "id": "git-disk",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "clis": [
+        "git"
+      ],
+      "mounts": [
+        {
+          "path": "/repo",
+          "resource": "disk",
+          "backend": "tmpdir",
+          "fixture": "git"
+        }
+      ]
+    },
+    {
+      "id": "git-ram",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "clis": [
+        "git"
+      ],
+      "mounts": [
+        {
+          "path": "/repo",
+          "resource": "ram",
+          "backend": "memory",
+          "fixture": "git"
         }
       ]
     }

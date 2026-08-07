@@ -24,8 +24,9 @@ from mirage.io.types import ByteSource
 from mirage.ops.types import LinkView
 from mirage.runtime.base import Runtime
 from mirage.runtime.policy import PolicyDecision
-from mirage.runtime.table import VfsRuntime
-from mirage.types import FileStat, PathSpec
+from mirage.runtime.table import VFSRuntime
+from mirage.runtime.types import DispatchFn
+from mirage.types import FileStat, PathSpec, ResourceName
 from mirage.utils.errors import format_fs_error
 from mirage.workspace.executor.builtins.links import (link_target_stat,
                                                       path_exists, path_stat)
@@ -35,7 +36,7 @@ from mirage.workspace.mount import (MountCommandUnsupported, MountEntry,
 from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.mount.namespace.overlay import merge_overlay_stat
 from mirage.workspace.session import Session, assert_mount_allowed
-from mirage.workspace.types import DispatchFn, ExecutionNode
+from mirage.workspace.types import ExecutionNode
 
 
 async def exec_node(cmd_str: str, io: IOResult,
@@ -75,7 +76,7 @@ def line_runtime_for(
     With no decision, the workspace's static bindings apply. With one,
     the command's runtime is looked up in the decision: its binding,
     or the decision's fallback when no entry captures it. A resolved
-    VfsRuntime means the executor serves the command itself (the vfs
+    VFSRuntime means the executor serves the command itself (the vfs
     runtime has no interpreter door); None means no runtime accepted
     it: exit 126, like a shell refusing to exec.
 
@@ -87,7 +88,7 @@ def line_runtime_for(
     """
     if routing is None:
         vfs = registry.vfs_runtime
-        restricted = isinstance(vfs, VfsRuntime) and vfs.restricted
+        restricted = isinstance(vfs, VFSRuntime) and vfs.restricted
         runtime = registry.runtime_bindings.get(cmd_name)
         if runtime is vfs and vfs is not None:
             return None, None
@@ -97,7 +98,7 @@ def line_runtime_for(
     runtime = routing.bindings.get(cmd_name, routing.fallback)
     if runtime is None:
         return None, admission_denial(cmd_name)
-    if isinstance(runtime, VfsRuntime):
+    if isinstance(runtime, VFSRuntime):
         return None, None
     return runtime, None
 
@@ -135,6 +136,61 @@ def link_view(namespace: Namespace | None,
                     exists=functools.partial(path_exists, dispatch),
                     target_stat=functools.partial(link_target_stat, namespace,
                                                   dispatch))
+
+
+def mount_root_of(registry: MountRegistry, virtual: str) -> str:
+    """The mount prefix serving a virtual path, "/" when none does.
+
+    A mount boundary is a filesystem boundary, which is what a caller
+    walking up a tree needs in order to stop: `git` looks for a `.git`
+    no further than the mount root, the way real git stops discovery at
+    a filesystem boundary. A path under no mount answers "/" so the walk
+    still terminates.
+
+    Args:
+        registry (MountRegistry): registry holding the mount table.
+        virtual (str): absolute virtual path.
+    """
+    try:
+        return registry.mount_for(virtual).prefix
+    except ValueError:
+        return "/"
+
+
+async def drop_service_caches(registry: MountRegistry,
+                              serves: tuple[ResourceName, ...]) -> None:
+    """Drop cached listings and bodies for the mounts a CLI's service backs.
+
+    An account CLI mutates its service by id, so no vfs path can be
+    derived from the call and per-path invalidation has nothing to aim
+    at: after `gws sheets spreadsheets create` the new file has no cache
+    entry to expire, which is exactly the case that matters. What is
+    known is the service, so the mounts it backs drop their caches and
+    the next read refetches.
+
+    Both caches go, because the two hide different writes. A stale
+    listing hides a create or a delete; a stale body hides an edit, and
+    these resources cache reads, so a `cat` after `gws docs documents
+    batchUpdate` would otherwise keep serving the pre-edit content
+    without ever reaching Google.
+
+    Scoped by the spec's declared ``serves`` rather than a blanket
+    reset, so a Slack or S3 mount alongside keeps its cache.
+
+    Args:
+        registry (MountRegistry): registry holding the mount table.
+        serves (tuple[ResourceName, ...]): resources the CLI's service
+            backs; empty drops nothing.
+    """
+    if not serves:
+        return
+    wanted = set(serves)
+    for mount in registry.mounts():
+        if mount.resource.name not in wanted:
+            continue
+        await mount.resource.index.clear()
+        if mount.cache_manager is not None:
+            await mount.cache_manager.drop_prefix()
 
 
 def namespace_stat_overlay(namespace: Namespace, virtual: str,

@@ -13,7 +13,10 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.commands.cli import CLISpec, walk
+from mirage.commands.cli.walk import (find_child, find_node, node_help,
+                                      owns_argv)
 from mirage.commands.spec.types import Option
+from mirage.runtime.types import ScriptSource
 
 
 async def _verb(config, paths, *texts, **flags):
@@ -311,3 +314,96 @@ def test_float_typed_group_option_uses_git_wording():
     ok = walk("tool", tree, ["--ratio", "2.5", "run"])
     assert ok.leaf is not None
     assert ok.group_flags == {"--ratio": "2.5"}
+
+
+def test_find_child_matches_name_or_alias():
+    tree = CLISpec(name="gws",
+                   subcommands=(CLISpec(name="checkout",
+                                        aliases=("co", ),
+                                        fn=_verb), ))
+    assert find_child(tree, "checkout").name == "checkout"
+    assert find_child(tree, "co").name == "checkout"
+    assert find_child(tree, "nope") is None
+
+
+def test_find_node_returns_the_node_and_its_canonical_path():
+    node, path = find_node(_tree(), ["gmail", "send"])
+    assert node.name == "send"
+    assert path == ("gmail", "send")
+
+
+def test_find_node_with_no_verbs_is_the_root():
+    tree = _tree()
+    node, path = find_node(tree, [])
+    assert node is tree
+    assert path == ()
+
+
+def test_find_node_misses_on_an_unknown_verb():
+    assert find_node(_tree(), ["gmail", "bogus"]) is None
+    assert find_node(_tree(), ["bogus"]) is None
+
+
+def test_script_root_terminates_the_walk_with_argv_verbatim():
+    # A script node is a terminal leaf like an fn node: the walk hands
+    # back every token so the program can re-parse argv natively.
+    spec = CLISpec(name="pager", script=ScriptSource("print('hi')"))
+    result = walk("pager", spec, ["--frobnicate", "report.txt"])
+    assert result.leaf is spec
+    assert result.path == ()
+    assert result.argv == ("--frobnicate", "report.txt")
+    assert result.exit_code == 0
+
+
+def test_owns_argv_only_for_a_grammarless_script_root():
+    source = ScriptSource("print('hi')")
+    assert owns_argv(CLISpec(name="pager", script=source))
+    declared = CLISpec(name="pager",
+                       script=source,
+                       options=(Option(long="--width", type="int"), ))
+    assert not owns_argv(declared)
+    assert not owns_argv(CLISpec(name="prog", fn=_verb))
+
+
+def test_manual_of_a_grammarless_script_omits_the_help_row():
+    # man renders from the spec, so it must not advertise a --help the
+    # program answers itself.
+    text = node_help("pager",
+                     CLISpec(name="pager", script=ScriptSource("print(1)")))
+    assert text.startswith("pager\n")
+    assert "--help" not in text
+
+
+def test_path_typed_group_option_resolves_against_cwd():
+    # A group option declared "path" has to mean what it means on a
+    # leaf, or the type is a lie at exactly one level of the tree.
+    tree = CLISpec(
+        name="tool",
+        options=(Option(short="-C", type="path"), ),
+        subcommands=(CLISpec(name="run", fn=_verb), ),
+    )
+    relative = walk("tool", tree, ["-C", "build", "run"], "/repo/src")
+    assert relative.group_flags == {"-C": "/repo/src/build"}
+    absolute = walk("tool", tree, ["-C", "/other", "run"], "/repo/src")
+    assert absolute.group_flags == {"-C": "/other"}
+
+
+def test_path_typed_group_default_lands_as_the_cwd():
+    tree = CLISpec(
+        name="tool",
+        options=(Option(short="-C", type="path", default="."), ),
+        subcommands=(CLISpec(name="run", fn=_verb), ),
+    )
+    assert walk("tool", tree, ["run"], "/repo/src").group_flags == {
+        "-C": "/repo/src"
+    }
+
+
+def test_repeated_path_group_option_resolves_every_value():
+    tree = CLISpec(
+        name="tool",
+        options=(Option(long="--dir", type="path", multiple=True), ),
+        subcommands=(CLISpec(name="run", fn=_verb), ),
+    )
+    result = walk("tool", tree, ["--dir", "a", "--dir", "/b", "run"], "/w")
+    assert result.group_flags == {"--dir": ["/w/a", "/b"]}

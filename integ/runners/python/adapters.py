@@ -47,8 +47,8 @@ from mirage.accessor.sharepoint import SharePointConfig
 from mirage.commands.cli.specs import cli_spec_for
 from mirage.commands.cli.types import CLISpec
 from mirage.core.databricks_volume.path import configured_root
+from mirage.core.discord.config import DiscordConfig
 from mirage.core.email.config import EmailConfig
-from mirage.core.google import _client as google_client
 from mirage.core.sharepoint import _resolver as sharepoint_resolver
 from mirage.resource.aliyun import AliyunConfig, AliyunResource
 from mirage.resource.backblaze import BackblazeConfig, BackblazeResource
@@ -60,7 +60,6 @@ from mirage.resource.databricks_volume import (DatabricksVolumeConfig,
 from mirage.resource.dify import DifyConfig, DifyResource
 from mirage.resource.digitalocean import (DigitalOceanConfig,
                                           DigitalOceanResource)
-from mirage.resource.discord.config import DiscordConfig
 from mirage.resource.discord.discord import DiscordResource
 from mirage.resource.disk import DiskResource
 from mirage.resource.dropbox import DropboxConfig, DropboxResource
@@ -484,16 +483,6 @@ class NextcloudService:
 FOLDER_MIME = "application/vnd.google-apps.folder"
 
 
-def _use_fake_google_endpoints(url: str) -> None:
-    google_client.TOKEN_URL = f"{url}/token"
-    google_client.DRIVE_API_BASE = f"{url}/drive/v3"
-    google_client.DRIVE_UPLOAD_BASE = f"{url}/upload/drive/v3"
-    google_client.DOCS_API_BASE = f"{url}/v1"
-    google_client.SLIDES_API_BASE = f"{url}/v1"
-    google_client.SHEETS_API_BASE = f"{url}/v4"
-    google_client.GMAIL_API_BASE = f"{url}/gmail/v1"
-
-
 class GwsService:
     """Points gdrive mounts at the fake Google Workspace server.
 
@@ -503,14 +492,17 @@ class GwsService:
     analog, so the three mounts never see each other.
     """
 
-    def __init__(self, url: str, folder_ids: dict[str, str]) -> None:
+    def __init__(self, url: str, folder_ids: dict[str, str],
+                 cli_scope: str | None) -> None:
         self.url = url
         self.folder_ids = folder_ids
+        # A target may scope the gws install to one mount's folder, the
+        # configuration where the CLI and the mount are the same folder.
+        self.cli_scope = cli_scope
 
     @classmethod
     async def create(cls, run_id: str, target: dict) -> "GwsService":
         url = os.environ["GWS_URL"].rstrip("/")
-        _use_fake_google_endpoints(url)
         folder_ids: dict[str, str] = {}
         drive_ids: dict[str, str] = {}
         # Native mounts (gdocs/gsheets/gslides) render the modified date
@@ -547,7 +539,7 @@ class GwsService:
                 ).parents[2] / "fixtures" / f"{mail}.json"
                 await cls._seed_mail(session, url,
                                      json.loads(manifest.read_text()))
-        return cls(url, folder_ids)
+        return cls(url, folder_ids, target.get("cli_scope"))
 
     @staticmethod
     async def _seed_apps(session: aiohttp.ClientSession, url: str,
@@ -636,31 +628,42 @@ class GwsService:
         return GoogleDriveResource(
             GoogleDriveConfig(client_id="integ",
                               refresh_token="integ",
+                              api_base=self.url,
                               folder_id=self.folder_ids[mount["path"]]))
 
     def gdocs_resource(self) -> GDocsResource:
         return GDocsResource(
-            GDocsConfig(client_id="integ", refresh_token="integ"))
+            GDocsConfig(client_id="integ",
+                        refresh_token="integ",
+                        api_base=self.url))
 
     def gsheets_resource(self) -> GSheetsResource:
         return GSheetsResource(
-            GSheetsConfig(client_id="integ", refresh_token="integ"))
+            GSheetsConfig(client_id="integ",
+                          refresh_token="integ",
+                          api_base=self.url))
 
     def gslides_resource(self) -> GSlidesResource:
         return GSlidesResource(
-            GSlidesConfig(client_id="integ", refresh_token="integ"))
+            GSlidesConfig(client_id="integ",
+                          refresh_token="integ",
+                          api_base=self.url))
 
     def gmail_resource(self) -> GmailResource:
         return GmailResource(
-            GmailConfig(client_id="integ", refresh_token="integ"))
+            GmailConfig(client_id="integ",
+                        refresh_token="integ",
+                        api_base=self.url))
 
     def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
-        return {
-            "gws": (cli_spec_for("gws"), {
-                "client_id": "integ",
-                "refresh_token": "integ",
-            }),
+        config: dict[str, object] = {
+            "client_id": "integ",
+            "refresh_token": "integ",
+            "api_base": self.url,
         }
+        if self.cli_scope is not None:
+            config["folder_id"] = self.folder_ids[self.cli_scope]
+        return {"gws": (cli_spec_for("gws"), config)}
 
     async def teardown(self) -> None:
         return None
@@ -984,6 +987,15 @@ class SlackService:
                         search_token="xoxp-integ-search",
                         base_url=f"{self.url}/api"))
 
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        return {
+            "slack": (cli_spec_for("slack"), {
+                "token": "xoxb-integ",
+                "search_token": "xoxp-integ-search",
+                "base_url": f"{self.url}/api",
+            }),
+        }
+
     async def teardown(self) -> None:
         return None
 
@@ -1119,6 +1131,14 @@ class DiscordService:
             DiscordConfig(token="integ-bot-token",
                           base_url=f"{self.base}/api/v10"))
 
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        return {
+            "discord": (cli_spec_for("discord"), {
+                "token": "integ-bot-token",
+                "base_url": f"{self.base}/api/v10",
+            }),
+        }
+
     async def teardown(self) -> None:
         await self.runner.cleanup()
 
@@ -1139,6 +1159,14 @@ class LinearService:
     def resource(self, mount: dict) -> LinearResource:
         return LinearResource(
             LinearConfig(api_key="integ-key", base_url=self.base))
+
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        return {
+            "linear": (cli_spec_for("linear"), {
+                "api_key": "integ-key",
+                "base_url": self.base,
+            }),
+        }
 
     async def teardown(self) -> None:
         await self.runner.cleanup()
@@ -1251,6 +1279,14 @@ class NotionService:
     def resource(self, mount: dict) -> NotionResource:
         return NotionResource(config=NotionConfig(
             api_key="integ-test", base_url=f"http://127.0.0.1:{self.port}/v1"))
+
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        return {
+            "ntn": (cli_spec_for("ntn"), {
+                "api_key": "integ-test",
+                "base_url": f"http://127.0.0.1:{self.port}/v1",
+            }),
+        }
 
     async def teardown(self) -> None:
         self.server.shutdown()
@@ -2084,6 +2120,30 @@ def build_mounts(
     return mounts, cleanups
 
 
+def cli_install(service: "Service | None",
+                cli_name: str) -> tuple[CLISpec, dict[str, object] | None]:
+    """The spec and config to install one CLI under its head word.
+
+    Every CLI here so far talks to an API, so its mock service hands
+    over both the tree and the credentials pointing at itself. `git` is
+    the first with neither: it reads a repository out of a mount, which
+    is what makes it installable from a bare name, so it resolves
+    through the registry the YAML ``clis:`` section uses and installs
+    with no config at all.
+
+    Args:
+        service (Service | None): the target's mock service, None for a
+            target that needs none.
+        cli_name (str): the head word the target declared.
+    """
+    if service is None:
+        return cli_spec_for(cli_name), None
+    # Widen the assert when another service grows a CLI.
+    assert isinstance(service, (DiscordService, EmailService, GwsService,
+                                LinearService, NotionService, SlackService))
+    return service.cli_installs()[cli_name]
+
+
 async def mutate_write(shadow_ws: Workspace, path: str,
                        content: bytes) -> None:
     await shadow_ws.ops.write(path, content)
@@ -2118,10 +2178,7 @@ async def open_target(
     else:
         ws = Workspace(mounts, mode=MountMode.WRITE, agent_id=agent_id)
     for cli_name in target.get("clis", []):
-        # Only the email and gws services install CLIs today; widen the
-        # assert when another service grows one.
-        assert isinstance(service, (EmailService, GwsService))
-        spec, config = service.cli_installs()[cli_name]
+        spec, config = cli_install(service, cli_name)
         ws.register_cli(cli_name, spec, config)
     return ws, functools.partial(teardown_target, [ws], cleanups, service)
 

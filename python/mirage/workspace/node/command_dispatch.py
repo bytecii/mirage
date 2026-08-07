@@ -20,6 +20,7 @@ from mirage.io import IOResult
 from mirage.io.types import materialize
 from mirage.policy import CommandContext, resolve_limit
 from mirage.runtime.policy import PolicyDecision
+from mirage.shell.bytes import encode_text
 from mirage.shell.types import NodeType as NT
 from mirage.shell.types import ShellBuiltin as SB
 from mirage.shell.xtrace import trace_command
@@ -46,8 +47,8 @@ from mirage.workspace.executor.builtins import (  # isort: skip
     handle_ln, handle_local, handle_man, handle_printenv, handle_printf,
     handle_read, handle_readlink, handle_return, handle_set, handle_shift,
     handle_sleep, handle_source, handle_test, handle_timeout, handle_touch,
-    handle_trap, handle_type, handle_unset, handle_whoami, handle_xargs,
-    link_flags, prepare_mv, strip_link_operands)
+    handle_trap, handle_type, handle_unset, handle_which, handle_whoami,
+    handle_xargs, link_flags, prepare_mv, strip_link_operands)
 
 _CdArgs = list[str | PathSpec]
 
@@ -194,7 +195,7 @@ async def _dispatch_command_body(
                 for sc in child.named_children:
                     content = await expand_node(sc, session, execute_fn,
                                                 call_stack)
-                    stdin = content.encode() + b"\n"
+                    stdin = encode_text(content) + b"\n"
                     break
 
     # Process substitution: <(cmd) feeds inner stdout as stdin.
@@ -472,6 +473,9 @@ async def _run_argv(
 
     if name == SB.TYPE:
         return handle_type(args, session, registry)
+
+    if name == SB.WHICH:
+        return handle_which(args, session, registry)
 
     if name == SB.XARGS:
         return await handle_xargs(execute_fn, args, session, stdin)

@@ -18,14 +18,17 @@ import pytest
 
 import mirage.runtime.policy.decide as decide_mod
 from mirage.runtime.base import Runtime
+from mirage.runtime.js.base import JsRuntime
 from mirage.runtime.mixin import EvaluatorMixin
 from mirage.runtime.policy import (DenyResult, PolicyContext, PolicyDeny,
                                    PolicyError, RouteResult, ScriptSource,
                                    decide_line, evaluate_policy,
                                    evaluate_script, evaluator_of,
-                                   parse_verdict, parsed_commands)
+                                   parse_verdict, parsed_commands,
+                                   runtime_for_language)
+from mirage.runtime.python.local import LocalRuntime
 from mirage.runtime.python.monty import MontyRuntime
-from mirage.runtime.table import VfsRuntime
+from mirage.runtime.table import VFSRuntime
 from mirage.runtime.types import RunArgs, RunResult
 from mirage.shell.parse import parse
 
@@ -103,14 +106,13 @@ async def test_script_source_needs_an_evaluator():
 
 def test_evaluator_of_picks_first_evaluator_entry():
     alpha, monty = AlphaRuntime(), MontyRuntime()
-    assert evaluator_of([alpha, monty, VfsRuntime()]) is monty
-    assert evaluator_of([alpha, VfsRuntime()]) is None
+    assert evaluator_of([alpha, monty, VFSRuntime()]) is monty
+    assert evaluator_of([alpha, VFSRuntime()]) is None
 
 
-class JsEvaluator(Runtime, EvaluatorMixin):
+class JsEvaluator(JsRuntime, EvaluatorMixin):
     name = "js-eval"
     captures = ("node", )
-    eval_language = "js"
 
     def __init__(self) -> None:
         super().__init__()
@@ -147,6 +149,36 @@ def test_evaluator_of_prefers_a_language_match():
     assert evaluator_of([monty, js]) is monty
     assert evaluator_of([monty], "js") is monty
     assert evaluator_of([], "js") is None
+
+
+def test_one_language_attribute_serves_both_doors():
+    # The eval door and the run door read the same Runtime.language, so
+    # an engine cannot be picked as a js interpreter and a python
+    # evaluator at once. Two attributes could disagree, and the
+    # disagreement only showed up as an unexplained 127 or a policy
+    # script evaluated on the wrong engine.
+    js = JsEvaluator()
+    assert evaluator_of([js], "js") is js
+    assert runtime_for_language([js], "js") is js
+    assert runtime_for_language([js], "python") is None
+
+
+def test_runtime_for_language_is_first_match_wins():
+    monty, local, js = MontyRuntime(), LocalRuntime(), JsEvaluator()
+    assert runtime_for_language([monty, local, js], "python") is monty
+    assert runtime_for_language([local, monty, js], "python") is local
+    assert runtime_for_language([monty, js], "js") is js
+
+
+def test_runtime_for_language_has_no_cross_language_fallback():
+    # evaluator_of serves the first evaluator when nothing matches; the
+    # run selector must not: a python program cannot run on a js
+    # engine. Captures do not count either (alpha captures python3 but
+    # declares no language), and an empty world selects nothing.
+    assert runtime_for_language([JsEvaluator()], "python") is None
+    assert runtime_for_language([AlphaRuntime(), VFSRuntime()],
+                                "python") is None
+    assert runtime_for_language([], "js") is None
 
 
 @pytest.mark.asyncio
@@ -235,17 +267,17 @@ def test_parse_verdict_fails_loud_on_bad_dicts():
 @pytest.mark.asyncio
 async def test_decide_route_overlays_static_bindings():
     alpha, beta = AlphaRuntime(), BetaRuntime()
-    routing = await decide_line([alpha, beta, VfsRuntime()], lambda c: "beta",
+    routing = await decide_line([alpha, beta, VFSRuntime()], lambda c: "beta",
                                 ctx_for("python3 x"), {"python3": alpha})
     assert routing.bindings["python3"] is beta
-    assert isinstance(routing.fallback, VfsRuntime)
+    assert isinstance(routing.fallback, VFSRuntime)
 
 
 @pytest.mark.asyncio
 async def test_decide_scripts_filter_in_list_order():
     alpha, beta = AlphaRuntime(), BetaRuntime()
     alpha.script = lambda c: False
-    routing = await decide_line([alpha, beta, VfsRuntime()], None,
+    routing = await decide_line([alpha, beta, VFSRuntime()], None,
                                 ctx_for("python3 x"), {})
     assert routing.bindings["python3"] is beta
 
@@ -254,15 +286,15 @@ async def test_decide_scripts_filter_in_list_order():
 async def test_decide_all_refuse_resolves_command_to_none():
     alpha = AlphaRuntime()
     alpha.script = lambda c: False
-    routing = await decide_line([alpha, VfsRuntime()], None,
+    routing = await decide_line([alpha, VFSRuntime()], None,
                                 ctx_for("python3 x"), {})
     assert routing.bindings["python3"] is None
-    assert isinstance(routing.fallback, VfsRuntime)
+    assert isinstance(routing.fallback, VFSRuntime)
 
 
 @pytest.mark.asyncio
 async def test_decide_vfs_entry_script_gates_vfs():
-    vfs = VfsRuntime(script=lambda c: "/secret" not in c.line)
+    vfs = VFSRuntime(script=lambda c: "/secret" not in c.line)
     allowed = await decide_line([vfs], None, ctx_for("cat /notes"), {})
     denied = await decide_line([vfs], None, ctx_for("cat /secret/x"), {})
     assert allowed.fallback is vfs
@@ -271,7 +303,7 @@ async def test_decide_vfs_entry_script_gates_vfs():
 
 @pytest.mark.asyncio
 async def test_decide_declared_captures_turn_the_catch_all_off():
-    vfs = VfsRuntime(captures=["grep"])
+    vfs = VFSRuntime(captures=["grep"])
     routing = await decide_line([vfs], None, ctx_for("grep x /a"), {})
     assert routing.bindings["grep"] is vfs
     assert routing.fallback is None
@@ -282,12 +314,12 @@ async def test_scripts_see_their_own_stage_on_pipelines():
     alpha = AlphaRuntime()
     seen: list[str] = []
     alpha.script = lambda c: seen.append(c.command) or True
-    await decide_line([alpha, VfsRuntime()], None,
+    await decide_line([alpha, VFSRuntime()], None,
                       ctx_for("cat /a.txt | python3 x"), {})
     assert seen == ["python3"]
 
 
 def test_for_runtime_keeps_first_stage_for_the_catch_all():
     ctx = ctx_for("cat /a.txt | python3 x")
-    assert ctx.for_runtime(VfsRuntime()).command == "cat"
+    assert ctx.for_runtime(VFSRuntime()).command == "cat"
     assert ctx.for_runtime(AlphaRuntime()).command == "python3"

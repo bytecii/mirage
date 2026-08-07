@@ -19,7 +19,6 @@ from mirage.core.box.exists import exists as _exists
 from mirage.core.box.mkdir import mkdir as _mkdir
 from mirage.core.box.read import read as _read
 from mirage.core.box.read import stream as _stream
-from mirage.core.box.readdir import is_dir_name as _is_dir_name
 from mirage.core.box.readdir import readdir as _readdir
 from mirage.core.box.rename import rename as _rename
 from mirage.core.box.rmdir import rm_r as _rm_r
@@ -34,9 +33,9 @@ from mirage.core.box.write import write_bytes as _write
 IO = CommandIO(
     readdir=_readdir,
     read_bytes=_read,
+    read_range=_read,
     read_stream=_stream,
     stat=_stat,
-    is_dir_name=lambda _accessor, child: _is_dir_name(child),
     is_mounted=lambda a: True,
     local=False,
     write=_write,

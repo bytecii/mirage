@@ -206,7 +206,16 @@ export {
   runWithRevisions,
   withMountPrefix,
 } from './observe/context.ts'
-export { guessType } from './utils/filetype.ts'
+export { guessType, mimeTypeFor } from './utils/filetype.ts'
+export {
+  assertHeaderValue,
+  encodeBase64Lines,
+  encodeText as encodeMimeText,
+  foldAddressList,
+  foldContentDisposition,
+  foldUnstructured,
+  type EncodedText,
+} from './utils/mime.ts'
 export { newSessionId, newWorkspaceId, uuid7 } from './utils/ids.ts'
 export { Accessor, NOOPAccessor, RAMAccessor } from './accessor/index.ts'
 export {
@@ -435,7 +444,7 @@ export { Precision, ProvisionResult, type ProvisionResultInit } from './provisio
 export { IndexEntry, type IndexEntryInit, ResourceType } from './cache/index/config.ts'
 export { drainBudget, type FileCache, validateMaxDrainBytes } from './cache/file/mixin.ts'
 export { CacheEntry, type CacheEntryInit } from './cache/file/entry.ts'
-export { defaultFingerprint, parseLimit } from './cache/file/utils.ts'
+export { defaultFingerprint, globEscape, parseLimit } from './cache/file/utils.ts'
 export { RAMFileCacheStore } from './cache/file/ram.ts'
 export { applyIo, readFingerprint } from './cache/file/io.ts'
 export {
@@ -496,16 +505,20 @@ export {
   isCrossMount,
 } from './workspace/executor/cross_mount.ts'
 export { handleCommand, ReturnSignal } from './workspace/executor/command.ts'
+export { Runtime, type RuntimeEntry } from './runtime/base.ts'
+export { LanguageRuntime } from './runtime/language.ts'
+export { PythonRuntime } from './runtime/python/base.ts'
+export { JsRuntime } from './runtime/js/base.ts'
+export { bindCommands, DEFAULT_ENTRIES, runtimeBindingsFor, VFSRuntime } from './runtime/table.ts'
+export { EvalError } from './runtime/errors.ts'
 export {
-  bindCommands,
-  DEFAULT_ENTRIES,
-  Runtime,
-  runtimeBindingsFor,
-  VfsRuntime,
-  type RuntimeEntry,
-} from './workspace/executor/runtime.ts'
-export { EvalError } from './workspace/executor/runtime_errors.ts'
-export { EVALUATOR, isEvaluator, type Evaluator } from './workspace/executor/runtime_mixin.ts'
+  EVALUATOR,
+  isEvaluator,
+  LINE_EXECUTOR,
+  isLineExecutor,
+  type Evaluator,
+  type LineExecutor,
+} from './runtime/mixin.ts'
 export {
   type EvalResult,
   type EvalStatus,
@@ -513,7 +526,7 @@ export {
   type RunArgs,
   type RunResult,
   type RuntimeOptions,
-} from './workspace/executor/runtime_types.ts'
+} from './runtime/types.ts'
 export {
   parsedCommands,
   decideLine,
@@ -533,7 +546,7 @@ export {
   type PolicyFn,
   type PolicyScript,
   type PolicyVerdict,
-} from './workspace/executor/policy/index.ts'
+} from './runtime/policy/index.ts'
 export {
   MountRootPolicy,
   Policies,
@@ -553,19 +566,10 @@ export {
   type OpsResultContext,
   type Policy,
 } from './policy/index.ts'
-export {
-  buildRuntime,
-  candidates,
-  registerRuntime,
-  RUNTIMES,
-} from './workspace/executor/runtime_table.ts'
-export { RemoteSandbox } from './workspace/executor/sandbox/base.ts'
-export {
-  type NormalizedSandboxConfig,
-  type SandboxConfig,
-} from './workspace/executor/sandbox/config.ts'
-export { stdinPath, stdinRedirect } from './workspace/executor/sandbox/constants.ts'
-export type { JsRuntime } from './workspace/executor/js/interface.ts'
+export { buildRuntime, candidates, registerRuntime, RUNTIMES } from './runtime/table.ts'
+export { RemoteSandbox } from './runtime/sandbox/base.ts'
+export { type NormalizedSandboxConfig, type SandboxConfig } from './runtime/sandbox/config.ts'
+export { stdinPath, stdinRedirect } from './runtime/sandbox/constants.ts'
 export { applyBarrier, BarrierPolicy } from './shell/barrier.ts'
 export { handleConnection, handlePipe, handleSubshell } from './workspace/executor/pipes.ts'
 export { handleRedirect } from './workspace/executor/redirect.ts'
@@ -631,6 +635,7 @@ export { MountEntry, type MountInit } from './workspace/mount/mount.ts'
 export { normMountPrefix } from './workspace/snapshot/utils.ts'
 export {
   command,
+  type CommandDispatch,
   type CommandFn,
   type CommandFnResult,
   type CommandOptions,
@@ -645,14 +650,21 @@ export {
   CLISpec,
   type CLISpecInit,
   type CLIVerbFn,
-  type CLIConfigModel,
   type CLIVerbOpts,
+  type CLIConfigModel,
+  type CLIInvocation,
   type WalkFlagBag,
   WalkResult,
   type WalkResultInit,
+  UsageStyle,
 } from './commands/cli/types.ts'
 export { cliSpecFor, registerCliSpec, unregisterCliSpec } from './commands/cli/specs.ts'
 export { GWS } from './commands/cli/builtin/gws/index.ts'
+export { SLACK } from './commands/cli/builtin/slack/index.ts'
+export { DISCORD } from './commands/cli/builtin/discord/index.ts'
+export { NTN } from './commands/cli/builtin/ntn/index.ts'
+export { LINEAR } from './commands/cli/builtin/linear/index.ts'
+export { GIT } from './commands/cli/builtin/git/index.ts'
 export { nodeHelp, walk } from './commands/cli/walk.ts'
 export { CLIRegistry } from './workspace/cli/registry.ts'
 export type { CLIInstall } from './workspace/cli/types.ts'
@@ -733,18 +745,33 @@ export {
 } from './core/slack/_client_browser.ts'
 export { SlackAccessor } from './accessor/slack.ts'
 export {
+  normalizeSlackConfig,
+  redactSlackConfig,
+  SlackConfigSchema,
+  type SlackConfig,
+  type SlackConfigRedacted,
+} from './core/slack/config.ts'
+export {
   DISCORD_API,
   type DiscordMethod,
   DiscordApiError,
   type DiscordResponse,
   type DiscordTransport,
   HttpDiscordTransport,
+  NodeDiscordTransport,
 } from './core/discord/_client.ts'
 export {
   BrowserDiscordTransport,
   type BrowserDiscordTransportOptions,
 } from './core/discord/_client_browser.ts'
 export { DiscordAccessor, type DiscordResourceLike } from './accessor/discord.ts'
+export {
+  DiscordConfigSchema,
+  normalizeDiscordConfig,
+  redactDiscordConfig,
+  type DiscordConfig,
+  type DiscordConfigRedacted,
+} from './core/discord/config.ts'
 export { SLACK_COMMANDS } from './commands/builtin/slack/index.ts'
 export { SLACK_OPS } from './ops/slack/index.ts'
 export { read as slackRead } from './core/slack/read.ts'
@@ -773,6 +800,13 @@ export {
   type LinearTransport,
 } from './core/linear/_client.ts'
 export { LinearAccessor, type LinearResourceLike } from './accessor/linear.ts'
+export {
+  LinearConfigSchema,
+  normalizeLinearConfig,
+  redactLinearConfig,
+  type LinearConfig,
+  type LinearConfigRedacted,
+} from './core/linear/config.ts'
 export { LINEAR_COMMANDS } from './commands/builtin/linear/index.ts'
 export { LINEAR_OPS } from './ops/linear/index.ts'
 export { read as linearRead } from './core/linear/read.ts'
@@ -780,6 +814,13 @@ export { readdir as linearReaddir, type LinearReaddirFilter } from './core/linea
 export { stat as linearStat } from './core/linear/stat.ts'
 export { LINEAR_PROMPT, LINEAR_WRITE_PROMPT } from './resource/linear/prompt.ts'
 export { NotionAccessor, type NotionResourceLike } from './accessor/notion.ts'
+export {
+  normalizeNotionConfig,
+  NotionConfigSchema,
+  redactNotionConfig,
+  type NotionConfig,
+  type NotionConfigRedacted,
+} from './core/notion/config.ts'
 export {
   HttpNotionTransport,
   MCPNotionTransport,

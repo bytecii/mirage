@@ -15,41 +15,33 @@
 import json
 
 from mirage.accessor.email import EmailAccessor
+from mirage.commands.cli.builtin.himalaya.query import (page_slice,
+                                                        sort_headers,
+                                                        uid_budget)
+from mirage.commands.cli.types import CLIInvocation
 from mirage.commands.spec.types import FlagView
-from mirage.core.email._client import fetch_headers
+from mirage.core.email._client import fetch_headers, list_message_uids
 from mirage.core.email.config import EmailConfig
-from mirage.core.email.search import search_messages
 from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
-from mirage.types import PathSpec
+
+DEFAULT_PAGE_SIZE = 25
 
 
 async def list_envelopes(
-    config: EmailConfig,
-    paths: list[PathSpec],
-    *texts: str,
-    **flags: object,
-) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(flags)
-    folder = fl.as_str("folder") or "INBOX"
-    max_results = fl.as_int("max") or 20
-    accessor = EmailAccessor(config)
+        inv: CLIInvocation[EmailConfig]) -> tuple[ByteSource | None, IOResult]:
+    fl = FlagView(inv.flags)
+    mailbox = fl.as_str("mailbox") or "INBOX"
+    page = fl.as_int("page") or 1
+    page_size = fl.as_int("page_size") or DEFAULT_PAGE_SIZE
+    budget = uid_budget(page, page_size, (), inv.config.max_messages)
+    accessor = EmailAccessor(inv.config)
     try:
-        uids = await search_messages(
-            accessor,
-            folder,
-            text=fl.as_str("body"),
-            subject=fl.as_str("subject"),
-            from_addr=fl.as_str("from"),
-            to_addr=fl.as_str("to"),
-            since=fl.as_str("since"),
-            before=fl.as_str("before"),
-            unseen=fl.as_bool("unseen"),
-            max_results=max_results,
-        )
-        headers = await fetch_headers(accessor, folder, uids) if uids else []
+        uids = await list_message_uids(accessor, mailbox, "ALL", budget)
+        headers = await fetch_headers(accessor, mailbox, uids) if uids else []
     finally:
         await accessor.close()
-    out = json.dumps(headers, ensure_ascii=False,
+    page_of = page_slice(sort_headers(headers, ()), page, page_size)
+    out = json.dumps(page_of, ensure_ascii=False,
                      separators=(",", ":")).encode()
     return yield_bytes(out), IOResult()
