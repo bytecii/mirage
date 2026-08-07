@@ -34,8 +34,6 @@ class TestNumberFlagError:
         # python's \d also matches Unicode digits (int('١٢') is 12), which
         # JS /\d/ and GNU's C-locale parsers reject.
         assert number_flag_error(
-            "head", "١٢",
-            None) == "head: invalid number of lines: '١٢'\n"
-        assert number_flag_error(
-            "tail", None,
-            "٥") == "tail: invalid number of bytes: '٥'\n"
+            "head", "١٢", None) == "head: invalid number of lines: '١٢'\n"
+        assert number_flag_error("tail", None,
+                                 "٥") == "tail: invalid number of bytes: '٥'\n"
