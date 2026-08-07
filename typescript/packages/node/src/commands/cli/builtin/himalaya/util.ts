@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import {
+  mimeTypeFor,
   IOResult,
   PathSpec,
   isMissingPath,
@@ -22,14 +23,7 @@ import {
   type FlagView,
 } from '@struktoai/mirage-core'
 import type { EmailConfig } from '../../../../core/email/config.ts'
-import {
-  build,
-  contentTypeFor,
-  readBody,
-  splitAddresses,
-  type Attachment,
-  type Source,
-} from './builder.ts'
+import { build, readBody, splitAddresses, type Attachment, type Source } from './builder.ts'
 import { sendRaw } from './smtp.ts'
 
 const ENC = new TextEncoder()
@@ -74,7 +68,7 @@ async function loadAttachments(
     const filename = trimmed.slice(trimmed.lastIndexOf('/') + 1) || 'attachment'
     attachments.push({
       filename,
-      contentType: contentTypeFor(filename),
+      contentType: mimeTypeFor(filename),
       data: data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBufferLike),
     })
   }

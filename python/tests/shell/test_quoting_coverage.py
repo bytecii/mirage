@@ -466,6 +466,71 @@ def test_quoted_declaration_operands(line, expected):
     assert _stdout(io) == expected
 
 
+# ── quoted parameter-expansion and [[ ]] patterns (pinned against
+# bash 5.2 in docker) ──
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        # Quoted parameter-expansion patterns match literally.
+        ('v="a*b"; echo "${v#"a*"}"', b"b\n"),
+        ('v=aXb; echo "${v#"a*"}"', b"aXb\n"),
+        ("v=aXb; echo \"${v#'a*'}\"", b"aXb\n"),
+        ('v="a*b"; echo "${v/"*"/y}"', b"ayb\n"),
+        ('v="a*b"; echo "${v%"*b"}"', b"a\n"),
+        ('v=aXbXc; echo "${v//"X"/-}"', b"a-b-c\n"),
+        # Unquoted globs stay live; a backslash binds the next char.
+        ("v=aXb; echo ${v#a*}", b"Xb\n"),
+        ('v="a*b"; echo ${v#a\\*}', b"b\n"),
+        ("v=aXb; echo ${v#a\\*}", b"aXb\n"),
+        # Expansion values are live unquoted, literal double-quoted.
+        ("p='a*'; v='a*b'; echo \"${v#\"$p\"}\"", b"b\n"),
+        ("p='a*'; v='a*b'; echo ${v#$p}", b"*b\n"),
+        ("v=$'a\\tb'; echo \"${v#$'a\\t'}\"", b"b\n"),
+        # Mixed operands stay one opaque token; quoting inside them
+        # still binds (single, double, ANSI-C, quoted refs).
+        ("v=ab; echo \"[${v#a'b'}]\"", b"[]\n"),
+        ('v="xa*b"; echo "[${v#x"a*"}]"', b"[b]\n"),
+        ('v=xaXb; echo "[${v#x"a*"}]"', b"[xaXb]\n"),
+        ("v=xy; echo \"[${v#$'x'y}]\"", b"[]\n"),
+        ("p='a*'; v='xa*b'; echo \"[${v#x\"$p\"}]\"", b"[b]\n"),
+        ("p='a*'; v=xaXb; echo \"[${v#x$p}]\"", b"[Xb]\n"),
+        # [[ == ]] renders its right side through the same expander.
+        ('x=abc; [[ $x == "a*"* ]] && echo hit || echo miss', b"miss\n"),
+        ("x='a*c'; [[ $x == \"a*\"* ]] && echo hit || echo miss", b"hit\n"),
+        ('x=aXb; [[ $x == "a"*"b" ]] && echo hit || echo miss', b"hit\n"),
+        ('x=ab; [[ $x == "a*" ]] && echo hit || echo miss', b"miss\n"),
+        ('x=ab; [[ $x == a* ]] && echo hit || echo miss', b"hit\n"),
+        ('x=ab; [[ $x != "a*" ]] && echo hit || echo miss', b"hit\n"),
+        ("x=$'a\\tb'; [[ $x == $'a\\tb' ]] && echo hit || echo miss",
+         b"hit\n"),
+        ('[[ abc < abd ]] && echo hit || echo miss', b"hit\n"),
+    ])
+def test_quoted_parameter_and_test_patterns(line, expected):
+    ws = _ws_with_paths()
+    io = _exec(ws, line)
+    assert _stdout(io) == expected
+
+
+# ── multi-line double-quoted strings (pinned against bash 5.2 in
+# docker): the newline bytes belong to no token and must re-emit ──
+
+
+@pytest.mark.parametrize("line,expected", [
+    ('echo "a\nb"', b"a\nb\n"),
+    ('echo "a\n\nb"', b"a\n\nb\n"),
+    ('echo "\na"', b"\na\n"),
+    ('echo "a\n"', b"a\n\n"),
+    ('x=1; echo "p$x\n\nq"', b"p1\n\nq\n"),
+    ('case "a\nb" in "a\nb") echo hit;; *) echo miss;; esac', b"hit\n"),
+])
+def test_multiline_double_quoted_strings(line, expected):
+    ws = _ws_with_paths()
+    io = _exec(ws, line)
+    assert _stdout(io) == expected
+
+
 # ── a bare $ is a literal word ─────────────────────────────
 
 

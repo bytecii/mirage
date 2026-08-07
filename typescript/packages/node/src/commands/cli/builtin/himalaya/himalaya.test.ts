@@ -26,7 +26,6 @@ import { Workspace } from '../../../../workspace.ts'
 import {
   build,
   composeBody,
-  contentTypeFor,
   hasPrefix,
   mixedBoundary,
   quoteText,
@@ -271,11 +270,58 @@ describe('message builder', () => {
     ).toThrow('no recipient')
   })
 
-  it('guesses content types from the extension table', () => {
-    expect(contentTypeFor('report.PDF')).toBe('application/pdf')
-    expect(contentTypeFor('notes.txt')).toBe('text/plain')
-    expect(contentTypeFor('archive.weird')).toBe('application/octet-stream')
-    expect(contentTypeFor('no_extension')).toBe('application/octet-stream')
+  it.each([
+    'evil\nname.txt',
+    'evil\rname.txt',
+    'tail\n',
+    'evil\vname.txt',
+    'evil\fname.txt',
+    'evil\x1cname.txt',
+    'evil\x1dname.txt',
+    'evil\x1ename.txt',
+  ])('refuses the ASCII attachment filename %j like EmailMessage', (bad) => {
+    // Header injection through the quoted-string form; python's
+    // EmailMessage raises the same ValueError, trailing terminators
+    // included (pinned in test_builder.py).
+    const attachment: Attachment = {
+      filename: bad,
+      contentType: 'text/plain',
+      data: new TextEncoder().encode('x'),
+    }
+    expect(() =>
+      build({
+        sender: 'a@example.com',
+        to: ['b@example.com'],
+        cc: [],
+        bcc: [],
+        subject: null,
+        body: 'hi',
+        signature: null,
+        attachments: [attachment],
+      }),
+    ).toThrow('Header values may not contain linefeed or carriage return characters')
+  })
+
+  it('percent-encodes a line break in a non-ASCII filename', () => {
+    // The RFC 2231 path never refuses; byte-exactness with python is
+    // pinned by the attachment_nonascii_filename_with_line_break
+    // parity case.
+    const attachment: Attachment = {
+      filename: 'naïve\nname.txt',
+      contentType: 'text/plain',
+      data: new TextEncoder().encode('x'),
+    }
+    const raw = build({
+      sender: 'a@example.com',
+      to: ['b@example.com'],
+      cc: [],
+      bcc: [],
+      subject: null,
+      body: 'hi',
+      signature: null,
+      attachments: [attachment],
+    })
+    expect(new TextDecoder().decode(raw)).toContain("filename*=utf-8''na%C3%AFve%0Aname.txt")
   })
 
   it('derives a deterministic content-addressed boundary', () => {

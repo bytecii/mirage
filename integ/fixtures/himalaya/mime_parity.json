@@ -56,6 +56,27 @@
    ]
   }
  },
+ "attachment_nonascii_filename_with_line_break": {
+  "bytesB64": "RnJvbTogc2VuZGVyQGV4YW1wbGUuY29tDQpUbzogdG9AZXhhbXBsZS5jb20NClN1YmplY3Q6IHNuZWFreSBmaWxlbmFtZQ0KTUlNRS1WZXJzaW9uOiAxLjANCkNvbnRlbnQtVHlwZTogbXVsdGlwYXJ0L21peGVkOyBib3VuZGFyeT0iYTUxMDI5MzZlNTA4YmQ5NDc2ZTcwYTYzNmMzODFjODYiDQoNCi0tYTUxMDI5MzZlNTA4YmQ5NDc2ZTcwYTYzNmMzODFjODYNCkNvbnRlbnQtVHlwZTogdGV4dC9wbGFpbjsgY2hhcnNldD0idXRmLTgiDQpDb250ZW50LVRyYW5zZmVyLUVuY29kaW5nOiA3Yml0DQoNCnNlZSBhdHRhY2htZW50DQoNCi0tYTUxMDI5MzZlNTA4YmQ5NDc2ZTcwYTYzNmMzODFjODYNCkNvbnRlbnQtVHlwZTogdGV4dC9wbGFpbg0KQ29udGVudC1UcmFuc2Zlci1FbmNvZGluZzogYmFzZTY0DQpDb250ZW50LURpc3Bvc2l0aW9uOiBhdHRhY2htZW50OyBmaWxlbmFtZSo9dXRmLTgnJ25hJUMzJUFGdmUlMEFuYW1lLnR4dA0KTUlNRS1WZXJzaW9uOiAxLjANCg0KY0dGNWJHOWhaQW89DQoNCi0tYTUxMDI5MzZlNTA4YmQ5NDc2ZTcwYTYzNmMzODFjODYtLQ0K",
+  "compose": {
+   "attachments": [
+    {
+     "contentType": "text/plain",
+     "dataB64": "cGF5bG9hZAo=",
+     "filename": "na\u00efve\nname.txt"
+    }
+   ],
+   "bcc": [],
+   "body": "see attachment\n",
+   "cc": [],
+   "sender": "sender@example.com",
+   "signature": null,
+   "subject": "sneaky filename",
+   "to": [
+    "to@example.com"
+   ]
+  }
+ },
  "attachment_nonascii_name": {
   "bytesB64": "RnJvbTogbWVAZXhhbXBsZS5jb20NClRvOiB0b0BleGFtcGxlLmNvbQ0KU3ViamVjdDogcw0KTUlNRS1WZXJzaW9uOiAxLjANCkNvbnRlbnQtVHlwZTogbXVsdGlwYXJ0L21peGVkOyBib3VuZGFyeT0iZTliOGM5MWEzNDhhODE0ZDdhMTlmMGVhNGZmMDIxNGIiDQoNCi0tZTliOGM5MWEzNDhhODE0ZDdhMTlmMGVhNGZmMDIxNGINCkNvbnRlbnQtVHlwZTogdGV4dC9wbGFpbjsgY2hhcnNldD0idXRmLTgiDQpDb250ZW50LVRyYW5zZmVyLUVuY29kaW5nOiA3Yml0DQoNCm9rDQoNCi0tZTliOGM5MWEzNDhhODE0ZDdhMTlmMGVhNGZmMDIxNGINCkNvbnRlbnQtVHlwZTogYXBwbGljYXRpb24vcGRmDQpDb250ZW50LVRyYW5zZmVyLUVuY29kaW5nOiBiYXNlNjQNCkNvbnRlbnQtRGlzcG9zaXRpb246IGF0dGFjaG1lbnQ7IGZpbGVuYW1lKj11dGYtOCcnciVDMyVBOXN1bSVDMyVBOS5wZGYNCk1JTUUtVmVyc2lvbjogMS4wDQoNCkpWQkVSZz09DQoNCi0tZTliOGM5MWEzNDhhODE0ZDdhMTlmMGVhNGZmMDIxNGItLQ0K",
   "compose": {

@@ -473,6 +473,40 @@
         "stdout": "hi\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "ansi_c_surrogates_encode_like_utf8_locale",
+      "seq": 930154,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "echo $'a\\ud800b\\U0000DFFFc' | wc -c",
+      "expect": {
+        "exit": 0,
+        "stdout": "10\n",
+        "stderr": ""
+      }
     }
   ]
 }

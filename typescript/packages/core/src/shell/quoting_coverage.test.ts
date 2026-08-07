@@ -491,6 +491,64 @@ describe('quoted declaration operands (pinned against bash 5.2)', () => {
   })
 })
 
+describe('quoted parameter-expansion and [[ ]] patterns (pinned against bash 5.2 in docker)', () => {
+  it.each([
+    // Quoted parameter-expansion patterns match literally.
+    ['v="a*b"; echo "${v#"a*"}"', 'b\n'],
+    ['v=aXb; echo "${v#"a*"}"', 'aXb\n'],
+    ['v=aXb; echo "${v#\'a*\'}"', 'aXb\n'],
+    ['v="a*b"; echo "${v/"*"/y}"', 'ayb\n'],
+    ['v="a*b"; echo "${v%"*b"}"', 'a\n'],
+    ['v=aXbXc; echo "${v//"X"/-}"', 'a-b-c\n'],
+    // Unquoted globs stay live; a backslash binds the next char.
+    ['v=aXb; echo ${v#a*}', 'Xb\n'],
+    ['v="a*b"; echo ${v#a\\*}', 'b\n'],
+    ['v=aXb; echo ${v#a\\*}', 'aXb\n'],
+    // Expansion values are live unquoted, literal double-quoted.
+    ['p=\'a*\'; v=\'a*b\'; echo "${v#"$p"}"', 'b\n'],
+    ["p='a*'; v='a*b'; echo ${v#$p}", '*b\n'],
+    ["v=$'a\\tb'; echo \"${v#$'a\\t'}\"", 'b\n'],
+    // Mixed operands stay one opaque token; quoting inside them
+    // still binds (single, double, ANSI-C, quoted refs).
+    ['v=ab; echo "[${v#a\'b\'}]"', '[]\n'],
+    ['v="xa*b"; echo "[${v#x"a*"}]"', '[b]\n'],
+    ['v=xaXb; echo "[${v#x"a*"}]"', '[xaXb]\n'],
+    ['v=xy; echo "[${v#$\'x\'y}]"', '[]\n'],
+    ['p=\'a*\'; v=\'xa*b\'; echo "[${v#x"$p"}]"', '[b]\n'],
+    ['p=\'a*\'; v=xaXb; echo "[${v#x$p}]"', '[Xb]\n'],
+    // [[ == ]] renders its right side through the same expander.
+    ['x=abc; [[ $x == "a*"* ]] && echo hit || echo miss', 'miss\n'],
+    ['x=\'a*c\'; [[ $x == "a*"* ]] && echo hit || echo miss', 'hit\n'],
+    ['x=aXb; [[ $x == "a"*"b" ]] && echo hit || echo miss', 'hit\n'],
+    ['x=ab; [[ $x == "a*" ]] && echo hit || echo miss', 'miss\n'],
+    ['x=ab; [[ $x == a* ]] && echo hit || echo miss', 'hit\n'],
+    ['x=ab; [[ $x != "a*" ]] && echo hit || echo miss', 'hit\n'],
+    ["x=$'a\\tb'; [[ $x == $'a\\tb' ]] && echo hit || echo miss", 'hit\n'],
+    ['[[ abc < abd ]] && echo hit || echo miss', 'hit\n'],
+  ])('matches %j', async (line, expected) => {
+    const ws = await makeQuotingWs()
+    const r = await run(ws, line)
+    expect(r.out).toBe(expected)
+    await ws.close()
+  })
+})
+
+describe('multi-line double-quoted strings (pinned against bash 5.2 in docker)', () => {
+  it.each([
+    ['echo "a\nb"', 'a\nb\n'],
+    ['echo "a\n\nb"', 'a\n\nb\n'],
+    ['echo "\na"', '\na\n'],
+    ['echo "a\n"', 'a\n\n'],
+    ['x=1; echo "p$x\n\nq"', 'p1\n\nq\n'],
+    ['case "a\nb" in "a\nb") echo hit;; *) echo miss;; esac', 'hit\n'],
+  ])('keeps the newlines of %j', async (line, expected) => {
+    const ws = await makeQuotingWs()
+    const r = await run(ws, line)
+    expect(r.out).toBe(expected)
+    await ws.close()
+  })
+})
+
 describe('a bare $ is a literal word', () => {
   it.each([
     ['echo $', '$\n'],

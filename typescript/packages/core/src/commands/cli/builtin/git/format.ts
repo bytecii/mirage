@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { byteChar } from '../../../../shell/bytes.ts'
 import { BadPrettyError, UnsupportedPrettyError } from './errors.ts'
 
 const SHORT_SHA = 7
@@ -281,8 +282,9 @@ function body(message: string): string {
  *
  * The scan mirrors git's pretty.c behavior pinned in docker: an unknown or
  * incomplete placeholder stays verbatim (`%q` prints `%q`), `%%` is a literal
- * percent, and `%xHH` names a character by hex code. Explicit cursor, one
- * pass, like the stat -c engine.
+ * percent, and `%xHH` names a raw output byte (`%x80` is the single byte
+ * 0x80, carried by the shell's byte-escape convention until `encodeText`
+ * writes it). Explicit cursor, one pass, like the stat -c engine.
  */
 export function renderTemplate(
   template: string,
@@ -321,7 +323,7 @@ export function renderTemplate(
       HEX_DIGITS.test(template[i + 2] ?? '') &&
       HEX_DIGITS.test(template[i + 3] ?? '')
     ) {
-      out.push(String.fromCharCode(parseInt(template.slice(i + 2, i + 4), 16)))
+      out.push(byteChar(parseInt(template.slice(i + 2, i + 4), 16)))
       i += 4
       continue
     }

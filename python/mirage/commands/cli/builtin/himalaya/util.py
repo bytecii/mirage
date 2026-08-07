@@ -18,7 +18,6 @@ from email.policy import SMTP
 
 from mirage.commands.cli.builtin.himalaya.builder import (Attachment, Compose,
                                                           Source, build,
-                                                          content_type_for,
                                                           read_body,
                                                           split_addresses)
 from mirage.commands.cli.builtin.himalaya.smtp import send_raw
@@ -28,6 +27,7 @@ from mirage.core.email.config import EmailConfig
 from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
+from mirage.utils.filetype import mime_type_for
 
 
 def first_text(texts: tuple[str, ...], label: str) -> str:
@@ -76,7 +76,7 @@ async def load_attachments(ops: CLIVerbOpts | None,
         filename = posixpath.basename(spec.virtual.rstrip("/")) or "attachment"
         attachments.append(
             Attachment(filename=filename,
-                       content_type=content_type_for(filename),
+                       content_type=mime_type_for(filename),
                        data=data if isinstance(data, bytes) else bytes(data)))
     return tuple(attachments)
 

@@ -289,17 +289,20 @@ async def expand_node(
         return "".join(parts)
 
     if ntype == NT.STRING:
+        # The newline bytes of a multi-line string belong to no child
+        # token, so each row step re-emits them; the quote tokens
+        # anchor the count, which keeps leading, trailing and blank
+        # lines alive ("a\n\nb" is five bytes in bash).
         parts = []
         prev_end_row = None
         for child in ts_node.children:
+            if prev_end_row is not None:
+                parts.append("\n" * (child.start_point[0] - prev_end_row))
+            prev_end_row = child.end_point[0]
             if child.type == NT.DQUOTE:
                 continue
-            if (prev_end_row is not None
-                    and child.start_point[0] > prev_end_row):
-                parts.append("\n")
             parts.append(await expand_node(child, session, execute_fn,
                                            call_stack))
-            prev_end_row = child.end_point[0]
         return "".join(parts)
 
     if ntype == NT.STRING_CONTENT:

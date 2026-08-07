@@ -24,10 +24,7 @@ import { build, type Attachment, type Compose, type Source } from './builder.ts'
 // implementation. Both test suites assert against the same bytes, so a
 // pass here proves the two builders serialize identically.
 const FIXTURE = fileURLToPath(
-  new URL(
-    '../../../../../../../../integ/fixtures/himalaya/mime_parity.json',
-    import.meta.url,
-  ),
+  new URL('../../../../../../../../integ/fixtures/himalaya/mime_parity.json', import.meta.url),
 )
 
 interface FixtureCompose {

@@ -18,8 +18,9 @@ import { fnmatch } from '../../utils/fnmatch.ts'
 import { getTestParser } from '../fixtures/workspace_fixture.ts'
 import { Session } from '../session/session.ts'
 import type { ExecuteFn } from './node.ts'
-import { escapeGlob, expandCasePattern } from './pattern.ts'
-import type { TSNodeLike } from './variable.ts'
+import { escapeGlob } from '../../utils/glob_walk.ts'
+import { expandPattern } from './pattern.ts'
+import type { TSNodeLike } from '../../shell/types.ts'
 
 const failExec: ExecuteFn = () =>
   Promise.reject(new Error('pattern expansion must not run commands here'))
@@ -35,7 +36,7 @@ async function expand(snippet: string, env: Record<string, string> = {}): Promis
   const pattern = patterns[0]
   if (pattern === undefined) throw new Error('no pattern parsed')
   const session = new Session({ sessionId: 'test', env })
-  return expandCasePattern(pattern, session, failExec)
+  return expandPattern(pattern, session, failExec)
 }
 
 describe('escapeGlob', () => {
@@ -56,7 +57,7 @@ describe('escapeGlob', () => {
   })
 })
 
-describe('expandCasePattern', () => {
+describe('expandPattern', () => {
   it('keeps a single-quoted pattern literal', async () => {
     expect(await expand("'*'")).toBe('[*]')
   })

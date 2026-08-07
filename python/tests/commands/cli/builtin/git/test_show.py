@@ -193,3 +193,29 @@ async def test_stat_reports_a_binary_file_in_bytes(git_ws, repo_path):
     text = result.stdout.decode()
     assert " blob.bin | Bin 0 -> 7 bytes" in text
     assert " 1 file changed, 0 insertions(+), 0 deletions(-)" in text
+
+
+@pytest.mark.asyncio
+async def test_show_format_header_prints_without_trailing_newline(git_ws):
+    # format: is a separator, and a single entry has nothing to
+    # separate from - git prints the seven id characters and stops.
+    result = await git_ws.execute("git -C /repo show -s --pretty='format:%h'")
+    assert len(result.stdout) == 7
+    assert not result.stdout.endswith(b"\n")
+
+
+@pytest.mark.asyncio
+async def test_show_tformat_terminates_an_empty_expansion(git_ws):
+    # A subject-only message has no body: %b renders empty and still
+    # claims its terminator, while an empty template stays silent.
+    result = await git_ws.execute("git -C /repo show -s --format='%b'")
+    assert result.stdout == b"\n"
+    silent = await git_ws.execute("git -C /repo show -s --format=")
+    assert not silent.stdout
+
+
+@pytest.mark.asyncio
+async def test_show_bare_format_is_refused_like_git(git_ws):
+    result = await git_ws.execute("git -C /repo show --format")
+    assert result.exit_code == 128
+    assert result.stderr == b"fatal: unrecognized argument: --format\n"

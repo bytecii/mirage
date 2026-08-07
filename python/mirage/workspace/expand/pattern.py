@@ -21,26 +21,11 @@ from mirage.shell.call_stack import CallStack
 from mirage.shell.escapes import decode_ansi_c
 from mirage.shell.helpers import get_text
 from mirage.shell.types import NodeType as NT
+from mirage.utils.glob_walk import escape_glob
 from mirage.utils.path import expand_tilde
 from mirage.workspace.expand.node import expand_node
 from mirage.workspace.session import Session
 from mirage.workspace.session.shell_dirs import home_dir
-
-GLOB_SPECIALS = "*?["
-
-
-def escape_glob(text: str) -> str:
-    """Encode text so the glob matcher reads every character literally.
-
-    fnmatch has no escape character, so each special is wrapped in its
-    own one-character class: ``*`` becomes ``[*]``. A ``]`` needs no
-    treatment: outside a class it is already literal, and no class can
-    open because every ``[`` gets wrapped.
-
-    Args:
-        text (str): literal text destined for a glob pattern.
-    """
-    return "".join(f"[{c}]" if c in GLOB_SPECIALS else c for c in text)
 
 
 def _unquoted_pattern(text: str) -> str:
@@ -83,33 +68,34 @@ async def _quoted_string_pattern(
     parts: list[str] = []
     prev_end_row = None
     for child in ts_node.children:
+        if prev_end_row is not None:
+            parts.append("\n" * (child.start_point[0] - prev_end_row))
+        prev_end_row = child.end_point[0]
         if child.type == NT.DQUOTE:
             continue
-        if prev_end_row is not None and child.start_point[0] > prev_end_row:
-            parts.append("\n")
         expanded = await expand_node(child, session, execute_fn, call_stack)
         parts.append(escape_glob(expanded))
-        prev_end_row = child.end_point[0]
     return "".join(parts)
 
 
-async def expand_case_pattern(
+async def expand_pattern(
     ts_node: tree_sitter.Node,
     session: Session,
     execute_fn: Callable[..., Any],
     call_stack: CallStack | None = None,
 ) -> str:
-    """Expand one case pattern into the matcher's glob dialect.
+    """Expand one pattern word into the matcher's glob dialect.
 
-    bash 5.2 semantics: text under any quote matches literally,
-    unquoted text keeps its glob characters live with backslash
-    escaping the next character, and an expansion's value is a live
-    pattern when unquoted but literal inside double quotes. Patterns
-    are never word-split, so ``$p`` holding ``a b`` matches the word
-    ``a b``.
+    bash 5.2 semantics, shared by case patterns, the ``[[ == ]]`` right
+    side and quoted parameter-expansion operands: text under any quote
+    matches literally, unquoted text keeps its glob characters live
+    with backslash escaping the next character, and an expansion's
+    value is a live pattern when unquoted but literal inside double
+    quotes. Patterns are never word-split, so ``$p`` holding ``a b``
+    matches the word ``a b``.
 
     Args:
-        ts_node (tree_sitter.Node): one pattern node from a case arm.
+        ts_node (tree_sitter.Node): one pattern node.
         session (Session): shell session state.
         execute_fn (Callable): evaluator for command substitutions.
         call_stack (CallStack | None): function-call scope, if any.
@@ -143,7 +129,7 @@ async def expand_case_pattern(
             if (child.type == "$" and position + 1 < len(children)
                     and children[position + 1].type == NT.STRING):
                 continue
-            parts.append(await expand_case_pattern(child, session, execute_fn,
-                                                   call_stack))
+            parts.append(await expand_pattern(child, session, execute_fn,
+                                              call_stack))
         return "".join(parts)
     return await expand_node(ts_node, session, execute_fn, call_stack)

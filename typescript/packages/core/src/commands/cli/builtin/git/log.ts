@@ -30,16 +30,18 @@ import { decorations, parseFlags, refCommits, select, type LogFlags } from './hi
 import { commitFacts, opened, type Repo } from './repo.ts'
 import { resolveCommit } from './revparse.ts'
 import { checkOperands, fatal, revisionArg } from './util.ts'
-
-const ENC = new TextEncoder()
+import { encodeText } from '../../../../shell/bytes.ts'
 
 /**
- * The bytes a log invocation prints for its selected commits.
+ * The text a log invocation prints for its selected commits.
  *
- * `format:` separates entries with a newline and ends without one;
- * `tformat:` (and any bare `%` string) terminates every entry. Entries that
- * render empty vanish entirely, newline included, which is how `--format=`
- * prints nothing at all. Pinned against git 2.50.
+ * `format:` separates entries with a newline and ends without one, and an
+ * entry that renders empty still claims its separator, so `--pretty=format:`
+ * prints one newline per commit past the first. `tformat:` (and any bare `%`
+ * string) terminates every entry, empty ones included - except that an empty
+ * template prints nothing at all, which is how `--format=` stays silent.
+ * The caller encodes through `encodeText` because `%xHH` names a raw byte.
+ * Pinned against git 2.37 and 2.54.
  */
 function rendered(
   commits: readonly CommitFacts[],
@@ -54,11 +56,13 @@ function rendered(
     return lines.length > 0 ? `${lines.join('\n')}\n` : ''
   }
   if (fmt.kind === 'format' || fmt.kind === 'tformat') {
-    const entries = commits
-      .map((commit) => renderTemplate(fmt.template ?? '', commit, width, decor))
-      .filter((text) => text !== '')
-    if (entries.length === 0) return ''
-    if (fmt.kind === 'tformat') return entries.map((text) => `${text}\n`).join('')
+    const entries = commits.map((commit) =>
+      renderTemplate(fmt.template ?? '', commit, width, decor),
+    )
+    if (fmt.kind === 'tformat') {
+      if (fmt.template === null || fmt.template === '') return ''
+      return entries.map((text) => `${text}\n`).join('')
+    }
     return entries.join('\n')
   }
   const lines: string[] = []
@@ -96,7 +100,7 @@ export async function log(inv: CLIInvocation): Promise<CommandFnResult> {
     const decor = needsDecorations(parsed.pretty) ? await decorations(repo) : null
     const out = rendered(commits, parsed, repo.abbrev, decor)
     if (out === '') return [null, new IOResult()]
-    return [ENC.encode(out), new IOResult()]
+    return [encodeText(out), new IOResult()]
   } catch (err) {
     if (err instanceof GitError) return fatal(err)
     throw err

@@ -46,7 +46,7 @@ from mirage.workspace.expand import (expand_and_classify, expand_node,
                                      expand_redirects)
 from mirage.workspace.expand.globs import resolve_globs
 from mirage.workspace.expand.node import expand_arith
-from mirage.workspace.expand.pattern import expand_case_pattern
+from mirage.workspace.expand.pattern import expand_pattern
 from mirage.workspace.expand.variable import _array_index
 from mirage.workspace.mount import MountRegistry
 from mirage.workspace.mount.namespace import Namespace
@@ -470,7 +470,7 @@ async def execute_node(
         case_items = []
         for pattern_nodes, body, terminator in get_case_items(node):
             patterns = [
-                await expand_case_pattern(p, session, execute_fn, cs)
+                await expand_pattern(p, session, execute_fn, cs)
                 for p in pattern_nodes
             ]
             case_items.append((patterns, body, terminator))

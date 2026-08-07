@@ -19,6 +19,7 @@ from dulwich.objects import Commit
 
 from mirage.commands.cli.builtin.git.errors import (BadPrettyError,
                                                     UnsupportedPrettyError)
+from mirage.shell.bytes import byte_char
 
 SHORT_SHA = 7
 FULL_SHA = 40
@@ -338,9 +339,10 @@ def render_template(template: str, commit: Commit, length: int,
 
     The scan mirrors git's pretty.c behavior pinned in docker: an
     unknown or incomplete placeholder stays verbatim (``%q`` prints
-    ``%q``), ``%%`` is a literal percent, and ``%xHH`` names a
-    character by hex code. Explicit cursor, one pass, like the stat -c
-    engine.
+    ``%q``), ``%%`` is a literal percent, and ``%xHH`` names a raw
+    output byte (``%x80`` is the single byte 0x80, carried by the
+    shell's byte-escape convention until ``encode_text`` writes it).
+    Explicit cursor, one pass, like the stat -c engine.
 
     Args:
         template (str): the placeholder string.
@@ -373,7 +375,7 @@ def render_template(template: str, commit: Commit, length: int,
         if marker == "x" and i + 3 < len(template) \
                 and template[i + 2] in HEX_DIGITS \
                 and template[i + 3] in HEX_DIGITS:
-            out.append(chr(int(template[i + 2:i + 4], 16)))
+            out.append(byte_char(int(template[i + 2:i + 4], 16)))
             i += 4
             continue
         out.append(char + marker)

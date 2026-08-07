@@ -244,3 +244,33 @@ async def test_empty_format_prints_nothing(git_ws):
 async def test_unknown_placeholders_stay_verbatim(git_ws):
     result = await git_ws.execute("git -C /repo log -n 1 --format='%q %zz'")
     assert result.stdout == b"%q %zz\n"
+
+
+@pytest.mark.asyncio
+async def test_format_empty_entries_keep_their_separators(git_ws):
+    # git 2.37/2.54: format: joins every entry, so a template that
+    # renders empty still claims its separator - three commits print
+    # exactly two bare newlines.
+    result = await git_ws.execute("git -C /repo log --pretty=format:")
+    assert result.stdout == b"\n\n"
+
+
+@pytest.mark.asyncio
+async def test_tformat_terminates_empty_entries(git_ws):
+    # Only the head commit decorates; the two undecorated entries still
+    # claim their terminators, unlike an empty template.
+    result = await git_ws.execute("git -C /repo log --format='%d'")
+    assert result.stdout == b" (HEAD -> main)\n\n\n"
+
+
+@pytest.mark.asyncio
+async def test_x_placeholder_names_a_raw_byte(git_ws):
+    result = await git_ws.execute("git -C /repo log -n 1 --format='a%x80b'")
+    assert result.stdout == b"a\x80b\n"
+
+
+@pytest.mark.asyncio
+async def test_bare_format_is_refused_like_git(git_ws):
+    result = await git_ws.execute("git -C /repo log --format")
+    assert result.exit_code == 128
+    assert result.stderr == b"fatal: unrecognized argument: --format\n"

@@ -38,6 +38,7 @@ from mirage.commands.cli.types import CLIInvocation, CLIVerbOpts
 from mirage.commands.spec.types import FlagView
 from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
+from mirage.shell.bytes import encode_text
 
 MERGE_PARENTS = 1
 
@@ -88,10 +89,13 @@ def parse_show_flags(fl: FlagView) -> ShowFlags:
 
 def _header(commit: Commit, flags: ShowFlags, width: int,
             decor: Decorations | None) -> bytes:
-    """The commit header in the requested format, newline-terminated.
+    """The commit header in the requested format.
 
-    A template that renders empty produces no header at all, matching
-    ``log --format=``.
+    ``format:`` is a separator, so a single commit prints with no
+    trailing newline at all; ``tformat:`` terminates the entry even
+    when it renders empty, except that an empty template prints
+    nothing, matching ``log --format=``. Pinned against git 2.37 and
+    2.54.
 
     Args:
         commit (Commit): the commit being shown.
@@ -104,7 +108,9 @@ def _header(commit: Commit, flags: ShowFlags, width: int,
         return f"{oneline(commit, width)}\n".encode()
     if fmt.kind in ("format", "tformat"):
         rendered = render_template(fmt.template or "", commit, width, decor)
-        return f"{rendered}\n".encode() if rendered else b""
+        if fmt.kind == "tformat":
+            return encode_text(f"{rendered}\n") if fmt.template else b""
+        return encode_text(rendered)
     return ("\n".join(preset_block(commit, fmt.kind, width)) + "\n").encode()
 
 

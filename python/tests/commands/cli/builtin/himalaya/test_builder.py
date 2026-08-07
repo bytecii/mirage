@@ -20,8 +20,8 @@ from pathlib import Path
 import pytest
 
 from mirage.commands.cli.builtin.himalaya.builder import (  # yapf: disable
-    Attachment, Compose, Source, build, compose_body, content_type_for,
-    has_prefix, mixed_boundary, quote_text, reply_recipients, split_addresses)
+    Attachment, Compose, Source, build, compose_body, has_prefix,
+    mixed_boundary, quote_text, reply_recipients, split_addresses)
 
 ORIGINAL = {
     "subject": "Quarterly numbers",
@@ -155,13 +155,6 @@ def test_forward_still_needs_an_explicit_recipient():
               Source(message=ORIGINAL, mode="forward"))
 
 
-def test_content_type_guesses_from_the_extension_table():
-    assert content_type_for("report.PDF") == "application/pdf"
-    assert content_type_for("notes.txt") == "text/plain"
-    assert content_type_for("archive.weird") == "application/octet-stream"
-    assert content_type_for("no_extension") == "application/octet-stream"
-
-
 def test_mixed_boundary_is_deterministic_and_content_addressed():
     attachments = (Attachment("a.txt", "text/plain", b"data"), )
     first = mixed_boundary("body", attachments)
@@ -245,3 +238,36 @@ def test_serialization_matches_the_shared_parity_pins(name, case):
     compose = parity_compose(case["compose"])
     raw = build(compose, parity_source(case["compose"])).as_bytes(policy=SMTP)
     assert raw == base64.b64decode(case["bytesB64"])
+
+
+@pytest.mark.parametrize("bad", [
+    "evil\nname.txt", "evil\rname.txt", "tail\n", "evil\vname.txt",
+    "evil\fname.txt", "evil\x1cname.txt", "evil\x1dname.txt",
+    "evil\x1ename.txt"
+])
+def test_ascii_filename_with_a_line_break_is_refused(bad):
+    # EmailMessage refuses the quoted-string form outright (header
+    # injection); trailing terminators are refused too, unlike the
+    # header-value guard. The TypeScript serializer mirrors this.
+    compose = Compose(sender="a@example.com",
+                      to=("b@example.com", ),
+                      body="hi",
+                      attachments=(Attachment(filename=bad,
+                                              content_type="text/plain",
+                                              data=b"x"), ))
+    with pytest.raises(ValueError,
+                       match="may not contain linefeed or carriage return"):
+        build(compose).as_bytes(policy=SMTP)
+
+
+def test_nonascii_filename_percent_encodes_line_breaks():
+    # The RFC 2231 path never refuses: percent-encoding neutralizes the
+    # same characters the quoted-string form cannot carry.
+    compose = Compose(sender="a@example.com",
+                      to=("b@example.com", ),
+                      body="hi",
+                      attachments=(Attachment(filename="naïve\nname.txt",
+                                              content_type="text/plain",
+                                              data=b"x"), ))
+    raw = build(compose).as_bytes(policy=SMTP)
+    assert b"filename*=utf-8''na%C3%AFve%0Aname.txt" in raw

@@ -242,4 +242,6 @@ export interface TSNodeLike {
   isMissing?: boolean
   startIndex?: number
   endIndex?: number
+  startPosition?: { row: number; column: number }
+  endPosition?: { row: number; column: number }
 }

@@ -14,44 +14,24 @@
 
 import { createHash } from 'node:crypto'
 
-import { materialize, type ByteSource, type FlagView } from '@struktoai/mirage-core'
-import type { FetchedMessage } from '../../../../core/email/_client.ts'
 import {
+  assertHeaderValue,
   encodeBase64Lines,
-  encodeText,
+  encodeMimeText as encodeText,
   foldAddressList,
   foldContentDisposition,
   foldUnstructured,
-} from './mime.ts'
+  materialize,
+  type ByteSource,
+  type FlagView,
+} from '@struktoai/mirage-core'
+import type { FetchedMessage } from '../../../../core/email/_client.ts'
 
 type SourceMode = 'reply' | 'forward'
 export type PostingStyle = 'top' | 'bottom'
 
 const PREFIXES: Record<SourceMode, string> = { reply: 'Re: ', forward: 'Fwd: ' }
 const ENC = new TextEncoder()
-
-// Extension-guessed like upstream's mime_guess, as a deliberate fixed
-// subset shared verbatim with the python builder: both implementations
-// must guess identically for the serialized bytes to match. Anything
-// else is application/octet-stream.
-const CONTENT_TYPES: Record<string, string> = {
-  csv: 'text/csv',
-  gif: 'image/gif',
-  gz: 'application/gzip',
-  htm: 'text/html',
-  html: 'text/html',
-  jpeg: 'image/jpeg',
-  jpg: 'image/jpeg',
-  json: 'application/json',
-  md: 'text/markdown',
-  pdf: 'application/pdf',
-  png: 'image/png',
-  svg: 'image/svg+xml',
-  tar: 'application/x-tar',
-  txt: 'text/plain',
-  xml: 'text/xml',
-  zip: 'application/zip',
-}
 
 /** One file attached to an outgoing message. */
 export interface Attachment {
@@ -69,13 +49,6 @@ export interface Compose {
   body: string
   signature: string | null
   attachments?: readonly Attachment[]
-}
-
-/** Guesses a content type from the filename's extension. */
-export function contentTypeFor(filename: string): string {
-  const dot = filename.lastIndexOf('.')
-  if (dot < 0) return 'application/octet-stream'
-  return CONTENT_TYPES[filename.slice(dot + 1).toLowerCase()] ?? 'application/octet-stream'
 }
 
 /**
@@ -212,10 +185,7 @@ export function build(compose: Compose, source: Source | null = null): Uint8Arra
   }
   if (recipients.length === 0) throw new Error('no recipient: pass --to')
   // EmailMessage refuses these outright (header injection), so the
-  // reference implementation never serializes them. Python's check is
-  // str.splitlines-based: a value is refused when it spans more than
-  // one line, so a single trailing terminator passes (and serializes
-  // inside an encoded word).
+  // reference implementation never serializes them.
   for (const value of [
     compose.sender,
     ...recipients,
@@ -223,12 +193,7 @@ export function build(compose: Compose, source: Source | null = null): Uint8Arra
     ...compose.bcc,
     subject ?? '',
   ]) {
-    // eslint-disable-next-line no-control-regex
-    const valueLines = value.split(/\r\n|[\n\r\v\f\x1c\x1d\x1e\u0085\u2028\u2029]/)
-    if (valueLines[valueLines.length - 1] === '') valueLines.pop()
-    if (valueLines.length > 1) {
-      throw new Error('Header values may not contain linefeed or carriage return characters')
-    }
+    assertHeaderValue(value)
   }
   headLines.push(foldAddressList('To', recipients))
   if (compose.cc.length > 0) headLines.push(foldAddressList('Cc', compose.cc))

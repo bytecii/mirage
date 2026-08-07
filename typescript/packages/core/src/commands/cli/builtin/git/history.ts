@@ -16,7 +16,7 @@ import git from 'isomorphic-git'
 
 import type { FlagView } from '../../../spec/types.ts'
 import { isoTimestamp } from '../../../../utils/dates.ts'
-import { BadDateError } from './errors.ts'
+import { BadDateError, UnrecognizedArgumentError } from './errors.ts'
 import { MEDIUM, parsePretty, type CommitFacts, type LogFormat } from './format.ts'
 import { touches } from './pickaxe.ts'
 import { loadRefs, SYMREF_PREFIX } from './refs.ts'
@@ -76,13 +76,18 @@ function timestamp(value: string | null, flag: string): number | null {
  *
  * Both spellings set the same variable in git; `--format` is read first when
  * both appear on one line, an ordering the flag bag cannot preserve. A bare
- * `--pretty` means medium, git's own default.
+ * `--pretty` means medium, git's own default, but pretty.c reads `--format`
+ * only in its =value form, so the bare spelling gets git's own fatal
+ * (pinned: 2.37 and 2.54, exit 128).
  */
 export function prettyValue(fl: FlagView): string | null {
   for (const key of ['format', 'pretty']) {
     const raw = fl.raw(key)
     if (typeof raw === 'string') return raw
-    if (raw === true) return 'medium'
+    if (raw === true) {
+      if (key === 'format') throw new UnrecognizedArgumentError('--format')
+      return 'medium'
+    }
   }
   return null
 }

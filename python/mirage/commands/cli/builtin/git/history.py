@@ -19,7 +19,8 @@ from dulwich.refs import HEADREF, LOCAL_BRANCH_PREFIX, LOCAL_TAG_PREFIX
 from dulwich.repo import BaseRepo
 from dulwich.walk import Walker
 
-from mirage.commands.cli.builtin.git.errors import BadDateError
+from mirage.commands.cli.builtin.git.errors import (BadDateError,
+                                                    UnrecognizedArgumentError)
 from mirage.commands.cli.builtin.git.format import (MEDIUM, LogFormat,
                                                     parse_pretty)
 from mirage.commands.cli.builtin.git.pickaxe import touches
@@ -84,16 +85,23 @@ def pretty_value(fl: FlagView) -> str | None:
 
     Both spellings set the same variable in git; ``--format`` is read
     first when both appear on one line, an ordering the flag bag cannot
-    preserve. A bare ``--pretty`` means medium, git's own default.
+    preserve. A bare ``--pretty`` means medium, git's own default, but
+    pretty.c reads ``--format`` only in its =value form, so the bare
+    spelling gets git's own fatal (pinned: 2.37 and 2.54, exit 128).
 
     Args:
         fl (FlagView): spec-validated view over the raw flag kwargs.
+
+    Raises:
+        UnrecognizedArgumentError: a bare ``--format`` with no value.
     """
     for key in ("format", "pretty"):
         raw = fl.raw(key)
         if isinstance(raw, str):
             return raw
         if raw is True:
+            if key == "format":
+                raise UnrecognizedArgumentError("--format")
             return "medium"
     return None
 

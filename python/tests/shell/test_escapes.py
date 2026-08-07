@@ -97,5 +97,22 @@ def test_high_bytes_ride_the_surrogate_escape():
     assert encode_text(decode_ansi_c(r"\xe4\xb8\xad")) == "中".encode()
 
 
-def test_value_past_unicode_stays_verbatim():
-    assert decode_ansi_c(r"\UFFFFFFFF") == r"\UFFFFFFFF"
+def test_surrogate_halves_encode_like_a_utf8_locale():
+    # bash 5.2 (docker, LC_ALL=C.UTF-8 at startup) writes \u/\U through
+    # u32toutf8, so a surrogate half comes out as its raw three-byte
+    # form; U+E000, one past the range, is an ordinary character.
+    assert encode_text(decode_ansi_c(r"\uD800")) == b"\xed\xa0\x80"
+    assert encode_text(decode_ansi_c(r"\udbff")) == b"\xed\xaf\xbf"
+    assert encode_text(decode_ansi_c(r"\U0000DFFF")) == b"\xed\xbf\xbf"
+    assert decode_ansi_c(r"\ue000") == "\ue000"
+
+
+def test_values_past_unicode_encode_or_vanish():
+    # u32toutf8 keeps the old-style four- to six-byte forms alive past
+    # Unicode, and 0x80000000 and past produce nothing - without
+    # truncating the rest of the segment the way NUL does.
+    assert encode_text(decode_ansi_c(r"\U00110000")) == b"\xf4\x90\x80\x80"
+    assert encode_text(
+        decode_ansi_c(r"\U7FFFFFFF")) == b"\xfd\xbf\xbf\xbf\xbf\xbf"
+    assert decode_ansi_c(r"x\UFFFFFFFFy") == "xy"
+    assert decode_ansi_c(r"x\U80000000y") == "xy"

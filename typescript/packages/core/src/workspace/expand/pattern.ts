@@ -15,25 +15,12 @@
 import type { CallStack } from '../../shell/call_stack.ts'
 import { decodeAnsiC } from '../../shell/escapes.ts'
 import { NodeType as NT } from '../../shell/types.ts'
+import { escapeGlob } from '../../utils/glob_walk.ts'
 import { expandTilde } from '../../utils/path.ts'
 import type { Session } from '../session/session.ts'
 import { homeDir } from '../session/shell_dirs.ts'
 import { expandNode, type ExecuteFn } from './node.ts'
-import type { TSNodeLike } from './variable.ts'
-
-const GLOB_SPECIALS = new Set(['*', '?', '['])
-
-/**
- * Encode text so the glob matcher reads every character literally.
- *
- * fnmatch has no escape character, so each special is wrapped in its own
- * one-character class: `*` becomes `[*]`. A `]` needs no treatment: outside
- * a class it is already literal, and no class can open because every `[`
- * gets wrapped.
- */
-export function escapeGlob(text: string): string {
-  return [...text].map((c) => (GLOB_SPECIALS.has(c) ? `[${c}]` : c)).join('')
-}
+import type { TSNodeLike } from '../../shell/types.ts'
 
 /** An unquoted word as a pattern: globs live, backslash escapes. */
 function unquotedPattern(text: string): string {
@@ -66,7 +53,12 @@ async function quotedStringPattern(
   callStack: CallStack | null,
 ): Promise<string> {
   const parts: string[] = []
+  let prevEndRow: number | null = null
   for (const child of tsNode.children) {
+    if (prevEndRow !== null) {
+      parts.push('\n'.repeat(Math.max(0, (child.startPosition?.row ?? 0) - prevEndRow)))
+    }
+    prevEndRow = child.endPosition?.row ?? 0
     if (child.type === NT.DQUOTE) continue
     parts.push(escapeGlob(await expandNode(child, session, executeFn, callStack)))
   }
@@ -74,15 +66,16 @@ async function quotedStringPattern(
 }
 
 /**
- * Expand one case pattern into the matcher's glob dialect.
+ * Expand one pattern word into the matcher's glob dialect.
  *
- * bash 5.2 semantics: text under any quote matches literally, unquoted text
- * keeps its glob characters live with backslash escaping the next character,
- * and an expansion's value is a live pattern when unquoted but literal
- * inside double quotes. Patterns are never word-split, so `$p` holding
- * `a b` matches the word `a b`.
+ * bash 5.2 semantics, shared by case patterns, the `[[ == ]]` right side
+ * and quoted parameter-expansion operands: text under any quote matches
+ * literally, unquoted text keeps its glob characters live with backslash
+ * escaping the next character, and an expansion's value is a live pattern
+ * when unquoted but literal inside double quotes. Patterns are never
+ * word-split, so `$p` holding `a b` matches the word `a b`.
  */
-export async function expandCasePattern(
+export async function expandPattern(
   tsNode: TSNodeLike,
   session: Session,
   executeFn: ExecuteFn,
@@ -115,7 +108,7 @@ export async function expandCasePattern(
       // followed by the string node; the `$` is the translation marker,
       // not text (same rule as expandNode).
       if (child.type === '$' && children[position + 1]?.type === NT.STRING) continue
-      parts.push(await expandCasePattern(child, session, executeFn, callStack))
+      parts.push(await expandPattern(child, session, executeFn, callStack))
     }
     return parts.join('')
   }

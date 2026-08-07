@@ -323,8 +323,17 @@ export async function expandNode(
   }
 
   if (ntype === NT.STRING) {
+    // The newline bytes of a multi-line string belong to no child token,
+    // so each row step re-emits them; the quote tokens anchor the count,
+    // which keeps leading, trailing and blank lines alive ("a\n\nb" is
+    // five bytes in bash).
     const parts: string[] = []
+    let prevEndRow: number | null = null
     for (const child of tsNode.children) {
+      if (prevEndRow !== null) {
+        parts.push('\n'.repeat(Math.max(0, (child.startPosition?.row ?? 0) - prevEndRow)))
+      }
+      prevEndRow = child.endPosition?.row ?? 0
       if (child.type === NT.DQUOTE) continue
       parts.push(await expandNode(child, session, executeFn, callStack))
     }

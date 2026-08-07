@@ -18,35 +18,11 @@ from email.message import EmailMessage
 from typing import Any, Literal
 
 from mirage.commands.spec.types import FlagView
-from mirage.io.types import ByteSource
+from mirage.io.types import ByteSource, materialize
 
 SourceMode = Literal["reply", "forward"]
 PostingStyle = Literal["top", "bottom"]
 PREFIXES: dict[SourceMode, str] = {"reply": "Re: ", "forward": "Fwd: "}
-
-# Extension-guessed like upstream's mime_guess, as a deliberate fixed
-# subset: the stdlib mimetypes module consults platform tables, and the
-# two implementations must guess identically for the serialized bytes
-# to match. Anything else is application/octet-stream, which every
-# client treats as "download me".
-CONTENT_TYPES: dict[str, str] = {
-    "csv": "text/csv",
-    "gif": "image/gif",
-    "gz": "application/gzip",
-    "htm": "text/html",
-    "html": "text/html",
-    "jpeg": "image/jpeg",
-    "jpg": "image/jpeg",
-    "json": "application/json",
-    "md": "text/markdown",
-    "pdf": "application/pdf",
-    "png": "image/png",
-    "svg": "image/svg+xml",
-    "tar": "application/x-tar",
-    "txt": "text/plain",
-    "xml": "text/xml",
-    "zip": "application/zip",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,18 +79,6 @@ class Source:
     mode: SourceMode
     posting_style: PostingStyle = "top"
     quote_headline: str = ""
-
-
-def content_type_for(filename: str) -> str:
-    """Guess a content type from the filename's extension.
-
-    Args:
-        filename (str): the attachment's basename.
-    """
-    _, dot, extension = filename.rpartition(".")
-    if not dot:
-        return "application/octet-stream"
-    return CONTENT_TYPES.get(extension.lower(), "application/octet-stream")
 
 
 def mixed_boundary(body: str, attachments: tuple[Attachment, ...]) -> str:
@@ -297,18 +261,4 @@ async def read_body(fl: FlagView, stdin: ByteSource | None) -> str:
     inline = fl.as_str("body")
     if inline is not None:
         return inline
-    return (await drain(stdin)).decode(errors="replace") if stdin else ""
-
-
-async def drain(stdin: ByteSource) -> bytes:
-    """Collect a byte source into one buffer.
-
-    Args:
-        stdin (ByteSource): piped input, bytes or an async iterator.
-    """
-    if isinstance(stdin, bytes):
-        return stdin
-    chunks: list[bytes] = []
-    async for chunk in stdin:
-        chunks.append(chunk)
-    return b"".join(chunks)
+    return (await materialize(stdin)).decode(errors="replace") if stdin else ""

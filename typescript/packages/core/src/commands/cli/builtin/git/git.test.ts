@@ -193,6 +193,28 @@ describe('git log', () => {
     expect(code).toBe(128)
     expect(err).toContain('unsupported --pretty format: raw')
   })
+
+  it('keeps empty format entries as separators byte for byte', async () => {
+    const [, out] = await run('log --pretty=format:')
+    expect(out).toBe(realGit(['log', '--pretty=format:']))
+  })
+
+  it('terminates empty tformat entries byte for byte', async () => {
+    const [, out] = await run("log --format='%d'")
+    expect(out).toBe(realGit(['log', '--format=%d']))
+  })
+
+  it('emits %xHH as a raw byte, not UTF-8 of the code point', async () => {
+    const result = await ws.execute("git -C /repo log -n 1 --format='a%x80b'")
+    const real = execFileSync('git', ['-C', repoPath, 'log', '-n', '1', '--format=a%x80b'])
+    expect(Array.from(result.stdout)).toEqual(Array.from(real))
+  })
+
+  it('refuses a bare --format the way git does', async () => {
+    const [code, , err] = await run('log --format')
+    expect(code).toBe(128)
+    expect(err).toBe('fatal: unrecognized argument: --format\n')
+  })
 })
 
 describe('git show', () => {
@@ -253,6 +275,23 @@ describe('git show', () => {
     const [code, , err] = await run('show --raw HEAD')
     expect(code).toBe(128)
     expect(err).toBe('fatal: unrecognized argument: --raw\n')
+  })
+
+  it('prints a format: header with no trailing newline like git', async () => {
+    const [, out] = await run("show -s --pretty='format:%h'")
+    expect(out).toBe(realGit(['show', '-s', '--pretty=format:%h']))
+    expect(out.endsWith('\n')).toBe(false)
+  })
+
+  it('terminates an empty tformat expansion byte for byte', async () => {
+    const [, out] = await run("show -s --format='%b' HEAD~1")
+    expect(out).toBe(realGit(['show', '-s', '--format=%b', 'HEAD~1']))
+  })
+
+  it('refuses a bare --format the way git does', async () => {
+    const [code, , err] = await run('show --format HEAD')
+    expect(code).toBe(128)
+    expect(err).toBe('fatal: unrecognized argument: --format\n')
   })
 })
 

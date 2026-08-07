@@ -50,16 +50,48 @@ def _scan_hex(content: str, start: int, limit: int) -> tuple[str, int]:
     return content[start:end], end
 
 
+def _u32_utf8(value: int) -> bytes:
+    """bash's u32toutf8 (lib/sh/unicode.c) for a value past ASCII.
+
+    UTF-8-shaped bytes for any 32-bit value: surrogate halves encode
+    like ordinary three-byte characters, values past Unicode take the
+    old-style four- to six-byte forms, and 0x80000000 and past produce
+    nothing at all.
+
+    Args:
+        value (int): the code the escape named, above 0x7F.
+    """
+    if value < 0x800:
+        return bytes((0xC0 | value >> 6, 0x80 | value & 0x3F))
+    if value < 0x10000:
+        return bytes((0xE0 | value >> 12, 0x80 | value >> 6 & 0x3F,
+                      0x80 | value & 0x3F))
+    if value < 0x200000:
+        return bytes((0xF0 | value >> 18, 0x80 | value >> 12 & 0x3F,
+                      0x80 | value >> 6 & 0x3F, 0x80 | value & 0x3F))
+    if value < 0x4000000:
+        return bytes((0xF8 | value >> 24, 0x80 | value >> 18 & 0x3F,
+                      0x80 | value >> 12 & 0x3F, 0x80 | value >> 6 & 0x3F,
+                      0x80 | value & 0x3F))
+    if value < 0x80000000:
+        return bytes((0xFC | value >> 30, 0x80 | value >> 24 & 0x3F,
+                      0x80 | value >> 18 & 0x3F, 0x80 | value >> 12 & 0x3F,
+                      0x80 | value >> 6 & 0x3F, 0x80 | value & 0x3F))
+    return b""
+
+
 def decode_ansi_c(content: str) -> str:
     """Decode the body of a $'...' word to the text it names.
 
     Follows bash 5.2 (lib/sh/strtrans.c, under a UTF-8 locale): simple
     escapes, 1-3 octal digits with the value masked to a byte, \\xHH
-    bytes, \\u and \\U code points, \\cX control characters (X of ``?``
-    is DEL, an escaped backslash counts as one operand), and any other
-    or incomplete escape kept verbatim, backslash included. A NUL
-    truncates the rest of this word segment, the C-string behavior; the
-    segment alone is cut, so ``x$'a\\0b'y`` still expands to ``xay``.
+    bytes, \\u and \\U values written through u32toutf8 (surrogates and
+    values past Unicode come out as raw UTF-8-shaped bytes), \\cX
+    control characters (X of ``?`` is DEL, an escaped backslash counts
+    as one operand), and any other or incomplete escape kept verbatim,
+    backslash included. A NUL truncates the rest of this word segment,
+    the C-string behavior; the segment alone is cut, so ``x$'a\\0b'y``
+    still expands to ``xay``.
 
     Args:
         content (str): the text between ``$'`` and the closing quote.
@@ -110,12 +142,17 @@ def decode_ansi_c(content: str) -> str:
             value = int(digits, 16)
             if value == 0:
                 return "".join(out)
-            # A value past Unicode has no character; keep the escape
-            # verbatim rather than raising, like an unknown escape.
-            if value > 0x10FFFF:
-                out.append(content[i:end])
-            else:
+            # bash writes every value through u32toutf8: a valid scalar
+            # is its character, while surrogate halves and values past
+            # Unicode become raw UTF-8-shaped bytes, and 0x80000000 and
+            # past produce nothing (without truncating). Pinned:
+            # $'\uD800' is ed a0 80, $'\U00110000' is f4 90 80 80,
+            # $'\UFFFFFFFF' is empty.
+            if value <= 0x7F or (value <= 0x10FFFF
+                                 and not 0xD800 <= value <= 0xDFFF):
                 out.append(chr(value))
+            else:
+                out.append("".join(byte_char(b) for b in _u32_utf8(value)))
             i = end
             continue
         if marker == "c":

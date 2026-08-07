@@ -35,8 +35,8 @@ import { resolveCommit } from './revparse.ts'
 import { diffstat, statTable } from './summary.ts'
 import { treeEntries, type TreeEntry } from './tree.ts'
 import { checkOperands, fatal, revisionArg } from './util.ts'
+import { encodeText } from '../../../../shell/bytes.ts'
 
-const ENC = new TextEncoder()
 const MERGE_PARENTS = 1
 
 // A merge prints no ordinary diff. git renders one against every parent at once
@@ -78,10 +78,12 @@ function parseShowFlags(fl: FlagView): ShowFlags {
 }
 
 /**
- * The commit header in the requested format, newline-terminated.
+ * The commit header in the requested format.
  *
- * A template that renders empty produces no header at all, matching
- * `log --format=`.
+ * `format:` is a separator, so a single commit prints with no trailing
+ * newline at all; `tformat:` terminates the entry even when it renders
+ * empty, except that an empty template prints nothing, matching
+ * `log --format=`. Pinned against git 2.37 and 2.54.
  */
 function header(
   commit: CommitFacts,
@@ -93,7 +95,10 @@ function header(
   if (fmt.kind === 'oneline') return `${oneline(commit, width)}\n`
   if (fmt.kind === 'format' || fmt.kind === 'tformat') {
     const text = renderTemplate(fmt.template ?? '', commit, width, decor)
-    return text === '' ? '' : `${text}\n`
+    if (fmt.kind === 'tformat') {
+      return fmt.template === null || fmt.template === '' ? '' : `${text}\n`
+    }
+    return text
   }
   return `${presetBlock(commit, fmt.kind, width).join('\n')}\n`
 }
@@ -138,11 +143,11 @@ export async function show(inv: CLIInvocation): Promise<CommandFnResult> {
     const facts = await commitFacts(repo, oid)
     const decor = needsDecorations(parsed.pretty) ? await decorations(repo) : null
     const head = header(facts, parsed, repo.abbrev, decor)
-    if (facts.parents.length > MERGE_PARENTS) return [ENC.encode(head), new IOResult()]
+    if (facts.parents.length > MERGE_PARENTS) return [encodeText(head), new IOResult()]
     const body = await diffSection(repo, facts, parsed)
-    if (body === '') return [ENC.encode(head), new IOResult()]
-    if (head === '') return [ENC.encode(body), new IOResult()]
-    return [ENC.encode(`${head}\n${body}`), new IOResult()]
+    if (body === '') return [encodeText(head), new IOResult()]
+    if (head === '') return [encodeText(body), new IOResult()]
+    return [encodeText(`${head}\n${body}`), new IOResult()]
   } catch (err) {
     if (err instanceof GitError) return fatal(err)
     throw err

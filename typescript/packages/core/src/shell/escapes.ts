@@ -45,15 +45,59 @@ function scanHex(content: string, start: number, limit: number): string {
 }
 
 /**
+ * bash's u32toutf8 (lib/sh/unicode.c) for a value past ASCII.
+ *
+ * UTF-8-shaped bytes for any 32-bit value: surrogate halves encode like
+ * ordinary three-byte characters, values past Unicode take the old-style
+ * four- to six-byte forms, and 0x80000000 and past produce nothing at all.
+ */
+function u32Utf8(value: number): number[] {
+  if (value < 0x800) return [0xc0 | (value >> 6), 0x80 | (value & 0x3f)]
+  if (value < 0x10000) {
+    return [0xe0 | (value >> 12), 0x80 | ((value >> 6) & 0x3f), 0x80 | (value & 0x3f)]
+  }
+  if (value < 0x200000) {
+    return [
+      0xf0 | (value >> 18),
+      0x80 | ((value >> 12) & 0x3f),
+      0x80 | ((value >> 6) & 0x3f),
+      0x80 | (value & 0x3f),
+    ]
+  }
+  if (value < 0x4000000) {
+    return [
+      0xf8 | (value >> 24),
+      0x80 | ((value >> 18) & 0x3f),
+      0x80 | ((value >> 12) & 0x3f),
+      0x80 | ((value >> 6) & 0x3f),
+      0x80 | (value & 0x3f),
+    ]
+  }
+  if (value < 0x80000000) {
+    return [
+      0xfc | (value >> 30),
+      0x80 | ((value >> 24) & 0x3f),
+      0x80 | ((value >> 18) & 0x3f),
+      0x80 | ((value >> 12) & 0x3f),
+      0x80 | ((value >> 6) & 0x3f),
+      0x80 | (value & 0x3f),
+    ]
+  }
+  return []
+}
+
+/**
  * Decode the body of a $'...' word to the text it names.
  *
  * Follows bash 5.2 (lib/sh/strtrans.c, under a UTF-8 locale): simple
  * escapes, 1-3 octal digits with the value masked to a byte, \xHH
- * bytes, \u and \U code points, \cX control characters (X of `?` is
- * DEL, an escaped backslash counts as one operand), and any other or
- * incomplete escape kept verbatim, backslash included. A NUL truncates
- * the rest of this word segment, the C-string behavior; the segment
- * alone is cut, so `x$'a\0b'y` still expands to `xay`.
+ * bytes, \u and \U values written through u32toutf8 (surrogates and
+ * values past Unicode come out as raw UTF-8-shaped bytes), \cX control
+ * characters (X of `?` is DEL, an escaped backslash counts as one
+ * operand), and any other or incomplete escape kept verbatim, backslash
+ * included. A NUL truncates the rest of this word segment, the C-string
+ * behavior; the segment alone is cut, so `x$'a\0b'y` still expands to
+ * `xay`.
  */
 export function decodeAnsiC(content: string): string {
   const out: string[] = []
@@ -105,10 +149,16 @@ export function decodeAnsiC(content: string): string {
       }
       const value = parseInt(digits, 16)
       if (value === 0) return out.join('')
-      // A value past Unicode has no character; keep the escape
-      // verbatim rather than throwing, like an unknown escape.
-      if (value > UNICODE_MAX) out.push(content.slice(i, i + 2 + digits.length))
-      else out.push(String.fromCodePoint(value))
+      // bash writes every value through u32toutf8: a valid scalar is
+      // its character, while surrogate halves and values past Unicode
+      // become raw UTF-8-shaped bytes, and 0x80000000 and past produce
+      // nothing (without truncating). Pinned: $'\uD800' is ed a0 80,
+      // $'\U00110000' is f4 90 80 80, $'\UFFFFFFFF' is empty.
+      if (value <= 0x7f || (value <= UNICODE_MAX && !(value >= 0xd800 && value <= 0xdfff))) {
+        out.push(String.fromCodePoint(value))
+      } else {
+        out.push(u32Utf8(value).map(byteChar).join(''))
+      }
       i += 2 + digits.length
       continue
     }

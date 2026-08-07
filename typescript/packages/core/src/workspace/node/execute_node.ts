@@ -43,7 +43,7 @@ import { ERREXIT_EXEMPT_TYPES, NodeType as NT, Redirect, RedirectKind } from '..
 import { NodeKind, nodeKind } from '../../shell/node_kind.ts'
 import { expandRedirects } from '../expand/redirects.ts'
 import { type ExecuteFn, expandArith, expandNode } from '../expand/node.ts'
-import { expandCasePattern } from '../expand/pattern.ts'
+import { expandPattern } from '../expand/pattern.ts'
 import { evaluateArith } from '../../shell/arith.ts'
 import {
   type ShellArray,
@@ -520,7 +520,7 @@ export async function executeNode(
     for (const [patternNodes, body, terminator] of getCaseItems(node)) {
       const patterns: string[] = []
       for (const patternNode of patternNodes) {
-        patterns.push(await expandCasePattern(patternNode, session, executeFn, callStack))
+        patterns.push(await expandPattern(patternNode, session, executeFn, callStack))
       }
       items.push([patterns, body, terminator])
     }

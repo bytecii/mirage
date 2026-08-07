@@ -78,15 +78,12 @@ describe('decodeAnsiC', () => {
     expect(decodeAnsiC('\\\nx')).toBe('\\\nx')
   })
 
-  it.each([
-    ['a\\0b'],
-    ['a\\x00b'],
-    ['a\\u0000b'],
-    ['a\\c@b'],
-    ['a\\400b'],
-  ])('truncates the segment at NUL: %s', (content) => {
-    expect(decodeAnsiC(content)).toBe('a')
-  })
+  it.each([['a\\0b'], ['a\\x00b'], ['a\\u0000b'], ['a\\c@b'], ['a\\400b']])(
+    'truncates the segment at NUL: %s',
+    (content) => {
+      expect(decodeAnsiC(content)).toBe('a')
+    },
+  )
 
   it('carries high bytes through the surrogate escape', () => {
     expect(encodeText(decodeAnsiC('\\xff'))).toEqual(new Uint8Array([0xff]))
@@ -95,7 +92,25 @@ describe('decodeAnsiC', () => {
     expect(encodeText(decodeAnsiC('\\xe4\\xb8\\xad'))).toEqual(new TextEncoder().encode('中'))
   })
 
-  it('keeps a value past Unicode verbatim', () => {
-    expect(decodeAnsiC('\\UFFFFFFFF')).toBe('\\UFFFFFFFF')
+  it('encodes surrogate halves like a UTF-8 locale', () => {
+    // bash 5.2 (docker, LC_ALL=C.UTF-8 at startup) writes \u/\U through
+    // u32toutf8, so a surrogate half comes out as its raw three-byte
+    // form; U+E000, one past the range, is an ordinary character.
+    expect(encodeText(decodeAnsiC('\\uD800'))).toEqual(new Uint8Array([0xed, 0xa0, 0x80]))
+    expect(encodeText(decodeAnsiC('\\udbff'))).toEqual(new Uint8Array([0xed, 0xaf, 0xbf]))
+    expect(encodeText(decodeAnsiC('\\U0000DFFF'))).toEqual(new Uint8Array([0xed, 0xbf, 0xbf]))
+    expect(decodeAnsiC('\\ue000')).toBe('\ue000')
+  })
+
+  it('encodes values past Unicode or drops them at 0x80000000', () => {
+    // u32toutf8 keeps the old-style four- to six-byte forms alive past
+    // Unicode, and 0x80000000 and past produce nothing - without
+    // truncating the rest of the segment the way NUL does.
+    expect(encodeText(decodeAnsiC('\\U00110000'))).toEqual(new Uint8Array([0xf4, 0x90, 0x80, 0x80]))
+    expect(encodeText(decodeAnsiC('\\U7FFFFFFF'))).toEqual(
+      new Uint8Array([0xfd, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf]),
+    )
+    expect(decodeAnsiC('x\\UFFFFFFFFy')).toBe('xy')
+    expect(decodeAnsiC('x\\U80000000y')).toBe('xy')
   })
 })

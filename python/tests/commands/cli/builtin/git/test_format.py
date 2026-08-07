@@ -21,6 +21,7 @@ from mirage.commands.cli.builtin.git.errors import (BadPrettyError,
 from mirage.commands.cli.builtin.git.format import (abbrev_length, entry,
                                                     git_date, message_block,
                                                     oneline, short, subject)
+from mirage.shell.bytes import encode_text
 
 AUTHOR = b"Dev Person <dev@example.com>"
 
@@ -230,3 +231,12 @@ def test_preset_blocks_shape_their_headers():
     assert fuller_lines[3].startswith("Commit:     ")
     assert fuller_lines[4].startswith("CommitDate: ")
     assert git_format.preset_block(commit, "medium", 7) == entry(commit, 7)
+
+
+def test_render_template_names_raw_bytes_with_x():
+    # %xHH is a byte, not a code point: %x80 must reach the wire as the
+    # single byte 0x80, riding the shell's surrogate-escape convention.
+    commit = _commit(b"subject\n")
+    rendered = git_format.render_template("a%x80b%x00c", commit, 7, None)
+    assert rendered == "a\udc80b\x00c"
+    assert encode_text(rendered) == b"a\x80b\x00c"

@@ -34,6 +34,7 @@ from mirage.commands.cli.types import CLIInvocation, CLIVerbOpts
 from mirage.commands.spec.types import FlagView
 from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
+from mirage.shell.bytes import encode_text
 
 
 def _collect(repo: BaseRepo, revision: str, flags: LogFlags,
@@ -63,10 +64,14 @@ def _rendered(commits: list[Commit], flags: LogFlags, width: int,
               decor: Decorations | None) -> bytes:
     """The bytes a log invocation prints for its selected commits.
 
-    ``format:`` separates entries with a newline and ends without one;
-    ``tformat:`` (and any bare ``%`` string) terminates every entry.
-    Entries that render empty vanish entirely, newline included, which
-    is how ``--format=`` prints nothing at all. Pinned against git 2.50.
+    ``format:`` separates entries with a newline and ends without one,
+    and an entry that renders empty still claims its separator, so
+    ``--pretty=format:`` prints one newline per commit past the first.
+    ``tformat:`` (and any bare ``%`` string) terminates every entry,
+    empty ones included - except that an empty template prints nothing
+    at all, which is how ``--format=`` stays silent. Bytes go out
+    through ``encode_text`` because ``%xHH`` names a raw byte. Pinned
+    against git 2.37 and 2.54.
 
     Args:
         commits (list[Commit]): the selected commits, in print order.
@@ -84,12 +89,11 @@ def _rendered(commits: list[Commit], flags: LogFlags, width: int,
             render_template(fmt.template or "", commit, width, decor)
             for commit in commits
         ]
-        rendered = [text for text in rendered if text]
-        if not rendered:
-            return b""
         if fmt.kind == "tformat":
-            return "".join(f"{text}\n" for text in rendered).encode()
-        return "\n".join(rendered).encode()
+            if not fmt.template:
+                return b""
+            return encode_text("".join(f"{text}\n" for text in rendered))
+        return encode_text("\n".join(rendered))
     lines = []
     for index, commit in enumerate(commits):
         if index:
