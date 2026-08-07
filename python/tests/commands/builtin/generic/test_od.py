@@ -69,3 +69,18 @@ def test_uintmax_overflow_reports_too_large():
     with pytest.raises(UsageError) as exc:
         parse_count("1Q", "-N")
     assert str(exc.value) == "od: -N argument '1Q' too large"
+
+
+def test_uintmax_boundary_is_exact():
+    # 2**64 - 1 is valid and 2**64 is not, in every radix (pinned against
+    # coreutils 9.7).
+    assert parse_count("18446744073709551615", "-N") == 2**64 - 1
+    assert parse_count("0xffffffffffffffff", "-N") == 2**64 - 1
+    with pytest.raises(UsageError) as exc:
+        parse_count("18446744073709551616", "-N")
+    assert str(exc.value) == ("od: -N argument '18446744073709551616' "
+                              "too large")
+    with pytest.raises(UsageError) as exc:
+        parse_count("0x10000000000000000", "-j")
+    assert str(exc.value) == ("od: -j argument '0x10000000000000000' "
+                              "too large")

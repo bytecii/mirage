@@ -33,6 +33,10 @@ def test_bytes_accepts_gnu_suffixes():
     assert parse_bytes_value("1G") == 1024**3
     # split is base-10 only: a leading zero is not octal.
     assert parse_bytes_value("010") == 10
+    # Counts past uintmax saturate rather than error in GNU (split -b 1Y
+    # exits 0), so overflow spellings stay valid byte counts.
+    assert parse_bytes_value("1Y") == 1024**8
+    assert parse_bytes_value("18446744073709551616") == 2**64
 
 
 def test_counts_accept_one_leading_plus_and_whitespace():
@@ -107,6 +111,18 @@ def test_suffix_length_rejects_junk_but_allows_zero():
     with pytest.raises(UsageError) as exc:
         parse_suffix_length("1k")
     assert str(exc.value) == "split: invalid suffix length: '1k'"
+
+
+def test_suffix_length_overflows_past_uintmax():
+    # GNU refuses widths past 2**64 - 1 at parse time; byte and line
+    # counts saturate instead (split -b 1Y is a valid spelling of "one
+    # output file"), so only -a gets the Value-too-large tail.
+    assert parse_suffix_length("18446744073709551615") == 2**64 - 1
+    with pytest.raises(UsageError) as exc:
+        parse_suffix_length("18446744073709551616")
+    assert str(exc.value) == ("split: invalid suffix length: "
+                              "'18446744073709551616': Value too large "
+                              "for defined data type")
 
 
 @pytest.mark.parametrize("value", ["+5", " 5"])

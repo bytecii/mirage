@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from mirage.commands.builtin.constants import (SPLIT_BYTE_UNITS,
                                                SPLIT_COUNT_PATTERN,
                                                SPLIT_DIGITS, SPLIT_HEX_DIGITS,
-                                               SPLIT_TRY_HELP)
+                                               SPLIT_TRY_HELP, UINTMAX)
 from mirage.commands.builtin.utils.stream import _resolve_source
 from mirage.commands.errors import UsageError
 from mirage.commands.spec.types import CommandName
@@ -65,7 +65,16 @@ def parse_suffix_length(value: str) -> int:
     """
     if SPLIT_COUNT_PATTERN.fullmatch(value) is None:
         raise UsageError(f"split: invalid suffix length: '{value}'", 1)
-    return int(value)
+    length = int(value)
+    # xstrtoumax overflow: past 2**64 - 1 GNU refuses the width at parse
+    # time (byte and line counts saturate instead — a count bigger than
+    # the input reads the same either way, but a width this size would be
+    # built into a file name).
+    if length > UINTMAX:
+        raise UsageError(
+            f"split: invalid suffix length: '{value}': "
+            "Value too large for defined data type", 1)
+    return length
 
 
 def parse_suffix_start(value: str, hex_mode: bool, suffix_len: int) -> int:

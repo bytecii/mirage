@@ -69,4 +69,18 @@ describe('od parseCount', () => {
       new UsageError("od: -N argument '1Q' too large", 1),
     )
   })
+
+  it('holds the uintmax boundary exactly', () => {
+    // 2**64 - 1 is valid and 2**64 is not, in every radix (pinned against
+    // coreutils 9.7). As doubles both are 2 ** 64, so the check runs in
+    // BigInt; the accepted count still rounds to a double on return.
+    expect(parseCount('18446744073709551615', '-N')).toBe(2 ** 64)
+    expect(parseCount('0xffffffffffffffff', '-N')).toBe(2 ** 64)
+    expect(() => parseCount('18446744073709551616', '-N')).toThrow(
+      new UsageError("od: -N argument '18446744073709551616' too large", 1),
+    )
+    expect(() => parseCount('0x10000000000000000', '-j')).toThrow(
+      new UsageError("od: -j argument '0x10000000000000000' too large", 1),
+    )
+  })
 })

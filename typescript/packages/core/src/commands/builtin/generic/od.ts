@@ -21,9 +21,13 @@ export function parseCount(value: string, flag: string): number {
         ? 8
         : 10
   const digits = base === 16 ? number.slice(2) : number
-  const count = Number.parseInt(digits, base) * (multiplier ?? 1)
-  if (count > UINTMAX) throw new UsageError(`od: ${flag} argument '${value}' too large`, 1)
-  return count
+  // The too-large check compares in BigInt: 2**64 - 1 is valid and 2**64
+  // is not, a boundary doubles cannot hold.
+  const magnitude =
+    (base === 16 ? BigInt(`0x${digits}`) : base === 8 ? BigInt(`0o${digits}`) : BigInt(digits)) *
+    BigInt(multiplier ?? 1)
+  if (magnitude > UINTMAX) throw new UsageError(`od: ${flag} argument '${value}' too large`, 1)
+  return Number(magnitude)
 }
 
 function address(offset: number, radix: string): string {

@@ -105,6 +105,13 @@ describe('split flag values', () => {
     [{ number: '+l/2' }, "split: invalid number of chunks: '+l/2'"],
     [{ number: 'x/3' }, "split: invalid number of chunks: 'x/3'"],
     [{ suffix_length: 'abc', lines: '1' }, "split: invalid suffix length: 'abc'"],
+    // Widths past 2**64 - 1 are refused at parse time; byte and line
+    // counts saturate instead (split -b 1Y is a valid spelling of "one
+    // output file"), so only -a gets the Value-too-large tail.
+    [
+      { suffix_length: '18446744073709551616', lines: '1' },
+      "split: invalid suffix length: '18446744073709551616': Value too large for defined data type",
+    ],
     [
       { numeric_suffixes: 'zz', lines: '1' },
       `split: 'zz': invalid start value for numerical suffix${TRY}`,

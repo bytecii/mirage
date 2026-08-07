@@ -45,7 +45,9 @@ export const FILE_MIME_MAP: Readonly<Record<string, string>> = Object.freeze({
 // od and split both read their counts with xstrtoumax, which skips leading
 // whitespace and allows one '+' before the digits, so `-b +10` and `-b " 10"`
 // are valid while `+ 10`, `++10`, `-10` and a trailing space are not.
-export const UINTMAX = 2 ** 64 - 1
+// A bigint: as a double, 2 ** 64 - 1 rounds up to 2 ** 64, which would let
+// exactly-2**64 values through the too-large checks that python rejects.
+export const UINTMAX = 2n ** 64n - 1n
 
 export const OD_SIZE_UNITS = sizeSuffixes('bkKmMGTPE')
 // Q/R/Y/Z are in GNU od's suffix set but always overflow uintmax, so they

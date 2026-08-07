@@ -30,6 +30,7 @@ import {
   SPLIT_DIGITS,
   SPLIT_HEX_DIGITS,
   SPLIT_TRY_HELP,
+  UINTMAX,
 } from '../constants.ts'
 
 const ENC = new TextEncoder()
@@ -71,6 +72,16 @@ function parseChunksValue(value: string): number {
 function parseSuffixLength(value: string): number {
   if (!SPLIT_COUNT_PATTERN.test(value)) {
     throw new UsageError(`split: invalid suffix length: '${value}'`, 1)
+  }
+  // xstrtoumax overflow: past 2**64 - 1 GNU refuses the width at parse
+  // time (byte and line counts saturate instead — a count bigger than the
+  // input reads the same either way, but a width this size would be
+  // built into a file name).
+  if (BigInt(value.trim().replace(/^\+/, '')) > UINTMAX) {
+    throw new UsageError(
+      `split: invalid suffix length: '${value}': Value too large for defined data type`,
+      1,
+    )
   }
   return Number.parseInt(value, 10)
 }
