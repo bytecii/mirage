@@ -22,6 +22,7 @@ import tree_sitter
 from mirage.shell.arith import evaluate_arith
 from mirage.shell.call_stack import CallStack
 from mirage.shell.errors import ArithError
+from mirage.shell.escapes import decode_ansi_c
 from mirage.shell.helpers import get_text
 from mirage.shell.parse import parse
 from mirage.shell.types import NodeType as NT
@@ -274,7 +275,15 @@ async def expand_node(
 
     if ntype == NT.CONCATENATION:
         parts = []
-        for child in ts_node.children:
+        children = ts_node.children
+        for position, child in enumerate(children):
+            # A $"..." in a concatenation arrives as an anonymous `$`
+            # token followed by the string node; the `$` is the
+            # translation marker, not text. A bare trailing `$` (a$)
+            # has no string after it and stays literal.
+            if (child.type == "$" and position + 1 < len(children)
+                    and children[position + 1].type == NT.STRING):
+                continue
             parts.append(await expand_node(child, session, execute_fn,
                                            call_stack))
         return "".join(parts)
@@ -308,6 +317,20 @@ async def expand_node(
     if ntype == NT.RAW_STRING:
         raw = get_text(ts_node)
         return raw[1:-1]
+
+    if ntype == NT.ANSI_C_STRING:
+        raw = get_text(ts_node)
+        return decode_ansi_c(raw[2:-1])
+
+    if ntype == NT.TRANSLATED_STRING:
+        # $"..." asks for a locale translation; no message catalog is
+        # ever loaded, so the translation is the identity and the word
+        # keeps plain double-quote semantics.
+        for child in ts_node.named_children:
+            if child.type == NT.STRING:
+                return await expand_node(child, session, execute_fn,
+                                         call_stack)
+        return ""
 
     if ntype == NT.VARIABLE_ASSIGNMENT:
         raw = get_text(ts_node)

@@ -28,7 +28,12 @@ const CONTAINER_TYPES = new Set<string>([
 ])
 const FLAT_OP_TOKENS = new Set(['=', '==', '!=', '<', '>', '!', '(', ')'])
 const COND_OP_TOKENS = new Set(['=', '==', '!=', '=~', '<', '>', '&&', '||'])
-const LITERAL_RIGHT_TYPES = new Set<string>([NT.STRING, NT.RAW_STRING])
+const LITERAL_RIGHT_TYPES = new Set<string>([
+  NT.STRING,
+  NT.RAW_STRING,
+  NT.ANSI_C_STRING,
+  NT.TRANSLATED_STRING,
+])
 const SPLIT_TYPES = new Set<string>([NT.SIMPLE_EXPANSION, NT.EXPANSION])
 
 /**

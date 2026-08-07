@@ -626,6 +626,7 @@ export { MountEntry, type MountInit } from './workspace/mount/mount.ts'
 export { normMountPrefix } from './workspace/snapshot/utils.ts'
 export {
   command,
+  type CommandDispatch,
   type CommandFn,
   type CommandFnResult,
   type CommandOptions,
@@ -640,6 +641,7 @@ export {
   CLISpec,
   type CLISpecInit,
   type CLIVerbFn,
+  type CLIVerbOpts,
   type CLIConfigModel,
   type CLIInvocation,
   type WalkFlagBag,

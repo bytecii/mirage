@@ -21,6 +21,7 @@ import { homeDir } from '../session/shell_dirs.ts'
 import { shlexSplit } from '../../utils/shlex.ts'
 import { evaluateArith } from '../../shell/arith.ts'
 import { ArithError } from '../../shell/errors.ts'
+import { decodeAnsiC } from '../../shell/escapes.ts'
 import { ARITH_DELIMITERS, ARITH_OPERATORS } from './constants.ts'
 import { expandBraces, lookupVar } from './variable.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
@@ -305,7 +306,17 @@ export async function expandNode(
 
   if (ntype === NT.CONCATENATION) {
     const parts: string[] = []
-    for (const child of tsNode.children) {
+    const children = tsNode.children
+    for (let position = 0; position < children.length; position += 1) {
+      const child = children[position]
+      if (child === undefined) continue
+      // A $"..." in a concatenation arrives as an anonymous `$` token
+      // followed by the string node; the `$` is the translation
+      // marker, not text. A bare trailing `$` (a$) has no string after
+      // it and stays literal.
+      if (child.type === '$' && children[position + 1]?.type === NT.STRING) {
+        continue
+      }
       parts.push(await expandNode(child, session, executeFn, callStack))
     }
     return parts.join('')
@@ -335,6 +346,23 @@ export async function expandNode(
   if (ntype === NT.RAW_STRING) {
     const raw = tsNode.text
     return raw.slice(1, -1)
+  }
+
+  if (ntype === NT.ANSI_C_STRING) {
+    const raw = tsNode.text
+    return decodeAnsiC(raw.slice(2, -1))
+  }
+
+  if (ntype === NT.TRANSLATED_STRING) {
+    // $"..." asks for a locale translation; no message catalog is ever
+    // loaded, so the translation is the identity and the word keeps
+    // plain double-quote semantics.
+    for (const child of tsNode.namedChildren) {
+      if (child.type === NT.STRING) {
+        return expandNode(child, session, executeFn, callStack)
+      }
+    }
+    return ''
   }
 
   if (ntype === NT.VARIABLE_ASSIGNMENT) {

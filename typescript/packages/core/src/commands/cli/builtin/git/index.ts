@@ -38,6 +38,23 @@ const DIRECTORY_OPTION = new Option({
 
 const REVISION = new Operand({ type: 'str' })
 
+// --pretty and --format set the same variable in git; both take git's
+// optional-value form, so a bare --pretty means medium and a detached next
+// word is a revision, never a format.
+const PRETTY_OPTION = new Option({
+  long: '--pretty',
+  type: 'str',
+  valueOptional: true,
+  description:
+    'Commit display format: oneline, short, medium, full, fuller, or a format:/tformat:/%-string',
+})
+const FORMAT_OPTION = new Option({
+  long: '--format',
+  type: 'str',
+  valueOptional: true,
+  description: 'Alias of --pretty',
+})
+
 const LOG_OPTIONS = [
   new Option({
     short: '-n',
@@ -47,6 +64,9 @@ const LOG_OPTIONS = [
   }),
   new Option({ long: '--oneline', description: 'One abbreviated line per commit' }),
   new Option({ long: '--reverse', description: 'Print commits oldest first' }),
+  new Option({ long: '--all', description: 'Start from every ref as well as the revision' }),
+  PRETTY_OPTION,
+  FORMAT_OPTION,
   // The pickaxe, and the reason `git log -S <name> --reverse` answers "which
   // commit introduced this": it selects commits that changed how many times the
   // string occurs, not commits that mention it.
@@ -65,6 +85,18 @@ const LOG_OPTIONS = [
     type: 'str',
     description: 'Commits older than a date (ISO-8601 or epoch)',
   }),
+]
+
+const SHOW_OPTIONS = [
+  new Option({ long: '--stat', description: 'Show the diffstat table instead of the patch' }),
+  new Option({ short: '-s', long: '--no-patch', description: 'Suppress all diff output' }),
+  new Option({ long: '--name-only', description: 'Show changed paths instead of the patch' }),
+  new Option({
+    long: '--no-ext-diff',
+    description: 'Accepted for compatibility; there are no external diff drivers to disable',
+  }),
+  PRETTY_OPTION,
+  FORMAT_OPTION,
 ]
 
 const STATUS_OPTIONS = [
@@ -153,6 +185,7 @@ export const GIT = new CLISpec({
       name: 'show',
       description: 'Show a commit and its diff',
       fn: show,
+      options: SHOW_OPTIONS,
       rest: REVISION,
     }),
     new CLISpec({

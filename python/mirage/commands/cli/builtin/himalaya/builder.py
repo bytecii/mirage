@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import hashlib
 from dataclasses import dataclass
 from email.message import EmailMessage
 from typing import Any, Literal
@@ -22,6 +23,44 @@ from mirage.io.types import ByteSource
 SourceMode = Literal["reply", "forward"]
 PostingStyle = Literal["top", "bottom"]
 PREFIXES: dict[SourceMode, str] = {"reply": "Re: ", "forward": "Fwd: "}
+
+# Extension-guessed like upstream's mime_guess, as a deliberate fixed
+# subset: the stdlib mimetypes module consults platform tables, and the
+# two implementations must guess identically for the serialized bytes
+# to match. Anything else is application/octet-stream, which every
+# client treats as "download me".
+CONTENT_TYPES: dict[str, str] = {
+    "csv": "text/csv",
+    "gif": "image/gif",
+    "gz": "application/gzip",
+    "htm": "text/html",
+    "html": "text/html",
+    "jpeg": "image/jpeg",
+    "jpg": "image/jpeg",
+    "json": "application/json",
+    "md": "text/markdown",
+    "pdf": "application/pdf",
+    "png": "image/png",
+    "svg": "image/svg+xml",
+    "tar": "application/x-tar",
+    "txt": "text/plain",
+    "xml": "text/xml",
+    "zip": "application/zip",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class Attachment:
+    """One file attached to an outgoing message.
+
+    Args:
+        filename (str): basename presented in Content-Disposition.
+        content_type (str): full maintype/subtype pair.
+        data (bytes): the file's bytes, read through the workspace.
+    """
+    filename: str
+    content_type: str
+    data: bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +76,8 @@ class Compose:
             the source message.
         body (str): the user's own body text.
         signature (str | None): signature appended after a `-- ` line.
+        attachments (tuple[Attachment, ...]): files attached via
+            --attach, already read into memory.
     """
     sender: str
     to: tuple[str, ...] = ()
@@ -45,6 +86,7 @@ class Compose:
     subject: str | None = None
     body: str = ""
     signature: str | None = None
+    attachments: tuple[Attachment, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +103,40 @@ class Source:
     mode: SourceMode
     posting_style: PostingStyle = "top"
     quote_headline: str = ""
+
+
+def content_type_for(filename: str) -> str:
+    """Guess a content type from the filename's extension.
+
+    Args:
+        filename (str): the attachment's basename.
+    """
+    _, dot, extension = filename.rpartition(".")
+    if not dot:
+        return "application/octet-stream"
+    return CONTENT_TYPES.get(extension.lower(), "application/octet-stream")
+
+
+def mixed_boundary(body: str, attachments: tuple[Attachment, ...]) -> str:
+    """A deterministic multipart boundary for the message's content.
+
+    EmailMessage would generate a random boundary, which breaks
+    byte-for-byte parity with the TypeScript builder and makes the
+    no-send stdout non-reproducible. Hashing the content gives a
+    boundary that cannot occur inside it (the content would have to
+    contain its own hash) while staying stable across runs and
+    languages.
+
+    Args:
+        body (str): the laid-out text body.
+        attachments (tuple[Attachment, ...]): the attached files.
+    """
+    digest = hashlib.sha256(body.encode())
+    for attachment in attachments:
+        digest.update(attachment.filename.encode())
+        digest.update(attachment.content_type.encode())
+        digest.update(attachment.data)
+    return digest.hexdigest()[:32]
 
 
 def split_addresses(values: list[str]) -> tuple[str, ...]:
@@ -197,9 +273,17 @@ def build(compose: Compose, source: Source | None = None) -> EmailMessage:
     message["Subject"] = subject or ""
     style: PostingStyle = source.posting_style if source else "top"
     headline = source.quote_headline if source else ""
-    message.set_content(
-        compose_body(compose.body, quote_text(source_text, headline),
-                     compose.signature or "", style))
+    body = compose_body(compose.body, quote_text(source_text, headline),
+                        compose.signature or "", style)
+    message.set_content(body)
+    for attachment in compose.attachments:
+        maintype, _, subtype = attachment.content_type.partition("/")
+        message.add_attachment(attachment.data,
+                               maintype=maintype,
+                               subtype=subtype,
+                               filename=attachment.filename)
+    if compose.attachments:
+        message.set_boundary(mixed_boundary(body, compose.attachments))
     return message
 
 
