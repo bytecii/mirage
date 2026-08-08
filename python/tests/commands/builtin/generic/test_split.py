@@ -14,6 +14,7 @@
 
 import pytest
 
+from mirage.commands.builtin.generic import split as split_generic
 from mirage.commands.builtin.generic.split import (parse_bytes_value,
                                                    parse_chunks_value,
                                                    parse_lines_value,
@@ -22,6 +23,10 @@ from mirage.commands.builtin.generic.split import (parse_bytes_value,
 from mirage.commands.errors import UsageError
 
 _TRY = "\nTry 'split --help' for more information."
+_ALPHA_SUFFIXES = split_generic._ALPHA_SUFFIXES
+_HEX_SUFFIXES = split_generic._HEX_SUFFIXES
+_NUMERIC_SUFFIXES = split_generic._NUMERIC_SUFFIXES
+_suffix_name = split_generic._suffix_name
 
 
 def test_bytes_accepts_gnu_suffixes():
@@ -111,6 +116,40 @@ def test_suffix_length_rejects_junk_but_allows_zero():
     with pytest.raises(UsageError) as exc:
         parse_suffix_length("1k")
     assert str(exc.value) == "split: invalid suffix length: '1k'"
+
+
+def test_suffix_names_auto_lengthen_like_gnu():
+    # GNU reserves the last alphabet character as a growth prefix:
+    # aa..yz then zaaa.., 00..89 then 9000..9899 then 990000.., 00..ef
+    # then f000.. (pinned against coreutils 9.7). Index 676 must never
+    # wrap back onto aa.
+    assert _suffix_name(649, _ALPHA_SUFFIXES, True, 2, 0) == "yz"
+    assert _suffix_name(650, _ALPHA_SUFFIXES, True, 2, 0) == "zaaa"
+    assert _suffix_name(651, _ALPHA_SUFFIXES, True, 2, 0) == "zaab"
+    assert _suffix_name(89, _NUMERIC_SUFFIXES, True, 2, 0) == "89"
+    assert _suffix_name(90, _NUMERIC_SUFFIXES, True, 2, 0) == "9000"
+    assert _suffix_name(989, _NUMERIC_SUFFIXES, True, 2, 0) == "9899"
+    assert _suffix_name(990, _NUMERIC_SUFFIXES, True, 2, 0) == "990000"
+    assert _suffix_name(239, _HEX_SUFFIXES, True, 2, 0) == "ef"
+    assert _suffix_name(240, _HEX_SUFFIXES, True, 2, 0) == "f000"
+
+
+def test_suffix_names_exhaust_fixed_widths():
+    # An explicit -a width or an explicit start value pins the width;
+    # GNU keeps the chunks already written and fails on the next name.
+    assert _suffix_name(675, _ALPHA_SUFFIXES, False, 2, 0) == "zz"
+    with pytest.raises(UsageError) as exc:
+        _suffix_name(676, _ALPHA_SUFFIXES, False, 2, 0)
+    assert str(exc.value) == "split: output file suffixes exhausted"
+    assert exc.value.exit_code == 1
+    assert _suffix_name(1, _NUMERIC_SUFFIXES, False, 2, 98) == "99"
+    with pytest.raises(UsageError):
+        _suffix_name(2, _NUMERIC_SUFFIXES, False, 2, 98)
+    # Deliberate divergence: GNU 9.7 with --hex-suffixes=f0 walks past its
+    # alphabet into non-hex names; mirage exhausts cleanly at the width.
+    assert _suffix_name(15, _HEX_SUFFIXES, False, 2, 0xf0) == "ff"
+    with pytest.raises(UsageError):
+        _suffix_name(16, _HEX_SUFFIXES, False, 2, 0xf0)
 
 
 def test_suffix_length_overflows_past_uintmax():

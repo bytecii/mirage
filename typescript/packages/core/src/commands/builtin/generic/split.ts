@@ -104,23 +104,56 @@ function parseSuffixStart(value: string, hexMode: boolean, suffixLen: number): n
   return start
 }
 
-function alphaSuffix(index: number, length: number): string {
+const ALPHA_SUFFIXES = 'abcdefghijklmnopqrstuvwxyz'
+const NUMERIC_SUFFIXES = '0123456789'
+const HEX_SUFFIXES = '0123456789abcdef'
+
+function toBase(value: number, alphabet: string, width: number): string {
+  const base = alphabet.length
   const chars: string[] = []
-  let n = index
-  for (let i = 0; i < length; i++) {
-    chars.push(String.fromCharCode('a'.charCodeAt(0) + (n % 26)))
-    n = Math.floor(n / 26)
+  let v = value
+  for (let i = 0; i < width; i++) {
+    chars.push(alphabet[v % base] ?? '')
+    v = Math.floor(v / base)
   }
   return chars.reverse().join('')
 }
 
-function numericSuffix(index: number, length: number): string {
-  const s = String(index)
-  return s.length >= length ? s : '0'.repeat(length - s.length) + s
-}
-
-function hexSuffix(index: number, length: number): string {
-  return index.toString(16).padStart(length, '0')
+// GNU's next_file_name: with no explicit width and no explicit start value
+// the suffix auto-lengthens, reserving the last alphabet character as a
+// prefix — aa..yz, then zaaa..zyzz, then zzaaaa.. (00..89 then 9000..9899
+// then 990000.. for -d); band k holds (B-1)*B**(k+1) names behind k reserved
+// characters. An explicit -a width or a --numeric/hex-suffixes start value
+// pins the width, and running past B**width is GNU's exhaustion error with
+// the chunks already written kept (pinned against coreutils 9.7).
+// Deliberate divergence: GNU with a hex start whose leading digit is the
+// reserved 'f' (--hex-suffixes=f0) walks past its alphabet and names files
+// with non-hex characters; mirage exhausts cleanly at B**width.
+function suffixNamer(
+  alphabet: string,
+  auto: boolean,
+  width: number,
+  start: number,
+): (index: number) => string {
+  const base = alphabet.length
+  return (index: number): string => {
+    if (auto) {
+      let band = 0
+      let capacity = (base - 1) * base
+      let rest = index
+      while (rest >= capacity) {
+        rest -= capacity
+        band += 1
+        capacity *= base
+      }
+      return (alphabet[base - 1] ?? '').repeat(band) + toBase(rest, alphabet, band + 2)
+    }
+    const value = start + index
+    if (value >= base ** width) {
+      throw new UsageError('split: output file suffixes exhausted', 1)
+    }
+    return toBase(value, alphabet, width)
+  }
 }
 
 function makePathSpec(virtual: string): PathSpec {
@@ -134,13 +167,11 @@ function makePathSpec(virtual: string): PathSpec {
 
 function outputPath(
   prefix: string,
-  suffix: (index: number, length: number) => string,
+  suffix: (index: number) => string,
   index: number,
-  start: number,
-  length: number,
   additional: string,
 ): string {
-  return prefix + suffix(index + start, length) + additional
+  return prefix + suffix(index) + additional
 }
 
 function joinLines(lines: readonly Uint8Array[]): Uint8Array {
@@ -216,9 +247,13 @@ export async function splitGeneric(
   const dFlag = numericValue !== undefined
   const xFlag = hexValue !== undefined
   const suffixLenRaw = aFlag !== null ? parseSuffixLength(aFlag) : 2
-  // GNU reads an explicit `-a 0` as "revert to auto width", which for
-  // fixed-width naming is the default length of 2.
+  // GNU reads an explicit `-a 0` as "revert to auto width": names start at
+  // the default length of 2 and keep auto-lengthening.
   const suffixLen = suffixLenRaw === 0 ? 2 : suffixLenRaw
+  const suffixAuto =
+    (aFlag === null || suffixLenRaw === 0) &&
+    typeof numericValue !== 'string' &&
+    typeof hexValue !== 'string'
   const suffixStart =
     typeof numericValue === 'string'
       ? parseSuffixStart(numericValue, false, suffixLen)
@@ -236,7 +271,12 @@ export async function splitGeneric(
     linesFlag !== null ? parseLinesValue(linesFlag) : bFlag === null && nFlag === null ? 1000 : 0
   const byteLimit = bFlag !== null ? parseBytesValue(bFlag) : 0
   const nChunks = nFlag !== null ? parseChunksValue(nFlag) : 0
-  const suffixFn = xFlag ? hexSuffix : dFlag ? numericSuffix : alphaSuffix
+  const suffixFn = suffixNamer(
+    xFlag ? HEX_SUFFIXES : dFlag ? NUMERIC_SUFFIXES : ALPHA_SUFFIXES,
+    suffixAuto,
+    suffixLen,
+    suffixStart,
+  )
 
   let source: AsyncIterable<Uint8Array>
   const first = paths[0]
@@ -267,7 +307,7 @@ export async function splitGeneric(
     for (let i = 0; i < nChunks; i++) {
       const part = allData.slice(offset, offset + chunkSize)
       if (part.byteLength === 0) break
-      const outPath = outputPath(prefixPath, suffixFn, i, suffixStart, suffixLen, additionalSuffix)
+      const outPath = outputPath(prefixPath, suffixFn, i, additionalSuffix)
       await write(makePathSpec(outPath), part)
       writes[outPath] = part
       offset += chunkSize
@@ -280,14 +320,7 @@ export async function splitGeneric(
       merged.set(c, buf.byteLength)
       buf = merged
       while (buf.byteLength >= byteLimit) {
-        const outPath = outputPath(
-          prefixPath,
-          suffixFn,
-          fileIdx,
-          suffixStart,
-          suffixLen,
-          additionalSuffix,
-        )
+        const outPath = outputPath(prefixPath, suffixFn, fileIdx, additionalSuffix)
         const data = buf.slice(0, byteLimit)
         await write(makePathSpec(outPath), data)
         writes[outPath] = data
@@ -296,14 +329,7 @@ export async function splitGeneric(
       }
     }
     if (buf.byteLength > 0) {
-      const outPath = outputPath(
-        prefixPath,
-        suffixFn,
-        fileIdx,
-        suffixStart,
-        suffixLen,
-        additionalSuffix,
-      )
+      const outPath = outputPath(prefixPath, suffixFn, fileIdx, additionalSuffix)
       await write(makePathSpec(outPath), buf)
       writes[outPath] = buf
     }
@@ -314,14 +340,7 @@ export async function splitGeneric(
     for await (const line of iter) {
       lineBuf.push(line)
       if (lineBuf.length >= linesPerFile) {
-        const outPath = outputPath(
-          prefixPath,
-          suffixFn,
-          fileIdx,
-          suffixStart,
-          suffixLen,
-          additionalSuffix,
-        )
+        const outPath = outputPath(prefixPath, suffixFn, fileIdx, additionalSuffix)
         const data = joinRecords(lineBuf, separator)
         await write(makePathSpec(outPath), data)
         writes[outPath] = data
@@ -330,14 +349,7 @@ export async function splitGeneric(
       }
     }
     if (lineBuf.length > 0) {
-      const outPath = outputPath(
-        prefixPath,
-        suffixFn,
-        fileIdx,
-        suffixStart,
-        suffixLen,
-        additionalSuffix,
-      )
+      const outPath = outputPath(prefixPath, suffixFn, fileIdx, additionalSuffix)
       const data = joinRecords(lineBuf, separator)
       await write(makePathSpec(outPath), data)
       writes[outPath] = data

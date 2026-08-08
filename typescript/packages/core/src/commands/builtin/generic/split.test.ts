@@ -24,8 +24,9 @@ const TRY = "\nTry 'split --help' for more information."
 async function runSplit(
   flags: CommandOpts['flags'],
   input = 'l1\nl2\nl3\nl4\n',
+  sink?: Record<string, string>,
 ): Promise<Record<string, string>> {
-  const written: Record<string, string> = {}
+  const written: Record<string, string> = sink ?? {}
   const opts = {
     stdin: ENC.encode(input),
     flags,
@@ -64,6 +65,50 @@ describe('split flag values', () => {
     // chunk landed on the same output path and only the last survived.
     const written = await runSplit({ suffix_length: '0', lines: '1' }, 'a\nb\n')
     expect(Object.keys(written).sort()).toEqual(['xaa', 'xab'])
+  })
+
+  it('auto-lengthens alpha suffixes past aa..yz instead of wrapping', async () => {
+    // GNU reserves z as a growth prefix: aa..yz, then zaaa.. — index 676
+    // must never wrap back onto xaa (pinned against coreutils 9.7).
+    const written = await runSplit({ bytes: '1', suffix_length: '0' }, 'q'.repeat(652))
+    expect(Object.keys(written).length).toBe(652)
+    expect(written.xyz).toBe('q')
+    expect(written.xzaaa).toBe('q')
+    expect(written.xzaab).toBe('q')
+    expect(written.xzz).toBeUndefined()
+  })
+
+  it('auto-lengthens numeric and hex suffixes behind their reserved digit', async () => {
+    const numeric = await runSplit({ bytes: '1', numeric_suffixes: true }, 'q'.repeat(92))
+    expect(numeric.x89).toBe('q')
+    expect(numeric.x9000).toBe('q')
+    expect(numeric.x9001).toBe('q')
+    expect(numeric.x90).toBeUndefined()
+    const hex = await runSplit({ bytes: '1', hex_suffixes: true }, 'q'.repeat(242))
+    expect(hex.xef).toBe('q')
+    expect(hex.xf000).toBe('q')
+    expect(hex.xf0).toBeUndefined()
+  })
+
+  it('exhausts an explicit width instead of wrapping onto earlier chunks', async () => {
+    // GNU keeps the chunks already written and fails on the next name.
+    const sink: Record<string, string> = {}
+    await expect(
+      runSplit({ bytes: '1', suffix_length: '1' }, 'q'.repeat(27), sink),
+    ).rejects.toThrow(new UsageError('split: output file suffixes exhausted', 1))
+    expect(Object.keys(sink).length).toBe(26)
+    expect(sink.xa).toBe('q')
+    expect(sink.xz).toBe('q')
+  })
+
+  it('an explicit start value pins the width and exhausts past it', async () => {
+    // Deliberate divergence for hex: GNU 9.7 with --hex-suffixes=f0 walks
+    // past its alphabet into non-hex names; mirage exhausts cleanly.
+    const sink: Record<string, string> = {}
+    await expect(runSplit({ bytes: '1', numeric_suffixes: '98' }, 'qqq', sink)).rejects.toThrow(
+      new UsageError('split: output file suffixes exhausted', 1),
+    )
+    expect(Object.keys(sink).sort()).toEqual(['x98', 'x99'])
   })
 
   // xstrtoumax skips leading whitespace and allows a single '+', so these are

@@ -58,10 +58,14 @@ async def split(
     numeric_value = fl.raw("numeric_suffixes")
     hex_value = fl.raw("hex_suffixes")
     length_value = a if a is not None else fl.as_str("suffix_length")
-    # GNU reads an explicit `-a 0` as "revert to auto width", which for
-    # fixed-width naming is the default length of 2.
-    suffix_len = (parse_suffix_length(length_value)
-                  if length_value is not None else 2) or 2
+    # GNU reads an explicit `-a 0` as "revert to auto width": names start
+    # at the default length of 2 and keep auto-lengthening. An explicit
+    # width or an explicit start value pins the width instead.
+    suffix_len_raw = (parse_suffix_length(length_value)
+                      if length_value is not None else None)
+    suffix_len = suffix_len_raw or 2
+    suffix_auto = (not suffix_len_raw and not isinstance(numeric_value, str)
+                   and not isinstance(hex_value, str))
     suffix_start = (parse_suffix_start(numeric_value, False, suffix_len)
                     if isinstance(numeric_value, str) else
                     parse_suffix_start(hex_value, True, suffix_len)
@@ -78,6 +82,7 @@ async def split(
         n_chunks=(parse_chunks_value(number_value)
                   if number_value is not None else 0),
         suffix_len=suffix_len,
+        suffix_auto=suffix_auto,
         numeric_suffix=d or numeric_value is not None,
         hex_suffix=x or hex_value is not None,
         suffix_start=suffix_start,
