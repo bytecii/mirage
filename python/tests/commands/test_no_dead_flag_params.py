@@ -108,8 +108,8 @@ def test_handlers_declare_no_flag_the_parser_cannot_emit():
             continue
         dead = [
             param for param, kind in signature.parameters.items()
-            if kind.kind not in (kind.VAR_KEYWORD, kind.VAR_POSITIONAL)
-            and param not in allowed
+            if kind.kind not in (kind.VAR_KEYWORD,
+                                 kind.VAR_POSITIONAL) and param not in allowed
         ]
         if dead:
             offenders.append(f"{label}: {name}({', '.join(dead)})")

@@ -66,12 +66,11 @@ def test_annotations_name_a_real_type():
                 continue
             args = node.args
             annotated = [
-                *args.posonlyargs, *args.args, *args.kwonlyargs,
-                args.vararg, args.kwarg
+                *args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg,
+                args.kwarg
             ]
-            named = [
-                arg.annotation for arg in annotated if arg is not None
-            ] + [node.returns]
+            named = [arg.annotation
+                     for arg in annotated if arg is not None] + [node.returns]
             if any(_mentions_object(item) for item in named):
                 offenders.append(f"{rel}: {node.name}")
     assert not offenders, (
