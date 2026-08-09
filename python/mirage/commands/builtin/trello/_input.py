@@ -15,9 +15,27 @@
 
 from mirage.commands.builtin.utils.stream import \
     resolve_text_input as _resolve_text_input
+from mirage.commands.spec.types import FlagView
 from mirage.core.trello.read import read_bytes
 from mirage.io.types import ByteSource
 from mirage.resource.trello.config import TrelloConfig
+
+
+def file_operand(fl: FlagView, name: str) -> str | None:
+    """The virtual path a ``--*_file`` flag names, or None when absent.
+
+    A PATH-typed flag value reaches the command as a PathSpec (the
+    executor promotes it), so ``as_str`` reads it as absent and the
+    operand silently goes unread. The TypeScript bag carries the
+    resolved virtual-path string instead, which is why its twin is a
+    plain ``asStr``.
+
+    Args:
+        fl (FlagView): Flag view constructed with the command's spec.
+        name (str): Canonical flag name, e.g. ``desc_file``.
+    """
+    paths = fl.as_paths(name)
+    return paths[0].virtual if paths else None
 
 
 async def _read_file(config: TrelloConfig, path: str) -> bytes:
