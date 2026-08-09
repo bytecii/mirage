@@ -15,11 +15,13 @@
 from mirage.commands.builtin.trello._input import file_operand
 from mirage.commands.builtin.trello.trello_card_update import SPEC
 from mirage.commands.spec.types import FlagView
+from mirage.types import PathSpec
 from mirage.workspace.executor.command.flags import parse_flags
 
 
 def _view(argv: list[str]) -> FlagView:
-    return FlagView(parse_flags(argv, SPEC, "trello card update", "/").flag_kwargs,
+    return FlagView(parse_flags(argv, SPEC, "trello card update",
+                                "/").flag_kwargs,
                     spec=SPEC)
 
 
@@ -29,8 +31,30 @@ def test_file_flag_reads_the_promoted_path():
     The executor promotes PATH-typed flag values, so reading one with
     `as_str` yields None and the operand is silently never read.
     """
-    assert file_operand(_view(["--desc_file", "/data/d.txt"]),
-                        "desc_file") == "/data/d.txt"
+    spec = file_operand(_view(["--desc_file", "/data/d.txt"]), "desc_file")
+    assert spec is not None
+    assert spec.virtual == "/data/d.txt"
+
+
+def test_file_flag_keeps_the_mount_relative_path():
+    """The backend reader is addressed by resource_path, not by virtual.
+
+    Handing the trello reader `/board/workspaces/...` makes every read
+    miss: it keys off the path with the mount prefix already taken off,
+    which only survives if the promotion hands back the executor's own
+    scoped spec rather than a synthesized one.
+    """
+    scoped = PathSpec(virtual="/board/w/x.json",
+                      directory="/board/w/",
+                      resource_path="w/x.json",
+                      raw_path="/board/w/x.json",
+                      resolved=True)
+    parsed = parse_flags(["--desc_file", scoped], SPEC, "trello card update",
+                         "/")
+    spec = file_operand(FlagView(parsed.flag_kwargs, spec=SPEC), "desc_file")
+    assert spec is not None
+    assert spec.resource_path == "w/x.json"
+    assert spec.virtual == "/board/w/x.json"
 
 
 def test_absent_file_flag_is_none():

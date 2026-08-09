@@ -50,6 +50,7 @@ async function trelloCardCommentUpdateCommand(
   const text = await resolveTextInput(accessor.transport, {
     inlineText,
     filePath: textFile,
+    mountPrefix: opts.mountPrefix ?? '',
     stdin: opts.stdin,
     errorMessage: 'comment text is required',
   })

@@ -58,6 +58,7 @@ async function trelloCardUpdateCommand(
     desc = await resolveTextInput(accessor.transport, {
       inlineText: inlineDesc,
       filePath: descFile,
+      mountPrefix: opts.mountPrefix ?? '',
       stdin: opts.stdin,
       errorMessage: 'desc is required',
     })
