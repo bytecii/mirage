@@ -15,7 +15,7 @@
 import { resolvePath } from '../../utils/path.ts'
 import { type CompiledSpec, compileSpec, expandLong } from './compile.ts'
 import { FLOAT_VALUE, flagKwargName, INT_VALUE, NUMERIC_SHORT } from './constants.ts'
-import { type CommandSpec, type ValueType, ParsedArgs } from './types.ts'
+import { type CommandSpec, type ValueType, ParsedArgs, type FlagValue } from './types.ts'
 
 // Record a value flag occurrence under its canonical dest. Both spellings
 // of one option land on the same key, so the last occurrence wins
@@ -23,7 +23,7 @@ import { type CommandSpec, type ValueType, ParsedArgs } from './types.ts'
 // and `multiple` options accumulate in true command-line order
 // (`sort -k1 --key=2` is `[1, 2]`).
 function setValueFlag(
-  flags: Record<string, string | boolean | number | string[]>,
+  flags: Record<string, FlagValue>,
   cs: CompiledSpec,
   spelling: string,
   value: string,
@@ -44,11 +44,7 @@ function setValueFlag(
 // Record a boolean flag occurrence under its canonical dest. A count flag
 // accumulates occurrences into a number (`-vvv` and `-v -v -v` both land
 // as 3); every other boolean flag is sticky true.
-function setBoolFlag(
-  flags: Record<string, string | boolean | number | string[]>,
-  cs: CompiledSpec,
-  spelling: string,
-): void {
+function setBoolFlag(flags: Record<string, FlagValue>, cs: CompiledSpec, spelling: string): void {
   const name = cs.destOf(spelling)
   if (cs.countDests.has(name)) {
     const prev = flags[name]
@@ -113,7 +109,7 @@ export function parseCommand(spec: CommandSpec, argv: string[], cwd: string): Pa
     }
   }
 
-  const flags: Record<string, string | boolean | number | string[]> = {}
+  const flags: Record<string, FlagValue> = {}
   const rawArgs: string[] = []
   // rawIndices[k] = argv position of rawArgs[k]
   const rawIndices: number[] = []
@@ -467,10 +463,8 @@ export function parseCommand(spec: CommandSpec, argv: string[], cwd: string): Pa
   })
 }
 
-export function parseToKwargs(
-  parsed: ParsedArgs,
-): Record<string, string | boolean | number | string[]> {
-  const result: Record<string, string | boolean | number | string[]> = {}
+export function parseToKwargs(parsed: ParsedArgs): Record<string, FlagValue> {
+  const result: Record<string, FlagValue> = {}
   for (const [key, value] of Object.entries(parsed.flags)) {
     result[flagKwargName(key)] = value
   }
