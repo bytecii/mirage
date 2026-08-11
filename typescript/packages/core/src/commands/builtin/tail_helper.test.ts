@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { parseCounts, tailBytes } from './tail_helper.ts'
+import { normalizeCounts, parseCounts, tailBytes, type TailCounts } from './tail_helper.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
@@ -21,6 +21,30 @@ const DEC = new TextDecoder()
 function run(data: string, n: string | null, c: string | null): string {
   return DEC.decode(tailBytes(ENC.encode(data), parseCounts(n, c)))
 }
+
+describe('normalizeCounts', () => {
+  // A TailCounts is a plain object, so anything reaching tailBytes from
+  // outside TypeScript can leave fields undefined. `undefined !== null` is
+  // true, so a bare guard used to take the count-forward branch and return
+  // `slice(NaN)` -- the whole input, silently.
+  it('reads a missing field as unset rather than as a count', () => {
+    expect(normalizeCounts({ lines: 2 } as unknown as TailCounts)).toEqual({
+      lines: 2,
+      fromLine: null,
+      byteCount: null,
+      fromByte: null,
+    })
+  })
+
+  it.each([
+    [{ lines: 2 }, 'd\ne\n'],
+    [{}, 'a\nb\nc\nd\ne\n'],
+    [{ byteCount: 3 }, '\ne\n'],
+  ])('serves %j as its own kind of tail, not as the whole input', (partial, expected) => {
+    const data = ENC.encode('a\nb\nc\nd\ne\n')
+    expect(DEC.decode(tailBytes(data, partial as TailCounts))).toBe(expected)
+  })
+})
 
 describe('parseCounts', () => {
   it('sends a bare count to the count-back-from-the-end slot', () => {

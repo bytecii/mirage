@@ -396,6 +396,7 @@ export {
 } from './commands/builtin/sort_helper.ts'
 export {
   countNewlines,
+  normalizeCounts,
   parseCounts,
   parseN,
   tailBytes,

@@ -26,6 +26,25 @@ export interface TailCounts {
 }
 
 /**
+ * Fill in whatever a caller left off a `TailCounts`.
+ *
+ * The struct is a plain object, so a caller that omits a field — or a
+ * JavaScript one that passes something else entirely — supplies undefined,
+ * and a bare `!== null` test waves that straight into the first branch,
+ * where `slice(NaN)` quietly returns the whole input. Python's twin is a
+ * dataclass whose four fields all default to None and has no such hole;
+ * reading every field through `?? null` gives this side the same floor.
+ */
+export function normalizeCounts(counts: TailCounts): TailCounts {
+  return {
+    lines: counts.lines ?? null,
+    fromLine: counts.fromLine ?? null,
+    byteCount: counts.byteCount ?? null,
+    fromByte: counts.fromByte ?? null,
+  }
+}
+
+/**
  * Split tail's `-n`/`-c` values by which end they count from.
  *
  * GNU gives both flags the same sign grammar: a leading `+` counts forward
@@ -67,7 +86,8 @@ export function numberFlagError(
   return null
 }
 
-export function tailBytes(data: Uint8Array, counts: TailCounts): Uint8Array {
+export function tailBytes(data: Uint8Array, rawCounts: TailCounts): Uint8Array {
+  const counts = normalizeCounts(rawCounts)
   if (counts.fromByte !== null) {
     // GNU counts `-c +N` from byte N, 1-indexed, so +0 and +1 both mean the
     // whole input.

@@ -20,6 +20,7 @@ import type { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import {
   countNewlines,
+  normalizeCounts,
   numberFlagError,
   parseCounts,
   tailBytes,
@@ -35,7 +36,8 @@ type Stream = (p: PathSpec) => AsyncIterable<Uint8Array>
 // Whether this operand's whole content is what tail emits, which is what
 // makes it worth handing to the file cache. Counting from the start is
 // never treated as a full read, matching what `-n +N` has always done.
-function readsEverything(counts: TailCounts, raw: Uint8Array): boolean {
+function readsEverything(rawCounts: TailCounts, raw: Uint8Array): boolean {
+  const counts = normalizeCounts(rawCounts)
   if (counts.fromByte !== null || counts.fromLine !== null) return false
   if (counts.byteCount !== null) return counts.byteCount >= raw.byteLength
   return (counts.lines ?? 10) >= countNewlines(raw)
