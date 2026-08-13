@@ -214,9 +214,16 @@ class MountRegistry:
         return m
 
     def try_mount_for_prefix(self, prefix: str) -> MountEntry | None:
-        """The mount at exactly this prefix, or None when none matches."""
+        """The mount at exactly this prefix, or None when none matches.
+
+        The argument is normalized like ``mount``/``unmount`` take it, so
+        the registration spelling ("/data", "data/") finds the stored
+        "/data/" entry (mirrors the TS twin).
+        """
+        stripped = prefix.strip("/")
+        norm = "/" + stripped + "/" if stripped else "/"
         for m in self._mounts:
-            if m.prefix == prefix:
+            if m.prefix == norm:
                 return m
         return None
 
@@ -237,9 +244,7 @@ class MountRegistry:
         return None
 
     def is_mount_root(self, path: str) -> bool:
-        stripped = path.strip("/")
-        norm = "/" + stripped + "/" if stripped else "/"
-        return any(m.prefix == norm for m in self._mounts)
+        return self.try_mount_for_prefix(path) is not None
 
     def descendant_mounts(self, path: str) -> list[MountEntry]:
         """Mounts whose prefix is strictly under `path`.

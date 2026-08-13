@@ -427,6 +427,13 @@ describe('MountRegistry mount lookup contract', () => {
     expect(reg.tryMountForPrefix('/data/')?.prefix).toBe('/data/')
   })
 
+  it('tryMountForPrefix normalizes the registration spelling', () => {
+    const reg = new MountRegistry({ '/data': new StubResource() }, MountMode.WRITE)
+    for (const spelling of ['/data', 'data/', '/data/']) {
+      expect(reg.tryMountForPrefix(spelling)?.prefix).toBe('/data/')
+    }
+  })
+
   it('groupByMount propagates the miss instead of dropping the path', () => {
     const reg = new MountRegistry({ '/data': new StubResource() }, MountMode.WRITE)
     let thrown: unknown = null

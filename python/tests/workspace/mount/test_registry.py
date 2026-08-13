@@ -473,6 +473,15 @@ def test_try_mount_for_prefix_none_on_miss(registry):
     assert registry.try_mount_for_prefix("/unknown/") is None
 
 
+def test_try_mount_for_prefix_normalizes_the_spelling(registry):
+    # The registration spelling ("/data", "data/") finds the stored
+    # "/data/" entry, mirroring the TS twin's normalization.
+    for spelling in ("/data", "data/", "/data/"):
+        mount = registry.try_mount_for_prefix(spelling)
+        assert mount is not None
+        assert mount.prefix == "/data/"
+
+
 def test_group_by_mount_propagates_miss(registry):
     with pytest.raises(NoMountError):
         registry.group_by_mount(["/data/a.txt", "/unknown/b.txt"])
