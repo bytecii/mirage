@@ -20,19 +20,16 @@ from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
                                                           Operation)
 from mirage.commands.builtin.utils.output import format_optional_records
 from mirage.commands.builtin.utils.verbose import removal_lines
+from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileType, PathSpec
-from mirage.commands.config import CommandOpts
 
 
-async def rm(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def rm(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+             texts: list[str],
+             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["rm"])
     f = fl.as_bool("f")
     v = fl.as_bool("v")

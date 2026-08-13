@@ -14,8 +14,8 @@
 
 import math
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.builtin.utils.formatting import _human_size
+from mirage.runtime.types import DispatchFn
 from mirage.types import CapacityResult, CapacityState, PathSpec
 from mirage.utils.path import resolve_path
 from mirage.workspace.executor.builtins.shared import (Result, fail, ok,

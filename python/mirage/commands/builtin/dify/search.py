@@ -1,13 +1,13 @@
 from mirage.commands.builtin.dify.io import resolve_glob
 from mirage.commands.builtin.utils.paths import default_paths
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
+from mirage.commands.spec.types import FlagView
 from mirage.core.dify import search as search_core
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
-from mirage.commands.config import CommandOpts
-from mirage.commands.spec.types import FlagView
 
 
 def is_mount_root(path: PathSpec) -> bool:
@@ -34,8 +34,7 @@ async def search(
     if any(is_mount_root(path) for path in target_paths):
         resolved_paths: list[PathSpec] = []
     else:
-        resolved_paths = await resolve_glob(accessor, target_paths,
-                                            opts.index)
+        resolved_paths = await resolve_glob(accessor, target_paths, opts.index)
     top_k = fl.as_int("top_k")
     output = await search_core.search_segments(
         accessor,

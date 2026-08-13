@@ -20,8 +20,10 @@ from mirage.commands.builtin.generic.cp import walk
 from mirage.commands.builtin.gridfs.io import resolve_glob
 from mirage.commands.builtin.utils.output import format_optional_records
 from mirage.commands.builtin.utils.verbose import removal_lines
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
+from mirage.commands.spec.types import FlagView
 from mirage.core.gridfs.readdir import readdir
 from mirage.core.gridfs.rm import rm_r
 from mirage.core.gridfs.rmdir import rmdir
@@ -29,8 +31,6 @@ from mirage.core.gridfs.stat import stat
 from mirage.core.gridfs.unlink import unlink
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileType, PathSpec
-from mirage.commands.config import CommandOpts
-from mirage.commands.spec.types import FlagView
 
 
 async def _rm(

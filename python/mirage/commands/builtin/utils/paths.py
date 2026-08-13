@@ -66,8 +66,6 @@ def default_paths(paths: list[PathSpec],
         return [cwd]
     if isinstance(cwd, str) and cwd:
         return [
-            PathSpec(resource_path=cwd.strip("/"),
-                     virtual=cwd,
-                     directory=cwd)
+            PathSpec(resource_path=cwd.strip("/"), virtual=cwd, directory=cwd)
         ]
     return [PathSpec(resource_path="", virtual="/", directory="/")]

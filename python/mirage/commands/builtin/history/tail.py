@@ -31,13 +31,10 @@ from mirage.types import PathSpec
          resource="history",
          spec=SPECS["tail"],
          aggregate=header_aggregate)
-async def tail(
-    accessor: HistoryAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def tail(accessor: HistoryAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     resolved = await resolve_or_empty(IO, accessor, paths, opts.index)
-    return await tail_generic(resolved, list(texts),
-                              opts,
+    return await tail_generic(resolved, list(texts), opts,
                               dir_aware_stat(IO, accessor, opts.index),
                               bound_op(IO.read_stream, accessor, opts.index))

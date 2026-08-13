@@ -17,6 +17,7 @@ from mirage.commands.builtin.dropbox.narrow import narrow_scope
 from mirage.commands.builtin.generic.grep import grep as generic_grep
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_helper import pattern_arg
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
@@ -26,15 +27,12 @@ from mirage.core.dropbox.readdir import readdir as _readdir
 from mirage.core.dropbox.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 
 @command("grep", resource="dropbox", spec=SPECS["grep"])
-async def grep(
-    accessor: DropboxAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def grep(accessor: DropboxAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
 

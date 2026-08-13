@@ -16,7 +16,6 @@ from dataclasses import dataclass
 
 from dulwich.repo import BaseRepo
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.cli.builtin.git.changes import collect
 from mirage.commands.cli.builtin.git.errors import GitError, NoWorkspaceError
 from mirage.commands.cli.builtin.git.format import short
@@ -35,6 +34,7 @@ from mirage.commands.spec.types import FlagView
 from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
 from mirage.ops.types import StatPath
+from mirage.runtime.types import DispatchFn
 
 
 @dataclass(frozen=True, slots=True)

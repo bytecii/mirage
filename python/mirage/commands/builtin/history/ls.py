@@ -26,13 +26,9 @@ from mirage.types import PathSpec
 
 
 @command("ls", resource="history", spec=SPECS["ls"])
-async def ls(
-    accessor: HistoryAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
-    return await ls_generic(list(paths),
-                            list(texts),
-                            opts,
+async def ls(accessor: HistoryAccessor, paths: list[PathSpec],
+             texts: list[str],
+             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+    return await ls_generic(list(paths), list(texts), opts,
                             partial(readdir, accessor),
                             partial(stat, accessor))

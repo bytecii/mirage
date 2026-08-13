@@ -31,13 +31,10 @@ from mirage.types import PathSpec
          resource="history",
          spec=SPECS["head"],
          aggregate=header_aggregate)
-async def head(
-    accessor: HistoryAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def head(accessor: HistoryAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     resolved = await resolve_or_empty(IO, accessor, paths, opts.index)
-    return await head_generic(resolved, list(texts),
-                              opts,
+    return await head_generic(resolved, list(texts), opts,
                               dir_aware_stat(IO, accessor, opts.index),
                               bound_op(IO.read_stream, accessor, opts.index))

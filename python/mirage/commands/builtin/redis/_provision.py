@@ -14,10 +14,10 @@
 
 from mirage.accessor.redis import RedisAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.commands.config import CommandOpts
 from mirage.core.redis.stat import stat as redis_stat
 from mirage.provision.types import Precision, ProvisionResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 
 async def _resolve_sizes(
@@ -61,11 +61,12 @@ async def file_read_provision(
     straight from the index entry size.
     """
     if not paths:
-        return ProvisionResult(command=opts.command or "", precision=Precision.UNKNOWN)
-    resolved, missing = await _resolve_sizes(accessor, paths,
-                                             opts.index)
+        return ProvisionResult(command=opts.command or "",
+                               precision=Precision.UNKNOWN)
+    resolved, missing = await _resolve_sizes(accessor, paths, opts.index)
     if missing > 0 or not resolved:
-        return ProvisionResult(command=opts.command or "", precision=Precision.UNKNOWN)
+        return ProvisionResult(command=opts.command or "",
+                               precision=Precision.UNKNOWN)
     total = sum(size for _, size in resolved)
     return ProvisionResult(
         command=opts.command or "",
@@ -89,11 +90,12 @@ async def head_tail_provision(
     the full file size, always exact.
     """
     if not paths:
-        return ProvisionResult(command=opts.command or "", precision=Precision.UNKNOWN)
-    resolved, missing = await _resolve_sizes(accessor, paths,
-                                             opts.index)
+        return ProvisionResult(command=opts.command or "",
+                               precision=Precision.UNKNOWN)
+    resolved, missing = await _resolve_sizes(accessor, paths, opts.index)
     if missing > 0 or not resolved:
-        return ProvisionResult(command=opts.command or "", precision=Precision.UNKNOWN)
+        return ProvisionResult(command=opts.command or "",
+                               precision=Precision.UNKNOWN)
     total = sum(size for _, size in resolved)
     return ProvisionResult(
         command=opts.command or "",

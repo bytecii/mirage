@@ -17,21 +17,19 @@ from functools import partial
 from mirage.accessor.gridfs import GridFSAccessor
 from mirage.commands.builtin.generic.tee import tee as generic_tee
 from mirage.commands.builtin.gridfs.io import resolve_glob
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.gridfs.stream import read_stream
 from mirage.core.gridfs.write import write_bytes
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 
 @command("tee", resource="gridfs", spec=SPECS["tee"], write=True)
-async def tee(
-    accessor: GridFSAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def tee(accessor: GridFSAccessor, paths: list[PathSpec],
+              texts: list[str],
+              opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not paths:
         raise ValueError("tee: missing operand")
     paths = await resolve_glob(accessor, paths, opts.index)

@@ -44,20 +44,17 @@ async def _dir_is_empty(ops: CommandIO, accessor: Accessor,
     return not await ops.readdir(accessor, search, index=index)
 
 
-async def find(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def find(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor):
         raise ValueError("find: no resource")
     resolved = await ops.resolve_glob(accessor, paths, opts.index)
     if ops.find is None:
         # -mtime must see namespace times (touch results, observed
         # writes on mtime-less backends), same as ls.
-        walk_stat: Callable[..., Awaitable[FileStat]] = partial(
-            ops.stat, accessor)
+        walk_stat: Callable[...,
+                            Awaitable[FileStat]] = partial(ops.stat, accessor)
         if opts.stat_overlay is not None:
             walk_stat = partial(overlaid_stat, walk_stat, opts.stat_overlay)
         return await find_walk_generic(resolved,

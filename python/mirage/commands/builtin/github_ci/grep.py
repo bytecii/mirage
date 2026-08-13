@@ -16,6 +16,7 @@ from mirage.accessor.github_ci import GitHubCIAccessor
 from mirage.commands.builtin.generic.grep import grep as generic_grep
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.github_ci.io import resolve_glob
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
@@ -25,15 +26,12 @@ from mirage.core.github_ci.readdir import readdir as _readdir
 from mirage.core.github_ci.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 
 @command("grep", resource="github_ci", spec=SPECS["grep"])
-async def grep(
-    accessor: GitHubCIAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def grep(accessor: GitHubCIAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["grep"])
     resolved = await resolve_glob(accessor, paths, opts.index) if paths else []
     recursive = fl.as_bool("r") or fl.as_bool("R")

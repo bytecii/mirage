@@ -14,9 +14,8 @@
 
 import json
 import re
-from typing import Any
-
 from dataclasses import replace
+from typing import Any
 
 from mirage.accessor.langfuse import LangfuseAccessor
 from mirage.commands.builtin.generic.grep import grep as generic_grep
@@ -25,6 +24,7 @@ from mirage.commands.builtin.grep_helper import compile_pattern, pattern_arg
 from mirage.commands.builtin.langfuse._provision import file_read_provision
 from mirage.commands.builtin.langfuse.io import resolve_glob
 from mirage.commands.builtin.utils.output import format_records
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
@@ -37,7 +37,6 @@ from mirage.core.langfuse.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 
 def _filter_traces(
@@ -112,11 +111,9 @@ def _format_dataset_results(
     return format_records(lines), IOResult()
 
 
-async def grep_provision(
-    accessor: LangfuseAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> ProvisionResult:
+async def grep_provision(accessor: LangfuseAccessor, paths: list[PathSpec],
+                         texts: list[str],
+                         opts: CommandOpts) -> ProvisionResult:
     line = "grep " + " ".join(list(texts) + [str(p) for p in paths])
     return await file_read_provision(accessor, paths, texts,
                                      replace(opts, command=line))
@@ -126,11 +123,9 @@ async def grep_provision(
          resource="langfuse",
          spec=SPECS["grep"],
          provision=grep_provision)
-async def grep(
-    accessor: LangfuseAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def grep(accessor: LangfuseAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
 

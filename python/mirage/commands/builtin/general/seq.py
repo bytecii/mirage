@@ -14,14 +14,13 @@
 
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.generic_bind.provision import pure_provision
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import CommandName
+from mirage.commands.spec.types import CommandName, FlagView
 from mirage.commands.spec.usage import extra_operand_error
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
-from mirage.commands.spec.types import FlagView
 
 
 def _seq_generate(texts: list[str], separator: str, width: bool,

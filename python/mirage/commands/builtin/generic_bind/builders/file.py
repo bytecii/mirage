@@ -21,18 +21,13 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def file(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def file(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor) or not paths:
         raise ValueError("file: missing operand")
     resolved = await ops.resolve_glob(accessor, paths, opts.index)
-    return await file_generic(resolved,
-                              list(texts),
-                              opts,
+    return await file_generic(resolved, list(texts), opts,
                               bound_op(ops.read_bytes, accessor, opts.index),
                               bound_op(ops.stat, accessor, opts.index))
 

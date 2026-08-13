@@ -17,11 +17,11 @@ from io import BytesIO
 
 from dulwich.refs import DictRefsContainer, Ref, read_packed_refs_with_peeled
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.cli.builtin.git.io import (read_file, read_names,
                                                 read_optional, remove_file,
                                                 write_file)
 from mirage.commands.cli.builtin.git.types import HeadRef
+from mirage.runtime.types import DispatchFn
 
 HEAD_FILE = "HEAD"
 PACKED_REFS = "packed-refs"
@@ -53,8 +53,8 @@ async def read_head(dispatch: DispatchFn, gitdir: str) -> HeadRef:
     return HeadRef(branch=branch, ref=ref, commit=None)
 
 
-async def _walk_loose_refs(dispatch: DispatchFn, root: str,
-                           prefix: str, refs: dict[Ref, bytes]) -> None:
+async def _walk_loose_refs(dispatch: DispatchFn, root: str, prefix: str,
+                           refs: dict[Ref, bytes]) -> None:
     """Collect loose refs under one directory into the ref table.
 
     Ref names nest arbitrarily (``refs/heads/feat/git-cli``,
@@ -104,8 +104,7 @@ async def write_ref(dispatch: DispatchFn, commondir: str, ref: str,
     await write_file(dispatch, posixpath.join(commondir, ref), sha + b"\n")
 
 
-async def delete_ref(dispatch: DispatchFn, commondir: str,
-                     ref: str) -> None:
+async def delete_ref(dispatch: DispatchFn, commondir: str, ref: str) -> None:
     """Remove a loose ref file.
 
     Only the loose copy is removed. A ref that also sits in
@@ -122,8 +121,7 @@ async def delete_ref(dispatch: DispatchFn, commondir: str,
     await remove_file(dispatch, posixpath.join(commondir, ref))
 
 
-async def set_head(dispatch: DispatchFn, gitdir: str,
-                   ref: str) -> None:
+async def set_head(dispatch: DispatchFn, gitdir: str, ref: str) -> None:
     """Point HEAD at a branch, symbolically.
 
     Args:
@@ -136,8 +134,7 @@ async def set_head(dispatch: DispatchFn, gitdir: str,
                      f"{SYMREF_PREFIX}{ref}\n".encode())
 
 
-async def detach_head(dispatch: DispatchFn, gitdir: str,
-                      sha: bytes) -> None:
+async def detach_head(dispatch: DispatchFn, gitdir: str, sha: bytes) -> None:
     """Point HEAD straight at a commit, detaching it from any branch.
 
     Args:

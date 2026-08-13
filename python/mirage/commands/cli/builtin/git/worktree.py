@@ -14,12 +14,12 @@
 
 import posixpath
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.cli.builtin.git.ignore import (GITIGNORE, IgnoreStack,
                                                     load_ignores)
 from mirage.commands.cli.builtin.git.io import read_names, read_optional
 from mirage.commands.cli.builtin.git.types import RepoLocation, WorkTree
 from mirage.ops.types import StatPath
+from mirage.runtime.types import DispatchFn
 from mirage.types import FileType
 
 GIT_DIR = ".git"

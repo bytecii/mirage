@@ -26,13 +26,9 @@ from mirage.types import PathSpec
 
 
 @command("tree", resource="history", spec=SPECS["tree"])
-async def tree(
-    accessor: HistoryAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
-    return await tree_generic(list(paths),
-                              list(texts),
-                              opts,
+async def tree(accessor: HistoryAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+    return await tree_generic(list(paths), list(texts), opts,
                               partial(readdir, accessor),
                               partial(stat, accessor))

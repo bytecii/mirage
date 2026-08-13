@@ -32,11 +32,9 @@ from mirage.types import PathSpec
 
 
 @command("tail", resource="mongodb", spec=SPECS["tail"])
-async def tail(
-    accessor: MongoDBAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def tail(accessor: MongoDBAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     try:
         parsed = parse_flags(opts.flags)
     except ValueError as exc:
@@ -55,7 +53,6 @@ async def tail(
             and detect_scope(resolved[0]).level == ScopeLevel.DOCUMENTS):
         data = await read_tail(accessor, resolved[0], n_eff, opts.index)
         return generic_tail(data, n=n_eff, c=None, from_line=None), IOResult()
-    return await tail_generic(resolved, list(texts),
-                              opts,
+    return await tail_generic(resolved, list(texts), opts,
                               bound_op(IO.stat, accessor, opts.index),
                               bound_op(stream_any, accessor, opts.index))

@@ -26,11 +26,9 @@ from mirage.types import PathSpec
 
 
 @command("find", resource="history", spec=SPECS["find"])
-async def find(
-    accessor: HistoryAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def find(accessor: HistoryAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     return await find_generic(list(paths),
                               list(texts),
                               opts,

@@ -12,20 +12,19 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.utils.http import (HttpConnectError,
                                                 _http_form_request,
                                                 _http_request)
+from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
+from mirage.commands.spec.types import FlagView
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.errors import (WALK_ERRORS, OperationNotSupportedError,
                                  fs_strerror)
-from mirage.commands.config import CommandOpts
-from mirage.commands.spec.types import FlagView
 
 # Exit codes real curl uses for the failures mirage can hit. An HTTP error
 # status is deliberately absent: curl treats 4xx/5xx as a successful transfer
@@ -36,8 +35,7 @@ EXIT_HTTP_ERROR = 22
 EXIT_WRITE = 23
 
 
-def _resolve_target(o: str | PathSpec,
-                    cwd: PathSpec | str | None) -> PathSpec:
+def _resolve_target(o: str | PathSpec, cwd: PathSpec | str | None) -> PathSpec:
     if isinstance(o, PathSpec):
         return o
     if o.startswith("/"):

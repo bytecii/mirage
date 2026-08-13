@@ -21,17 +21,13 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def diff(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def diff(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor):
         raise ValueError("diff: no resource")
     resolved = await ops.resolve_glob(accessor, paths, opts.index)
-    return await diff_generic(resolved, list(texts),
-                              opts,
+    return await diff_generic(resolved, list(texts), opts,
                               bound_op(ops.read_bytes, accessor, opts.index),
                               bound_op(ops.readdir, accessor, opts.index),
                               bound_op(ops.stat, accessor, opts.index))

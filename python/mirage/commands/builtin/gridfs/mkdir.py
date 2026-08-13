@@ -14,21 +14,19 @@
 
 from mirage.accessor.gridfs import GridFSAccessor
 from mirage.commands.builtin.gridfs.io import resolve_glob
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
 from mirage.core.gridfs.mkdir import mkdir as mkdir_impl
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 
 @command("mkdir", resource="gridfs", spec=SPECS["mkdir"], write=True)
-async def mkdir(
-    accessor: GridFSAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def mkdir(accessor: GridFSAccessor, paths: list[PathSpec],
+                texts: list[str],
+                opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["mkdir"])
     parents = fl.as_bool("parents")
     verbose = fl.as_bool("verbose")

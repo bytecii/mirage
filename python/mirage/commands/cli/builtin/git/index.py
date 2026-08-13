@@ -19,9 +19,9 @@ from typing import IO, BinaryIO, cast
 from dulwich.index import (ConflictedIndexEntry, IndexEntry, read_index_dict,
                            write_index_dict)
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.cli.builtin.git.io import read_optional, write_file
 from mirage.commands.cli.builtin.git.types import IndexState
+from mirage.runtime.types import DispatchFn
 
 INDEX_FILE = "index"
 MERGE_HEAD = "MERGE_HEAD"

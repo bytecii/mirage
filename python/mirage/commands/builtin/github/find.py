@@ -18,6 +18,7 @@ from mirage.accessor.github import GitHubAccessor
 from mirage.commands.builtin.generic.find import find_generic
 from mirage.commands.builtin.github._provision import metadata_provision
 from mirage.commands.builtin.github.io import resolve_glob
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.github.find import find as find_core
@@ -25,14 +26,11 @@ from mirage.core.github.stat import stat as stat_core
 from mirage.io.types import ByteSource, IOResult
 from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 
-async def find_provision(
-    accessor: GitHubAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> ProvisionResult:
+async def find_provision(accessor: GitHubAccessor, paths: list[PathSpec],
+                         texts: list[str],
+                         opts: CommandOpts) -> ProvisionResult:
     path_strs = [
         p.virtual if isinstance(p, PathSpec) else str(p) for p in paths
     ]

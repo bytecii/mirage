@@ -21,6 +21,7 @@ from mirage.commands.builtin.gmail._provision import file_read_provision
 from mirage.commands.builtin.gmail.io import resolve_glob
 from mirage.commands.builtin.grep_helper import pattern_arg
 from mirage.commands.builtin.utils.output import format_records
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
@@ -33,14 +34,11 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
-from mirage.commands.config import CommandOpts
 
 
-async def grep_provision(
-    accessor: GmailAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> ProvisionResult:
+async def grep_provision(accessor: GmailAccessor, paths: list[PathSpec],
+                         texts: list[str],
+                         opts: CommandOpts) -> ProvisionResult:
     line = "grep " + " ".join(list(texts) + [str(p) for p in paths])
     return await file_read_provision(accessor, paths, texts,
                                      replace(opts, command=line))
@@ -50,11 +48,9 @@ async def grep_provision(
          resource="gmail",
          spec=SPECS["grep"],
          provision=grep_provision)
-async def grep(
-    accessor: GmailAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def grep(accessor: GmailAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
     max_count = fl.as_int("m")

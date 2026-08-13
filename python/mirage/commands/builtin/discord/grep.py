@@ -13,7 +13,6 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import logging
-
 from dataclasses import replace
 
 from mirage.accessor.discord import DiscordAccessor
@@ -23,6 +22,7 @@ from mirage.commands.builtin.generic.grep import grep as generic_grep
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_helper import pattern_arg
 from mirage.commands.builtin.utils.output import format_records
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
@@ -38,16 +38,13 @@ from mirage.io.types import ByteSource, IOResult, materialize
 from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
-from mirage.commands.config import CommandOpts
 
 logger = logging.getLogger(__name__)
 
 
-async def grep_provision(
-    accessor: DiscordAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> ProvisionResult:
+async def grep_provision(accessor: DiscordAccessor, paths: list[PathSpec],
+                         texts: list[str],
+                         opts: CommandOpts) -> ProvisionResult:
     line = "grep " + " ".join(list(texts) + [str(p) for p in paths])
     return await file_read_provision(accessor, paths, texts,
                                      replace(opts, command=line))
@@ -57,11 +54,9 @@ async def grep_provision(
          resource="discord",
          spec=SPECS["grep"],
          provision=grep_provision)
-async def grep(
-    accessor: DiscordAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def grep(accessor: DiscordAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
     max_count = fl.as_int("m")

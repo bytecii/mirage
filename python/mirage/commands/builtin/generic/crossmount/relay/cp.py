@@ -14,7 +14,6 @@
 
 from typing import Callable
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.builtin.generic.cp import cp as generic_cp
 from mirage.commands.builtin.generic.cp import parse_cp_flags
 from mirage.commands.builtin.generic.crossmount.types import CrossResult
@@ -22,6 +21,7 @@ from mirage.commands.builtin.generic.crossmount.utils import (
     flat_scopes, transfer_primitives)
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.runtime.types import DispatchFn
 from mirage.types import PathSpec, PrimitiveCopy
 
 

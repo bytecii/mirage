@@ -14,7 +14,6 @@
 
 from typing import Callable
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.builtin.generic.crossmount.relay.cmp import run_cmp
 from mirage.commands.builtin.generic.crossmount.relay.comm import run_comm
 from mirage.commands.builtin.generic.crossmount.relay.cp import run_cp
@@ -24,6 +23,7 @@ from mirage.commands.builtin.generic.crossmount.relay.mv import run_mv
 from mirage.commands.builtin.generic.crossmount.relay.paste import run_paste
 from mirage.commands.builtin.generic.crossmount.types import Cmd, CrossResult
 from mirage.commands.spec.types import FlagValue
+from mirage.runtime.types import DispatchFn
 from mirage.types import PathSpec
 
 

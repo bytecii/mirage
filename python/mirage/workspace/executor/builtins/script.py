@@ -19,10 +19,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from mirage.runtime.types import DispatchFn
 from mirage.io import IOResult
 from mirage.io.stream import materialize
 from mirage.io.types import ByteSource
+from mirage.runtime.types import DispatchFn
 from mirage.shell.options import parse_option_word
 from mirage.types import FileType, PathSpec
 from mirage.utils.errors import FS_ERRORS, eisdir, fs_strerror
@@ -64,8 +64,7 @@ def script_error(
                                                      stderr=err)
 
 
-async def read_script_text(dispatch: DispatchFn, path: str,
-                           cwd: str) -> str:
+async def read_script_text(dispatch: DispatchFn, path: str, cwd: str) -> str:
     """Read a script file through the op dispatcher.
 
     Every way of running a script off a mount comes through here, so a

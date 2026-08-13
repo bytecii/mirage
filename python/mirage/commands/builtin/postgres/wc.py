@@ -30,11 +30,9 @@ from mirage.types import PathSpec
 
 
 @command("wc", resource="postgres", spec=SPECS["wc"])
-async def wc(
-    accessor: PostgresAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def wc(accessor: PostgresAccessor, paths: list[PathSpec],
+             texts: list[str],
+             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     try:
         parsed = parse_flags(opts.flags)
     except ValueError as exc:
@@ -61,6 +59,5 @@ async def wc(
                 total += count
         return format_count_rows(rows, WCCounts(lines=total), len(resolved),
                                  parsed), IOResult()
-    return await wc_generic(resolved, list(texts),
-                            opts,
+    return await wc_generic(resolved, list(texts), opts,
                             bound_op(postgres_read, accessor, opts.index))

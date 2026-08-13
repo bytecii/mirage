@@ -14,7 +14,6 @@
 
 from typing import Callable
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.builtin.generic.crossmount.detect import strategy_for
 from mirage.commands.builtin.generic.crossmount.fanout import run_fanout
 from mirage.commands.builtin.generic.crossmount.relay import run_relay
@@ -25,6 +24,7 @@ from mirage.commands.builtin.generic.crossmount.types import (CrossResult,
 from mirage.commands.spec.types import FlagValue
 from mirage.io import IOResult
 from mirage.io.types import ByteSource
+from mirage.runtime.types import DispatchFn
 from mirage.types import PathSpec
 from mirage.utils.errors import FS_ERRORS, format_fs_error
 

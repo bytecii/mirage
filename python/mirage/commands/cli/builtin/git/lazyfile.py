@@ -15,9 +15,9 @@
 import asyncio
 from io import SEEK_CUR, SEEK_END, SEEK_SET
 
-from mirage.runtime.types import DispatchFn
 from mirage.bridge.sync import run_async_from_sync
 from mirage.commands.cli.builtin.git.io import read_range
+from mirage.runtime.types import DispatchFn
 
 # Measured on a 19-pack, 400 MB repository reading one commit: 64 KiB
 # costs 3.4 MB over 63 requests, 256 KiB costs 7.6 MB over 37, and 1 MiB

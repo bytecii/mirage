@@ -18,12 +18,12 @@ from mirage.accessor.base import Accessor
 from mirage.commands.builtin.general.interpreter import (CPYTHON_ARGV0,
                                                          resolve_source,
                                                          run_code)
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
+from mirage.commands.spec.types import FlagView
 from mirage.io.types import CommandOutput
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
-from mirage.commands.spec.types import FlagView
 
 
 async def _python3(
@@ -35,9 +35,10 @@ async def _python3(
     fl = FlagView(opts.flags, spec=SPECS["python3"])
     error, prepared = await resolve_source("python3", paths, texts,
                                            fl.as_str("c"), opts.stdin,
-                                           opts.dispatch, opts.cwd,
-                                           opts.exec_allowed, fl.as_str("m"),
-                                           CPYTHON_ARGV0, fl.as_bool("x"))
+                                           opts.dispatch,
+                                           opts.cwd, opts.exec_allowed,
+                                           fl.as_str("m"), CPYTHON_ARGV0,
+                                           fl.as_bool("x"))
     if error is not None or prepared is None:
         assert error is not None
         return error

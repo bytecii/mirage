@@ -246,8 +246,8 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> TarFlags:
     )
 
 
-async def tar_generic(paths, texts, opts: CommandOpts, read_bytes,
-                      write_bytes, mkdir_fn, stat, walk, is_dir):
+async def tar_generic(paths, texts, opts: CommandOpts, read_bytes, write_bytes,
+                      mkdir_fn, stat, walk, is_dir):
     parsed = parse_flags(opts.flags)
     return await tar(paths,
                      read_bytes=read_bytes,

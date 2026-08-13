@@ -24,17 +24,13 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def unexpand(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def unexpand(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+                   texts: list[str],
+                   opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     resolved = await resolve_or_empty(ops, accessor, paths, opts.index)
-    return await unexpand_generic(resolved, list(texts),
-                                  opts,
-                                  dir_aware_stat(ops, accessor, opts.index),
-                                  bound_op(ops.read_bytes, accessor, opts.index))
+    return await unexpand_generic(
+        resolved, list(texts), opts, dir_aware_stat(ops, accessor, opts.index),
+        bound_op(ops.read_bytes, accessor, opts.index))
 
 
 BUILDER = Builder('unexpand', unexpand, None, False, None, read=True)

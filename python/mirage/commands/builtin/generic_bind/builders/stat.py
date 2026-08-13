@@ -24,12 +24,9 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def stat(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def stat(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor):
         raise ValueError("stat: no resource")
     resolved = await ops.resolve_glob(accessor, paths, opts.index)
@@ -39,10 +36,7 @@ async def stat(
                           partial(ops.stat, accessor),
                           opts.stat_overlay,
                           index=opts.index)
-    return await stat_generic(resolved,
-                              list(texts),
-                              opts,
-                              stat_fn)
+    return await stat_generic(resolved, list(texts), opts, stat_fn)
 
 
 BUILDER = Builder('stat', stat, None, False, None)

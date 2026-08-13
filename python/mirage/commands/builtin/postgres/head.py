@@ -29,11 +29,9 @@ from mirage.types import PathSpec
 
 
 @command("head", resource="postgres", spec=SPECS["head"])
-async def head(
-    accessor: PostgresAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def head(accessor: PostgresAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     try:
         parsed = parse_flags(opts.flags)
     except ValueError as exc:
@@ -46,7 +44,6 @@ async def head(
         read_fn = partial(postgres_read,
                           limit=min(n_eff, accessor.config.default_row_limit))
     resolved = await resolve_or_empty(IO, accessor, paths, opts.index)
-    return await head_generic(resolved, list(texts),
-                              opts,
+    return await head_generic(resolved, list(texts), opts,
                               bound_op(IO.stat, accessor, opts.index),
                               bound_op(read_fn, accessor, opts.index))

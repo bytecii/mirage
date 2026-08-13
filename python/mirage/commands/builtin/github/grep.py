@@ -18,6 +18,7 @@ from mirage.commands.builtin.generic.grep import grep as generic_grep
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.github.narrow import narrow_scope
 from mirage.commands.builtin.grep_helper import pattern_arg
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
@@ -29,7 +30,6 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.provision import ProvisionResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
-from mirage.commands.config import CommandOpts
 
 
 async def _estimate_recursive(index, path: str) -> tuple[int, int]:
@@ -89,11 +89,9 @@ async def grep_provision(
          spec=SPECS["grep"],
          provision=grep_provision,
          aggregate=prefix_aggregate)
-async def grep(
-    accessor: GitHubAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def grep(accessor: GitHubAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
     recursive = fl.as_bool("r") or fl.as_bool("R")

@@ -14,12 +14,12 @@
 
 import posixpath
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.cli.builtin.git.errors import (  # yapf: disable
     InvalidGitFileError, NotARepositoryError, NoWorkingDirectoryError)
 from mirage.commands.cli.builtin.git.io import read_file, read_optional
 from mirage.commands.cli.builtin.git.types import RepoLocation
 from mirage.ops.types import MountRoot, StatPath
+from mirage.runtime.types import DispatchFn
 from mirage.types import FileType
 
 GIT_DIR = ".git"

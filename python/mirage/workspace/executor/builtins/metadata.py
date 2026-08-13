@@ -16,9 +16,9 @@ import re
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
-from mirage.runtime.types import DispatchFn
 from mirage.io import IOResult
 from mirage.policy import PolicyDenied
+from mirage.runtime.types import DispatchFn
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import FS_ERRORS, format_fs_error, fs_strerror
 from mirage.utils.mode import DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, parse_chmod

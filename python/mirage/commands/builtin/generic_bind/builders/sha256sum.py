@@ -24,17 +24,13 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def sha256sum(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def sha256sum(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+                    texts: list[str],
+                    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     resolved = await resolve_or_empty(ops, accessor, paths, opts.index)
-    return await sha256sum_generic(
-        resolved, list(texts), opts,
-        dir_aware_stat(ops, accessor, opts.index),
-        dir_aware_stream(ops, accessor, opts.index))
+    return await sha256sum_generic(resolved, list(texts), opts,
+                                   dir_aware_stat(ops, accessor, opts.index),
+                                   dir_aware_stream(ops, accessor, opts.index))
 
 
 BUILDER = Builder('sha256sum', sha256sum, None, False, None, read=True)

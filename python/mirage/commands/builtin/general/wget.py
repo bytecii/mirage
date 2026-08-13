@@ -12,18 +12,17 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.general.curl import _resolve_target
 from mirage.commands.builtin.utils.http import HttpConnectError, _http_get
+from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
+from mirage.commands.spec.types import FlagView
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.errors import WALK_ERRORS
-from mirage.commands.config import CommandOpts
-from mirage.commands.spec.types import FlagView
 
 # Exit codes GNU wget uses for the failures mirage can hit. Unlike curl, wget
 # treats any 4xx/5xx as a failure (EXIT_SERVER_ERROR) and needs no flag to do
@@ -46,7 +45,7 @@ async def wget(
     opts: CommandOpts,
 ) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["wget"])
-    args_O = fl.as_str("args_O")
+    args_O = fl.raw("args_O")
     q = fl.as_bool("q")
     spider = fl.as_bool("spider")
     dispatch = opts.dispatch
@@ -73,7 +72,7 @@ async def wget(
         return None, IOResult(stderr=err)
 
     dest_raw: str | PathSpec
-    if args_O:
+    if isinstance(args_O, (str, PathSpec)) and args_O:
         dest_raw = args_O
     elif paths:
         dest_raw = paths[0]

@@ -21,15 +21,11 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def realpath(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec] | None,
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def realpath(ops: CommandIO, accessor: Accessor,
+                   paths: list[PathSpec] | None, texts: list[str],
+                   opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     resolved = await ops.resolve_glob(accessor, paths or [], opts.index)
-    return await realpath_generic(resolved, list(texts),
-                                  opts,
+    return await realpath_generic(resolved, list(texts), opts,
                                   bound_op(ops.stat, accessor, opts.index))
 
 

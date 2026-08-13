@@ -150,12 +150,9 @@ def _budget_hit(budget: WalkBudget) -> bool:
     return budget.hit
 
 
-async def du(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def du(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+             texts: list[str],
+             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor):
         raise ValueError("du: no resource")
     budget = WalkBudget(ops.max_du_entries)
@@ -164,10 +161,12 @@ async def du(
     compute_entries: ComputeEntries
     if native is None:
         compute_size = partial(_walk_size, ops, accessor, opts.index, budget)
-        compute_entries = partial(_walk_entries, ops, accessor, opts.index, budget)
+        compute_entries = partial(_walk_entries, ops, accessor, opts.index,
+                                  budget)
     else:
         compute_size = partial(_op_size, native.size, accessor, opts.index)
-        compute_entries = partial(_op_entries, native.entries, accessor, opts.index)
+        compute_entries = partial(_op_entries, native.entries, accessor,
+                                  opts.index)
     return await du_generic(paths,
                             list(texts),
                             opts,

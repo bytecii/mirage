@@ -12,9 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from functools import partial
-
 from dataclasses import replace
+from functools import partial
 
 from mirage.accessor.github_ci import GitHubCIAccessor
 from mirage.commands.builtin.generic.find import (is_link, parse_find_args,
@@ -22,23 +21,21 @@ from mirage.commands.builtin.generic.find import (is_link, parse_find_args,
 from mirage.commands.builtin.github_ci._provision import metadata_provision
 from mirage.commands.builtin.github_ci.io import resolve_glob
 from mirage.commands.builtin.utils.output import format_records
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
+from mirage.commands.spec.types import FlagView
 from mirage.core.github_ci.readdir import is_cross_run_root
 from mirage.core.github_ci.readdir import readdir as _readdir
 from mirage.core.github_ci.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
-from mirage.commands.spec.types import FlagView
 
 
-async def find_provision(
-    accessor: GitHubCIAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> ProvisionResult:
+async def find_provision(accessor: GitHubCIAccessor, paths: list[PathSpec],
+                         texts: list[str],
+                         opts: CommandOpts) -> ProvisionResult:
     return await metadata_provision(
         accessor, paths, texts,
         replace(opts, command="find " + " ".join(p.virtual for p in paths)))

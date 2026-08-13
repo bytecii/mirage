@@ -22,18 +22,13 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def tree(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def tree(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor):
         raise ValueError("tree: no resource")
     resolved = await ops.resolve_glob(accessor, paths, opts.index)
-    return await tree_generic(resolved,
-                              list(texts),
-                              opts,
+    return await tree_generic(resolved, list(texts), opts,
                               partial(ops.readdir, accessor),
                               partial(ops.stat, accessor))
 

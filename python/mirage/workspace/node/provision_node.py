@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Callable
 
-from mirage.runtime.types import DispatchFn
 from mirage.provision import Precision, ProvisionResult
+from mirage.runtime.types import DispatchFn
 from mirage.shell.node_kind import NodeKind, node_kind
 from mirage.shell.types import FunctionBody
 from mirage.shell.types import NodeType as NT

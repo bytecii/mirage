@@ -12,16 +12,15 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.general.interpreter import (resolve_source,
                                                          run_code)
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
+from mirage.commands.spec.types import FlagView
 from mirage.io.types import CommandOutput
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
-from mirage.commands.spec.types import FlagView
 
 
 async def _js(
@@ -31,9 +30,8 @@ async def _js(
     opts: CommandOpts,
 ) -> CommandOutput:
     fl = FlagView(opts.flags, spec=SPECS["js"])
-    error, prepared = await resolve_source("js", paths, texts,
-                                           fl.as_str("e"), opts.stdin,
-                                           opts.dispatch, opts.cwd,
+    error, prepared = await resolve_source("js", paths, texts, fl.as_str("e"),
+                                           opts.stdin, opts.dispatch, opts.cwd,
                                            opts.exec_allowed)
     if error is not None or prepared is None:
         assert error is not None

@@ -14,11 +14,13 @@
 
 import logging
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import Any
 
 from mirage.accessor.base import Accessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.grep_helper import BINARY_EXTENSIONS
+from mirage.commands.config import CommandOpts
 from mirage.commands.resolve import get_extension
 from mirage.commands.spec.compile import compile_spec
 from mirage.commands.spec.constants import flag_kwarg_name
@@ -27,8 +29,6 @@ from mirage.core.jq import is_jsonl_path, is_streamable_jsonl_expr
 from mirage.provision.types import Precision, ProvisionResult
 from mirage.types import FileType, PathSpec
 from mirage.utils.key_prefix import rekey
-from mirage.commands.config import CommandOpts
-from dataclasses import replace
 
 logger = logging.getLogger(__name__)
 
@@ -553,8 +553,8 @@ async def write_metadata_provision(
     count is only a floor and precision degrades to UNKNOWN.
     """
     n = max(1, len(paths) if paths else 1)
-    precision = (Precision.UNKNOWN if _walks_a_subtree(
-        opts.spec, opts.flags) else Precision.EXACT)
+    precision = (Precision.UNKNOWN if _walks_a_subtree(opts.spec, opts.flags)
+                 else Precision.EXACT)
     return ProvisionResult(
         command=opts.command or "",
         network_read_low=0,

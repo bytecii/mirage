@@ -25,15 +25,11 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def tail(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def tail(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     resolved = await resolve_or_empty(ops, accessor, paths, opts.index)
-    return await tail_generic(resolved, list(texts),
-                              opts,
+    return await tail_generic(resolved, list(texts), opts,
                               dir_aware_stat(ops, accessor, opts.index),
                               bound_op(ops.read_stream, accessor, opts.index))
 

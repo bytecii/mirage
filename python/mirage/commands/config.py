@@ -221,8 +221,7 @@ def _with_help_support(
 
     @functools.wraps(fn)
     async def wrapper(accessor: Accessor, paths: list[PathSpec],
-                      texts: list[str],
-                      opts: CommandOpts) -> CommandFnResult:
+                      texts: list[str], opts: CommandOpts) -> CommandFnResult:
         if opts.flags.get("help") is True:
             return yield_bytes(help_text), IOResult()
         if opts.flags.get("version") is True:

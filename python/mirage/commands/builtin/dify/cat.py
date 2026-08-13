@@ -20,17 +20,15 @@ def make_cat(ops: CommandIO):
     """
 
     @command("cat", resource="dify", spec=SPECS["cat"])
-    async def cat(
-        accessor,
-        paths: list[PathSpec],
-        texts: list[str],
-        opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+    async def cat(accessor, paths: list[PathSpec], texts: list[str],
+                  opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
         resolved = await resolve_or_empty(ops, accessor, paths, opts.index)
         return await cat_generic(resolved,
                                  list(texts),
                                  opts,
                                  dir_aware_stat(ops, accessor, opts.index),
-                                 bound_op(ops.read_stream, accessor, opts.index),
+                                 bound_op(ops.read_stream, accessor,
+                                          opts.index),
                                  local=ops.local)
 
     return cat

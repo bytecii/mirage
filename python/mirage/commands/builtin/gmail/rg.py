@@ -18,6 +18,7 @@ from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.gmail.io import resolve_glob
 from mirage.commands.builtin.grep_helper import pattern_arg
 from mirage.commands.builtin.utils.output import format_records
+from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
@@ -30,15 +31,11 @@ from mirage.core.gmail.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
-from mirage.commands.config import CommandOpts
 
 
 @command("rg", resource="gmail", spec=SPECS["rg"])
-async def rg(
-    accessor: GmailAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def rg(accessor: GmailAccessor, paths: list[PathSpec], texts: list[str],
+             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["rg"])
     pattern_str = pattern_arg(texts, fl)
     if pattern_str is None:

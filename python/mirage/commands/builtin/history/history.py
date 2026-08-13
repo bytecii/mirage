@@ -13,14 +13,13 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.history import HistoryAccessor
+from mirage.commands.config import CommandOpts, cwd_str
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
+from mirage.commands.spec.types import FlagView
 from mirage.core.history.render import render_history_listing
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
-from mirage.commands.config import cwd_str
-from mirage.commands.spec.types import FlagView
 
 
 def _out_of_range(value: str) -> IOResult:
@@ -68,10 +67,9 @@ async def history_cmd(
             return None, _out_of_range(d)
         await observer.log_delete(session=session, offset=offset)
     if s and texts:
-        await observer.log_command_text(
-            " ".join(texts),
-            session=session,
-            cwd=cwd_str(opts.cwd))
+        await observer.log_command_text(" ".join(texts),
+                                        session=session,
+                                        cwd=cwd_str(opts.cwd))
     if p and not s:
         out = "\n".join(texts) + "\n" if texts else ""
         return out.encode(), IOResult()

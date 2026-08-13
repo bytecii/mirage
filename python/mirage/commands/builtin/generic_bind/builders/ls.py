@@ -24,16 +24,14 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileStat, PathSpec
 
 
-async def ls(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def ls(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+             texts: list[str],
+             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor):
         raise ValueError("ls: no resource")
     if not paths:
-        cwd_virtual = opts.cwd.virtual if isinstance(opts.cwd, PathSpec) else opts.cwd
+        cwd_virtual = opts.cwd.virtual if isinstance(opts.cwd,
+                                                     PathSpec) else opts.cwd
         cwd_rp = (opts.cwd.resource_path
                   if isinstance(opts.cwd, PathSpec) else opts.cwd.strip("/"))
         paths = [
@@ -43,15 +41,11 @@ async def ls(
                      resource_path=cwd_rp)
         ]
     resolved = await ops.resolve_glob(accessor, paths, opts.index)
-    stat_fn: Callable[..., Awaitable[FileStat]] = partial(
-        ops.stat, accessor)
+    stat_fn: Callable[..., Awaitable[FileStat]] = partial(ops.stat, accessor)
     if opts.stat_overlay is not None:
         stat_fn = partial(overlaid_stat, stat_fn, opts.stat_overlay)
-    return await ls_generic(resolved,
-                            list(texts),
-                            opts,
-                            partial(ops.readdir, accessor),
-                            stat_fn)
+    return await ls_generic(resolved, list(texts), opts,
+                            partial(ops.readdir, accessor), stat_fn)
 
 
 BUILDER = Builder('ls', ls, None, False, None)

@@ -24,18 +24,13 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def zip_cmd(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def zip_cmd(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+                  texts: list[str],
+                  opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor) or not paths:
         raise ValueError("zip: usage: zip archive.zip file1 [file2 ...]")
     resolved = await ops.resolve_glob(accessor, paths, opts.index)
-    return await zip_generic(resolved,
-                             list(texts),
-                             opts,
+    return await zip_generic(resolved, list(texts), opts,
                              bound_op(ops.read_bytes, accessor, opts.index),
                              partial(ops.require(Operation.WRITE), accessor),
                              partial(ops.stat, accessor, index=opts.index),

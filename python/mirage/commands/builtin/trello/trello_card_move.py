@@ -15,6 +15,7 @@
 import json
 
 from mirage.accessor.trello import TrelloAccessor
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec.types import CommandSpec, FlagView, Option
 from mirage.core.trello._client import card_move
@@ -22,7 +23,6 @@ from mirage.core.trello.normalize import normalize_card
 from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 SPEC = CommandSpec(options=(
     Option(long="--card_id", type="str"),
@@ -32,10 +32,8 @@ SPEC = CommandSpec(options=(
 
 @command("trello card move", resource="trello", spec=SPEC)
 async def trello_card_move(
-    accessor: TrelloAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+        accessor: TrelloAccessor, paths: list[PathSpec], texts: list[str],
+        opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPEC)
     config = accessor.config
     card_id = fl.as_str("card_id")

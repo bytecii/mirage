@@ -24,13 +24,13 @@ from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
                                                           OperationFn,
                                                           bound_op,
                                                           overlaid_stat)
+from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
 from mirage.io.types import ByteSource, IOResult
 from mirage.ops.types import StatOverlay
 from mirage.types import NativeCopy, PathSpec
 from mirage.utils.key_prefix import rekey
-from mirage.commands.config import CommandOpts
 
 
 async def _walk_find(readdir: OperationFn,
@@ -78,12 +78,9 @@ def overlayable_stat(ops: CommandIO, accessor: Accessor,
                    index=index)
 
 
-async def cp(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def cp(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+             texts: list[str],
+             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor):
         raise ValueError("cp: no resource")
     fl = FlagView(opts.flags, spec=SPECS["cp"])
@@ -100,7 +97,8 @@ async def cp(
                             stat=overlayable_stat(ops, accessor, opts.index,
                                                   opts.stat_overlay),
                             flags=parsed,
-                            readdir=bound_op(ops.readdir, accessor, opts.index))
+                            readdir=bound_op(ops.readdir, accessor,
+                                             opts.index))
 
 
 BUILDER = Builder('cp',

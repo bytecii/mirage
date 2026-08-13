@@ -23,14 +23,10 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def patch(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
-    return await patch_generic(paths, list(texts),
-                               opts,
+async def patch(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+                texts: list[str],
+                opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+    return await patch_generic(paths, list(texts), opts,
                                bound_op(ops.read_bytes, accessor, opts.index),
                                partial(ops.require(Operation.WRITE), accessor),
                                ops.is_mounted(accessor))

@@ -19,6 +19,7 @@ from mirage.commands.builtin.box.narrow import narrow_scope
 from mirage.commands.builtin.generic.rg import rg as generic_rg
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_helper import pattern_arg
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagValue, FlagView
@@ -28,7 +29,6 @@ from mirage.core.box.readdir import readdir as _readdir
 from mirage.core.box.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 
 def _keep_visible(
@@ -67,11 +67,8 @@ def _keep_visible(
 
 
 @command("rg", resource="box", spec=SPECS["rg"])
-async def rg(
-    accessor: BoxAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def rg(accessor: BoxAccessor, paths: list[PathSpec], texts: list[str],
+             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["rg"])
     pattern_str = pattern_arg(texts, fl)
 

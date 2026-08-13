@@ -24,15 +24,11 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def fold(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def fold(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     resolved = await resolve_or_empty(ops, accessor, paths, opts.index)
-    return await fold_generic(resolved, list(texts),
-                              opts,
+    return await fold_generic(resolved, list(texts), opts,
                               dir_aware_stat(ops, accessor, opts.index),
                               bound_op(ops.read_bytes, accessor, opts.index))
 

@@ -24,18 +24,13 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def tar(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def tar(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+              texts: list[str],
+              opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor):
         raise ValueError("tar: missing operand")
     resolved = await ops.resolve_glob(accessor, paths, opts.index)
-    return await tar_generic(resolved,
-                             list(texts),
-                             opts,
+    return await tar_generic(resolved, list(texts), opts,
                              bound_op(ops.read_bytes, accessor, opts.index),
                              partial(ops.require(Operation.WRITE), accessor),
                              partial(ops.require(Operation.MKDIR), accessor),

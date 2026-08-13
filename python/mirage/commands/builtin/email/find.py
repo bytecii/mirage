@@ -12,9 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from functools import partial
-
 from dataclasses import replace
+from functools import partial
 
 from mirage.accessor.email import EmailAccessor
 from mirage.commands.builtin.email._provision import metadata_provision
@@ -22,8 +21,10 @@ from mirage.commands.builtin.email.io import resolve_glob
 from mirage.commands.builtin.generic.find import (is_link, parse_find_args,
                                                   resolve_start, walk_find)
 from mirage.commands.builtin.utils.output import format_records
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
+from mirage.commands.spec.types import FlagView
 from mirage.core.email._client import fetch_headers
 from mirage.core.email.readdir import _date_bucket, _sanitize
 from mirage.core.email.readdir import readdir as _readdir
@@ -35,8 +36,6 @@ from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
 from mirage.utils.fnmatch import fnmatch
 from mirage.utils.key_prefix import mount_prefix_of
-from mirage.commands.config import CommandOpts
-from mirage.commands.spec.types import FlagView
 
 
 def _is_folder_level(paths: list[PathSpec]) -> bool:
@@ -47,11 +46,9 @@ def _is_folder_level(paths: list[PathSpec]) -> bool:
     return len(parts) <= 1
 
 
-async def find_provision(
-    accessor: EmailAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> ProvisionResult:
+async def find_provision(accessor: EmailAccessor, paths: list[PathSpec],
+                         texts: list[str],
+                         opts: CommandOpts) -> ProvisionResult:
     return await metadata_provision(
         accessor, paths, texts,
         replace(opts, command="find " + " ".join(p.virtual for p in paths)))

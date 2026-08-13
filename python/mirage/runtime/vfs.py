@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
-from collections.abc import Awaitable, Coroutine
+from collections.abc import Awaitable
 from typing import Any
 
 from mirage.context import (get_current_session, reset_current_session,

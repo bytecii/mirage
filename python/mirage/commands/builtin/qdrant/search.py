@@ -17,23 +17,21 @@ from dataclasses import replace
 from mirage.accessor.qdrant import QdrantAccessor
 from mirage.commands.builtin.qdrant._provision import metadata_provision
 from mirage.commands.builtin.utils.paths import default_paths
+from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
+from mirage.commands.spec.types import FlagView
 from mirage.core.qdrant.search import search_rows_output
 from mirage.io.types import ByteSource, IOResult
 from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
-from mirage.commands.config import CommandOpts
-from mirage.commands.spec.types import FlagView
 
 
-async def search_provision(
-    accessor: QdrantAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> ProvisionResult:
+async def search_provision(accessor: QdrantAccessor, paths: list[PathSpec],
+                           texts: list[str],
+                           opts: CommandOpts) -> ProvisionResult:
     return await metadata_provision(
         accessor, paths, texts,
         replace(opts, command="search " + " ".join(texts)))

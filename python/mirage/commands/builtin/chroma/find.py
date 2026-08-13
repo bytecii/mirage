@@ -1,20 +1,20 @@
+from dataclasses import replace
 from functools import partial
 
 from mirage.commands.builtin.chroma.io import resolve_glob
 from mirage.commands.builtin.generic.find import find_generic
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.builtin.utils.paths import default_paths
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
+from mirage.commands.spec.types import FlagView
 from mirage.core.chroma.find import find as find_core
 from mirage.core.chroma.stat import stat as stat_core
 from mirage.core.chroma.stat import stat_light
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
-from mirage.commands.config import CommandOpts
-from mirage.commands.spec.types import FlagView
-from dataclasses import replace
 
 
 def _is_bare_name(texts: list[str]) -> bool:

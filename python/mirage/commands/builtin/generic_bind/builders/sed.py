@@ -30,15 +30,11 @@ async def _resolve(ops: CommandIO, accessor: Accessor, index: IndexCacheStore,
     return await ops.resolve_glob(accessor, targets, index)
 
 
-async def sed(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def sed(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+              texts: list[str],
+              opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     return await sed_generic(
-        paths, list(texts), opts,
-        partial(_resolve, ops, accessor, opts.index),
+        paths, list(texts), opts, partial(_resolve, ops, accessor, opts.index),
         bound_op(ops.read_bytes, accessor, opts.index),
         (partial(ops.write, accessor) if ops.write is not None else None))
 

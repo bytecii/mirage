@@ -16,8 +16,8 @@ import dataclasses
 import posixpath
 import time
 
-from mirage.runtime.types import DispatchFn
 from mirage.io import IOResult
+from mirage.runtime.types import DispatchFn
 from mirage.types import FileStat, FileType, PathSpec, word_text
 from mirage.utils.errors import MISS_ERRORS
 from mirage.utils.path import CycleError
@@ -124,8 +124,7 @@ async def resolve_path_stat(dispatch: DispatchFn,
                     type=FileType.DIRECTORY)
 
 
-async def path_stat(dispatch: DispatchFn,
-                    virtual: str) -> FileStat | None:
+async def path_stat(dispatch: DispatchFn, virtual: str) -> FileStat | None:
     """Stat one virtual path through the workspace, None when absent.
 
     Resolves through the op dispatcher rather than one backend, so a path
@@ -143,8 +142,7 @@ async def path_stat(dispatch: DispatchFn,
     return await resolve_path_stat(dispatch, spec)
 
 
-async def path_readdir(dispatch: DispatchFn,
-                       virtual: str) -> list[str]:
+async def path_readdir(dispatch: DispatchFn, virtual: str) -> list[str]:
     """List one virtual path through the workspace, as virtual paths.
 
     Resolves through the op dispatcher rather than one backend, so a

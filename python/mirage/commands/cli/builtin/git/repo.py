@@ -12,17 +12,15 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-
 from dulwich.repo import BaseRepo
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.cli.builtin.git.objects import load_object_store
 from mirage.commands.cli.builtin.git.refs import load_refs
 from mirage.commands.cli.builtin.git.types import RepoLocation
+from mirage.runtime.types import DispatchFn
 
 
-async def open_repo(dispatch: DispatchFn,
-                    location: RepoLocation) -> BaseRepo:
+async def open_repo(dispatch: DispatchFn, location: RepoLocation) -> BaseRepo:
     """Open a repository living in a mount as a dulwich repository.
 
     This is the async-to-sync boundary the whole design turns on. Every

@@ -13,7 +13,6 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import json
-
 from dataclasses import replace
 
 from mirage.accessor.discord import DiscordAccessor
@@ -36,11 +35,9 @@ from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
 
 
-async def head_provision(
-    accessor: DiscordAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> ProvisionResult:
+async def head_provision(accessor: DiscordAccessor, paths: list[PathSpec],
+                         texts: list[str],
+                         opts: CommandOpts) -> ProvisionResult:
     line = "head " + " ".join(p.virtual for p in paths)
     return await file_read_provision(accessor, paths, texts,
                                      replace(opts, command=line))
@@ -50,11 +47,9 @@ async def head_provision(
          resource="discord",
          spec=SPECS["head"],
          provision=head_provision)
-async def head(
-    accessor: DiscordAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def head(accessor: DiscordAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     try:
         parsed = parse_flags(opts.flags)
     except ValueError as exc:
@@ -83,7 +78,6 @@ async def head(
                 for m in msgs) + "\n"
             return generic_head(jsonl.encode(), n=lines), IOResult()
     resolved = await resolve_or_empty(IO, accessor, paths, opts.index)
-    return await head_generic(resolved, list(texts),
-                              opts,
+    return await head_generic(resolved, list(texts), opts,
                               bound_op(IO.stat, accessor, opts.index),
                               bound_op(discord_read, accessor, opts.index))

@@ -27,12 +27,9 @@ from mirage.types import PathSpec
 
 
 @command("wc", resource="history", spec=SPECS["wc"], aggregate=wc_aggregate)
-async def wc(
-    accessor: HistoryAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def wc(accessor: HistoryAccessor, paths: list[PathSpec],
+             texts: list[str],
+             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     resolved = await resolve_or_empty(IO, accessor, paths, opts.index)
-    return await wc_generic(resolved, list(texts),
-                            opts,
+    return await wc_generic(resolved, list(texts), opts,
                             dir_aware_stream(IO, accessor, opts.index))

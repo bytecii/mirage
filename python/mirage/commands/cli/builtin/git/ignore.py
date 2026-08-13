@@ -18,8 +18,8 @@ from typing import BinaryIO, cast
 
 from dulwich.ignore import IgnoreFilter, read_ignore_patterns
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.cli.builtin.git.io import read_optional
+from mirage.runtime.types import DispatchFn
 
 GITIGNORE = ".gitignore"
 INFO_EXCLUDE = "info/exclude"

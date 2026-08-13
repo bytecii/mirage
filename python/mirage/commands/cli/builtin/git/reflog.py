@@ -14,8 +14,8 @@
 
 import posixpath
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.cli.builtin.git.io import read_optional, write_file
+from mirage.runtime.types import DispatchFn
 
 LOGS_DIR = "logs"
 HEAD_LOG = "logs/HEAD"

@@ -61,8 +61,7 @@ async def file_size(dispatch: DispatchFn, path: str) -> int | None:
     return getattr(stat, "size", None)
 
 
-async def read_optional(dispatch: DispatchFn,
-                        path: str) -> bytes | None:
+async def read_optional(dispatch: DispatchFn, path: str) -> bytes | None:
     """Read a path that a repository may legitimately not have.
 
     ``packed-refs`` and ``HEAD``-adjacent files are absent in perfectly
@@ -137,8 +136,7 @@ async def exists(dispatch: DispatchFn, path: str) -> bool:
     return True
 
 
-async def write_file(dispatch: DispatchFn, path: str,
-                     data: bytes) -> None:
+async def write_file(dispatch: DispatchFn, path: str, data: bytes) -> None:
     """Write one virtual path, creating the directories above it.
 
     Args:
@@ -150,8 +148,7 @@ async def write_file(dispatch: DispatchFn, path: str,
     await dispatch("write", PathSpec.from_str_path(path), data=data)
 
 
-async def write_once(dispatch: DispatchFn, path: str,
-                     data: bytes) -> None:
+async def write_once(dispatch: DispatchFn, path: str, data: bytes) -> None:
     """Write a path only if nothing is there yet.
 
     For content-addressed files, which is every object in the database:

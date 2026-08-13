@@ -21,9 +21,8 @@ from mirage.io.types import ByteSource, CommandOutput, IOResult
 from mirage.runtime.base import Runtime
 from mirage.runtime.language import LanguageRuntime
 from mirage.runtime.python.base import PythonRuntime
-from mirage.runtime.types import RunArgs, RunResult
+from mirage.runtime.types import DispatchFn, RunArgs, RunResult
 from mirage.types import PathSpec
-from mirage.runtime.types import DispatchFn
 
 
 def run_output(result: RunResult) -> CommandOutput:

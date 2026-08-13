@@ -4,8 +4,8 @@ from typing import Any
 
 import orjson
 
-from mirage.commands.errors import UsageError
 from mirage.commands.config import CommandOpts
+from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagValue, FlagView
 from mirage.core.jq import (DEFAULT_INDENT, JqOptions, args_object,

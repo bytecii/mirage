@@ -285,8 +285,8 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> ZipFlags:
     )
 
 
-async def zip_generic(paths, texts, opts: CommandOpts, read_bytes,
-                      write_bytes, stat, walk):
+async def zip_generic(paths, texts, opts: CommandOpts, read_bytes, write_bytes,
+                      stat, walk):
     parsed = parse_flags(opts.flags)
     return await zip_cmd(paths,
                          read_bytes=read_bytes,

@@ -23,13 +23,13 @@ from dulwich.objects import Blob, ObjectID, RawObjectID, ShaFile
 from dulwich.pack import Pack, PackData, load_pack_index_file
 from dulwich.repo import BaseRepo
 
-from mirage.runtime.types import DispatchFn
 from mirage.bridge.sync import run_async_from_sync
 from mirage.commands.cli.builtin.git.format import abbrev_length
 from mirage.commands.cli.builtin.git.io import (file_size, read_file,
                                                 read_names, read_optional,
                                                 write_once)
 from mirage.commands.cli.builtin.git.lazyfile import LazyFile
+from mirage.runtime.types import DispatchFn
 
 OBJECTS_DIR = "objects"
 PACK_DIR = "objects/pack"

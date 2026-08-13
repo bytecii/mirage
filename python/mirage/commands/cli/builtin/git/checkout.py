@@ -23,7 +23,6 @@ from dulwich.objectspec import parse_commit
 from dulwich.refs import Ref
 from dulwich.repo import BaseRepo
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.cli.builtin.git.changes import head_entries, work_changes
 from mirage.commands.cli.builtin.git.errors import (  # yapf: disable
     BadStartPointError, BranchExistsError, CheckoutConflictError, GitError,
@@ -46,6 +45,7 @@ from mirage.commands.cli.types import CLIInvocation, CLIVerbOpts
 from mirage.commands.spec.types import FlagView
 from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
+from mirage.runtime.types import DispatchFn
 
 Tree = dict[bytes, tuple[int, bytes]]
 
@@ -147,9 +147,9 @@ def _overwritten(after: Tree, untracked: list[str]) -> list[str]:
     return sorted(path for path in untracked if path.encode() in after)
 
 
-async def _switch(dispatch: DispatchFn, repo: BaseRepo,
-                  location: RepoLocation, before: Tree, after: Tree,
-                  keep: set[str], staged: dict[bytes, IndexEntry]) -> None:
+async def _switch(dispatch: DispatchFn, repo: BaseRepo, location: RepoLocation,
+                  before: Tree, after: Tree, keep: set[str],
+                  staged: dict[bytes, IndexEntry]) -> None:
     """Make the working tree and index match the tree being switched to.
 
     Only paths whose recorded content differs are touched, so a file

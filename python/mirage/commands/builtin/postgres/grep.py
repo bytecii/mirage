@@ -19,6 +19,7 @@ from mirage.commands.builtin.grep_helper import pattern_arg, search_pushdown_ok
 from mirage.commands.builtin.postgres.io import resolve_glob
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.builtin.utils.paths import has_unresolved_glob
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
@@ -33,15 +34,12 @@ from mirage.core.postgres.search import (format_grep_results, search_database,
 from mirage.core.postgres.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 
 @command("grep", resource="postgres", spec=SPECS["grep"])
-async def grep(
-    accessor: PostgresAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def grep(accessor: PostgresAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
     ci = fl.as_bool("i")

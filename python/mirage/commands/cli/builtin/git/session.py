@@ -12,10 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-
 from dulwich.repo import BaseRepo
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.cli.builtin.git.discover import discover
 from mirage.commands.cli.builtin.git.errors import NoWorkspaceError
 from mirage.commands.cli.builtin.git.repo import open_repo
@@ -23,6 +21,7 @@ from mirage.commands.cli.builtin.git.types import RepoLocation
 from mirage.commands.cli.builtin.git.util import start_point
 from mirage.commands.spec.types import FlagView
 from mirage.ops.types import MountRoot, StatPath
+from mirage.runtime.types import DispatchFn
 
 
 async def opened(

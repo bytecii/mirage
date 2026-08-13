@@ -5,19 +5,16 @@ from mirage.commands.builtin.generic.truncate import \
     truncate as generic_truncate
 from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
                                                           Operation, bound_op)
+from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 
-async def truncate(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def truncate(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+                   texts: list[str],
+                   opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["truncate"])
     size = fl.as_str("size")
     if size is None:

@@ -15,9 +15,9 @@
 import posixpath
 from collections.abc import Callable
 
-from mirage.runtime.types import DispatchFn
 from mirage.io import IOResult
 from mirage.io.types import ByteSource
+from mirage.runtime.types import DispatchFn
 from mirage.types import FileType, PathSpec
 from mirage.utils.path import (MAX_SYMLINK_HOPS, CycleError, resolve_path,
                                resolve_symlinks)

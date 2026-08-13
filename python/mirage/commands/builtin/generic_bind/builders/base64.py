@@ -23,16 +23,13 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
 
-async def base64(
-    ops: CommandIO,
-    accessor: Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def base64(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
+                 texts: list[str],
+                 opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     resolved = await resolve_or_empty(ops, accessor, paths, opts.index)
-    return await base64_generic(resolved, list(texts),
-                                opts,
-                                bound_op(ops.read_stream, accessor, opts.index))
+    return await base64_generic(
+        resolved, list(texts), opts,
+        bound_op(ops.read_stream, accessor, opts.index))
 
 
 BUILDER = Builder('base64', base64, None, False, None, read=True)

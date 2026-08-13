@@ -48,11 +48,8 @@ async def _du_entries(index: IndexCacheStore,
     return found, sum(size for _, size in found)
 
 
-async def du_provision(
-    accessor: GitHubAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> ProvisionResult:
+async def du_provision(accessor: GitHubAccessor, paths: list[PathSpec],
+                       texts: list[str], opts: CommandOpts) -> ProvisionResult:
     return await metadata_provision("du " + " ".join(
         p.virtual if isinstance(p, PathSpec) else p for p in paths))
 
@@ -68,14 +65,9 @@ async def _stat(accessor: GitHubAccessor, index: IndexCacheStore,
 
 
 @command("du", resource="github", spec=SPECS["du"], provision=du_provision)
-async def du(
-    accessor: GitHubAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
-    return await du_generic(paths,
-                            list(texts),
-                            opts,
+async def du(accessor: GitHubAccessor, paths: list[PathSpec], texts: list[str],
+             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+    return await du_generic(paths, list(texts), opts,
                             partial(_resolve, accessor, opts.index),
                             partial(_stat, accessor, opts.index),
                             partial(_du_size, opts.index),

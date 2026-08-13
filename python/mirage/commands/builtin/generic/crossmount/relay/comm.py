@@ -14,12 +14,12 @@
 
 import functools
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.builtin.generic.comm import comm as generic_comm
 from mirage.commands.builtin.generic.crossmount.types import CrossResult
 from mirage.commands.builtin.generic.crossmount.utils import flat_scopes, relay
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.runtime.types import DispatchFn
 from mirage.types import PathSpec
 
 

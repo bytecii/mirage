@@ -12,10 +12,9 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-
-from mirage.runtime.types import DispatchFn
 from mirage.io import IOResult
 from mirage.io.types import ByteSource
+from mirage.runtime.types import DispatchFn
 from mirage.shell.errors import ExitSignal
 from mirage.types import PathSpec
 from mirage.workspace.executor.builtins.condition.flat import eval_flat

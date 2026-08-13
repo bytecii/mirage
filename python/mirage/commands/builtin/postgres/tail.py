@@ -34,11 +34,9 @@ from mirage.types import PathSpec
 
 
 @command("tail", resource="postgres", spec=SPECS["tail"])
-async def tail(
-    accessor: PostgresAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def tail(accessor: PostgresAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     try:
         parsed = parse_flags(opts.flags)
     except ValueError as exc:
@@ -74,7 +72,6 @@ async def tail(
                                 from_line=counts.from_line,
                                 from_byte=counts.from_byte), IOResult()
     resolved = await resolve_or_empty(IO, accessor, paths, opts.index)
-    return await tail_generic(resolved, list(texts),
-                              opts,
+    return await tail_generic(resolved, list(texts), opts,
                               bound_op(IO.stat, accessor, opts.index),
                               bound_op(postgres_read, accessor, opts.index))

@@ -13,8 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import functools
-from collections.abc import (AsyncIterator, Awaitable, Callable,
-                             Sequence)
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol, overload
@@ -46,14 +45,20 @@ OperationFn = Callable[..., Any]
 
 class ReaddirOp(Protocol):
 
-    def __call__(self, accessor: Any, path: PathSpec, /,
+    def __call__(self,
+                 accessor: Any,
+                 path: PathSpec,
+                 /,
                  index: IndexCacheStore = ...) -> Awaitable[list[str]]:
         ...
 
 
 class ReadBytesOp(Protocol):
 
-    def __call__(self, accessor: Any, path: PathSpec, /,
+    def __call__(self,
+                 accessor: Any,
+                 path: PathSpec,
+                 /,
                  index: IndexCacheStore = ...) -> Awaitable[bytes]:
         ...
 
@@ -65,14 +70,20 @@ class ReadStreamOp(Protocol):
     the cache wrapper and the dir-refusing chokepoint both ``async
     for`` over this directly."""
 
-    def __call__(self, accessor: Any, path: PathSpec, /,
+    def __call__(self,
+                 accessor: Any,
+                 path: PathSpec,
+                 /,
                  index: IndexCacheStore = ...) -> AsyncIterator[bytes]:
         ...
 
 
 class StatOp(Protocol):
 
-    def __call__(self, accessor: Any, path: PathSpec, /,
+    def __call__(self,
+                 accessor: Any,
+                 path: PathSpec,
+                 /,
                  index: IndexCacheStore = ...) -> Awaitable[FileStat]:
         ...
 
@@ -125,7 +136,10 @@ class RmTreeOp(Protocol):
 
 class MkdirOp(Protocol):
 
-    def __call__(self, accessor: Any, path: PathSpec, /,
+    def __call__(self,
+                 accessor: Any,
+                 path: PathSpec,
+                 /,
                  parents: bool = ...) -> Awaitable[None]:
         ...
 
@@ -153,21 +167,30 @@ class IsMountedOp(Protocol):
 
 class DuSizeOp(Protocol):
 
-    def __call__(self, accessor: Any, path: PathSpec, /,
+    def __call__(self,
+                 accessor: Any,
+                 path: PathSpec,
+                 /,
                  index: IndexCacheStore = ...) -> Awaitable[int]:
         ...
 
 
 class DuEntriesOp(Protocol):
 
-    def __call__(self, accessor: Any, path: PathSpec, /,
+    def __call__(self,
+                 accessor: Any,
+                 path: PathSpec,
+                 /,
                  index: IndexCacheStore = ...) -> Awaitable[DuEntries]:
         ...
 
 
 class ResolveGlobOp(Protocol):
 
-    def __call__(self, accessor: Any, paths: Sequence[str | PathSpec], /,
+    def __call__(self,
+                 accessor: Any,
+                 paths: Sequence[str | PathSpec],
+                 /,
                  index: IndexCacheStore = ...) -> Awaitable[list[PathSpec]]:
         ...
 
@@ -175,8 +198,8 @@ class ResolveGlobOp(Protocol):
 class BuilderFn(Protocol):
     """Builder body: a CommandFn with the backend's ops bound in front."""
 
-    def __call__(self, ops: "CommandIO", accessor: Any,
-                 paths: list[PathSpec], texts: list[str],
+    def __call__(self, ops: "CommandIO", accessor: Any, paths: list[PathSpec],
+                 texts: list[str],
                  opts: CommandOpts) -> Awaitable[CommandFnResult]:
         ...
 

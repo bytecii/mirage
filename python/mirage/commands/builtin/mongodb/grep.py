@@ -22,6 +22,7 @@ from mirage.commands.builtin.grep_helper import (has_search_shaping_flags,
 from mirage.commands.builtin.mongodb.io import resolve_glob
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.builtin.utils.paths import has_unresolved_glob
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
@@ -37,18 +38,15 @@ from mirage.core.mongodb.stat import stat as _stat
 from mirage.core.mongodb.stream import read_stream
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 SEARCHABLE_SCOPE_TYPES = (MongoDBEntityScope, MongoDBDatabaseScope,
                           MongoDBRootScope)
 
 
 @command("grep", resource="mongodb", spec=SPECS["grep"])
-async def grep(
-    accessor: MongoDBAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def grep(accessor: MongoDBAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
 
@@ -58,7 +56,8 @@ async def grep(
     # The $regex push-down prints each matching document as a whole line, so
     # output/match-shaping flags must defer to the generic scan below.
     if (paths and not has_unresolved_glob(paths) and pattern is not None
-            and "\n" not in pattern and not has_search_shaping_flags(opts.flags)):
+            and "\n" not in pattern
+            and not has_search_shaping_flags(opts.flags)):
         scope = detect_scope(paths[0])
 
         if isinstance(scope, SEARCHABLE_SCOPE_TYPES):

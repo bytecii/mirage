@@ -1,3 +1,4 @@
+from dataclasses import replace
 from functools import partial
 
 from mirage.commands.builtin.dify.io import resolve_glob
@@ -14,7 +15,6 @@ from mirage.core.dify.stat import stat_light
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
-from dataclasses import replace
 
 
 def _is_bare_name(texts: list[str]) -> bool:
@@ -51,11 +51,8 @@ async def _normalize_find_output(
 
 
 @command("find", resource="dify", spec=SPECS["find"])
-async def find(
-    accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def find(accessor, paths: list[PathSpec], texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     paths = default_paths(paths, opts.cwd)
     paths = await resolve_glob(accessor, paths, opts.index)
     search_path = paths[0]
@@ -67,8 +64,9 @@ async def find(
     default_name = _default_name(fl.as_str("name"), texts)
     if default_name is not None:
         bag["name"] = default_name
-    stat_fn = (partial(stat_core, accessor, index=opts.index) if fl.as_str("mtime")
-               is not None else partial(stat_light, accessor, index=opts.index))
+    stat_fn = (partial(stat_core, accessor, index=opts.index)
+               if fl.as_str("mtime") is not None else partial(
+                   stat_light, accessor, index=opts.index))
     stdout, io = await find_generic(paths,
                                     _expr_texts(texts),
                                     replace(opts, flags=bag),

@@ -14,21 +14,18 @@
 
 from mirage.accessor.s3 import S3Accessor
 from mirage.commands.builtin.s3.io import resolve_glob
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
 from mirage.core.s3.mkdir import mkdir as mkdir_impl
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 
 @command("mkdir", resource="s3", spec=SPECS["mkdir"], write=True)
-async def mkdir(
-    accessor: S3Accessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def mkdir(accessor: S3Accessor, paths: list[PathSpec], texts: list[str],
+                opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["mkdir"])
     parents = fl.as_bool("parents")
     verbose = fl.as_bool("verbose")

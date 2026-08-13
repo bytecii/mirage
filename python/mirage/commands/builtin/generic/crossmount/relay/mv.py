@@ -15,7 +15,6 @@
 import functools
 from typing import Callable
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.builtin.generic.crossmount.types import CrossResult
 from mirage.commands.builtin.generic.crossmount.utils import (
     flat_scopes, relay, transfer_primitives)
@@ -23,6 +22,7 @@ from mirage.commands.builtin.generic.mv import mv as generic_mv
 from mirage.commands.builtin.generic.mv import parse_mv_flags
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.runtime.types import DispatchFn
 from mirage.types import PathSpec, PrimitiveMove
 
 

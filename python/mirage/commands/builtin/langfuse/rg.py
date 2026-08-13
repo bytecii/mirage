@@ -21,6 +21,7 @@ from mirage.commands.builtin.langfuse.grep import (_filter_traces,
                                                    _format_prompt_results,
                                                    _format_session_results)
 from mirage.commands.builtin.langfuse.io import resolve_glob
+from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
@@ -33,15 +34,12 @@ from mirage.core.langfuse.scope import detect_scope
 from mirage.core.langfuse.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 
 @command("rg", resource="langfuse", spec=SPECS["rg"])
-async def rg(
-    accessor: LangfuseAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def rg(accessor: LangfuseAccessor, paths: list[PathSpec],
+             texts: list[str],
+             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(opts.flags, spec=SPECS["rg"])
     pattern_str = pattern_arg(texts, fl)
     if pattern_str is None:

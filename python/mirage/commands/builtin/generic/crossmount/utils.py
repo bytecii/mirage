@@ -16,12 +16,12 @@ import dataclasses
 import functools
 from typing import Any
 
-from mirage.runtime.types import DispatchFn
 from mirage.commands.builtin.generic.crossmount.types import (OperandRun,
                                                               RunSingle)
 from mirage.commands.spec.types import FlagValue
 from mirage.io import IOResult
 from mirage.io.stream import materialize
+from mirage.runtime.types import DispatchFn
 from mirage.types import PathSpec
 from mirage.utils.errors import FS_ERRORS, fs_error_line
 

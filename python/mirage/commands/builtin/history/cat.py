@@ -31,11 +31,9 @@ from mirage.types import PathSpec
          resource="history",
          spec=SPECS["cat"],
          aggregate=concat_aggregate)
-async def cat(
-    accessor: HistoryAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def cat(accessor: HistoryAccessor, paths: list[PathSpec],
+              texts: list[str],
+              opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     resolved = await resolve_or_empty(IO, accessor, paths, opts.index)
     return await cat_generic(resolved,
                              list(texts),

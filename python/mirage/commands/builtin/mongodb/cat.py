@@ -49,11 +49,9 @@ async def stream_any(accessor: MongoDBAccessor, path: PathSpec, *,
 
 
 @command("cat", resource="mongodb", spec=SPECS["cat"])
-async def cat(
-    accessor: MongoDBAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def cat(accessor: MongoDBAccessor, paths: list[PathSpec],
+              texts: list[str],
+              opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     resolved = await resolve_or_empty(IO, accessor, paths, opts.index)
     return await cat_generic(resolved,
                              list(texts),

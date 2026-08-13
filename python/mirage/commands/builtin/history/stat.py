@@ -24,14 +24,10 @@ from mirage.types import PathSpec
 
 
 @command("stat", resource="history", spec=SPECS["stat"])
-async def stat(
-    accessor: HistoryAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def stat(accessor: HistoryAccessor, paths: list[PathSpec],
+               texts: list[str],
+               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not paths:
         raise ValueError("stat: missing operand")
-    return await stat_generic(list(paths),
-                              list(texts),
-                              opts,
+    return await stat_generic(list(paths), list(texts), opts,
                               bound_op(history_stat, accessor, opts.index))

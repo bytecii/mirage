@@ -16,6 +16,7 @@ from mirage.accessor.github_ci import GitHubCIAccessor
 from mirage.commands.builtin.generic.rg import rg as generic_rg
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.github_ci.io import resolve_glob
+from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.github_ci.read import read as ci_read
@@ -24,15 +25,12 @@ from mirage.core.github_ci.readdir import readdir as _readdir
 from mirage.core.github_ci.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.config import CommandOpts
 
 
 @command("rg", resource="github_ci", spec=SPECS["rg"])
-async def rg(
-    accessor: GitHubCIAccessor,
-    paths: list[PathSpec],
-    texts: list[str],
-    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+async def rg(accessor: GitHubCIAccessor, paths: list[PathSpec],
+             texts: list[str],
+             opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     resolved = await resolve_glob(accessor, paths, opts.index) if paths else []
     if any(is_cross_run_root(p) for p in resolved):
         raise ValueError("rg: recursive search across runs is disabled; "
