@@ -23,10 +23,6 @@ export interface ResourceWithGlob extends Resource {
   glob(paths: readonly PathSpec[], prefix?: string): Promise<PathSpec[]>
 }
 
-function hasGlob(r: Resource): r is ResourceWithGlob {
-  return 'glob' in r && typeof (r as { glob?: unknown }).glob === 'function'
-}
-
 // Expand a mid-path pattern level by level via the resource's glob. A glob
 // in a non-final segment (`s*/x.txt`) cannot resolve in one listing: each
 // glob segment is matched against its (already expanded) parent directory,
@@ -112,11 +108,14 @@ export async function resolveGlobs(
   const result: (string | PathSpec)[] = []
   for (const item of classified) {
     if (item instanceof PathSpec && item.pattern !== null) {
-      const mount = registry.mountFor(item.virtual)
-      if (mount === null || !hasGlob(mount.resource)) {
+      // A pattern word no mount owns, or one whose backend cannot glob,
+      // stays the literal word like a zero-match glob.
+      const mount = registry.tryMountFor(item.virtual)
+      if (mount?.resource.glob === undefined) {
         result.push(item)
         continue
       }
+      const resource = mount.resource as ResourceWithGlob
       const prefix = rstripSlash(mount.prefix)
       const withPrefix = new PathSpec({
         virtual: item.virtual,
@@ -128,8 +127,8 @@ export async function resolveGlobs(
       })
       try {
         const resolved = hasGlobChars(withPrefix.directory)
-          ? await walkSegments(withPrefix, mount.resource, prefix)
-          : await mount.resource.glob([withPrefix], prefix)
+          ? await walkSegments(withPrefix, resource, prefix)
+          : await resource.glob([withPrefix], prefix)
         // bash with nullglob off: a zero-match glob stays the literal
         // word instead of vanishing.
         if (resolved.length === 0) {

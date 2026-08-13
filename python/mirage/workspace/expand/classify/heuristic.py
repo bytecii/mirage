@@ -66,9 +66,8 @@ def classify_word(word: str, registry: MountRegistry,
         # (N;s/\n/ /) also contains \ and / but must not be unescaped.
         if "\\" in word:
             word = _unescape_path(word)
-        try:
-            mount = registry.mount_for(word)
-        except ValueError:
+        mount = registry.try_mount_for(word)
+        if mount is None:
             return word
         is_dir = word.endswith("/")
         path = posixpath.normpath(word)

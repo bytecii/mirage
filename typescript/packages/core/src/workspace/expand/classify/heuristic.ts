@@ -40,7 +40,7 @@ export function classifyWord(
   if (word.startsWith('/')) {
     let w = word
     if (w.includes('\\')) w = unescapePath(w)
-    const mount = registry.mountFor(w)
+    const mount = registry.tryMountFor(w)
     if (mount === null) return word
     let isDir = w.endsWith('/')
     const path = posixNormpath(w)

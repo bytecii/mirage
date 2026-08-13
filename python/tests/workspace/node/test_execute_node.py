@@ -64,6 +64,7 @@ def _mock_registry():
 
     reg = MagicMock()
     reg.mount_for = MagicMock(return_value=mount)
+    reg.try_mount_for = MagicMock(return_value=mount)
     reg.resolve_mount = AsyncMock(return_value=mount)
     reg.policies.pre_command = AsyncMock(return_value=None)
     # A bare MagicMock answers clis.get() with a truthy mock, which

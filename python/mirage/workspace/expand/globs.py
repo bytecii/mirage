@@ -122,14 +122,19 @@ async def resolve_globs(
     result: list[str | PathSpec] = []
     for item in classified:
         if isinstance(item, PathSpec) and item.pattern:
+            mount = registry.try_mount_for(item.virtual)
+            if mount is None:
+                # A pattern word no mount owns cannot match anything, so
+                # it stays the literal word like a zero-match glob.
+                result.append(item)
+                continue
+            prefix = mount.prefix.rstrip("/")
+            # Stamp the backend key so readdir addresses the correct
+            # resource-relative path.
+            item = dataclasses.replace(item,
+                                       resource_path=mount_key(
+                                           item.virtual, prefix))
             try:
-                mount = registry.mount_for(item.virtual)
-                prefix = mount.prefix.rstrip("/")
-                # Stamp the backend key so readdir addresses the correct
-                # resource-relative path.
-                item = dataclasses.replace(item,
-                                           resource_path=mount_key(
-                                               item.virtual, prefix))
                 if has_glob(item.directory):
                     resolved = await _walk_segments(item, mount, prefix)
                 else:

@@ -56,7 +56,7 @@ def _dispatcher(policies: Policies) -> tuple[Dispatcher, MagicMock]:
     mount.prefix = "/data/"
     mount.resource.caches_reads = True
     mount.execute_op = AsyncMock(return_value=b"cold")
-    namespace.mount_for = MagicMock(return_value=mount)
+    namespace.try_mount_for = MagicMock(return_value=mount)
     namespace.registry.policies = policies
     cache = MagicMock()
     cache.get = AsyncMock(return_value=b"warm")
@@ -116,10 +116,10 @@ async def test_spec_op_twin_holds_on_the_dispatch_door():
 
 def _structure_only(dispatcher) -> None:
     """Point the mocks at a path no mount serves but structure knows:
-    mount_for misses, while a mount deeper down makes the namespace
+    try_mount_for misses, while a mount deeper down makes the namespace
     answer readdir/stat for its parent."""
     namespace = dispatcher._namespace
-    namespace.mount_for = MagicMock(side_effect=ValueError("no mount"))
+    namespace.try_mount_for = MagicMock(return_value=None)
     deep = MagicMock()
     deep.prefix = "/data/locked/inner/deep/"
     namespace.registry.mounts = MagicMock(return_value=[deep])
@@ -162,13 +162,13 @@ def scoped_session():
 
 def _ungranted_parent(dispatcher) -> None:
     """Point the mocks at a real but ungranted mount whose subtree holds
-    a granted one: mount_for resolves the parent for every path, while
+    a granted one: try_mount_for resolves the parent for every path, while
     only the deep mount is in the session's grants."""
     namespace = dispatcher._namespace
     mount = MagicMock()
     mount.prefix = "/data/locked/"
     mount.execute_op = AsyncMock(return_value=b"cold")
-    namespace.mount_for = MagicMock(return_value=mount)
+    namespace.try_mount_for = MagicMock(return_value=mount)
     deep = MagicMock()
     deep.prefix = "/data/locked/inner/deep/"
     namespace.registry.mounts = MagicMock(return_value=[mount, deep])
@@ -186,7 +186,7 @@ async def test_ungranted_parent_serves_granted_structure(scoped_session):
     assert result == ["/data/locked/inner"]
     st, _ = await dispatcher.dispatch("stat", _path("/data/locked"))
     assert st.type is FileType.DIRECTORY
-    mount = dispatcher._namespace.mount_for.return_value
+    mount = dispatcher._namespace.try_mount_for.return_value
     mount.execute_op.assert_not_awaited()
 
 
