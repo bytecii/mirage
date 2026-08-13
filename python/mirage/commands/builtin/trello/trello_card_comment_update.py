@@ -18,12 +18,13 @@ from mirage.accessor.trello import TrelloAccessor
 from mirage.commands.builtin.trello._input import (file_operand,
                                                    resolve_text_input)
 from mirage.commands.registry import command
-from mirage.commands.spec.types import CommandSpec, FlagValue, FlagView, Option
+from mirage.commands.spec.types import CommandSpec, FlagView, Option
 from mirage.core.trello._client import comment_update
 from mirage.core.trello.normalize import normalize_comment
 from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
+from mirage.commands.config import CommandOpts
 
 SPEC = CommandSpec(options=(
     Option(long="--card_id", type="str"),
@@ -40,11 +41,9 @@ SPEC = CommandSpec(options=(
 async def trello_card_comment_update(
     accessor: TrelloAccessor,
     paths: list[PathSpec],
-    *texts: str,
-    stdin: ByteSource | None = None,
-    **_extra: FlagValue,
-) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(_extra, spec=SPEC)
+    texts: list[str],
+    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+    fl = FlagView(opts.flags, spec=SPEC)
     config = accessor.config
     card_id = fl.as_str("card_id")
     if not card_id:
@@ -56,7 +55,7 @@ async def trello_card_comment_update(
         config,
         inline_text=fl.as_str("text"),
         file_path=file_operand(fl, "text_file"),
-        stdin=stdin,
+        stdin=opts.stdin,
         error_message="comment text is required",
     )
     comment = await comment_update(config,

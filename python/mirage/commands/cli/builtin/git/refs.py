@@ -14,10 +14,10 @@
 
 import posixpath
 from io import BytesIO
-from typing import Any, Callable
 
 from dulwich.refs import DictRefsContainer, Ref, read_packed_refs_with_peeled
 
+from mirage.runtime.types import DispatchFn
 from mirage.commands.cli.builtin.git.io import (read_file, read_names,
                                                 read_optional, remove_file,
                                                 write_file)
@@ -31,7 +31,7 @@ BRANCH_PREFIX = "refs/heads/"
 HEAD_REF = Ref(b"HEAD")
 
 
-async def read_head(dispatch: Callable[..., Any], gitdir: str) -> HeadRef:
+async def read_head(dispatch: DispatchFn, gitdir: str) -> HeadRef:
     """Resolve ``.git/HEAD`` to a branch name or a detached commit.
 
     HEAD holds either a symbolic ref (``ref: refs/heads/main``) or a raw
@@ -40,7 +40,7 @@ async def read_head(dispatch: Callable[..., Any], gitdir: str) -> HeadRef:
     remote-tracking ref.
 
     Args:
-        dispatch (Callable): workspace op dispatcher.
+        dispatch (DispatchFn): workspace op dispatcher.
         gitdir (str): absolute virtual path of the ``.git`` directory.
     """
     raw = await read_file(dispatch, posixpath.join(gitdir, HEAD_FILE))
@@ -53,7 +53,7 @@ async def read_head(dispatch: Callable[..., Any], gitdir: str) -> HeadRef:
     return HeadRef(branch=branch, ref=ref, commit=None)
 
 
-async def _walk_loose_refs(dispatch: Callable[..., Any], root: str,
+async def _walk_loose_refs(dispatch: DispatchFn, root: str,
                            prefix: str, refs: dict[Ref, bytes]) -> None:
     """Collect loose refs under one directory into the ref table.
 
@@ -62,7 +62,7 @@ async def _walk_loose_refs(dispatch: Callable[..., Any], root: str,
     listing one level.
 
     Args:
-        dispatch (Callable): workspace op dispatcher.
+        dispatch (DispatchFn): workspace op dispatcher.
         root (str): absolute virtual path of the directory to walk.
         prefix (str): ref-name prefix accumulated so far.
         refs (dict[Ref, bytes]): ref table, updated in place.
@@ -81,7 +81,7 @@ async def _walk_loose_refs(dispatch: Callable[..., Any], root: str,
             refs[Ref(f"{prefix}/{name}".encode())] = value
 
 
-async def write_ref(dispatch: Callable[..., Any], commondir: str, ref: str,
+async def write_ref(dispatch: DispatchFn, commondir: str, ref: str,
                     sha: bytes) -> None:
     """Point one ref at an object id, as a loose ref file.
 
@@ -95,7 +95,7 @@ async def write_ref(dispatch: Callable[..., Any], commondir: str, ref: str,
     makes ``git worktree`` share branches at all.
 
     Args:
-        dispatch (Callable): workspace op dispatcher.
+        dispatch (DispatchFn): workspace op dispatcher.
         commondir (str): absolute virtual path of the shared git
             directory.
         ref (str): full ref name, e.g. ``refs/heads/main``.
@@ -104,7 +104,7 @@ async def write_ref(dispatch: Callable[..., Any], commondir: str, ref: str,
     await write_file(dispatch, posixpath.join(commondir, ref), sha + b"\n")
 
 
-async def delete_ref(dispatch: Callable[..., Any], commondir: str,
+async def delete_ref(dispatch: DispatchFn, commondir: str,
                      ref: str) -> None:
     """Remove a loose ref file.
 
@@ -114,7 +114,7 @@ async def delete_ref(dispatch: Callable[..., Any], commondir: str,
     what actually holds the branch.
 
     Args:
-        dispatch (Callable): workspace op dispatcher.
+        dispatch (DispatchFn): workspace op dispatcher.
         commondir (str): absolute virtual path of the shared git
             directory.
         ref (str): full ref name.
@@ -122,12 +122,12 @@ async def delete_ref(dispatch: Callable[..., Any], commondir: str,
     await remove_file(dispatch, posixpath.join(commondir, ref))
 
 
-async def set_head(dispatch: Callable[..., Any], gitdir: str,
+async def set_head(dispatch: DispatchFn, gitdir: str,
                    ref: str) -> None:
     """Point HEAD at a branch, symbolically.
 
     Args:
-        dispatch (Callable): workspace op dispatcher.
+        dispatch (DispatchFn): workspace op dispatcher.
         gitdir (str): absolute virtual path of this checkout's git
             directory, which owns HEAD.
         ref (str): full ref name to attach to.
@@ -136,12 +136,12 @@ async def set_head(dispatch: Callable[..., Any], gitdir: str,
                      f"{SYMREF_PREFIX}{ref}\n".encode())
 
 
-async def detach_head(dispatch: Callable[..., Any], gitdir: str,
+async def detach_head(dispatch: DispatchFn, gitdir: str,
                       sha: bytes) -> None:
     """Point HEAD straight at a commit, detaching it from any branch.
 
     Args:
-        dispatch (Callable): workspace op dispatcher.
+        dispatch (DispatchFn): workspace op dispatcher.
         gitdir (str): absolute virtual path of this checkout's git
             directory.
         sha (bytes): hex object id to check out.
@@ -149,7 +149,7 @@ async def detach_head(dispatch: Callable[..., Any], gitdir: str,
     await write_file(dispatch, posixpath.join(gitdir, HEAD_FILE), sha + b"\n")
 
 
-async def load_refs(dispatch: Callable[..., Any],
+async def load_refs(dispatch: DispatchFn,
                     gitdir: str,
                     commondir: str | None = None) -> DictRefsContainer:
     """Read every ref a repository publishes, packed and loose.
@@ -174,7 +174,7 @@ async def load_refs(dispatch: Callable[..., Any],
     worktree's own overrides it, then HEAD last of all.
 
     Args:
-        dispatch (Callable): workspace op dispatcher.
+        dispatch (DispatchFn): workspace op dispatcher.
         gitdir (str): absolute virtual path of this checkout's git
             directory, which owns HEAD.
         commondir (str | None): absolute virtual path of the shared git

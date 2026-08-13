@@ -19,7 +19,6 @@ from mirage.commands.builtin.generic.mktemp import mktemp_generic
 from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
                                                           Operation)
 from mirage.commands.config import CommandOpts
-from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
@@ -28,12 +27,10 @@ async def mktemp(
     ops: CommandIO,
     accessor: Accessor,
     paths: list[PathSpec],
-    *texts: str,
-    stdin: bytes | None = None,
-    **flags: FlagValue,
-) -> tuple[ByteSource | None, IOResult]:
+    texts: list[str],
+    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     return await mktemp_generic(
-        paths, list(texts), CommandOpts(stdin=stdin, flags=flags),
+        paths, list(texts), opts,
         partial(ops.require(Operation.MKDIR), accessor),
         partial(ops.require(Operation.WRITE), accessor))
 

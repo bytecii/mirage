@@ -13,12 +13,10 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.base import Accessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.generic.diff import diff_generic
 from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
                                                           bound_op)
 from mirage.commands.config import CommandOpts
-from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
@@ -27,19 +25,16 @@ async def diff(
     ops: CommandIO,
     accessor: Accessor,
     paths: list[PathSpec],
-    *texts: str,
-    stdin: bytes | None = None,
-    index: IndexCacheStore = NULL_INDEX,
-    **flags: FlagValue,
-) -> tuple[ByteSource | None, IOResult]:
+    texts: list[str],
+    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not ops.is_mounted(accessor):
         raise ValueError("diff: no resource")
-    resolved = await ops.resolve_glob(accessor, paths, index)
+    resolved = await ops.resolve_glob(accessor, paths, opts.index)
     return await diff_generic(resolved, list(texts),
-                              CommandOpts(stdin=stdin, flags=flags),
-                              bound_op(ops.read_bytes, accessor, index),
-                              bound_op(ops.readdir, accessor, index),
-                              bound_op(ops.stat, accessor, index))
+                              opts,
+                              bound_op(ops.read_bytes, accessor, opts.index),
+                              bound_op(ops.readdir, accessor, opts.index),
+                              bound_op(ops.stat, accessor, opts.index))
 
 
 BUILDER = Builder('diff', diff, None, False, None, read=True)

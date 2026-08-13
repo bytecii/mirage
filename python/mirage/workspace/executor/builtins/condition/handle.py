@@ -12,9 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Callable
-from typing import Any
 
+from mirage.runtime.types import DispatchFn
 from mirage.io import IOResult
 from mirage.io.types import ByteSource
 from mirage.shell.errors import ExitSignal
@@ -30,7 +29,7 @@ from mirage.workspace.types import ExecutionNode
 
 
 async def handle_test(
-    dispatch: Callable[..., Any],
+    dispatch: DispatchFn,
     namespace: Namespace,
     args: list[str | PathSpec] | CondNode,
     session: Session,
@@ -39,7 +38,7 @@ async def handle_test(
     """Evaluate test/[ (flat argv) or [[ (condition tree).
 
     Args:
-        dispatch (Callable): op dispatcher for file probes.
+        dispatch (DispatchFn): op dispatcher for file probes.
         namespace (Namespace): addressing authority (symlink table).
         args (list[str | PathSpec] | CondNode): flat operands for
             test/[, a CondNode tree for [[.

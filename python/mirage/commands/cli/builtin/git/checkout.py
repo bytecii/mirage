@@ -15,7 +15,6 @@
 import asyncio
 import posixpath
 import time
-from typing import Any, Callable
 
 from dulwich.index import IndexEntry
 from dulwich.object_store import iter_tree_contents
@@ -24,6 +23,7 @@ from dulwich.objectspec import parse_commit
 from dulwich.refs import Ref
 from dulwich.repo import BaseRepo
 
+from mirage.runtime.types import DispatchFn
 from mirage.commands.cli.builtin.git.changes import head_entries, work_changes
 from mirage.commands.cli.builtin.git.errors import (  # yapf: disable
     BadStartPointError, BranchExistsError, CheckoutConflictError, GitError,
@@ -147,7 +147,7 @@ def _overwritten(after: Tree, untracked: list[str]) -> list[str]:
     return sorted(path for path in untracked if path.encode() in after)
 
 
-async def _switch(dispatch: Callable[..., Any], repo: BaseRepo,
+async def _switch(dispatch: DispatchFn, repo: BaseRepo,
                   location: RepoLocation, before: Tree, after: Tree,
                   keep: set[str], staged: dict[bytes, IndexEntry]) -> None:
     """Make the working tree and index match the tree being switched to.
@@ -159,7 +159,7 @@ async def _switch(dispatch: Callable[..., Any], repo: BaseRepo,
     branches happen to agree about.
 
     Args:
-        dispatch (Callable): workspace op dispatcher.
+        dispatch (DispatchFn): workspace op dispatcher.
         repo (BaseRepo): the opened repository.
         location (RepoLocation): the discovered repository.
         before (Tree): the tree HEAD records.

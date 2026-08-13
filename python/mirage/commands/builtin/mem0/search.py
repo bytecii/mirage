@@ -15,19 +15,19 @@
 from dataclasses import dataclass
 
 from mirage.accessor.mem0 import Mem0Accessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.generic_bind import metadata_provision
 from mirage.commands.builtin.mem0.io import resolve_glob
 from mirage.commands.builtin.utils.paths import default_paths
 from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.commands.spec.types import FlagView
 from mirage.core.mem0.scope import ScopeLevel, detect
 from mirage.core.mem0.search import search_memories_rendered
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
+from mirage.commands.config import CommandOpts
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,27 +71,22 @@ def memory_ids(paths: list[PathSpec]) -> set[str]:
 async def search(
     accessor: Mem0Accessor,
     paths: list[PathSpec],
-    *texts: str,
-    stdin: ByteSource | None = None,
-    index: IndexCacheStore = NULL_INDEX,
-    prefix: str = "",
-    cwd: PathSpec | None = None,
-    **flags: FlagValue,
-) -> tuple[ByteSource | None, IOResult]:
+    texts: list[str],
+    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not texts:
         raise UsageError("search: query is required")
     query = texts[0]
-    parsed = parse_flags(FlagView(flags, spec=SPECS["search"]),
+    parsed = parse_flags(FlagView(opts.flags, spec=SPECS["search"]),
                          accessor.config.default_search_limit)
     if parsed.method != "semantic":
         raise UsageError("search: only the 'semantic' method is supported")
-    target_paths = default_paths(paths, cwd)
+    target_paths = default_paths(paths, opts.cwd)
     mount_prefix = mount_prefix_of(target_paths[0].virtual,
                                    target_paths[0].resource_path)
     target_ids: set[str] | None = None
     if not any(is_mount_root(path) for path in target_paths):
         target_ids = memory_ids(await resolve_glob(accessor, target_paths,
-                                                   index))
+                                                   opts.index))
     output = await search_memories_rendered(
         accessor,
         query,

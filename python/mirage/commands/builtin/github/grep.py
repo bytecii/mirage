@@ -13,7 +13,6 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.github import GitHubAccessor
-from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.aggregators import prefix_aggregate
 from mirage.commands.builtin.generic.grep import grep as generic_grep
 from mirage.commands.builtin.generic_bind.adapter import bound_op
@@ -21,7 +20,7 @@ from mirage.commands.builtin.github.narrow import narrow_scope
 from mirage.commands.builtin.grep_helper import pattern_arg
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.commands.spec.types import FlagView
 from mirage.core.github.constants import SCOPE_ERROR
 from mirage.core.github.read import read as github_read
 from mirage.core.github.readdir import readdir as github_readdir
@@ -30,6 +29,7 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.provision import ProvisionResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
+from mirage.commands.config import CommandOpts
 
 
 async def _estimate_recursive(index, path: str) -> tuple[int, int]:
@@ -49,15 +49,14 @@ async def _estimate_recursive(index, path: str) -> tuple[int, int]:
 async def grep_provision(
     accessor: GitHubAccessor,
     paths: list[PathSpec],
-    *texts: str,
-    r: bool = False,
-    R: bool = False,
-    index: IndexCacheStore,
-    **_extra: FlagValue,
+    texts: list[str],
+    opts: CommandOpts,
 ) -> ProvisionResult:
     if not paths:
         return ProvisionResult(command="grep " + " ".join(texts))
-    recursive = r or R
+    fl = FlagView(opts.flags, spec=SPECS["grep"])
+    recursive = fl.as_bool("r") or fl.as_bool("R")
+    index = opts.index
     total = 0
     ops = 0
     for p in paths:
@@ -93,12 +92,9 @@ async def grep_provision(
 async def grep(
     accessor: GitHubAccessor,
     paths: list[PathSpec],
-    *texts: str,
-    stdin: ByteSource | None = None,
-    index: IndexCacheStore,
-    **flags: FlagValue,
-) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(flags, spec=SPECS["grep"])
+    texts: list[str],
+    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+    fl = FlagView(opts.flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
     recursive = fl.as_bool("r") or fl.as_bool("R")
 
@@ -106,7 +102,7 @@ async def grep(
     if paths:
         resolved, file_count, used_search = await narrow_scope(
             accessor,
-            index,
+            opts.index,
             paths,
             pattern,
             fixed_string=fl.as_bool("F"),
@@ -124,10 +120,10 @@ async def grep(
     return await generic_grep(
         resolved,
         texts,
-        flags,
-        readdir=bound_op(github_readdir, accessor, index),
-        stat=bound_op(github_stat, accessor, index),
-        read_bytes=bound_op(github_read, accessor, index),
+        opts.flags,
+        readdir=bound_op(github_readdir, accessor, opts.index),
+        stat=bound_op(github_stat, accessor, opts.index),
+        read_bytes=bound_op(github_read, accessor, opts.index),
         read_stream=None,
-        stdin=stdin,
+        stdin=opts.stdin,
     )

@@ -13,7 +13,6 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.postgres import PostgresAccessor
-from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.rg import rg as generic_rg
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_helper import pattern_arg, search_pushdown_ok
@@ -23,7 +22,7 @@ from mirage.commands.builtin.utils.paths import has_unresolved_glob
 from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.commands.spec.types import FlagView
 from mirage.core.postgres.read import read as postgres_read
 from mirage.core.postgres.readdir import readdir as _readdir
 from mirage.core.postgres.scope import detect_scope
@@ -35,19 +34,16 @@ from mirage.core.postgres.search import (format_grep_results, search_database,
 from mirage.core.postgres.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
+from mirage.commands.config import CommandOpts
 
 
 @command("rg", resource="postgres", spec=SPECS["rg"])
 async def rg(
     accessor: PostgresAccessor,
     paths: list[PathSpec],
-    *texts: str,
-    stdin: ByteSource | None = None,
-    prefix: str = "",
-    index: IndexCacheStore,
-    **flags: FlagValue,
-) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(flags, spec=SPECS["rg"])
+    texts: list[str],
+    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+    fl = FlagView(opts.flags, spec=SPECS["rg"])
     pattern_str = pattern_arg(texts, fl)
     if pattern_str is None:
         raise UsageError("rg: usage: rg [flags] pattern [path]")
@@ -60,7 +56,7 @@ async def rg(
     # a whole line; a multi -e set (#347), a real regex, or any match/output
     # shaping flag must fall through to the generic scan below.
     if (paths and not has_unresolved_glob(paths)
-            and search_pushdown_ok(flags, pattern_str)):
+            and search_pushdown_ok(opts.flags, pattern_str)):
         scope = detect_scope(paths[0])
 
         # Directory scopes cover every file under them, so the rendered
@@ -136,14 +132,14 @@ async def rg(
             return format_records(all_lines), IOResult()
 
     resolved = await resolve_glob(accessor, paths,
-                                  index=index) if paths else []
+                                  index=opts.index) if paths else []
     return await generic_rg(
         resolved,
         texts,
-        flags,
-        readdir=bound_op(_readdir, accessor, index),
-        stat=bound_op(_stat, accessor, index),
-        read_bytes=bound_op(postgres_read, accessor, index),
+        opts.flags,
+        readdir=bound_op(_readdir, accessor, opts.index),
+        stat=bound_op(_stat, accessor, opts.index),
+        read_bytes=bound_op(postgres_read, accessor, opts.index),
         read_stream=None,
-        stdin=stdin,
+        stdin=opts.stdin,
     )

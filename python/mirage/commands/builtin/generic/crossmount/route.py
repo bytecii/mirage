@@ -12,8 +12,9 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from typing import Any, Callable
+from typing import Callable
 
+from mirage.runtime.types import DispatchFn
 from mirage.commands.builtin.generic.crossmount.detect import strategy_for
 from mirage.commands.builtin.generic.crossmount.fanout import run_fanout
 from mirage.commands.builtin.generic.crossmount.relay import run_relay
@@ -33,7 +34,7 @@ async def handle_cross_mount(
     scopes: list[PathSpec],
     text_args: list[str],
     flag_kwargs: dict[str, FlagValue],
-    dispatch: Callable[..., Any],
+    dispatch: DispatchFn,
     run_single: RunSingle,
     stdin: ByteSource | None = None,
     storage_key: Callable[[PathSpec], str] | None = None,
@@ -54,7 +55,7 @@ async def handle_cross_mount(
         text_args (list[str]): Positional text operands (grep pattern,
             find expression).
         flag_kwargs (dict): Flags parsed from the shared command spec.
-        dispatch (Callable): Workspace operation dispatcher (RELAY).
+        dispatch (DispatchFn): Workspace operation dispatcher (RELAY).
         run_single (RunSingle): Executor-injected single-mount runner
             (STREAM and FANOUT).
         stdin (ByteSource | None): Original stdin (tee re-feeds it per

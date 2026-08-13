@@ -18,12 +18,13 @@ from mirage.accessor.trello import TrelloAccessor
 from mirage.commands.builtin.trello._input import (file_operand,
                                                    resolve_text_input)
 from mirage.commands.registry import command
-from mirage.commands.spec.types import CommandSpec, FlagValue, FlagView, Option
+from mirage.commands.spec.types import CommandSpec, FlagView, Option
 from mirage.core.trello._client import card_create
 from mirage.core.trello.normalize import normalize_card
 from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
+from mirage.commands.config import CommandOpts
 
 SPEC = CommandSpec(options=(
     Option(long="--list_id", type="str"),
@@ -37,11 +38,9 @@ SPEC = CommandSpec(options=(
 async def trello_card_create(
     accessor: TrelloAccessor,
     paths: list[PathSpec],
-    *texts: str,
-    stdin: ByteSource | None = None,
-    **_extra: FlagValue,
-) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(_extra, spec=SPEC)
+    texts: list[str],
+    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+    fl = FlagView(opts.flags, spec=SPEC)
     config = accessor.config
     list_id = fl.as_str("list_id")
     if not list_id:
@@ -51,12 +50,12 @@ async def trello_card_create(
         raise ValueError("--name is required")
     desc = None
     if (fl.as_str("desc") or file_operand(fl, "desc_file")
-            or stdin is not None):
+            or opts.stdin is not None):
         desc = await resolve_text_input(
             config,
             inline_text=fl.as_str("desc"),
             file_path=file_operand(fl, "desc_file"),
-            stdin=stdin,
+            stdin=opts.stdin,
             error_message="desc is required",
         )
     card = await card_create(

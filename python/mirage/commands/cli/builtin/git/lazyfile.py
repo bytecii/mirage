@@ -14,8 +14,8 @@
 
 import asyncio
 from io import SEEK_CUR, SEEK_END, SEEK_SET
-from typing import Any, Callable
 
+from mirage.runtime.types import DispatchFn
 from mirage.bridge.sync import run_async_from_sync
 from mirage.commands.cli.builtin.git.io import read_range
 
@@ -44,13 +44,13 @@ class LazyFile:
     onto the workspace's event loop.
 
     Args:
-        dispatch (Callable): workspace op dispatcher.
+        dispatch (DispatchFn): workspace op dispatcher.
         path (str): absolute virtual path of the file.
         size (int): the file's byte length.
         loop (asyncio.AbstractEventLoop): the loop serving the mount.
     """
 
-    def __init__(self, dispatch: Callable[..., Any], path: str, size: int,
+    def __init__(self, dispatch: DispatchFn, path: str, size: int,
                  loop: asyncio.AbstractEventLoop) -> None:
         self._dispatch = dispatch
         self._path = path

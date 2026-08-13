@@ -13,16 +13,13 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.history import HistoryAccessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.generic.stat import stat_generic
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue
 from mirage.core.history.stat import stat as history_stat
 from mirage.io.types import ByteSource, IOResult
-from mirage.ops.types import LinkView
 from mirage.types import PathSpec
 
 
@@ -30,16 +27,11 @@ from mirage.types import PathSpec
 async def stat(
     accessor: HistoryAccessor,
     paths: list[PathSpec],
-    *texts: str,
-    stdin: bytes | None = None,
-    index: IndexCacheStore = NULL_INDEX,
-    links: LinkView | None = None,
-    **flags: FlagValue,
-) -> tuple[ByteSource | None, IOResult]:
+    texts: list[str],
+    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     if not paths:
         raise ValueError("stat: missing operand")
     return await stat_generic(list(paths),
                               list(texts),
-                              CommandOpts(stdin=stdin, flags=flags),
-                              bound_op(history_stat, accessor, index),
-                              links=links)
+                              opts,
+                              bound_op(history_stat, accessor, opts.index))

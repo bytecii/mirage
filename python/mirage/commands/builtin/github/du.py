@@ -22,9 +22,7 @@ from mirage.commands.builtin.github.io import IO, resolve_glob
 from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
-from mirage.ops.types import LinkView, MountView
 from mirage.provision.types import ProvisionResult
 from mirage.types import PathSpec
 
@@ -53,10 +51,8 @@ async def _du_entries(index: IndexCacheStore,
 async def du_provision(
     accessor: GitHubAccessor,
     paths: list[PathSpec],
-    *texts: str,
-    index: IndexCacheStore,
-    **_extra: FlagValue,
-) -> ProvisionResult:
+    texts: list[str],
+    opts: CommandOpts) -> ProvisionResult:
     return await metadata_provision("du " + " ".join(
         p.virtual if isinstance(p, PathSpec) else p for p in paths))
 
@@ -75,20 +71,12 @@ async def _stat(accessor: GitHubAccessor, index: IndexCacheStore,
 async def du(
     accessor: GitHubAccessor,
     paths: list[PathSpec],
-    *texts: str,
-    stdin: bytes | None = None,
-    index: IndexCacheStore,
-    cwd: PathSpec | str = "/",
-    links: LinkView | None = None,
-    mounts: MountView | None = None,
-    **flags: FlagValue,
-) -> tuple[ByteSource | None, IOResult]:
+    texts: list[str],
+    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     return await du_generic(paths,
                             list(texts),
-                            CommandOpts(stdin=stdin, flags=flags, cwd=cwd),
-                            partial(_resolve, accessor, index),
-                            partial(_stat, accessor, index),
-                            partial(_du_size, index),
-                            partial(_du_entries, index),
-                            links=links,
-                            mounts=mounts)
+                            opts,
+                            partial(_resolve, accessor, opts.index),
+                            partial(_stat, accessor, opts.index),
+                            partial(_du_size, opts.index),
+                            partial(_du_entries, opts.index))

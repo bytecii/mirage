@@ -19,8 +19,7 @@ from typing import Any
 
 from mirage.accessor.trello import TrelloAccessor
 from mirage.commands.registry import command
-from mirage.commands.spec.types import (CommandSpec, FlagValue, FlagView,
-                                        Operand)
+from mirage.commands.spec.types import CommandSpec, FlagView, Operand
 from mirage.core.trello._client import (get_board, get_card, list_board_labels,
                                         list_board_lists, list_board_members,
                                         list_card_comments, list_list_cards,
@@ -32,6 +31,7 @@ from mirage.core.trello.normalize import (normalize_board, normalize_card,
 from mirage.io.stream import yield_bytes
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import JsonValue, PathSpec
+from mirage.commands.config import CommandOpts
 
 Runner = Callable[[TrelloAccessor, list[str], FlagView], Awaitable[bytes]]
 
@@ -128,10 +128,9 @@ async def _dispatch(
     entry: TrelloRead,
     accessor: TrelloAccessor,
     paths: list[PathSpec],
-    *texts: str,
-    **flags: FlagValue,
-) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(flags, spec=entry.spec)
+    texts: list[str],
+    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+    fl = FlagView(opts.flags, spec=entry.spec)
     data = await entry.runner(accessor, list(texts), fl)
     return yield_bytes(data), IOResult()
 

@@ -13,7 +13,6 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.postgres import PostgresAccessor
-from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.grep import grep as generic_grep
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_helper import pattern_arg, search_pushdown_ok
@@ -22,7 +21,7 @@ from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.builtin.utils.paths import has_unresolved_glob
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.commands.spec.types import FlagView
 from mirage.core.postgres.read import read as postgres_read
 from mirage.core.postgres.readdir import readdir as _readdir
 from mirage.core.postgres.scope import detect_scope
@@ -34,19 +33,16 @@ from mirage.core.postgres.search import (format_grep_results, search_database,
 from mirage.core.postgres.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
+from mirage.commands.config import CommandOpts
 
 
 @command("grep", resource="postgres", spec=SPECS["grep"])
 async def grep(
     accessor: PostgresAccessor,
     paths: list[PathSpec],
-    *texts: str,
-    stdin: ByteSource | None = None,
-    prefix: str = "",
-    index: IndexCacheStore,
-    **flags: FlagValue,
-) -> tuple[ByteSource | None, IOResult]:
-    fl = FlagView(flags, spec=SPECS["grep"])
+    texts: list[str],
+    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+    fl = FlagView(opts.flags, spec=SPECS["grep"])
     pattern = pattern_arg(texts, fl)
     ci = fl.as_bool("i")
 
@@ -57,11 +53,11 @@ async def grep(
     # output/match-shaping flags or a real regex, so those defer to the
     # generic scan below.
     if (paths and not has_unresolved_glob(paths) and pattern is not None
-            and search_pushdown_ok(flags, pattern)):
+            and search_pushdown_ok(opts.flags, pattern)):
         scope = detect_scope(paths[0])
 
         if scope.level != "root":
-            await _stat(accessor, paths[0], index=index)
+            await _stat(accessor, paths[0], index=opts.index)
 
         # Directory scopes cover every file under them, so the rendered
         # schema.json / semantic.json are searched alongside the row
@@ -136,14 +132,14 @@ async def grep(
             return format_records(all_lines), IOResult()
 
     resolved = await resolve_glob(accessor, paths,
-                                  index=index) if paths else []
+                                  index=opts.index) if paths else []
     return await generic_grep(
         resolved,
         texts,
-        flags,
-        readdir=bound_op(_readdir, accessor, index),
-        stat=bound_op(_stat, accessor, index),
-        read_bytes=bound_op(postgres_read, accessor, index),
+        opts.flags,
+        readdir=bound_op(_readdir, accessor, opts.index),
+        stat=bound_op(_stat, accessor, opts.index),
+        read_bytes=bound_op(postgres_read, accessor, opts.index),
         read_stream=None,
-        stdin=stdin,
+        stdin=opts.stdin,
     )

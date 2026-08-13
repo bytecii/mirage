@@ -13,7 +13,6 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.history import HistoryAccessor
-from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.aggregators import wc_aggregate
 from mirage.commands.builtin.generic.wc import wc_generic
 from mirage.commands.builtin.generic_bind.adapter import dir_aware_stream
@@ -23,7 +22,6 @@ from mirage.commands.builtin.history.io import IO
 from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
@@ -32,12 +30,9 @@ from mirage.types import PathSpec
 async def wc(
     accessor: HistoryAccessor,
     paths: list[PathSpec],
-    *texts: str,
-    stdin: ByteSource | None = None,
-    index: IndexCacheStore,
-    **flags: FlagValue,
-) -> tuple[ByteSource | None, IOResult]:
-    resolved = await resolve_or_empty(IO, accessor, paths, index)
+    texts: list[str],
+    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
+    resolved = await resolve_or_empty(IO, accessor, paths, opts.index)
     return await wc_generic(resolved, list(texts),
-                            CommandOpts(stdin=stdin, flags=flags),
-                            dir_aware_stream(IO, accessor, index))
+                            opts,
+                            dir_aware_stream(IO, accessor, opts.index))

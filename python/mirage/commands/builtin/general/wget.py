@@ -12,18 +12,18 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from typing import Any, Callable
 
-from mirage.accessor.base import Accessor, NOOPAccessor
+from mirage.accessor.base import Accessor
 from mirage.commands.builtin.general.curl import _resolve_target
 from mirage.commands.builtin.utils.http import HttpConnectError, _http_get
 from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.errors import WALK_ERRORS
+from mirage.commands.config import CommandOpts
+from mirage.commands.spec.types import FlagView
 
 # Exit codes GNU wget uses for the failures mirage can hit. Unlike curl, wget
 # treats any 4xx/5xx as a failure (EXIT_SERVER_ERROR) and needs no flag to do
@@ -40,17 +40,16 @@ USAGE = ("wget: missing URL\n"
 
 @command("wget", resource=None, spec=SPECS["wget"])
 async def wget(
-    accessor: Accessor = NOOPAccessor(),
-    paths: list[PathSpec] | None = None,
-    *texts: str,
-    stdin: bytes | None = None,
-    args_O: str | None = None,
-    q: bool = False,
-    spider: bool = False,
-    dispatch: Callable[..., Any] | None = None,
-    cwd: PathSpec | None = None,
-    **_extra: FlagValue,
+    accessor: Accessor,
+    paths: list[PathSpec],
+    texts: list[str],
+    opts: CommandOpts,
 ) -> tuple[ByteSource | None, IOResult]:
+    fl = FlagView(opts.flags, spec=SPECS["wget"])
+    args_O = fl.as_str("args_O")
+    q = fl.as_bool("q")
+    spider = fl.as_bool("spider")
+    dispatch = opts.dispatch
     if not texts:
         raise UsageError(USAGE, exit_code=EXIT_GENERIC)
     url = texts[0]
@@ -86,7 +85,7 @@ async def wget(
     # truncates the -O target before it learns the response code.
     data = b"" if resp.is_error else resp.body
     if dispatch is not None:
-        scope = _resolve_target(dest_raw, cwd)
+        scope = _resolve_target(dest_raw, opts.cwd)
         try:
             await dispatch("write", scope, data=data)
         # WALK_ERRORS is the shared recoverable set (every filesystem error

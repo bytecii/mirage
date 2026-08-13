@@ -22,7 +22,6 @@ from mirage.commands.builtin.utils.output import format_optional_records
 from mirage.commands.builtin.utils.verbose import removal_lines
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue
 from mirage.core.s3.readdir import readdir
 from mirage.core.s3.rm import rm_r
 from mirage.core.s3.rmdir import rmdir
@@ -30,6 +29,8 @@ from mirage.core.s3.stat import stat
 from mirage.core.s3.unlink import unlink
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileType, PathSpec
+from mirage.commands.config import CommandOpts
+from mirage.commands.spec.types import FlagView
 
 
 async def _rm(
@@ -88,19 +89,17 @@ async def _rm(
 async def rm(
     accessor: S3Accessor,
     paths: list[PathSpec],
-    *texts: str,
-    stdin: bytes | None = None,
-    r: bool = False,
-    R: bool = False,
-    f: bool = False,
-    v: bool = False,
-    d: bool = False,
-    index: IndexCacheStore,
-    **_extra: FlagValue,
+    texts: list[str],
+    opts: CommandOpts,
 ) -> tuple[ByteSource | None, IOResult]:
     if not paths:
         raise ValueError("rm: missing operand")
-    paths = await resolve_glob(accessor, paths, index)
+    fl = FlagView(opts.flags, spec=SPECS["rm"])
+    r = fl.as_bool("r") or fl.as_bool("R")
+    f = fl.as_bool("f")
+    v = fl.as_bool("v")
+    d = fl.as_bool("d")
+    paths = await resolve_glob(accessor, paths, opts.index)
     verbose_parts: list[str] = []
     errors: list[str] = []
     removed: dict[str, ByteSource] = {}
@@ -108,11 +107,11 @@ async def rm(
         # GNU rm reports the operand and keeps removing the rest.
         error, entry_lines = await _rm(accessor,
                                        p,
-                                       recursive=r or R,
+                                       recursive=r,
                                        force=f,
                                        remove_dir=d,
                                        verbose=v,
-                                       index=index)
+                                       index=opts.index)
         if error is not None:
             errors.append(error)
             continue

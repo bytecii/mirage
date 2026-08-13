@@ -14,8 +14,9 @@
 
 import json
 
+from dataclasses import replace
+
 from mirage.accessor.discord import DiscordAccessor
-from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.discord._provision import file_read_provision
 from mirage.commands.builtin.discord.io import IO
 from mirage.commands.builtin.generic.head import head as generic_head
@@ -26,7 +27,6 @@ from mirage.commands.builtin.generic_bind.builders.common import \
 from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.types import FlagValue
 from mirage.core.discord._client import discord_get
 from mirage.core.discord.history import date_to_snowflake
 from mirage.core.discord.read import read as discord_read
@@ -39,13 +39,11 @@ from mirage.types import PathSpec
 async def head_provision(
     accessor: DiscordAccessor,
     paths: list[PathSpec],
-    *texts: str,
-    **_extra: FlagValue,
-) -> ProvisionResult:
-    return await file_read_provision(
-        accessor, paths,
-        "head " + " ".join(p.virtual if isinstance(p, PathSpec) else p
-                           for p in paths))
+    texts: list[str],
+    opts: CommandOpts) -> ProvisionResult:
+    line = "head " + " ".join(p.virtual for p in paths)
+    return await file_read_provision(accessor, paths, texts,
+                                     replace(opts, command=line))
 
 
 @command("head",
@@ -55,18 +53,15 @@ async def head_provision(
 async def head(
     accessor: DiscordAccessor,
     paths: list[PathSpec],
-    *texts: str,
-    stdin: ByteSource | None = None,
-    index: IndexCacheStore,
-    **flags: FlagValue,
-) -> tuple[ByteSource | None, IOResult]:
+    texts: list[str],
+    opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
     try:
-        parsed = parse_flags(flags)
+        parsed = parse_flags(opts.flags)
     except ValueError as exc:
         return None, IOResult(exit_code=1, stderr=str(exc).encode())
     lines = parsed.lines if parsed.lines is not None else 10
     if paths:
-        scope = await detect_scope(paths[0], index)
+        scope = await detect_scope(paths[0], opts.index)
 
         # Smart head: fetch only first N messages for a single date.
         if (len(paths) == 1 and scope.level == "file" and scope.channel_id
@@ -87,8 +82,8 @@ async def head(
                 json.dumps(m, ensure_ascii=False, separators=(",", ":"))
                 for m in msgs) + "\n"
             return generic_head(jsonl.encode(), n=lines), IOResult()
-    resolved = await resolve_or_empty(IO, accessor, paths, index)
+    resolved = await resolve_or_empty(IO, accessor, paths, opts.index)
     return await head_generic(resolved, list(texts),
-                              CommandOpts(stdin=stdin, flags=flags),
-                              bound_op(IO.stat, accessor, index),
-                              bound_op(discord_read, accessor, index))
+                              opts,
+                              bound_op(IO.stat, accessor, opts.index),
+                              bound_op(discord_read, accessor, opts.index))
