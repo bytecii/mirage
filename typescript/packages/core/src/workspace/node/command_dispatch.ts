@@ -32,8 +32,8 @@ import type { JobTable } from '../../shell/job_table.ts'
 import { NodeType as NT, ShellBuiltin as SB } from '../../shell/types.ts'
 import { PathSpec, wordText } from '../../types.ts'
 import { classifyBarePath } from '../expand/classify/index.ts'
-import type { Argv } from '../expand/argv.ts'
-import { expandArgv } from '../expand/argv.ts'
+import { Argv, expandArgv } from '../expand/argv.ts'
+import { expandBoundaryGlobs } from '../expand/globs.ts'
 import { type ExecuteFn, expandNode } from '../expand/node.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import { handleCommand } from '../executor/command.ts'
@@ -95,6 +95,7 @@ import {
 } from '../route/index.ts'
 import type { Session } from '../session/session.ts'
 import { homeDir, logicalCwd } from '../session/shell_dirs.ts'
+import { sessionView } from '../session/state.ts'
 import { ExecutionNode } from '../types.ts'
 
 type Result = [ByteSource | null, IOResult, ExecutionNode]
@@ -329,7 +330,7 @@ async function runCommandBody(
     stdin = merged
   }
 
-  const argv = await expandArgv(cleanParts, session, executeFn, callStack, registry)
+  const argv = await expandArgv(cleanParts, session, executeFn, callStack, registry, namespace)
 
   // Limits resolve against the expanded name, so `$CMD`-style
   // invocations get their real command's policy.
@@ -410,6 +411,31 @@ async function runArgv(
   signal?: AbortSignal,
 ): Promise<Result> {
   const name = argv.name
+
+  // A glob whose directory holds a child mount cannot be pushed down to
+  // one backend: the mount root is a child of that directory but its keys
+  // live in another resource, so the backend reports "no such file" for a
+  // name its own listing shows. Expanding such a word here lets the
+  // matches route per mount. It has to happen before the admission
+  // policies below, not just before the follow policy: a word left
+  // unexpanded reaches preCommand as the literal pattern, and
+  // MountRootPolicy cannot recognize a mount root inside one, so
+  // `tar -cf out.tar /base/*` would archive a whole backend the same
+  // operand typed by hand is refused for.
+  const boundary = await expandBoundaryGlobs(argv.operands, registry, namespace)
+  const expandedWords = boundary.map(wordText)
+  // Compared as words, not as a count: a glob that matches exactly one
+  // name (`du /base/i*` where only the mount root matches) is still an
+  // expansion, and dropping it routes the pattern to a backend that
+  // cannot serve the child mount's keys.
+  const typedWords = argv.operands.map(wordText)
+  if (
+    expandedWords.length !== typedWords.length ||
+    expandedWords.some((w, i) => w !== typedWords[i])
+  ) {
+    argv = new Argv(argv.name, expandedWords, boundary)
+  }
+
   const args = [...argv.args]
   let operands = [...argv.operands]
 
@@ -597,9 +623,10 @@ async function runArgv(
   if (name === SB.BASH || name === SB.SH) {
     return handleBash(dispatch, executeFn, args, session, stdin, name)
   }
-  if (name === SB.EXPORT) return handleExport(args, session)
-  if (name === SB.UNSET) return handleUnset(args, session)
-  if (name === SB.LOCAL) return handleLocal(args, session)
+  if (name === SB.EXPORT)
+    return handleExport(args, session, sessionView(session, registry.policies))
+  if (name === SB.UNSET) return handleUnset(args, session, sessionView(session, registry.policies))
+  if (name === SB.LOCAL) return handleLocal(args, session, sessionView(session, registry.policies))
   if (name === SB.PRINTENV) {
     return handlePrintenv(args.length > 0 ? (args[0] ?? null) : null, session)
   }
@@ -611,7 +638,9 @@ async function runArgv(
   if (name === SB.SHIFT) {
     return handleShift(args, callStack, session)
   }
-  if (name === SB.GETOPTS) return handleGetopts(args, session, callStack)
+  if (name === SB.GETOPTS) {
+    return handleGetopts(args, session, callStack, sessionView(session, registry.policies))
+  }
   if (name === SB.TRAP) return handleTrap(session)
   if (name === SB.TEST || name === SB.BRACKET || name === SB.DOUBLE_BRACKET) {
     let testArgs = [...operands]
@@ -637,7 +666,7 @@ async function runArgv(
   if (name === SB.PRINTF) return handlePrintf(args, session)
   if (name === SB.SLEEP) return handleSleep(args, signal)
   if (name === SB.READ) {
-    return handleRead(args, session, stdin)
+    return handleRead(args, session, stdin, sessionView(session, registry.policies))
   }
   if (name === SB.SOURCE || name === SB.DOT) {
     const target = operands[0] ?? ''
@@ -679,7 +708,7 @@ async function runArgv(
   // They mutate the addressing layer. `readlink -f/-e/-m` is canonicalization,
   // which falls through to the mount command.
   if (name === 'ln' && linkFlags(operands, 'sfnvrT').has('s')) {
-    return await handleLn(namespace, session, operands)
+    return await handleLn(namespace, dispatch, session, operands)
   }
   if (name === 'readlink') {
     return await handleReadlink(namespace, dispatch, session, operands)
