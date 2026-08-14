@@ -56,13 +56,14 @@ async def head(accessor: DiscordAccessor, paths: list[PathSpec],
         return None, IOResult(exit_code=1, stderr=str(exc).encode())
     lines = parsed.lines if parsed.lines is not None else 10
     if paths:
-        scope = await detect_scope(paths[0], opts.index)
+        scope = detect_scope(paths[0])
 
         # Smart head: fetch only first N messages for a single date.
-        if (len(paths) == 1 and scope.level == "file" and scope.channel_id
+        if (len(paths) == 1 and scope.level == "messages" and scope.channel_id
                 and scope.date_str and parsed.bytes_ is None
                 and not parsed.zero_terminated):
             after = date_to_snowflake(scope.date_str)
+            before_int = int(date_to_snowflake(scope.date_str, end=True))
             msgs = await discord_get(
                 accessor.config,
                 f"/channels/{scope.channel_id}/messages",
@@ -72,6 +73,11 @@ async def head(accessor: DiscordAccessor, paths: list[PathSpec],
                 },
             )
             assert isinstance(msgs, list)
+            # With `after`, a short day spills into the next one: the API
+            # keeps returning messages past midnight until `limit` is met,
+            # so bound to the same end-of-day snowflake the readdir walk
+            # uses or head would print lines chat.jsonl does not contain.
+            msgs = [m for m in msgs if int(m["id"]) <= before_int]
             msgs.sort(key=lambda m: int(m["id"]))
             jsonl = "\n".join(
                 json.dumps(m, ensure_ascii=False, separators=(",", ":"))
