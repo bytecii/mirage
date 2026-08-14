@@ -14,11 +14,11 @@
 
 import posixpath
 from collections.abc import AsyncIterator
-
 from functools import partial
-from mirage.cache.index.warm import entry_or_warm
+
 from mirage.accessor.dropbox import DropboxAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
+from mirage.cache.index.warm import entry_or_warm
 from mirage.core.dropbox._client import (DropboxApiError, dropbox_download,
                                          dropbox_download_stream)
 from mirage.core.dropbox.readdir import readdir

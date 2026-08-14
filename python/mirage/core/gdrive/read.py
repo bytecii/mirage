@@ -14,11 +14,11 @@
 
 import posixpath
 import time
-
 from functools import partial
-from mirage.cache.index.warm import entry_or_warm
+
 from mirage.accessor.gdrive import GDriveAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.cache.index.warm import entry_or_warm
 from mirage.core.gdocs.read import read_doc
 from mirage.core.gdrive import DIRECTORY_RESOURCE_TYPES
 from mirage.core.gdrive.readdir import readdir
@@ -122,13 +122,10 @@ async def read(
     if entry.resource_type == "gdrive/gdoc":
         rendered = await read_doc(accessor.token_manager, entry.id)
     elif entry.resource_type == "gdrive/gsheet":
-        rendered = await read_spreadsheet(accessor.token_manager,
-                                          entry.id)
+        rendered = await read_spreadsheet(accessor.token_manager, entry.id)
     elif entry.resource_type == "gdrive/gslide":
-        rendered = await read_presentation(accessor.token_manager,
-                                           entry.id)
+        rendered = await read_presentation(accessor.token_manager, entry.id)
     else:
-        return await read_file_versioned(accessor.token_manager,
-                                         entry.id, virtual, key, offset,
-                                         size)
+        return await read_file_versioned(accessor.token_manager, entry.id,
+                                         virtual, key, offset, size)
     return slice_window(rendered, offset, size)

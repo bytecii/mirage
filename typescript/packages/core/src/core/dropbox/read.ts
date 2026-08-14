@@ -86,7 +86,11 @@ export async function* stream(
           virtualKey,
           parentKey !== virtualKey
             ? () =>
-                readdir(accessor, PathSpec.fromStrPath(parentKey, mountKey(parentKey, prefix)), index)
+                readdir(
+                  accessor,
+                  PathSpec.fromStrPath(parentKey, mountKey(parentKey, prefix)),
+                  index,
+                )
             : null,
         )
   if (entry === null) throw enoent(path.virtual)

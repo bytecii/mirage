@@ -13,11 +13,11 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import posixpath
-
 from functools import partial
-from mirage.cache.index.warm import entry_or_warm
+
 from mirage.accessor.gmail import GmailAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.cache.index.warm import entry_or_warm
 from mirage.core.gmail.messages import (get_attachment, get_message_raw,
                                         message_json_bytes)
 from mirage.core.gmail.readdir import readdir
@@ -44,7 +44,7 @@ async def read(
     if entry is None:
         raise enoent(virtual)
     if entry.resource_type in ("gmail/label", "gmail/date",
-                                      "gmail/attachment_dir"):
+                               "gmail/attachment_dir"):
         raise IsADirectoryError(virtual)
     if entry.resource_type == "gmail/attachment":
         att_dir_result = await index.get(parent_key)

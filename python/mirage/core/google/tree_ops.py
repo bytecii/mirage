@@ -13,13 +13,13 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from collections.abc import Callable
+from functools import partial
 from typing import Any, Protocol
 
-from functools import partial
-from mirage.cache.index.warm import entry_or_warm
 from mirage.accessor.base import Accessor
 from mirage.cache.context import invalidate_after_unlink
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.cache.index.warm import entry_or_warm
 from mirage.core.google._client import TokenManager
 from mirage.core.google.drive import delete_file
 from mirage.types import FileStat, FileType, PathSpec

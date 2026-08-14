@@ -14,11 +14,11 @@
 
 import json
 import posixpath
-
 from functools import partial
-from mirage.cache.index.warm import entry_or_warm
+
 from mirage.accessor.gdocs import GDocsAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.cache.index.warm import entry_or_warm
 from mirage.core.gdocs._client import TokenManager, docs_base, google_get
 from mirage.core.gdocs.readdir import readdir
 from mirage.types import PathSpec

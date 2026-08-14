@@ -14,11 +14,11 @@
 
 import posixpath
 from collections.abc import AsyncIterator
-
 from functools import partial
-from mirage.cache.index.warm import entry_or_warm
+
 from mirage.accessor.box import BoxAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
+from mirage.cache.index.warm import entry_or_warm
 from mirage.core.box.api import download_file, download_file_stream
 from mirage.core.box.readdir import readdir
 from mirage.types import PathSpec
