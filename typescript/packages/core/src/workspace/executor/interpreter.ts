@@ -26,11 +26,11 @@ type Result = [ByteSource | null, IOResult, ExecutionNode]
 
 const ENC = new TextEncoder()
 
-export interface InterpreterDeps {
+interface InterpreterDeps {
   runtime: LanguageRuntime
 }
 
-export interface InterpreterOpts {
+interface InterpreterOpts {
   stdin: ByteSource | null
   env: Record<string, string>
   code: string | null
