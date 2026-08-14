@@ -136,7 +136,13 @@ describe('gdrive read auto-bootstrap', () => {
       virtual: '/Team Drive',
       directory: '/Team Drive',
     })
-    await expect(read(accessor, path, index)).rejects.toThrow(/EISDIR/)
+    // The stamped code is the signal, not the message: the message is the
+    // bare operand, which is what the shell renders (`cat: /Team Drive: Is a
+    // directory`) and what Python's IsADirectoryError(virtual) carries.
+    await expect(read(accessor, path, index)).rejects.toMatchObject({
+      code: 'EISDIR',
+      virtualPath: '/Team Drive',
+    })
     expect(vi.mocked(drive.downloadFile)).not.toHaveBeenCalled()
   })
 })

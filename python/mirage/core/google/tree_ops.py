@@ -12,10 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import logging
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from functools import partial
+from mirage.cache.index.warm import entry_or_warm
 from mirage.accessor.base import Accessor
 from mirage.cache.context import invalidate_after_unlink
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
@@ -24,8 +25,6 @@ from mirage.core.google.drive import delete_file
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import enoent
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
-
-logger = logging.getLogger(__name__)
 
 # The Drive-item backends (gdocs, gsheets, gslides) present the same
 # synthetic owned/shared tree over the index; stat and unlink differ only
@@ -57,32 +56,27 @@ def make_stat(readdir: Callable[..., Any]) -> Callable[..., Any]:
             name = key if key else "/"
             return FileStat(name=name, type=FileType.DIRECTORY)
         virtual_key = prefix + "/" + key if prefix else "/" + key
-        result = await index.get(virtual_key)
-        if result.entry is None:
-            parent_virtual = virtual_key.rsplit("/", 1)[0] or "/"
-            try:
-                await readdir(
-                    accessor,
-                    PathSpec(virtual=parent_virtual,
-                             directory=parent_virtual,
-                             resource_path=mount_key(parent_virtual, prefix)),
-                    index=index,
-                )
-            except FileNotFoundError as exc:
-                logger.debug("stat readdir populate failed for %s: %s",
-                             parent_virtual, exc)
-            result = await index.get(virtual_key)
-            if result.entry is None:
-                raise enoent(virtual)
+        parent_virtual = virtual_key.rsplit("/", 1)[0] or "/"
+        warm = partial(
+            readdir,
+            accessor,
+            PathSpec(virtual=parent_virtual,
+                     directory=parent_virtual,
+                     resource_path=mount_key(parent_virtual, prefix)),
+            index=index,
+        )
+        entry = await entry_or_warm(index, virtual_key, warm)
+        if entry is None:
+            raise enoent(virtual)
         return FileStat(
-            name=result.entry.vfs_name,
+            name=entry.vfs_name,
             type=FileType.JSON,
-            modified=result.entry.remote_time,
-            size=result.entry.size,
+            modified=entry.remote_time,
+            size=entry.size,
             extra={
-                "doc_id": result.entry.id,
-                "doc_name": result.entry.name,
-                **result.entry.extra,
+                "doc_id": entry.id,
+                "doc_name": entry.name,
+                **entry.extra,
             },
         )
 
@@ -110,23 +104,14 @@ def make_unlink(readdir: Callable[..., Any]) -> Callable[..., Any]:
         if key in VIRTUAL_DIRS:
             raise IsADirectoryError(raw)
         virtual_key = prefix + "/" + key if prefix else "/" + key
-        result = await index.get(virtual_key)
-        if result.entry is None:
-            parent = "/" + "/".join(key.split("/")[:-1])
-            parent_path = PathSpec.from_str_path(
-                prefix + parent, mount_key(prefix + parent, prefix))
-            # An absent parent leaves the miss below to report ENOENT
-            # against the operand, which is the path GNU names
-            # (`rm nodir/f` -> "cannot remove 'nodir/f'"), not the parent.
-            try:
-                await readdir(accessor, parent_path, index)
-            except FileNotFoundError as exc:
-                logger.debug("unlink readdir populate failed for %s: %s",
-                             parent_path.virtual, exc)
-            result = await index.get(virtual_key)
-        if result.entry is None:
+        parent = "/" + "/".join(key.split("/")[:-1])
+        parent_path = PathSpec.from_str_path(
+            prefix + parent, mount_key(prefix + parent, prefix))
+        entry = await entry_or_warm(
+            index, virtual_key, partial(readdir, accessor, parent_path, index))
+        if entry is None:
             raise enoent(path)
-        await delete_file(accessor.token_manager, result.entry.id)
+        await delete_file(accessor.token_manager, entry.id)
         parent_dir = "/".join(virtual_key.rsplit("/", 1)[:-1]) or "/"
         await index.invalidate_dir(parent_dir)
         await invalidate_after_unlink(path)
