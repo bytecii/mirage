@@ -169,6 +169,16 @@ describe('gridfs core find', () => {
     await expect(out).resolves.toEqual(['/data', '/data/a'])
   })
 
+  it('emits a file shadowed by an implicit dir once', async () => {
+    const docs: [string, number][] = [
+      ['data/a', 1],
+      ['data/a/b.txt', 2],
+    ]
+    await expect(runFind(docs).out).resolves.toEqual(['/data', '/data/a', '/data/a/b.txt'])
+    await expect(runFind(docs, { type: 'd' }).out).resolves.toEqual(['/data', '/data/a'])
+    await expect(runFind(docs, { type: 'f' }).out).resolves.toEqual(['/data/a', '/data/a/b.txt'])
+  })
+
   it('-empty matches a marker-only start dir', async () => {
     const { out } = runFind([['data/', 0]], { empty: true })
     await expect(out).resolves.toEqual(['/data'])

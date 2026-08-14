@@ -142,4 +142,7 @@ async def find(
                         mindepth=mindepth,
                         min_size=min_size,
                         max_size=max_size)
-    return sorted(results)
+    # A file key and a synthesized directory can name the same path (`data/a`
+    # alongside `data/a/b.txt`), which these stores allow and a filesystem
+    # does not; find prints such a path once.
+    return sorted(set(results))

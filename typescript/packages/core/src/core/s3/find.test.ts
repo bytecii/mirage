@@ -105,6 +105,16 @@ describe('s3 core find', () => {
     ).resolves.toEqual(['/data', '/data/a'])
   })
 
+  it('emits a file shadowed by an implicit dir once', async () => {
+    const keys: [string, number][] = [
+      ['data/a', 1],
+      ['data/a/b.txt', 2],
+    ]
+    await expect(runFind(keys)).resolves.toEqual(['/data', '/data/a', '/data/a/b.txt'])
+    await expect(runFind(keys, { type: 'd' })).resolves.toEqual(['/data', '/data/a'])
+    await expect(runFind(keys, { type: 'f' })).resolves.toEqual(['/data/a', '/data/a/b.txt'])
+  })
+
   it('-empty matches a marker-only start dir', async () => {
     await expect(runFind([['data/', 0]], { empty: true })).resolves.toEqual(['/data'])
   })

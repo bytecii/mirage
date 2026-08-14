@@ -93,6 +93,15 @@ def test_find_marker_plus_files_no_duplicates(monkeypatch):
     assert out == ["/data", "/data/a"]
 
 
+def test_find_file_shadowed_by_implicit_dir_emits_once(monkeypatch):
+    keys = [("data/a", 1), ("data/a/b.txt", 2)]
+    assert _run_find(monkeypatch,
+                     keys) == ["/data", "/data/a", "/data/a/b.txt"]
+    assert _run_find(monkeypatch, keys, type="d") == ["/data", "/data/a"]
+    assert _run_find(monkeypatch, keys,
+                     type="f") == ["/data/a", "/data/a/b.txt"]
+
+
 def test_find_empty_matches_marker_only_start(monkeypatch):
     out = _run_find(monkeypatch, [("data/", 0)], empty=True)
     assert out == ["/data"]

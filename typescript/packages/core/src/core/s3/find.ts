@@ -128,5 +128,8 @@ export async function find(
       maxSize: options.maxSize,
     })
   }
-  return results.sort(compareCodePoints)
+  // A file key and a synthesized directory can name the same path (`data/a`
+  // alongside `data/a/b.txt`), which these stores allow and a filesystem does
+  // not; find prints such a path once.
+  return [...new Set(results)].sort(compareCodePoints)
 }

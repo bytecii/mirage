@@ -154,6 +154,15 @@ def test_find_unordered_marker_and_file_no_duplicates(monkeypatch):
     assert out == ["/data", "/data/a"]
 
 
+def test_find_file_shadowed_by_implicit_dir_emits_once(monkeypatch):
+    docs = [("data/a", 1), ("data/a/b.txt", 2)]
+    assert _run_find(monkeypatch,
+                     docs)[0] == ["/data", "/data/a", "/data/a/b.txt"]
+    assert _run_find(monkeypatch, docs, type="d")[0] == ["/data", "/data/a"]
+    assert _run_find(monkeypatch, docs,
+                     type="f")[0] == ["/data/a", "/data/a/b.txt"]
+
+
 def test_find_empty_matches_marker_only_start(monkeypatch):
     out, _ = _run_find(monkeypatch, [("data/", 0)], empty=True)
     assert out == ["/data"]
