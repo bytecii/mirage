@@ -17,7 +17,7 @@ import type { GDriveAccessor } from '../../accessor/gdrive.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
 import { DIRECTORY_RESOURCE_TYPES, readdir as coreReaddir } from './readdir.ts'
-import { enoent } from '../../utils/errors.ts'
+import { enoent, isEnoent } from '../../utils/errors.ts'
 import { FOLDER_MIME, MIME_TO_EXT, getFile } from '../google/drive.ts'
 import { guessType } from '../../utils/filetype.ts'
 import { resolveKey } from './resolve.ts'
@@ -93,8 +93,12 @@ export async function stat(
         }),
         index,
       )
-    } catch {
-      // parent listing failed — fall through
+    } catch (err) {
+      // An absent parent just leaves the API probe below as the authority;
+      // an auth or transport failure must propagate rather than be retried
+      // as a fresh single-file call. Mirrors Python's
+      // `except FileNotFoundError` around the same call.
+      if (!isEnoent(err)) throw err
     }
     result = await index.get(virtualKey)
     if (result.entry === undefined || result.entry === null) {

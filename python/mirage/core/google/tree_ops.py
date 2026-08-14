@@ -115,7 +115,14 @@ def make_unlink(readdir: Callable[..., Any]) -> Callable[..., Any]:
             parent = "/" + "/".join(key.split("/")[:-1])
             parent_path = PathSpec.from_str_path(
                 prefix + parent, mount_key(prefix + parent, prefix))
-            await readdir(accessor, parent_path, index)
+            # An absent parent leaves the miss below to report ENOENT
+            # against the operand, which is the path GNU names
+            # (`rm nodir/f` -> "cannot remove 'nodir/f'"), not the parent.
+            try:
+                await readdir(accessor, parent_path, index)
+            except FileNotFoundError as exc:
+                logger.debug("unlink readdir populate failed for %s: %s",
+                             parent_path.virtual, exc)
             result = await index.get(virtual_key)
         if result.entry is None:
             raise enoent(path)

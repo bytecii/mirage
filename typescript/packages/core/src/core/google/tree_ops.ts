@@ -16,7 +16,7 @@ import type { Accessor } from '../../accessor/base.ts'
 import { invalidateAfterUnlink } from '../../cache/context.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
-import { eisdir, enoent } from '../../utils/errors.ts'
+import { eisdir, enoent, isEnoent } from '../../utils/errors.ts'
 import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { TokenManager } from './_client.ts'
 import { deleteFile } from './drive.ts'
@@ -53,6 +53,27 @@ function parentSpec(parentVirtual: string, prefix: string): PathSpec {
   })
 }
 
+// Warm the index with the parent's listing so a cold lookup can retry.
+// A parent that is simply absent is not an error here: the caller's second
+// lookup then reports ENOENT against the operand, which is the path GNU
+// names (`rm nodir/f` -> "cannot remove 'nodir/f'"), not the parent.
+// Anything else — an auth failure, a transport error — propagates instead
+// of reading back as "no such file". Mirrors Python's `except
+// FileNotFoundError` around the same call.
+async function warmParent<A>(
+  readdir: ReaddirFn<A>,
+  accessor: A,
+  virtualKey: string,
+  prefix: string,
+  index: IndexCacheStore,
+): Promise<void> {
+  try {
+    await readdir(accessor, parentSpec(parentOf(virtualKey), prefix), index)
+  } catch (err) {
+    if (!isEnoent(err)) throw err
+  }
+}
+
 /**
  * Build a Drive-item stat over a backend's readdir.
  *
@@ -77,12 +98,7 @@ export function makeStat<A extends Accessor>(readdir: ReaddirFn<A>): StatFn<A> {
     const virtualKey = prefix !== '' ? `${prefix}/${key}` : `/${key}`
     let result = await index.get(virtualKey)
     if (result.entry === undefined || result.entry === null) {
-      const parentVirtual = parentOf(virtualKey)
-      try {
-        await readdir(accessor, parentSpec(parentVirtual, prefix), index)
-      } catch {
-        // parent listing failed — fall through
-      }
+      await warmParent(readdir, accessor, virtualKey, prefix, index)
       result = await index.get(virtualKey)
       if (result.entry === undefined || result.entry === null) {
         throw enoent(path.virtual)
@@ -123,11 +139,7 @@ export function makeUnlink<A extends Accessor & DriveItemAccessor>(
     const virtualKey = prefix !== '' ? `${prefix}/${key}` : `/${key}`
     let result = await index.get(virtualKey)
     if (result.entry === undefined || result.entry === null) {
-      try {
-        await readdir(accessor, parentSpec(parentOf(virtualKey), prefix), index)
-      } catch {
-        // parent listing failed — fall through to not-found
-      }
+      await warmParent(readdir, accessor, virtualKey, prefix, index)
       result = await index.get(virtualKey)
     }
     if (result.entry === undefined || result.entry === null) throw enoent(path.virtual)

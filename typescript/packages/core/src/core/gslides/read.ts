@@ -19,7 +19,7 @@ import { PathSpec } from '../../types.ts'
 import { slidesBase, type TokenManager, googleGet } from '../google/_client.ts'
 import { readdir } from './readdir.ts'
 import { rstripSlash } from '../../utils/slash.ts'
-import { enoent } from '../../utils/errors.ts'
+import { enoent, isEnoent } from '../../utils/errors.ts'
 
 const ENC = new TextEncoder()
 
@@ -55,8 +55,12 @@ export async function read(
       try {
         await readdir(accessor, parentPath, index)
         result = await index.get(virtualKey)
-      } catch {
-        // parent refresh failed; fall through to ENOENT
+      } catch (err) {
+        // An absent parent leaves the miss below to report ENOENT against
+        // the operand; an auth or transport failure must propagate rather
+        // than read back as "no such file". Mirrors Python's
+        // `except FileNotFoundError` around the same call.
+        if (!isEnoent(err)) throw err
       }
     }
     if (result.entry === undefined || result.entry === null) throw enoent(path.virtual)

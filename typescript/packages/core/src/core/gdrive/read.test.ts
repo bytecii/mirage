@@ -102,6 +102,21 @@ describe('gdrive read auto-bootstrap', () => {
     await expect(read(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
+  // Mirrors test_read_propagates_parent_refresh_failure: only an absent
+  // parent may collapse into the operand's ENOENT.
+  it('propagates a failed parent listing instead of reporting ENOENT', async () => {
+    vi.mocked(drive.listFiles).mockRejectedValue(new Error('drive unavailable'))
+    vi.mocked(drive.downloadFile).mockRejectedValue(new Error('should not call downloadFile'))
+    const accessor = makeAccessor()
+    const index = new RAMIndexCacheStore()
+    const path = new PathSpec({
+      resourcePath: 'missing.txt',
+      virtual: '/missing.txt',
+      directory: '/missing.txt',
+    })
+    await expect(read(accessor, path, index)).rejects.toThrow(/drive unavailable/)
+  })
+
   it('throws EISDIR when reading a shared drive root', async () => {
     vi.mocked(drive.downloadFile).mockRejectedValue(new Error('should not call downloadFile'))
     const accessor = makeAccessor()

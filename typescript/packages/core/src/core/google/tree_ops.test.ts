@@ -17,7 +17,9 @@ import type { Accessor } from '../../accessor/base.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { FileType, PathSpec } from '../../types.ts'
-import { makeStat } from './tree_ops.ts'
+import { enoent } from '../../utils/errors.ts'
+import type { TokenManager } from './_client.ts'
+import { makeStat, makeUnlink } from './tree_ops.ts'
 
 // The three Drive-item backends share one synthetic owned/shared tree and
 // differ only in the readdir they warm the index with, so the factory is
@@ -26,7 +28,14 @@ function specFor(virtual: string, resourcePath: string): PathSpec {
   return new PathSpec({ virtual, directory: '/', resolved: true, resourcePath })
 }
 
+type DriveAccessor = Accessor & { tokenManager: TokenManager }
+
 const NO_ACCESSOR = {} as Accessor
+const NO_DRIVE_ACCESSOR = {} as DriveAccessor
+
+// A path two levels down, so the parent readdir is the one that fails.
+const DEEP = '/owned/sub/missing.json'
+const DEEP_KEY = 'owned/sub/missing.json'
 
 describe('core/google/tree_ops: makeStat', () => {
   it('reports the synthetic roots as directories without touching readdir', async () => {
@@ -95,5 +104,40 @@ describe('core/google/tree_ops: makeStat', () => {
     await expect(
       stat(NO_ACCESSOR, specFor('/owned/notes.json', 'owned/notes.json')),
     ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+})
+
+// Mirrors test_tree_ops.py: a parent that is merely absent is swallowed so
+// the operand gets the ENOENT, but an auth or transport failure must reach
+// the caller instead of reading back as "no such file".
+describe('core/google/tree_ops: a failed parent listing', () => {
+  it('propagates out of stat instead of reporting ENOENT', async () => {
+    const stat = makeStat(() => Promise.reject(new Error('google unavailable')))
+    await expect(
+      stat(NO_ACCESSOR, specFor(DEEP, DEEP_KEY), new RAMIndexCacheStore()),
+    ).rejects.toThrow(/google unavailable/)
+  })
+
+  it('propagates out of unlink instead of reporting ENOENT', async () => {
+    const unlink = makeUnlink((_a: DriveAccessor) =>
+      Promise.reject(new Error('google unavailable')),
+    )
+    await expect(
+      unlink(NO_DRIVE_ACCESSOR, specFor(DEEP, DEEP_KEY), new RAMIndexCacheStore()),
+    ).rejects.toThrow(/google unavailable/)
+  })
+
+  it('names the operand, not the parent, when the parent is absent (stat)', async () => {
+    const stat = makeStat((_a: Accessor, p: PathSpec) => Promise.reject(enoent(p.virtual)))
+    await expect(
+      stat(NO_ACCESSOR, specFor(DEEP, DEEP_KEY), new RAMIndexCacheStore()),
+    ).rejects.toMatchObject({ code: 'ENOENT', virtualPath: DEEP })
+  })
+
+  it('names the operand, not the parent, when the parent is absent (unlink)', async () => {
+    const unlink = makeUnlink((_a: DriveAccessor, p: PathSpec) => Promise.reject(enoent(p.virtual)))
+    await expect(
+      unlink(NO_DRIVE_ACCESSOR, specFor(DEEP, DEEP_KEY), new RAMIndexCacheStore()),
+    ).rejects.toMatchObject({ code: 'ENOENT', virtualPath: DEEP })
   })
 })
