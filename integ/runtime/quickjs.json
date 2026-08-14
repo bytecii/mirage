@@ -331,6 +331,20 @@
             "exit": 0,
             "stdout": "a,b\n"
           }
+        },
+        {
+          "command": "echo 'console.log(\"stdin:\" + scriptArgs.join(\",\"))' | node - -e 'console.log(\"flag\")'",
+          "expect": {
+            "exit": 0,
+            "stdout": "stdin:-e,console.log(\"flag\")\n"
+          }
+        },
+        {
+          "command": "echo 'console.log(scriptArgs.join(\",\"))' | node - -m",
+          "expect": {
+            "exit": 0,
+            "stdout": "-m\n"
+          }
         }
       ]
     }

@@ -174,4 +174,16 @@ describe('node/js: quickjs runtime', () => {
     expect(stdoutStr(io)).toBe('a,b\n')
     await ws.close()
   }, 60_000)
+
+  // A word after `-` that happens to spell a js option is still the
+  // program's argv: `node - -e x` runs the piped program, not `x`.
+  it('js -: a following -e is argv, not the interpreter’s', async () => {
+    const { ws } = await makeWorkspace()
+    const io = await ws.execute(
+      'echo \'console.log("stdin:" + scriptArgs.join(","))\' | js - -e \'console.log("flag")\'',
+    )
+    expect(io.exitCode).toBe(0)
+    expect(stdoutStr(io)).toBe('stdin:-e,console.log("flag")\n')
+    await ws.close()
+  }, 60_000)
 })
