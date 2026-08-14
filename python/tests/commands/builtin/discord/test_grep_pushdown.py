@@ -20,6 +20,7 @@ from mirage.commands.builtin.discord.grep import grep
 from mirage.commands.builtin.discord.rg import rg
 from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
+from mirage.io.types import materialize
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.key_prefix import mount_key
 
@@ -308,3 +309,38 @@ async def test_discord_grep_without_word_flag_skips_native_search():
         with pytest.raises(UsageError):
             await grep(accessor, _concrete_paths(7), ['hello'], CommandOpts())
     fake_search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_grep_file_blob_skips_native_search():
+    """An attachment operand must scan its bytes; widening it to a
+    channel-wide message search would return hits that say nothing about
+    the requested file."""
+    accessor = AsyncMock()
+    accessor.config = AsyncMock()
+    path = ("/discord/myguild__g_123/channels/general__ch_456/2026-01-01/"
+            "files/img__A1.png")
+    paths = [
+        PathSpec(resource_path=mount_key(path, "/discord"),
+                 virtual=path,
+                 directory=path)
+    ]
+    with patch(
+            "mirage.commands.builtin.discord.grep.search_guild",
+            new=AsyncMock(return_value=[]),
+    ) as fake_search, patch(
+            "mirage.commands.builtin.discord.grep.resolve_glob",
+            new=AsyncMock(return_value=paths),
+    ), patch(
+            "mirage.commands.builtin.discord.grep.discord_read",
+            new=AsyncMock(return_value=b"quarter,amount\n"),
+    ), patch(
+            "mirage.commands.builtin.discord.grep._stat",
+            new=AsyncMock(
+                return_value=FileStat(name="img__A1.png", type=FileType.TEXT)),
+    ):
+        out, io = await grep(accessor, paths, ['quarter'],
+                             CommandOpts(flags={'w': True}))
+    fake_search.assert_not_awaited()
+    assert io.exit_code == 0
+    assert b"quarter,amount" in await materialize(out)

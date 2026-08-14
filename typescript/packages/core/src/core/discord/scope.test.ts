@@ -252,6 +252,19 @@ describe('coalesceScopes', () => {
     expect(coalesceScopes(paths)).toBeNull()
   })
 
+  it('returns null for attachment blobs — message search cannot answer them', () => {
+    const paths = [spec('/discord/myserver__G1/channels/general__C1/2026-01-01/files/img__A1.png')]
+    expect(coalesceScopes(paths)).toBeNull()
+  })
+
+  it('returns null when message files are mixed with blobs', () => {
+    const paths = [
+      spec('/discord/myserver__G1/channels/general__C1/2026-01-01/chat.jsonl'),
+      spec('/discord/myserver__G1/channels/general__C1/2026-01-01/files/img__A1.png'),
+    ]
+    expect(coalesceScopes(paths)).toBeNull()
+  })
+
   it('returns null for an empty list', () => {
     expect(coalesceScopes([])).toBeNull()
   })

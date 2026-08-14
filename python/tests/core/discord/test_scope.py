@@ -242,3 +242,23 @@ def test_coalesce_returns_none_without_ids():
 
 def test_coalesce_empty_list_returns_none():
     assert coalesce_scopes([]) is None
+
+
+def test_coalesce_returns_none_for_file_blobs():
+    # Guild search answers questions about message content; an attachment
+    # operand must scan its bytes, not widen to a channel message search.
+    paths = [
+        _spec("/discord/myserver__G1/channels/general__C1/2026-01-01/files/"
+              "img__A1.png"),
+    ]
+    assert coalesce_scopes(paths) is None
+
+
+def test_coalesce_returns_none_for_mixed_levels():
+    paths = [
+        _spec("/discord/myserver__G1/channels/general__C1/"
+              "2026-01-01/chat.jsonl"),
+        _spec("/discord/myserver__G1/channels/general__C1/2026-01-01/files/"
+              "img__A1.png"),
+    ]
+    assert coalesce_scopes(paths) is None

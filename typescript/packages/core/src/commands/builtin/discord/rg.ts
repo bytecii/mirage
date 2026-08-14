@@ -65,7 +65,7 @@ async function rgCommand(
     const firstPath = paths[0]
     if (firstPath !== undefined) {
       let scope = detectScope(firstPath)
-      if (!scope.useNative) scope = coalesceScopes(paths) ?? scope
+      if (scope.level === 'messages') scope = coalesceScopes(paths) ?? scope
       // Discord search matches whole words while grep matches substrings,
       // and the native path returns search results verbatim as the output, so
       // a bare literal would under-report. Only -w makes the two agree.

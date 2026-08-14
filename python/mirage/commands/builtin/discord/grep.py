@@ -64,7 +64,7 @@ async def grep(accessor: DiscordAccessor, paths: list[PathSpec],
     pushdown_warnings: list[str] = []
     if paths and pattern is not None and "\n" not in pattern:
         scope = detect_scope(paths[0])
-        if not scope.use_native:
+        if scope.level == "messages":
             scope = coalesce_scopes(paths) or scope
 
         # Provider search matches whole words while grep matches

@@ -53,7 +53,7 @@ async def rg(accessor: DiscordAccessor, paths: list[PathSpec],
     pushdown_warnings: list[str] = []
     if paths and "\n" not in pattern_str:
         scope = detect_scope(paths[0])
-        if not scope.use_native:
+        if scope.level == "messages":
             scope = coalesce_scopes(paths) or scope
 
         # Provider search matches whole words while grep matches
