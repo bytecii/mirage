@@ -33,7 +33,10 @@ def _mock_registry(resolve_result=None):
     async def _resolve_glob(scopes, prefix=""):
         if resolve_result is not None:
             return resolve_result
-        return scopes
+        # A backend holding nothing the patterns match. Echoing the specs
+        # back would stand in for no backend: a real one never answers a
+        # dir-shaped ask with the directory itself.
+        return [s for s in scopes if not s.pattern]
 
     mount.resource = MagicMock()
     mount.resource.resolve_glob = _resolve_glob
@@ -153,6 +156,37 @@ def test_glob_no_match_keeps_literal_word():
     assert isinstance(result[1], PathSpec)
     assert result[1].virtual == "/data/*.xyz"
     assert result[1].pattern
+
+
+def test_match_named_like_the_glob_word_survives():
+    """A file may be named exactly like the word that globbed for it.
+
+    The merge layer used to read "the backend handed me back the word I
+    gave it" as "nothing matched", which is what a zero-match backend
+    answers with nullglob off. The two are byte-identical, so the real
+    match was thrown away.
+    """
+    matches = [
+        PathSpec(resource_path="*a.txt",
+                 virtual="/data/*a.txt",
+                 directory="/data/",
+                 resolved=True),
+        PathSpec(resource_path="xa.txt",
+                 virtual="/data/xa.txt",
+                 directory="/data/",
+                 resolved=True),
+    ]
+    reg = _mock_registry(resolve_result=matches)
+    glob_ps = PathSpec(
+        resource_path="*a.txt",
+        virtual="/data/*a.txt",
+        directory="/data/",
+        pattern="*a.txt",
+        resolved=False,
+    )
+    result = _run(resolve_globs(["echo", glob_ps], reg))
+    assert [r.virtual for r in result[1:]] == ["/data/*a.txt", "/data/xa.txt"]
+    assert all(not r.pattern for r in result[1:])
 
 
 def test_mixed_text_and_pathspec():
@@ -376,6 +410,19 @@ def test_glob_matches_only_the_pattern():
     assert _out(ws, "echo /base/i*").split() == ["/base/inner"]
     assert _out(ws, "echo /base/l*").split() == ["/base/link"]
     assert _out(ws, "echo /base/f*").split() == ["/base/f1"]
+
+
+def test_glob_keeps_a_match_spelled_like_the_word():
+    """GNU bash 5.2 (debian:stable-slim), ``*a.txt`` beside ``xa.txt``:
+    ``echo /data/*a.txt`` -> ``/data/*a.txt /data/xa.txt``. The live ``*``
+    matches the literal ``*`` in the first name.
+    """
+    ws = _ws()
+    _run(_seed(ws))
+    _run(ws.execute("touch '/base/*a.txt'", session_id="s"))
+    _run(ws.execute("touch /base/xa.txt", session_id="s"))
+    assert _out(
+        ws, "echo /base/*a.txt").split() == ["/base/*a.txt", "/base/xa.txt"]
 
 
 def test_unmatched_glob_still_stays_literal():

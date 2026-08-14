@@ -93,6 +93,19 @@ describe('glob expansion sees namespace state', () => {
     expect((await out(ws, 'echo /base/f*')).trim()).toBe('/base/f1')
   })
 
+  // GNU bash 5.2 (debian:stable-slim), `*a.txt` beside `xa.txt`:
+  //   echo /data/*a.txt -> /data/*a.txt /data/xa.txt
+  // The live `*` matches the literal `*` in the first name.
+  it('keeps a match spelled like the glob word', async () => {
+    const ws = await makeWs()
+    await ws.execute("touch '/base/*a.txt'", { sessionId: 's' })
+    await ws.execute('touch /base/xa.txt', { sessionId: 's' })
+    expect((await out(ws, 'echo /base/*a.txt')).split(/\s+/).filter(Boolean)).toEqual([
+      '/base/*a.txt',
+      '/base/xa.txt',
+    ])
+  })
+
   it('keeps an unmatched glob literal', async () => {
     const ws = await makeWs()
     expect((await out(ws, 'echo /base/zzz*')).trim()).toBe('/base/zzz*')

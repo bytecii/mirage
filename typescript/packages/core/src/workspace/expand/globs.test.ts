@@ -90,6 +90,29 @@ describe('resolveGlobs', () => {
     ])
   })
 
+  // A file may be named exactly like the word that globbed for it. The
+  // merge layer used to read "the backend handed me back the word I gave
+  // it" as "nothing matched", which is what a zero-match backend answers
+  // with nullglob off. The two are byte-identical, so the real match was
+  // thrown away.
+  it('keeps a match named exactly like the glob word', async () => {
+    const res = new GlobResource([
+      PathSpec.fromStrPath('/ram/*a.txt'),
+      PathSpec.fromStrPath('/ram/xa.txt'),
+    ])
+    const reg = new MountRegistry({ '/ram': res }, MountMode.WRITE)
+    const p = new PathSpec({
+      resourcePath: 'ram/*a.txt',
+      virtual: '/ram/*a.txt',
+      directory: '/ram/',
+      pattern: '*a.txt',
+      resolved: false,
+    })
+    const out = await resolveGlobs([p], reg)
+    expect(out.map((x) => (x as PathSpec).virtual)).toEqual(['/ram/*a.txt', '/ram/xa.txt'])
+    expect(out.every((x) => (x as PathSpec).pattern === null)).toBe(true)
+  })
+
   it('keeps the literal word on zero matches (bash nullglob off)', async () => {
     const res = new GlobResource([])
     const reg = new MountRegistry({ '/ram': res }, MountMode.WRITE)
