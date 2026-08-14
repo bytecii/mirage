@@ -67,24 +67,39 @@ def _as_spec(match: str | PathSpec, prefix: str) -> PathSpec:
 
 
 def _merge_namespace(matches: list[str | PathSpec], extra: list[str],
-                     prefix: str, registry: MountRegistry,
+                     directory: str, prefix: str, registry: MountRegistry,
                      mount: MountEntry) -> list[PathSpec]:
     """Union a backend's matches with the namespace-owed ones.
 
     Sorted, because bash sorts a pathname expansion and the two sources
-    are enumerated separately. Every spec here is a real match: the
-    backend is asked with a directory-shaped spec, which answers with
-    matches alone, so "nothing matched" arrives as an empty list and the
-    caller reinstates the literal only when the union is empty too.
+    are enumerated separately. The backend is asked with a
+    directory-shaped spec, which answers with matches alone, so "nothing
+    matched" arrives as an empty list and the caller reinstates the
+    literal only when the union is empty too.
+
+    A match is a child of the directory it was globbed in, so a spec that
+    is the directory itself is not one. The shared resolver never answers
+    a dir-shaped ask that way, but ``resolve_glob`` is a public hook and a
+    resource reinstating the literal on its own would hand back the spec
+    it was given. Unlike the word comparison this replaces, the test
+    cannot discard a real match: a match is strictly longer than the
+    directory holding it, while a word can be spelled exactly like one.
 
     Args:
         matches (list[str | PathSpec]): the backend's own matches.
         extra (list[str]): namespace-owed virtual paths.
+        directory (str): the globbed directory, slash-terminated, with
+            its marks off: a match is a real path a backend listed, so a
+            glob character quoted in the directory's name is a character
+            of it and the marked spelling would match no match at all.
         prefix (str): the mount prefix with no trailing slash.
         registry (MountRegistry): registry holding the mount table.
         mount (MountEntry): the mount owning the glob word.
     """
-    specs = [_as_spec(m, prefix) for m in matches]
+    specs = [
+        s for s in (_as_spec(m, prefix) for m in matches)
+        if s.virtual.startswith(directory) and s.virtual != directory
+    ]
     seen = {s.virtual for s in specs}
     for virtual in extra:
         if virtual in seen:
@@ -352,7 +367,8 @@ async def resolve_globs(
                         list(await mount.resource.resolve_glob([item.dir],
                                                                prefix=prefix)),
                         _namespace_children(registry, links, directory,
-                                            pattern), prefix, registry, mount)
+                                            pattern), directory, prefix,
+                        registry, mount)
                 # bash with nullglob off: a zero-match glob stays the
                 # literal word instead of vanishing.
                 if not resolved:

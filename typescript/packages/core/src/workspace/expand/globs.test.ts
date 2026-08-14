@@ -28,6 +28,22 @@ class PlainResource implements Resource {
   }
 }
 
+// A resource that implements nullglob-off on its own: a no-match ask comes
+// back as the spec it was handed. `glob` is a public hook, so the shape
+// resolveGlobs sends is not a contract it can rely on.
+class EchoGlobResource implements ResourceWithGlob {
+  readonly kind = 'echo'
+  open(): Promise<void> {
+    return Promise.resolve()
+  }
+  close(): Promise<void> {
+    return Promise.resolve()
+  }
+  glob(paths: readonly PathSpec[]): Promise<PathSpec[]> {
+    return Promise.resolve([...paths])
+  }
+}
+
 class GlobResource implements ResourceWithGlob {
   readonly kind = 'glob'
   constructor(private readonly results: PathSpec[]) {}
@@ -111,6 +127,24 @@ describe('resolveGlobs', () => {
     const out = await resolveGlobs([p], reg)
     expect(out.map((x) => (x as PathSpec).virtual)).toEqual(['/ram/*a.txt', '/ram/xa.txt'])
     expect(out.every((x) => (x as PathSpec).pattern === null)).toBe(true)
+  })
+
+  // The echoed spec is the directory, which is not a child of itself, so
+  // it is no match and the word stays literal rather than expanding to
+  // `/ram/`.
+  it('takes no match from a resource that reinstates the literal itself', async () => {
+    const reg = new MountRegistry({ '/ram': new EchoGlobResource() }, MountMode.WRITE)
+    const p = new PathSpec({
+      resourcePath: 'ram/*.nope',
+      virtual: '/ram/*.nope',
+      directory: '/ram/',
+      pattern: '*.nope',
+      resolved: false,
+    })
+    const out = await resolveGlobs([p], reg)
+    expect(out).toHaveLength(1)
+    expect((out[0] as PathSpec).virtual).toBe('/ram/*.nope')
+    expect((out[0] as PathSpec).pattern).toBe('*.nope')
   })
 
   it('keeps the literal word on zero matches (bash nullglob off)', async () => {

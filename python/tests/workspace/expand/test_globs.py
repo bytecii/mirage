@@ -31,6 +31,8 @@ def _mock_registry(resolve_result=None):
     mount.prefix = "/data/"
 
     async def _resolve_glob(scopes, prefix=""):
+        if callable(resolve_result):
+            return resolve_result(scopes)
         if resolve_result is not None:
             return resolve_result
         # A backend holding nothing the patterns match. Echoing the specs
@@ -187,6 +189,28 @@ def test_match_named_like_the_glob_word_survives():
     result = _run(resolve_globs(["echo", glob_ps], reg))
     assert [r.virtual for r in result[1:]] == ["/data/*a.txt", "/data/xa.txt"]
     assert all(not r.pattern for r in result[1:])
+
+
+def test_resource_reinstating_the_literal_itself_yields_no_match():
+    """``resolve_glob`` is a public hook, so the shape is not a contract.
+
+    A resource that implements nullglob-off on its own answers a
+    no-match ask with the spec it was handed, which is now the directory.
+    That is not a child of the directory, so it is no match, and the word
+    stays literal rather than expanding to ``/data/``.
+    """
+    reg = _mock_registry(resolve_result=list)
+    glob_ps = PathSpec(
+        resource_path="*.nope",
+        virtual="/data/*.nope",
+        directory="/data/",
+        pattern="*.nope",
+        resolved=False,
+    )
+    result = _run(resolve_globs(["cat", glob_ps], reg))
+    assert len(result) == 2
+    assert result[1].virtual == "/data/*.nope"
+    assert result[1].pattern
 
 
 def test_mixed_text_and_pathspec():
@@ -423,6 +447,29 @@ def test_glob_keeps_a_match_spelled_like_the_word():
     _run(ws.execute("touch /base/xa.txt", session_id="s"))
     assert _out(
         ws, "echo /base/*a.txt").split() == ["/base/*a.txt", "/base/xa.txt"]
+
+
+def test_glob_lists_a_directory_whose_name_holds_a_quoted_glob_char():
+    """A quoted glob character in the parent is part of a real name.
+
+    The backend is asked with the directory-shaped spec, and a match is a
+    real path it listed, so the two are compared in unmarked space. The
+    marked spelling names no directory, so it would answer every word
+    under ``'/base/*d'/`` with the literal. GNU bash 5.2
+    (debian:stable-slim): ``echo '/data/*d'/*.txt`` ->
+    ``/data/*d/one.txt /data/*d/two.txt``.
+    """
+    ws = _ws()
+    _run(_seed(ws))
+    _run(ws.execute("mkdir '/base/*d'", session_id="s"))
+    _run(ws.execute("touch '/base/*d/one.txt'", session_id="s"))
+    _run(ws.execute("touch '/base/*d/two.txt'", session_id="s"))
+    assert _out(ws, "echo '/base/*d'/*.txt").split() == [
+        "/base/*d/one.txt", "/base/*d/two.txt"
+    ]
+    assert _out(ws, "echo '/base/*d'/o*.txt").split() == ["/base/*d/one.txt"]
+    # Nothing under it still falls back to the literal word.
+    assert _out(ws, "echo '/base/*d'/*.none").split() == ["/base/*d/*.none"]
 
 
 def test_unmatched_glob_still_stays_literal():

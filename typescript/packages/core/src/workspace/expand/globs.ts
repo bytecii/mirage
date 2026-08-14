@@ -111,17 +111,28 @@ function toSpecs(
 
 // Union a backend's matches with the namespace-owed ones. Sorted, because
 // bash sorts a pathname expansion and the two sources are enumerated
-// separately. Every spec here is a real match: the backend is asked with a
-// directory-shaped spec, which answers with matches alone, so "nothing
-// matched" arrives as an empty list and the caller reinstates the literal
-// only when the union is empty too.
+// separately. The backend is asked with a directory-shaped spec, which
+// answers with matches alone, so "nothing matched" arrives as an empty list
+// and the caller reinstates the literal only when the union is empty too.
+//
+// A match is a child of the directory it was globbed in, so a spec that is
+// the directory itself is not one. The shared resolver never answers a
+// dir-shaped ask that way, but `glob` is a public hook and a resource
+// reinstating the literal on its own would hand back the spec it was given.
+// Unlike the word comparison this replaces, the test cannot discard a real
+// match: a match is strictly longer than the directory holding it, while a
+// word can be spelled exactly like one. `directory` arrives with its marks
+// off, because a match is a real path a backend listed: a glob character
+// quoted in the directory's name is a character of it, and the marked
+// spelling would match no match at all.
 function mergeNamespace(
   matches: readonly PathSpec[],
   extra: readonly string[],
+  directory: string,
   registry: MountRegistry,
   mount: MountEntry,
 ): PathSpec[] {
-  const specs = [...matches]
+  const specs = matches.filter((m) => m.virtual.startsWith(directory) && m.virtual !== directory)
   const seen = new Set(specs.map((m) => m.virtual))
   for (const virtual of extra) {
     if (seen.has(virtual)) continue
@@ -307,7 +318,7 @@ export async function resolveGlobs(
             mount.resource.glob !== undefined
               ? await mount.resource.glob([withPrefix.dir], prefix)
               : []
-          resolved = mergeNamespace(own, extra, registry, mount)
+          resolved = mergeNamespace(own, extra, directory, registry, mount)
         }
         // bash with nullglob off: a zero-match glob stays the literal
         // word instead of vanishing.
