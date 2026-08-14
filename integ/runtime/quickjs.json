@@ -315,6 +315,24 @@
           }
         }
       ]
+    },
+    {
+      "id": "stdin_operand",
+      "world": {
+        "runtimes": [
+          "quickjs",
+          "vfs"
+        ]
+      },
+      "steps": [
+        {
+          "command": "echo 'console.log(scriptArgs.join(\",\"))' | node - a b",
+          "expect": {
+            "exit": 0,
+            "stdout": "a,b\n"
+          }
+        }
+      ]
     }
   ]
 }
