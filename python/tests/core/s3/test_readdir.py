@@ -100,3 +100,16 @@ def test_readdir_missing_path_under_a_key_prefix_is_enoent():
 
 def test_readdir_key_prefix_root_does_not_raise():
     assert _readdir({}, "/", key_prefix="team") == []
+
+
+def test_readdir_missing_child_of_a_coexisting_object_and_prefix():
+    # S3 allows an object "a" and a prefix "a/" at once, and a child path
+    # reaches "a" only through the prefix, so a missing child is ENOENT.
+    store = {"a": b"i am a file", "a/x.txt": b"child"}
+    with pytest.raises(FileNotFoundError):
+        _readdir(store, "/a/never")
+
+
+def test_readdir_coexisting_prefix_still_lists_its_children():
+    store = {"a": b"i am a file", "a/x.txt": b"child"}
+    assert _readdir(store, "/a") == ["/a/x.txt"]

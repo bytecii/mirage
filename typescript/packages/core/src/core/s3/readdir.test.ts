@@ -145,4 +145,14 @@ describe('s3 core readdir', () => {
   it('does not raise on the root of an empty key-prefixed mount', async () => {
     await expect(run([], '/', 'team')).resolves.toEqual([])
   })
+
+  it('reports ENOENT for a missing child of a coexisting object and prefix', async () => {
+    // S3 allows an object "a" and a prefix "a/" at once, and a child path
+    // reaches "a" only through the prefix, so a missing child is ENOENT.
+    await expect(codeOf(run(['a', 'a/x.txt'], '/a/never'))).resolves.toBe('ENOENT')
+  })
+
+  it('still lists the children of a coexisting prefix', async () => {
+    await expect(run(['a', 'a/x.txt'], '/a')).resolves.toEqual(['/a/x.txt'])
+  })
 })

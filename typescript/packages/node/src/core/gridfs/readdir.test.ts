@@ -117,4 +117,15 @@ describe('gridfs core readdir', () => {
   it('reports ENOENT for a missing path under a key prefix', async () => {
     await expect(codeOf(run(['team/dir/f.txt'], '/never.txt', 'team/'))).resolves.toBe('ENOENT')
   })
+
+  it('reports ENOENT for a missing child of a coexisting doc and prefix', async () => {
+    // GridFS allows a file "a" and deeper files under "a/" at once, and a
+    // child path reaches "a" only through the prefix, so a missing child is
+    // ENOENT rather than ENOTDIR.
+    await expect(codeOf(run(['a', 'a/x.txt'], '/a/never'))).resolves.toBe('ENOENT')
+  })
+
+  it('still lists the children of a coexisting prefix', async () => {
+    await expect(run(['a', 'a/x.txt'], '/a')).resolves.toEqual(['/a/x.txt'])
+  })
 })

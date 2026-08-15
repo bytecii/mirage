@@ -179,3 +179,18 @@ async def test_readdir_missing_path_under_a_key_prefix_is_enoent():
                             key_prefix="team"))
     with _bucket(["team/dir/f.txt"]), pytest.raises(FileNotFoundError):
         await readdir(prefixed, _path("/never.txt"))
+
+
+@pytest.mark.asyncio
+async def test_readdir_missing_child_of_a_coexisting_doc_and_prefix(accessor):
+    # GridFS allows a file "a" and deeper files under "a/" at once, and a
+    # child path reaches "a" only through the prefix, so a missing child is
+    # ENOENT rather than ENOTDIR.
+    with _bucket(["a", "a/x.txt"]), pytest.raises(FileNotFoundError):
+        await readdir(accessor, _path("/a/never"))
+
+
+@pytest.mark.asyncio
+async def test_readdir_coexisting_prefix_still_lists_its_children(accessor):
+    with _bucket(["a", "a/x.txt"]):
+        assert await readdir(accessor, _path("/a")) == ["/a/x.txt"]
