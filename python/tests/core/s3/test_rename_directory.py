@@ -21,7 +21,8 @@ from mirage.accessor.s3 import S3Accessor
 from mirage.core.s3.rename import rename
 from mirage.resource.s3 import S3Config
 from mirage.types import PathSpec
-from tests.e2e.s3_mock import patch_s3_multi
+from tests.e2e.s3_mock import (MultiBucketSession, patch_s3_multi,
+                               patch_s3_session)
 
 BUCKET = "test-bucket"
 
@@ -103,3 +104,26 @@ def test_rename_missing_source_is_enoent_not_a_backend_error():
     with pytest.raises(FileNotFoundError):
         _run(store, _config(), "ghost", "e")
     assert sorted(store) == ["other.txt"]
+
+
+def test_rename_reports_a_refused_delete_instead_of_claiming_success():
+    """DeleteObjects refuses per key inside a 200, and never raises.
+
+    Reading only the absence of an exception would leave the whole source
+    tree beside the fresh copy and still call the move a success, which is
+    a duplicated directory the caller is never told about.
+    """
+    store = {"d/": b"", "d/f.txt": b"hi", "d/locked.txt": b"no"}
+    session = MultiBucketSession({BUCKET: store})
+    session._client.undeletable.add("d/locked.txt")
+    stack = ExitStack()
+    stack.enter_context(patch_s3_session(session))
+    try:
+        with pytest.raises(PermissionError):
+            asyncio.run(rename(S3Accessor(_config()), _spec("d"), _spec("e")))
+    finally:
+        stack.close()
+    # Both trees survive, the way GNU mv leaves them when the unlink half
+    # fails after the copy half landed.
+    assert "d/locked.txt" in store
+    assert store["e/f.txt"] == b"hi"

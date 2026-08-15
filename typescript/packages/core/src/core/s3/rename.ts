@@ -15,7 +15,7 @@
 import { invalidateAfterUnlink } from '../../cache/context.ts'
 import type { PathSpec } from '../../types.ts'
 import type { S3Accessor } from '../../accessor/s3.ts'
-import { enoent } from '../../utils/errors.ts'
+import { eaccesReadOnly, enoent } from '../../utils/errors.ts'
 import {
   isNotFoundError,
   loadS3Module,
@@ -54,6 +54,7 @@ async function isObject(accessor: S3Accessor, client: S3SendClient, key: string)
 async function movePrefix(
   accessor: S3Accessor,
   client: S3SendClient,
+  src: PathSpec,
   srcPfx: string,
   dstPfx: string,
 ): Promise<boolean> {
@@ -87,12 +88,30 @@ async function movePrefix(
   if (moved.length === 0) return false
   // Deleted only after every copy landed: a partial move that dropped the
   // source would lose the entries that had not been copied yet.
+  const failed: string[] = []
   for (let start = 0; start < moved.length; start += DELETE_BATCH) {
-    await client.send(
+    const resp = (await client.send(
       new DeleteObjectsCommand({
         Bucket: bucket,
         Delete: { Objects: moved.slice(start, start + DELETE_BATCH) },
       }),
+    )) as { Errors?: { Key?: string }[] }
+    // DeleteObjects reports a refused key in the body of a 200, so a
+    // response that throws nothing can still have deleted nothing.
+    // Ignoring it would leave the source tree in place beside the copy and
+    // call the move a success.
+    for (const err of resp.Errors ?? []) failed.push(err.Key ?? '')
+  }
+  if (failed.length > 0) {
+    // Both trees survive, which is what GNU mv leaves behind when the
+    // unlink half fails after the copy half succeeded. EACCES because a
+    // refused delete is a lock or a policy in practice, and because it is
+    // an fs error: mv reports the operand and keeps going instead of
+    // aborting the whole command line.
+    throw eaccesReadOnly(
+      `S3 refused to delete ${String(failed.length)} source object(s) after ` +
+        `copying, starting at '${failed[0] ?? ''}'`,
+      src,
     )
   }
   return true
@@ -124,7 +143,7 @@ export async function rename(accessor: S3Accessor, src: PathSpec, dst: PathSpec)
     }
     const srcPfx = s3Prefix(rawPathOf(src), accessor.config)
     const dstPfx = s3Prefix(rawPathOf(dst), accessor.config)
-    if (!(await movePrefix(accessor, client, srcPfx, dstPfx))) throw enoent(src)
+    if (!(await movePrefix(accessor, client, src, srcPfx, dstPfx))) throw enoent(src)
   })
   await invalidateAfterUnlink(dst)
   await invalidateAfterUnlink(src)

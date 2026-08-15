@@ -34,15 +34,22 @@ def case_files() -> list[Path]:
                   if "node_modules" not in p.parts)
 
 
-def file_targets(paths: list[Path]) -> dict[str, set[str]]:
-    """Collect the target set each case file exercises.
+def case_targets(paths: list[Path]) -> dict[str, set[str]]:
+    """Collect the target set each individual case exercises.
+
+    Keyed per case, never per file: a sequence-style file states the same
+    scenario across prep/act/verify cases, so a backend dropped from only
+    the verifying one still runs every step that cannot fail and skips the
+    assertion. A union over the file would show that backend as covered
+    and the gate would read as green over the exact hole it exists to
+    find.
 
     Args:
         paths (list[Path]): every candidate json file under ``integ/``.
 
     Returns:
-        dict[str, set[str]]: repo-relative path to the union of the
-            targets its cases name.
+        dict[str, set[str]]: ``<path> :: <case id>`` to the targets it
+            names.
     """
     out: dict[str, set[str]] = {}
     for path in paths:
@@ -52,24 +59,24 @@ def file_targets(paths: list[Path]) -> dict[str, set[str]]:
             continue
         if not isinstance(loaded, dict) or "cases" not in loaded:
             continue
-        union: set[str] = set()
+        rel = str(path.relative_to(ROOT))
         for case in loaded["cases"]:
-            union |= set(case.get("targets", []))
-        if union:
-            out[str(path.relative_to(ROOT))] = union
+            names = set(case.get("targets", []))
+            if names:
+                out[f"{rel} :: {case['id']}"] = names
     return out
 
 
 def modal_set(sets: list[set[str]]) -> set[str]:
-    """The target set a directory's case files most often agree on.
+    """The target set a directory's cases most often agree on.
 
     Ties are broken toward the larger set and then lexicographically, so
-    the answer never depends on which file happened to sort first: a tie
-    settled by file order would move the whole report when an unrelated
-    case file is added or renamed.
+    the answer never depends on which case happened to sort first: a tie
+    settled by input order would move the whole report when an unrelated
+    case is added or renamed.
 
     Args:
-        sets (list[set[str]]): one target set per case file.
+        sets (list[set[str]]): one target set per case.
 
     Returns:
         set[str]: the modal target set.
@@ -81,24 +88,24 @@ def modal_set(sets: list[set[str]]) -> set[str]:
 
 
 def collect(targets: dict[str, set[str]]) -> dict[str, list[str]]:
-    """Report every target a case file drops that its siblings still test.
+    """Report every target a case drops that its siblings still test.
 
-    The comparison is against the modal target set of the file's own
-    directory, not the whole roster: a command family's case files agree
-    on which backends they exercise, so a file quietly naming fewer is a
+    The comparison is against the modal target set of the case's own
+    directory, not the whole roster: a command family's cases agree on
+    which backends they exercise, so one quietly naming fewer is a
     divergence parked as an omission. Comparing against the roster instead
     would flag every deliberately narrow case in the battery.
 
     Args:
-        targets (dict[str, set[str]]): per-file target sets.
+        targets (dict[str, set[str]]): per-case target sets.
 
     Returns:
-        dict[str, list[str]]: file path to the targets it is missing.
+        dict[str, list[str]]: case key to the targets it is missing.
     """
     by_dir: dict[str, list[tuple[str,
                                  set[str]]]] = collections.defaultdict(list)
     for rel, names in targets.items():
-        parent = str(Path(rel).parent)
+        parent = str(Path(rel.split(" :: ", 1)[0]).parent)
         if parent.startswith(UNRELATED_DIRS):
             continue
         by_dir[parent].append((rel, names))
@@ -144,20 +151,26 @@ def excuse(
     excused_entries = entries if isinstance(entries, dict) else {}
     remaining: dict[str, list[str]] = {}
     stale: list[str] = []
+    seen_files: set[str] = set()
     for rel, missing in found.items():
-        if rel in excused_files:
+        # A "files" excuse covers every case in that file, since the usual
+        # reason (this command is backend-independent) is a property of the
+        # file rather than of one step in it.
+        path = rel.split(" :: ", 1)[0]
+        seen_files.add(path)
+        if path in excused_files:
             continue
-        per_file = excused_entries.get(rel)
-        excused = set(per_file) if isinstance(per_file, dict) else set()
+        per_case = excused_entries.get(rel)
+        excused = set(per_case) if isinstance(per_case, dict) else set()
         left = [name for name in missing if name not in excused]
         for name in excused:
             if name not in missing:
                 stale.append(f"{rel} :: {name}")
         if left:
             remaining[rel] = left
-    for rel in excused_files:
-        if rel not in found:
-            stale.append(rel)
+    for path in excused_files:
+        if path not in seen_files:
+            stale.append(path)
     for rel in excused_entries:
         if rel not in found:
             stale.append(rel)
@@ -183,7 +196,7 @@ def report(remaining: dict[str, list[str]], stale: list[str],
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Find backends a case file drops that its siblings test.")
+        description="Find backends a case drops that its siblings test.")
     # Advisory by default because the existing gaps predate the gate and
     # each needs its own decision. --strict does not demand zero: it fails
     # only when the count moves off the baseline, in either direction, so
@@ -195,7 +208,7 @@ def main() -> int:
     exceptions = load_exceptions()
     baseline_value = exceptions.get("baseline", 0)
     baseline = baseline_value if isinstance(baseline_value, int) else 0
-    found = collect(file_targets(case_files()))
+    found = collect(case_targets(case_files()))
     remaining, stale = excuse(found, exceptions)
 
     if args.as_json:

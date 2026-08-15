@@ -91,11 +91,27 @@ async def _move_prefix(client: Any, accessor: S3Accessor, src: str,
         return False
     # Deleted only after every copy landed: a partial move that dropped the
     # source would lose the entries that had not been copied yet.
+    failed: list[str] = []
     for start in range(0, len(moved), DELETE_BATCH):
-        await client.delete_objects(
+        resp = await client.delete_objects(
             Bucket=config.bucket,
             Delete={"Objects": moved[start:start + DELETE_BATCH]},
         )
+        # DeleteObjects reports a refused key in the body of a 200, so a
+        # response that raises nothing can still have deleted nothing.
+        # Ignoring it would leave the source tree in place beside the copy
+        # and call the move a success.
+        for err in (resp or {}).get("Errors") or []:
+            failed.append(str(err.get("Key", "")))
+    if failed:
+        # Both trees survive, which is what GNU mv leaves behind when the
+        # unlink half fails after the copy half succeeded. PermissionError
+        # because a refused delete is a lock or a policy in practice, and
+        # because it is in FS_ERRORS: mv reports the operand and keeps
+        # going instead of aborting the whole command line.
+        raise PermissionError(
+            f"S3 refused to delete {len(failed)} source object(s) after "
+            f"copying, starting at {failed[0]!r}")
     return True
 
 
