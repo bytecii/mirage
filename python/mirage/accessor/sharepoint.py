@@ -26,3 +26,5 @@ class SharePointAccessor(SessionAccessor):
     def __init__(self, config: SharePointConfig) -> None:
         super().__init__(timeout=aiohttp.ClientTimeout(total=config.timeout))
         self.config = config
+        self.site_cache: dict[str, str] = {}
+        self.drive_cache: dict[tuple[str, str], str] = {}
