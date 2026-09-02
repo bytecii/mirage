@@ -820,6 +820,18 @@ def test_runtimes_reference_must_name_a_runtime_subclass(tmp_path):
         _build_runtime_entries([f"{tmp_path / 'missing.py'}:EchoBox"])
 
 
+def test_runtimes_reference_refuses_an_unknown_entry_key(tmp_path):
+    # A referenced class is constructed with the entry's keys as kwargs,
+    # so a typo fails the way it does for a builtin name instead of
+    # leaving the runtime on its class defaults; TypeScript's loader runs
+    # the same check by hand (checkRuntimeOptions).
+    (tmp_path / "box.py").write_text(BOX_RUNTIME)
+    ref = f"{tmp_path / 'box.py'}:EchoBox"
+    with pytest.raises(TypeError,
+                       match="unexpected keyword argument 'captuers'"):
+        _build_runtime_entries([{"name": ref, "captuers": ["nvidia-smi"]}])
+
+
 @pytest.mark.asyncio
 async def test_mounts_registry_name_is_left_alone(tmp_path):
     cfg_file = tmp_path / "ws.yaml"

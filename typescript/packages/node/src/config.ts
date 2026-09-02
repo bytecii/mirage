@@ -22,7 +22,7 @@ import { CLISpec } from '@struktoai/mirage-core/commands/cli/types'
 import type { Resource } from '@struktoai/mirage-core/resource/base'
 import { Runtime, type RuntimeEntry } from '@struktoai/mirage-core/runtime/base'
 import { ScriptSource } from '@struktoai/mirage-core/runtime/routing/index'
-import { buildRuntime } from '@struktoai/mirage-core/runtime/table'
+import { buildRuntime, checkRuntimeOptions } from '@struktoai/mirage-core/runtime/table'
 import type { RuntimeOptions } from '@struktoai/mirage-core/runtime/types'
 import {
   EnvVarSchema,
@@ -138,7 +138,12 @@ async function buildRuntimeEntries(entries: unknown[]): Promise<RuntimeEntry[]> 
     const withScript: Record<string, unknown> =
       script !== undefined ? { ...options, script: loadScriptSource(script) } : options
     if (name.includes(':')) {
+      // The key check `buildRuntime` runs for a name: the base
+      // constructor ignores a key it does not read, so without it a typo
+      // would leave the runtime on its defaults where Python's
+      // `**options` refuses the entry.
       const cls = await loadRuntimeClass(name)
+      checkRuntimeOptions(name, withScript)
       out.push(new cls(withScript as RuntimeOptions<never>))
       continue
     }

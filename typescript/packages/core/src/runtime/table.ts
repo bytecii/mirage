@@ -151,6 +151,22 @@ export function knownRuntimes(): string[] {
 }
 
 /**
+ * Refuse an entry key no runtime takes, naming the entry. Every runtime
+ * is constructed the same way, so this is one check for a builtin, a
+ * registered name and a `source:Class` reference alike: `buildRuntime`
+ * runs it for the names it resolves, and the config loader runs it for
+ * a reference, whose class it constructs itself.
+ */
+export function checkRuntimeOptions(name: string, options: Record<string, unknown>): void {
+  for (const key of Object.keys(options)) {
+    if (!ENTRY_KEYS.includes(key)) {
+      const knownKeys = ENTRY_KEYS.map((k) => `'${k}'`).join(', ')
+      throw new Error(`unknown ${name} runtime option '${key}' (expected: ${knownKeys})`)
+    }
+  }
+}
+
+/**
  * Construct a runtime by name, failing loud on unknown names (with a
  * cross-language hint for Python-only names) and on unknown options.
  */
@@ -164,12 +180,7 @@ export function buildRuntime(name: string, options: Record<string, unknown> = {}
       .join(', ')
     throw new Error(`unknown runtime: '${name}' (expected one of ${known})`)
   }
-  for (const key of Object.keys(options)) {
-    if (!ENTRY_KEYS.includes(key)) {
-      const knownKeys = ENTRY_KEYS.map((k) => `'${k}'`).join(', ')
-      throw new Error(`unknown ${name} runtime option '${key}' (expected: ${knownKeys})`)
-    }
-  }
+  checkRuntimeOptions(name, options)
   return new cls(options as RuntimeOptions<never>)
 }
 

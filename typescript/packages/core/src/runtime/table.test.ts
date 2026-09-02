@@ -17,6 +17,7 @@ import { Runtime } from './base.ts'
 import {
   bindCommands,
   buildRuntime,
+  checkRuntimeOptions,
   DEFAULT_ENTRIES,
   DEFAULT_PYTHON,
   knownRuntimes,
@@ -137,6 +138,17 @@ describe('buildRuntime option validation', () => {
     expect(() => buildRuntime('monty', { config: { home: '/x' } })).toThrow(
       /unknown runtime config key 'home'/,
     )
+  })
+
+  it('the key check stands alone, so a referenced class gets the same refusal', () => {
+    expect(() => {
+      checkRuntimeOptions('./box.mjs:EchoBox', { captuers: ['nvidia-smi'] })
+    }).toThrow(
+      /unknown \.\/box\.mjs:EchoBox runtime option 'captuers' \(expected: 'captures', 'config', 'script'\)/,
+    )
+    expect(() => {
+      checkRuntimeOptions('./box.mjs:EchoBox', { captures: ['nvidia-smi'], config: {} })
+    }).not.toThrow()
   })
 })
 

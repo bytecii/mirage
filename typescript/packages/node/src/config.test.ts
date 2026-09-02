@@ -835,6 +835,23 @@ describe('runtimes name: reference', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
+  it('checks the entry keys of a referenced runtime the way a named one is checked', async () => {
+    // The base constructor ignores a key it does not read, so without
+    // the check `captuers:` would leave EchoBox on its class captures;
+    // Python refuses the same entry through `**options`.
+    const dir = mkdtempSync(join(tmpdir(), 'mirage-rt-'))
+    writeFileSync(join(dir, 'box.mjs'), BOX)
+    writeFileSync(
+      join(dir, 'ws.yaml'),
+      'mounts:\n  /data:\n    resource: ram\n' +
+        'runtimes:\n  - name: ./box.mjs:EchoBox\n    captuers: [nvidia-smi, rocm-smi]\n  - vfs\n',
+    )
+    await expect(
+      configToWorkspaceArgs(loadWorkspaceConfigFile(join(dir, 'ws.yaml'))),
+    ).rejects.toThrow(/unknown .*box\.mjs:EchoBox runtime option 'captuers'/)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
   it('refuses a ref that is not a Runtime subclass, and one that does not load', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mirage-rt-'))
     writeFileSync(join(dir, 'box.mjs'), BOX)
