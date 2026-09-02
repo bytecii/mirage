@@ -18,6 +18,7 @@ import type { Resource } from '../../resource/base.ts'
 import { EVENT_CLEAR, EVENT_COMMAND, EVENT_DELETE } from '../../observe/log_entry.ts'
 import type { EventDict } from '../../observe/observer.ts'
 import { RAMResource, type RAMResourceState } from '../../resource/ram/ram.ts'
+import { type ResourceStateBase, resourceRefOf } from '../../resource/base.ts'
 import { z } from 'zod'
 
 import { setCwd } from '../session/shell_dirs.ts'
@@ -90,6 +91,7 @@ export async function toStateDict(ws: Workspace): Promise<WorkspaceStateDict> {
       mode: m.mode,
       consistency: ConsistencyPolicy.LAZY,
       resource_class: m.resource.kind,
+      resource_ref: resourceRefOf(m.resource),
       resource_state: state,
     })
   }
@@ -294,6 +296,59 @@ export function buildMountArgs(
     defaultAgentId: state.default_agent_id,
     ...(cliEntries.length > 0 ? { clis: cliArgs } : {}),
   }
+}
+
+/** Builds the resource a saved mount names, or null when it cannot. */
+export type SavedResourceBuilder = (entry: MountSnapshot) => Promise<Resource | null>
+
+/**
+ * What a saved mount asks a registry to build: the name and config, or
+ * null when the registry has nothing to say. Two rungs, the same door
+ * config uses: the resource's `type` (a builtin or a registered name),
+ * then the `resource_ref` the registry built it from, which is how a
+ * mount declared as `./wiki.mjs:WikiResource` comes back. `ram` and `disk`
+ * are left to `buildMountArgs`, which restores their content into a fresh
+ * RAMResource rather than reopening the original root.
+ */
+export function savedResourceBuild(
+  entry: MountSnapshot,
+  known: (name: string) => boolean,
+): { name: string; config: Record<string, unknown> } | null {
+  const type = entry.resource_state.type
+  if (type === 'ram' || type === 'disk') return null
+  const ref = entry.resource_ref
+  const name = known(type) ? type : ref !== null && (known(ref) || ref.includes(':')) ? ref : null
+  if (name === null) return null
+  const config = (entry.resource_state as ResourceStateBase).config
+  return {
+    name,
+    config:
+      typeof config === 'object' && config !== null && !Array.isArray(config)
+        ? (config as Record<string, unknown>)
+        : {},
+  }
+}
+
+/**
+ * The overrides `buildMountArgs` restores with: the caller's, plus every
+ * mount the builder can rebuild from its saved state. A mount that asks
+ * to be handed back live (`resourceStateRequiresOverride`) is never
+ * built here, so the refusal `buildMountArgs` raises for it stands.
+ */
+export async function withRebuiltResources(
+  state: WorkspaceStateDict,
+  overrides: Record<string, Resource>,
+  build: SavedResourceBuilder,
+): Promise<Record<string, Resource>> {
+  const merged: Record<string, Resource> = { ...overrides }
+  const held = new Set(Object.keys(overrides).map(normMountPrefix))
+  for (const m of state.mounts) {
+    if (held.has(normMountPrefix(m.prefix))) continue
+    if (resourceStateRequiresOverride(m.resource_state)) continue
+    const built = await build(m)
+    if (built !== null) merged[m.prefix] = built
+  }
+  return merged
 }
 
 export async function applyStateDict(ws: Workspace, state: WorkspaceStateDict): Promise<void> {

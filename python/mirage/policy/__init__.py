@@ -33,8 +33,8 @@ from mirage.policy.script import ScriptPolicy
 from mirage.policy.types import (  # isort: skip
     VALIDITY, Abandoned, Action, Ask, CommandContext, CommandRule,
     AdmissionRules, Decision, Deny, DenyScope, ExecuteResultContext,
-    Explanation, Limit, MountRootQuery, OpsContext, OpsResultContext, Pending,
-    ProfileScript, Scope, SessionCommandsQuery, SessionContext,
+    Explanation, Limit, MountRootQuery, OpsContext, OpsResultContext, Outcome,
+    Pending, ProfileScript, Scope, SessionCommandsQuery, SessionContext,
     SessionDecisionsQuery, SessionScriptsQuery)
 
 __all__ = [
@@ -66,6 +66,7 @@ __all__ = [
     "MountRootQuery",
     "OpsContext",
     "OpsResultContext",
+    "Outcome",
     "OutputCapPolicy",
     "PathsBlock",
     "Pending",
