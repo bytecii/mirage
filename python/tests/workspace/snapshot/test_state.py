@@ -22,7 +22,7 @@ from mirage import (NULL_INDEX, Accessor, CommandIO, FileStat, GenericResource,
                     IndexCacheStore, MountMode, PathSpec, Workspace,
                     stream_from_bytes)
 from mirage.resource import registry as resource_registry
-from mirage.resource.loader import load_backend_class
+from mirage.resource.loader import SCRIPT_MODULE_NAME, load_backend_class
 from mirage.resource.ram import RAMResource
 from mirage.resource.registry import build_resource, register_resource
 from mirage.secrets import registry
@@ -291,3 +291,77 @@ async def test_a_script_class_with_no_reference_asks_for_an_override(
     with pytest.raises(ValueError, match="cannot import") as exc:
         build_mount_args(state)
     assert "/t/" in str(exc.value)
+
+
+class SeededRAM(RAMResource):
+    """Inherits ``name``, so its state reports the builtin's ``ram`` type."""
+
+
+SEEDED_MODULE = '''
+from mirage.resource.ram import RAMResource
+
+
+class SeededRAM(RAMResource):
+    pass
+'''
+
+
+@pytest.mark.asyncio
+async def test_an_alias_over_a_builtin_rebuilds_through_its_ref_not_its_type():
+    register_resource("seeded", SeededRAM)
+    ws = Workspace({"/s/": build_resource("seeded")}, mode=MountMode.WRITE)
+    try:
+        await ws.execute("echo one > /s/a.txt")
+        state = await to_state_dict(ws)
+    finally:
+        await ws.close()
+    mount = state[StateKey.MOUNTS][0]
+    # The type alone names RAMResource, which is what the mount used to
+    # come back as; the ref is the door it was declared through.
+    assert mount[MountKey.RESOURCE_STATE]["type"] == "ram"
+    assert mount[MountKey.RESOURCE_REF] == "seeded"
+    restored = await Workspace.from_state(state)
+    try:
+        seeded = [m for m in restored.mounts() if m.prefix == "/s/"][0]
+        assert type(seeded.resource) is SeededRAM
+        assert seeded.resource.resource_ref == "seeded"
+        result = await restored.execute("cat /s/a.txt")
+        assert await result.stdout_str() == "one\n"
+    finally:
+        await restored.close()
+
+
+@pytest.mark.asyncio
+async def test_a_colon_reference_subclassing_a_builtin_keeps_the_subclass(
+        tmp_path: Path):
+    module = tmp_path / "seeded_backend.py"
+    module.write_text(SEEDED_MODULE)
+    ref = f"{module}:SeededRAM"
+    ws = Workspace({"/s/": build_resource(ref)}, mode=MountMode.READ)
+    try:
+        state = await to_state_dict(ws)
+    finally:
+        await ws.close()
+    assert state[StateKey.MOUNTS][0][MountKey.RESOURCE_STATE]["type"] == "ram"
+    rebuilt = build_mount_args(state).mount_args["/s/"][0]
+    assert type(rebuilt).__name__ == "SeededRAM"
+    assert type(rebuilt) is not RAMResource
+
+
+@pytest.mark.asyncio
+async def test_a_ref_this_process_cannot_resolve_is_not_guessed_from_the_type(
+):
+    ws = Workspace({"/s/": RAMResource()}, mode=MountMode.READ)
+    try:
+        state = await to_state_dict(ws)
+    finally:
+        await ws.close()
+    mount = state[StateKey.MOUNTS][0]
+    # Saved by a process that had an alias registered over a class loaded
+    # from a script file; this one has neither, and the type would only
+    # say RAMResource.
+    mount[MountKey.RESOURCE_REF] = "seeded"
+    mount[MountKey.RESOURCE_CLASS] = f"{SCRIPT_MODULE_NAME}.SeededRAM"
+    with pytest.raises(ValueError, match="resources= must include") as exc:
+        build_mount_args(state)
+    assert "/s/" in str(exc.value)

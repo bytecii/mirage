@@ -584,23 +584,26 @@ def reusable_resources(mounts: list[Any], state: dict[str,
 def _saved_entry(mount_state: dict[str, Any]) -> ResourceEntry | None:
     """The registry entry a saved mount rebuilds through, or None.
 
-    Two rungs, the same door yaml uses: the resource's ``type`` (a
-    builtin or a registered name), then the ``resource_ref`` the
-    registry built it from, which is how a mount declared as
-    ``./wiki.py:WikiResource`` comes back. A class the snapshot only
-    names by module path is not an entry; ``_saved_class`` imports it as
-    the last resort.
+    The ``resource_ref`` the registry built the mount from when one was
+    recorded (a registered name, or a colon reference, which is how a
+    mount declared as ``./wiki.py:WikiResource`` comes back), else the
+    resource's ``type``, the one locator a resource constructed in code
+    leaves. The ref comes first because ``type`` is the class's ``name``
+    and a subclass inherits it: an alias registered over a builtin, or a
+    script subclassing one, reports the builtin's type and rebuilt as
+    the builtin while the type was consulted first. A recorded ref this
+    process cannot resolve is not a reason to fall back to that guess;
+    ``_saved_class`` imports the class the snapshot names as the last
+    resort, and the loader asks for an override when even that fails.
 
     Args:
         mount_state (dict[str, Any]): one captured ``mounts`` entry.
     """
+    ref = mount_state.get(MountKey.RESOURCE_REF)
+    if ref:
+        return resolve_entry(ref)
     ptype = mount_state[MountKey.RESOURCE_STATE].get(ResourceStateKey.TYPE, "")
-    entry = resolve_entry(ptype) if ptype else None
-    if entry is None:
-        ref = mount_state.get(MountKey.RESOURCE_REF)
-        if ref:
-            entry = resolve_entry(ref)
-    return entry
+    return resolve_entry(ptype) if ptype else None
 
 
 def _saved_class(

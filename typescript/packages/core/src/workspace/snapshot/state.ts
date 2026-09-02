@@ -242,18 +242,26 @@ export function buildMountArgs(
   for (const [prefix, resource] of Object.entries(overrides)) {
     normalized[normMountPrefix(prefix)] = resource
   }
+  // A mount with no override by now is one nobody can build: it asked to
+  // be handed back live or was saved with a redacted secret, or the
+  // registry `withRebuiltResources` consulted had nothing for its ref or
+  // type. Only a mount this builder restores itself is exempt. Refusing
+  // is what Python's `requires_resource_override` does for a class it
+  // cannot import; an empty RAMResource in its place would lose the
+  // backend without a word.
   const missing = state.mounts
     .filter(
       (m) =>
         normalized[normMountPrefix(m.prefix)] === undefined &&
-        resourceStateRequiresOverride(m.resource_state),
+        (resourceStateRequiresOverride(m.resource_state) || !restoresAsFreshRAM(m)),
     )
     .map((m) => m.prefix)
   if (missing.length > 0) {
     throw new Error(
       `Workspace.load: resources= must include overrides for: ${missing.join(', ')}. ` +
-        `These mounts were saved with redacted creds or transient connection state ` +
-        `and need fresh resources.`,
+        `A listed mount was saved with redacted credentials, asked to be handed back live ` +
+        `(needs_override), or names a resource this registry cannot build; register its ` +
+        `factory (register) or pass a live instance.`,
     )
   }
   const mountArgs: Record<string, [Resource, MountMode]> = {}
@@ -302,22 +310,53 @@ export function buildMountArgs(
 export type SavedResourceBuilder = (entry: MountSnapshot) => Promise<Resource | null>
 
 /**
+ * The `resource_ref` a saved mount was built from, or null: for one
+ * constructed in code, and for a v3 snapshot written before the key
+ * existed, which carries none (the format version did not move).
+ */
+function savedRef(entry: MountSnapshot): string | null {
+  return (entry.resource_ref as string | null | undefined) ?? null
+}
+
+/**
+ * Whether `buildMountArgs` restores a saved mount itself, into a fresh
+ * RAMResource, so no registry is asked about it: `disk` (its content
+ * rides the state, and reopening the original root is exactly what a
+ * restore must not do), and `ram` declared by its builtin name or
+ * constructed in code. A `ram` mount whose ref points elsewhere is an
+ * alias registered over RAMResource, and rebuilds through that alias so
+ * the subclass survives; Python's `_construct_resource` calls `cls()` on
+ * the class its ladder found for the same reason.
+ */
+export function restoresAsFreshRAM(entry: MountSnapshot): boolean {
+  const type = entry.resource_state.type
+  if (type === 'disk') return true
+  const ref = savedRef(entry)
+  return type === 'ram' && (ref === null || ref === type)
+}
+
+/**
  * What a saved mount asks a registry to build: the name and config, or
- * null when the registry has nothing to say. Two rungs, the same door
- * config uses: the resource's `type` (a builtin or a registered name),
- * then the `resource_ref` the registry built it from, which is how a
- * mount declared as `./wiki.mjs:WikiResource` comes back. `ram` and `disk`
- * are left to `buildMountArgs`, which restores their content into a fresh
- * RAMResource rather than reopening the original root.
+ * null when the registry has nothing to say. The `resource_ref` the
+ * registry built the mount from when one was recorded (a registered name,
+ * or a code reference, which is how a mount declared as
+ * `./wiki.mjs:WikiResource` comes back), else the resource's `type`, the
+ * one locator a resource constructed in code leaves. The ref comes first
+ * because `type` is the class's `kind` and a subclass inherits it: an
+ * alias registered over a builtin reports the builtin's type and rebuilt
+ * as the builtin while the type was consulted first. A recorded ref this
+ * registry cannot resolve is not a reason to fall back to that guess: the
+ * answer is null, and `buildMountArgs` then asks for the mount live.
  */
 export function savedResourceBuild(
   entry: MountSnapshot,
   known: (name: string) => boolean,
 ): { name: string; config: Record<string, unknown> } | null {
+  if (restoresAsFreshRAM(entry)) return null
   const type = entry.resource_state.type
-  if (type === 'ram' || type === 'disk') return null
-  const ref = entry.resource_ref
-  const name = known(type) ? type : ref !== null && (known(ref) || ref.includes(':')) ? ref : null
+  const ref = savedRef(entry)
+  const name =
+    ref !== null ? (known(ref) || ref.includes(':') ? ref : null) : known(type) ? type : null
   if (name === null) return null
   const config = (entry.resource_state as ResourceStateBase).config
   return {

@@ -18,6 +18,7 @@ import type { CommandIO } from '@struktoai/mirage-core/commands/builtin/generic_
 import { streamFromBytes } from '@struktoai/mirage-core/commands/builtin/utils/wrap'
 import { resourceRefOf, type ResourceStateBase } from '@struktoai/mirage-core/resource/base'
 import { GenericResource } from '@struktoai/mirage-core/resource/generic'
+import { RAMResource } from '@struktoai/mirage-core/resource/ram/ram'
 import {
   ContentType,
   FileStat,
@@ -113,6 +114,9 @@ class Bare extends GenericResource<NotesAccessor> {
   }
 }
 
+/** Inherits `kind`, so its state reports the builtin's `ram` type. */
+class SeededRAM extends RAMResource {}
+
 describe('snapshot rebuild through the registry', () => {
   it('rebuilds a registered content resource from its saved state, no override', async () => {
     register('notes-test', () => Promise.resolve(new Notes()))
@@ -151,5 +155,46 @@ describe('snapshot rebuild through the registry', () => {
     expect(resourceRefOf(built)).toBe('notes-test')
     expect(resourceRefOf(new Notes())).toBeNull()
     await built.close()
+  })
+
+  it('rebuilds an alias over a builtin through its ref, not its type', async () => {
+    register('seeded-test', () => Promise.resolve(new SeededRAM()))
+    const ws = new Workspace(
+      { '/s/': await buildResource('seeded-test') },
+      { mode: MountMode.WRITE },
+    )
+    await ws.execute('echo one > /s/a.txt')
+    const state = await toStateDict(ws)
+    await ws.close()
+    const [mount] = state.mounts
+    if (mount === undefined) throw new Error('snapshot recorded no mounts')
+    // The type alone names RAMResource, which is what the mount used to
+    // come back as; the ref is the door it was declared through.
+    expect(mount.resource_state.type).toBe('ram')
+    expect(mount[MountKey.RESOURCE_REF]).toBe('seeded-test')
+    const restored = await Workspace.fromState(state)
+    try {
+      const seeded = restored.mounts().find((m) => m.prefix === '/s/')
+      expect(seeded?.resource).toBeInstanceOf(SeededRAM)
+      expect(seeded === undefined ? null : resourceRefOf(seeded.resource)).toBe('seeded-test')
+      const out = await restored.execute('cat /s/a.txt')
+      expect(out.stdoutText).toBe('one\n')
+    } finally {
+      await restored.close()
+    }
+  })
+
+  it('refuses a ref it cannot resolve rather than guessing from the type', async () => {
+    const ws = new Workspace({ '/s/': new RAMResource() }, { mode: MountMode.READ })
+    const state = await toStateDict(ws)
+    await ws.close()
+    const [mount] = state.mounts
+    if (mount === undefined) throw new Error('snapshot recorded no mounts')
+    // Saved by a process that had an alias registered; this one has not,
+    // and the type would only say RAMResource.
+    mount.resource_ref = 'ghost-test'
+    await expect(Workspace.fromState(state)).rejects.toThrow(
+      /resources= must include overrides for: \/s\//,
+    )
   })
 })
