@@ -346,6 +346,15 @@ describe('UpstashRedisStore', () => {
     expect(() => new UpstashRedisStore({ url: fake.url, token: '' })).toThrow(/token/)
   })
 
+  it('refuses a maxRequestBytes that is not a positive integer', () => {
+    const { fake } = make()
+    for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        () => new UpstashRedisStore({ url: fake.url, token: fake.token, maxRequestBytes: bad }),
+      ).toThrow(/maxRequestBytes/)
+    }
+  })
+
   it('close is a no-op that can be repeated', async () => {
     const { store } = make()
     await store.close()

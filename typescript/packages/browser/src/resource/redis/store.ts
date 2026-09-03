@@ -172,7 +172,11 @@ export class UpstashRedisStore implements RedisStoreLike {
     this.token = target.token
     this.keyPrefix = options.keyPrefix ?? 'mirage:fs:'
     this.fetchImpl = options.fetchImpl ?? fetch.bind(globalThis)
-    this.maxRequestBytes = options.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES
+    const limit = options.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES
+    if (!Number.isInteger(limit) || limit <= 0) {
+      throw new Error('redis: maxRequestBytes must be a positive integer')
+    }
+    this.maxRequestBytes = limit
   }
 
   fk(path: string): string {
