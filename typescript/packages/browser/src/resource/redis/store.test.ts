@@ -43,6 +43,13 @@ function countingFetch(fake: ReturnType<typeof createFakeUpstash>, sizes: number
   }
 }
 
+function bodyBytesFetch(fake: ReturnType<typeof createFakeUpstash>, sizes: number[]): typeof fetch {
+  return (input, init) => {
+    if (typeof init?.body === 'string') sizes.push(ENC.encode(init.body).byteLength)
+    return fake.fetch(input, init)
+  }
+}
+
 describe('UpstashRedisStore', () => {
   it('open seeds the root directory', async () => {
     const { store } = make()
@@ -101,6 +108,29 @@ describe('UpstashRedisStore', () => {
     })
     await store.setFile('/big', ENC.encode('old'))
     failAppend = true
+    await expect(store.setFile('/big', ALL_BYTES)).rejects.toThrow(/cannot reach/)
+    expect(await store.getFile('/big')).toEqual(ENC.encode('old'))
+    expect(fake.keys()).toEqual(['mirage:fs:file:/big'])
+  })
+
+  it('a chunked write whose RENAME fails leaves the previous content and no temp key', async () => {
+    const fake = createFakeUpstash()
+    let failRename = false
+    const flaky: typeof fetch = (input, init) => {
+      if (failRename && typeof init?.body === 'string' && init.body.startsWith('["RENAME"')) {
+        return Promise.reject(new TypeError('network down'))
+      }
+      return fake.fetch(input, init)
+    }
+    const store = new UpstashRedisStore({
+      url: fake.url,
+      token: fake.token,
+      keyPrefix: 'mirage:fs:',
+      fetchImpl: flaky,
+      maxRequestBytes: 100,
+    })
+    await store.setFile('/big', ENC.encode('old'))
+    failRename = true
     await expect(store.setFile('/big', ALL_BYTES)).rejects.toThrow(/cannot reach/)
     expect(await store.getFile('/big')).toEqual(ENC.encode('old'))
     expect(fake.keys()).toEqual(['mirage:fs:file:/big'])
@@ -245,6 +275,45 @@ describe('UpstashRedisStore', () => {
     expect(Object.keys(await store.listModified())).toHaveLength(1200)
     expect(sizes.length).toBeGreaterThanOrEqual(6)
     expect(Math.max(...sizes)).toBeLessThanOrEqual(500)
+  })
+
+  it('keeps every pipeline body under maxRequestBytes when keys are long', async () => {
+    const fake = createFakeUpstash()
+    const long = 'x'.repeat(200)
+    for (let i = 0; i < 50; i++) {
+      fake.exec(['HSET', `mirage:fs:attrs:/${long}${String(i)}`, 'mode', '420'])
+    }
+    const sizes: number[] = []
+    const store = new UpstashRedisStore({
+      url: fake.url,
+      token: fake.token,
+      keyPrefix: 'mirage:fs:',
+      fetchImpl: bodyBytesFetch(fake, sizes),
+      maxRequestBytes: 1000,
+    })
+    expect(Object.keys(await store.listAttrs())).toHaveLength(50)
+    expect(sizes.length).toBeGreaterThan(10)
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(1000)
+  })
+
+  it('keeps every DEL body under maxRequestBytes when keys are long', async () => {
+    const fake = createFakeUpstash()
+    const long = 'x'.repeat(200)
+    for (let i = 0; i < 50; i++) {
+      fake.exec(['SET', `mirage:fs:file:/${long}${String(i)}`, 'v'])
+    }
+    const sizes: number[] = []
+    const store = new UpstashRedisStore({
+      url: fake.url,
+      token: fake.token,
+      keyPrefix: 'mirage:fs:',
+      fetchImpl: bodyBytesFetch(fake, sizes),
+      maxRequestBytes: 1000,
+    })
+    await store.clear()
+    expect(fake.keys()).toEqual([])
+    expect(sizes.length).toBeGreaterThan(10)
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(1000)
   })
 
   it('clear removes files, side keys and the dir set', async () => {

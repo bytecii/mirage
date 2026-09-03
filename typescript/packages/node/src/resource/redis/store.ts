@@ -271,7 +271,7 @@ export class RedisStore implements RedisStoreLike {
   async clear(): Promise<void> {
     const c = await this.client()
     const p = escapeGlob(this.keyPrefix)
-    for (const pattern of [`${p}file:*`, `${p}modified:*`, `${p}attrs:*`]) {
+    for (const pattern of [`${p}file:*`, `${p}tmp:*`, `${p}modified:*`, `${p}attrs:*`]) {
       const keys = await this.scanKeys(pattern)
       if (keys.length > 0) await c.del(keys)
     }

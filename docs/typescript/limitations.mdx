@@ -148,7 +148,7 @@ See [Python filesystem](/typescript/python-fs) for the details.
 
 ### 5. Some resource drivers remain Node-only
 
-SSH, LanceDB, Email, Disk, and the Hugging Face resources are only exposed by `@struktoai/mirage-node` because their drivers need Node APIs or raw TCP. Importing them from `@struktoai/mirage-browser` is a build error. Redis is the exception: the browser package mounts it over the Upstash REST API, see [Redis](/typescript/setup/redis#browser).
+SSH, LanceDB, Email, Disk, and the Hugging Face resources are only exposed by `@struktoai/mirage-node` because their drivers need Node APIs or raw TCP. Importing them from `@struktoai/mirage-browser` is a build error.
 
 Postgres and MongoDB do have browser implementations:
 

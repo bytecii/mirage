@@ -21,10 +21,12 @@ import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 
 // Upstash caps one REST request at 10 MB on every plan, so a file above this
 // goes out as one SET followed by APPENDs, each under the cap with headroom,
-// and a DEL or a pipeline carries at most KEY_BATCH keys for the same reason.
+// and a DEL or a pipeline is packed to the same budget by serialized size,
+// with KEY_BATCH keys as a ceiling on top for a reply that has to fit too.
 const DEFAULT_MAX_REQUEST_BYTES = 8 * 1024 * 1024
 const SCAN_COUNT = 1000
 const KEY_BATCH = 500
+const UTF8 = new TextEncoder()
 
 export interface UpstashRedisStoreOptions {
   /**
@@ -109,6 +111,29 @@ function expectString(value: JsonValue, command: string): string {
 function expectStrings(value: JsonValue, command: string): string[] {
   if (!Array.isArray(value)) throw new Error(`upstash: ${command} did not answer an array`)
   return value.map((item) => expectString(item, command))
+}
+
+/**
+ * Splits `items` into runs whose JSON array stays within `limit` UTF-8 bytes
+ * and KEY_BATCH entries. An item that alone outgrows the limit still goes out,
+ * on its own, so the server is the one to refuse it rather than a silent drop.
+ */
+function packJson<T>(items: readonly T[], limit: number): T[][] {
+  const runs: T[][] = []
+  let run: T[] = []
+  let bytes = 2
+  for (const item of items) {
+    const size = UTF8.encode(JSON.stringify(item)).byteLength + 1
+    if (run.length > 0 && (run.length >= KEY_BATCH || bytes + size > limit)) {
+      runs.push(run)
+      run = []
+      bytes = 2
+    }
+    run.push(item)
+    bytes += size
+  }
+  if (run.length > 0) runs.push(run)
+  return runs
 }
 
 function pairsToRecord(flat: readonly string[]): Record<string, string> {
@@ -216,10 +241,10 @@ export class UpstashRedisStore implements RedisStoreLike {
     base64 = false,
   ): Promise<JsonValue[]> {
     const replies: JsonValue[] = []
-    for (let i = 0; i < commands.length; i += KEY_BATCH) {
+    for (const run of packJson(commands, this.maxRequestBytes)) {
       const payload = await this.request(
         '/pipeline',
-        JSON.stringify(commands.slice(i, i + KEY_BATCH)),
+        JSON.stringify(run),
         'application/json',
         base64,
       )
@@ -311,11 +336,11 @@ export class UpstashRedisStore implements RedisStoreLike {
       for (let offset = limit; offset < data.byteLength; offset += limit) {
         await this.raw('append', staging, data.subarray(offset, offset + limit))
       }
+      await this.command(['RENAME', staging, key])
     } catch (err) {
       await this.command(['DEL', staging])
       throw err
     }
-    await this.command(['RENAME', staging, key])
   }
 
   async delFile(path: string): Promise<void> {
@@ -422,8 +447,8 @@ export class UpstashRedisStore implements RedisStoreLike {
     const p = escapeGlob(this.keyPrefix)
     for (const pattern of [`${p}file:*`, `${p}tmp:*`, `${p}modified:*`, `${p}attrs:*`]) {
       const keys = await this.scan(pattern)
-      for (let i = 0; i < keys.length; i += KEY_BATCH) {
-        await this.command(['DEL', ...keys.slice(i, i + KEY_BATCH)])
+      for (const run of packJson(keys, this.maxRequestBytes - '"DEL",'.length)) {
+        await this.command(['DEL', ...run])
       }
     }
     await this.command(['DEL', this.dk()])
