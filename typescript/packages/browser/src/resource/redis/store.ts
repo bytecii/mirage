@@ -12,17 +12,19 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { RedisStoreLike } from '@struktoai/mirage-core/resource/redis/store'
+import type { RedisRestore, RedisStoreLike } from '@struktoai/mirage-core/resource/redis/store'
 import type { JsonValue } from '@struktoai/mirage-core/types'
 import { decodeBase64 } from '@struktoai/mirage-core/utils/base64'
+import { escapeGlob } from '@struktoai/mirage-core/core/redis/utils'
 import { rstripSlash } from '@struktoai/mirage-core/utils/slash'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 
 // Upstash caps one REST request at 10 MB on every plan, so a file above this
-// goes out as one SET followed by APPENDs, each under the cap with headroom.
+// goes out as one SET followed by APPENDs, each under the cap with headroom,
+// and a DEL or a pipeline carries at most KEY_BATCH keys for the same reason.
 const DEFAULT_MAX_REQUEST_BYTES = 8 * 1024 * 1024
 const SCAN_COUNT = 1000
-const DEL_BATCH = 500
+const KEY_BATCH = 500
 
 export interface UpstashRedisStoreOptions {
   /**
@@ -213,15 +215,18 @@ export class UpstashRedisStore implements RedisStoreLike {
     commands: readonly (readonly CommandArg[])[],
     base64 = false,
   ): Promise<JsonValue[]> {
-    if (commands.length === 0) return []
-    const payload = await this.request(
-      '/pipeline',
-      JSON.stringify(commands),
-      'application/json',
-      base64,
-    )
-    if (!Array.isArray(payload)) throw new Error('upstash: pipeline did not answer an array')
-    return payload.map(unwrap)
+    const replies: JsonValue[] = []
+    for (let i = 0; i < commands.length; i += KEY_BATCH) {
+      const payload = await this.request(
+        '/pipeline',
+        JSON.stringify(commands.slice(i, i + KEY_BATCH)),
+        'application/json',
+        base64,
+      )
+      if (!Array.isArray(payload)) throw new Error('upstash: pipeline did not answer an array')
+      for (const item of payload) replies.push(unwrap(item))
+    }
+    return replies
   }
 
   private async raw(command: 'set' | 'append', key: string, data: Uint8Array): Promise<void> {
@@ -292,10 +297,25 @@ export class UpstashRedisStore implements RedisStoreLike {
       return
     }
     const limit = this.maxRequestBytes
-    await this.raw('set', key, data.subarray(0, limit))
-    for (let offset = limit; offset < data.byteLength; offset += limit) {
-      await this.raw('append', key, data.subarray(offset, offset + limit))
+    if (data.byteLength <= limit) {
+      await this.raw('set', key, data)
+      return
     }
+    // A chunked write lands on a staging key and is renamed in only once every
+    // chunk arrived, so a failed chunk never leaves a truncated file behind and
+    // two writers of one path never interleave: the mount keeps the single-SET
+    // semantics of the node and python stores.
+    const staging = `${this.keyPrefix}tmp:${path}:${crypto.randomUUID()}`
+    try {
+      await this.raw('set', staging, data.subarray(0, limit))
+      for (let offset = limit; offset < data.byteLength; offset += limit) {
+        await this.raw('append', staging, data.subarray(offset, offset + limit))
+      }
+    } catch (err) {
+      await this.command(['DEL', staging])
+      throw err
+    }
+    await this.command(['RENAME', staging, key])
   }
 
   async delFile(path: string): Promise<void> {
@@ -308,7 +328,7 @@ export class UpstashRedisStore implements RedisStoreLike {
 
   async listFiles(prefix = ''): Promise<string[]> {
     const head = `${this.keyPrefix}file:`
-    const keys = await this.scan(`${head}${prefix}*`)
+    const keys = await this.scan(`${escapeGlob(`${head}${prefix}`)}*`)
     return keys.map((key) => key.slice(head.length)).sort(compareCodePoints)
   }
 
@@ -361,7 +381,7 @@ export class UpstashRedisStore implements RedisStoreLike {
 
   async listAttrs(): Promise<Record<string, Record<string, string>>> {
     const head = `${this.keyPrefix}attrs:`
-    const keys = await this.scan(`${head}*`)
+    const keys = await this.scan(`${escapeGlob(head)}*`)
     const replies = await this.pipeline(keys.map((key) => ['HGETALL', key]))
     const out: Record<string, Record<string, string>> = {}
     keys.forEach((key, i) => {
@@ -372,7 +392,7 @@ export class UpstashRedisStore implements RedisStoreLike {
 
   async listModified(): Promise<Record<string, string>> {
     const head = `${this.keyPrefix}modified:`
-    const keys = await this.scan(`${head}*`)
+    const keys = await this.scan(`${escapeGlob(head)}*`)
     const replies = await this.pipeline(keys.map((key) => ['GET', key]))
     const out: Record<string, string> = {}
     keys.forEach((key, i) => {
@@ -382,15 +402,28 @@ export class UpstashRedisStore implements RedisStoreLike {
     return out
   }
 
+  async restore(state: RedisRestore): Promise<void> {
+    for (const [path, data] of Object.entries(state.files)) {
+      await this.setFile(path, data)
+    }
+    const commands: CommandArg[][] = []
+    for (const dir of state.dirs) commands.push(['SADD', this.dk(), dir])
+    for (const [path, fields] of Object.entries(state.attrs)) {
+      const flat = Object.entries(fields).flat()
+      if (flat.length > 0) commands.push(['HSET', this.ak(path), ...flat])
+    }
+    for (const [path, ts] of Object.entries(state.modified)) {
+      commands.push(['SET', this.mk(path), ts])
+    }
+    await this.pipeline(commands)
+  }
+
   async clear(): Promise<void> {
-    for (const pattern of [
-      `${this.keyPrefix}file:*`,
-      `${this.keyPrefix}modified:*`,
-      `${this.keyPrefix}attrs:*`,
-    ]) {
+    const p = escapeGlob(this.keyPrefix)
+    for (const pattern of [`${p}file:*`, `${p}tmp:*`, `${p}modified:*`, `${p}attrs:*`]) {
       const keys = await this.scan(pattern)
-      for (let i = 0; i < keys.length; i += DEL_BATCH) {
-        await this.command(['DEL', ...keys.slice(i, i + DEL_BATCH)])
+      for (let i = 0; i < keys.length; i += KEY_BATCH) {
+        await this.command(['DEL', ...keys.slice(i, i + KEY_BATCH)])
       }
     }
     await this.command(['DEL', this.dk()])

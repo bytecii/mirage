@@ -243,20 +243,12 @@ export class RedisResourceBase extends BaseResource implements Resource {
     }
   }
 
-  override async loadState(state: RedisResourceState): Promise<void> {
-    for (const [path, data] of Object.entries(state.files)) {
-      await this.store.setFile(path, data)
-    }
-    for (const dir of state.dirs) {
-      await this.store.addDir(dir)
-    }
-    for (const [path, fields] of Object.entries(state.attrs ?? {})) {
-      if (Object.keys(fields).length > 0) {
-        await this.store.setAttrs(path, fields)
-      }
-    }
-    for (const [path, ts] of Object.entries(state.modified ?? {})) {
-      await this.store.setModified(path, ts)
-    }
+  override loadState(state: RedisResourceState): Promise<void> {
+    return this.store.restore({
+      files: state.files,
+      dirs: state.dirs,
+      attrs: state.attrs ?? {},
+      modified: state.modified ?? {},
+    })
   }
 }

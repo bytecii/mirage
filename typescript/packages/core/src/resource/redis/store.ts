@@ -26,6 +26,13 @@
  * `<prefix>modified:<path>` the ISO mtime and `<prefix>attrs:<path>` a hash
  * carrying the stat overlay.
  */
+export interface RedisRestore {
+  files: Record<string, Uint8Array>
+  dirs: readonly string[]
+  attrs: Record<string, Record<string, string>>
+  modified: Record<string, string>
+}
+
 export interface RedisStoreLike {
   readonly url: string
   readonly keyPrefix: string
@@ -53,6 +60,12 @@ export interface RedisStoreLike {
   listAttrs(): Promise<Record<string, Record<string, string>>>
   listModified(): Promise<Record<string, string>>
   /** Drop every key of this mount. */
+  /**
+   * Write a whole snapshot in as few round trips as the transport allows:
+   * node queues everything into one MULTI, the browser pipelines the side
+   * keys under the REST request cap and sends each file's bytes on its own.
+   */
+  restore(state: RedisRestore): Promise<void>
   clear(): Promise<void>
   close(): Promise<void>
 }

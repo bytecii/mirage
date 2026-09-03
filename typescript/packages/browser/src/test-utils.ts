@@ -225,6 +225,12 @@ function globRegExp(pattern: string): RegExp {
     if (ch === '\\' && i + 1 < pattern.length) {
       i++
       out += escapeRegExp(pattern[i] ?? '')
+    } else if (ch === '[') {
+      const close = pattern.indexOf(']', i + 1)
+      if (close === -1) throw new Error('ERR unbalanced [ in pattern')
+      const body = pattern.slice(i + 1, close)
+      out += `[${body.startsWith('^') ? '^' : ''}${body.replace(/^\^/, '').replace(/[\\\]]/g, '\\$&')}]`
+      i = close
     } else if (ch === '*') out += '.*'
     else if (ch === '?') out += '.'
     else out += escapeRegExp(ch)
@@ -315,6 +321,14 @@ class FakeRedis {
         if (end < 0) end = n + end
         end = Math.min(end, n - 1)
         return start > end ? new Uint8Array(0) : data.slice(start, end + 1)
+      }
+      case 'RENAME': {
+        if (rest.length !== 2) throw wrongArity(name)
+        const v = this.data.get(key)
+        if (v === undefined) throw new Error('ERR no such key')
+        this.data.delete(key)
+        this.data.set(argText(rest[1] ?? ''), v)
+        return 'OK'
       }
       case 'DEL':
       case 'EXISTS': {

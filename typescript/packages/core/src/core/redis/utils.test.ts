@@ -12,13 +12,12 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-export { gnuBasename as basename, norm } from '../../utils/path.ts'
+import { describe, expect, it } from 'vitest'
+import { escapeGlob } from './utils.ts'
 
-export function nowIso(): string {
-  return new Date().toISOString()
-}
-
-/** Quote a literal for a redis MATCH pattern, so a prefix holding `*?[]\` matches itself. */
-export function escapeGlob(literal: string): string {
-  return literal.replace(/[\\*?[\]]/g, '\\$&')
-}
+describe('escapeGlob', () => {
+  it('quotes every MATCH metacharacter and leaves the rest alone', () => {
+    expect(escapeGlob('m:[ab]?*\\:')).toBe('m:\\[ab\\]\\?\\*\\\\:')
+    expect(escapeGlob('mirage:fs:file:/a b+c')).toBe('mirage:fs:file:/a b+c')
+  })
+})

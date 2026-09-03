@@ -39,6 +39,14 @@ await ws.execute('cat /r/greet')
 [page example](https://github.com/strukto-ai/mirage/blob/main/examples/typescript/browser/redis.html)
 uses a Vite `define` fed from `UPSTASH_REDIS_URL` in `.env.development`.
 
+<Warning>
+  That `define` copies the whole URL, password included, into the served JavaScript, so the
+  page is a local demo for a trusted machine: run it from the dev server, do not build or host
+  it. Anyone who reads the token out of a bundle can call the REST API directly and reach every
+  key, whatever `keyPrefix` and mount mode the page used. A page for other people needs a
+  server-side proxy, or a credential scoped to what that page may touch.
+</Warning>
+
 ## One database, both runtimes
 
 The browser store keeps every value byte-identical to what the Node mount writes: writes go out

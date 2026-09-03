@@ -33,6 +33,16 @@ function make(options: { scanPageSize?: number; maxRequestBytes?: number } = {})
   return { fake, store }
 }
 
+function countingFetch(fake: ReturnType<typeof createFakeUpstash>, sizes: number[]): typeof fetch {
+  return (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (url.endsWith('/pipeline') && typeof init?.body === 'string') {
+      sizes.push((JSON.parse(init.body) as unknown[]).length)
+    }
+    return fake.fetch(input, init)
+  }
+}
+
 describe('UpstashRedisStore', () => {
   it('open seeds the root directory', async () => {
     const { store } = make()
@@ -68,6 +78,70 @@ describe('UpstashRedisStore', () => {
     expect(await store.getFile('/big')).toEqual(ALL_BYTES)
     expect(fake.commands.filter((c) => c === 'SET')).toHaveLength(1)
     expect(fake.commands.filter((c) => c === 'APPEND')).toHaveLength(2)
+    expect(fake.commands.filter((c) => c === 'RENAME')).toHaveLength(1)
+    expect(fake.keys()).toEqual(['mirage:fs:file:/big'])
+  })
+
+  it('a chunked write that fails leaves the previous content and no temp key', async () => {
+    const fake = createFakeUpstash()
+    let failAppend = false
+    const flaky: typeof fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (failAppend && url.includes('/append/')) {
+        return Promise.reject(new TypeError('network down'))
+      }
+      return fake.fetch(input, init)
+    }
+    const store = new UpstashRedisStore({
+      url: fake.url,
+      token: fake.token,
+      keyPrefix: 'mirage:fs:',
+      fetchImpl: flaky,
+      maxRequestBytes: 100,
+    })
+    await store.setFile('/big', ENC.encode('old'))
+    failAppend = true
+    await expect(store.setFile('/big', ALL_BYTES)).rejects.toThrow(/cannot reach/)
+    expect(await store.getFile('/big')).toEqual(ENC.encode('old'))
+    expect(fake.keys()).toEqual(['mirage:fs:file:/big'])
+  })
+
+  it('matches a keyPrefix holding glob metacharacters literally', async () => {
+    const fake = createFakeUpstash()
+    const store = new UpstashRedisStore({
+      url: fake.url,
+      token: fake.token,
+      keyPrefix: 'm:[ab]?:',
+      fetchImpl: fake.fetch,
+    })
+    fake.exec(['SET', 'm:ax:file:/other', 'x'])
+    await store.setFile('/mine', ENC.encode('y'))
+    expect(await store.listFiles()).toEqual(['/mine'])
+    await store.clear()
+    expect(fake.keys()).toEqual(['m:ax:file:/other'])
+  })
+
+  it('restore writes files one by one and the side keys through pipelines', async () => {
+    const fake = createFakeUpstash()
+    const sizes: number[] = []
+    const store = new UpstashRedisStore({
+      url: fake.url,
+      token: fake.token,
+      keyPrefix: 'mirage:fs:',
+      fetchImpl: countingFetch(fake, sizes),
+    })
+    await store.restore({
+      files: { '/a': ENC.encode('a'), '/e': new Uint8Array(0) },
+      dirs: ['/', '/d'],
+      attrs: { '/a': { mode: '420' }, '/skip': {} },
+      modified: { '/a': 't1' },
+    })
+    expect(sizes).toEqual([4])
+    expect(await store.getFile('/a')).toEqual(ENC.encode('a'))
+    expect(await store.hasFile('/e')).toBe(true)
+    expect(await store.listDirs()).toEqual(new Set(['/', '/d']))
+    expect(await store.listAttrs()).toEqual({ '/a': { mode: '420' } })
+    expect(await store.listModified()).toEqual({ '/a': 't1' })
   })
 
   it('keeps a key with slashes, spaces, plus, percent, question mark and hash intact', async () => {
@@ -152,6 +226,25 @@ describe('UpstashRedisStore', () => {
     await store.setFile('/a', ENC.encode('a'))
     expect(await store.listAttrs()).toEqual({ '/a': { mode: '420' }, '/d/b': { uid: 'x' } })
     expect(await store.listModified()).toEqual({ '/a': 't1', '/d/b': 't2' })
+  })
+
+  it('listAttrs and listModified pipeline at most 500 commands per request', async () => {
+    const fake = createFakeUpstash()
+    for (let i = 0; i < 1200; i++) {
+      fake.exec(['HSET', `mirage:fs:attrs:/p${String(i)}`, 'mode', '420'])
+      fake.exec(['SET', `mirage:fs:modified:/p${String(i)}`, 't'])
+    }
+    const sizes: number[] = []
+    const store = new UpstashRedisStore({
+      url: fake.url,
+      token: fake.token,
+      keyPrefix: 'mirage:fs:',
+      fetchImpl: countingFetch(fake, sizes),
+    })
+    expect(Object.keys(await store.listAttrs())).toHaveLength(1200)
+    expect(Object.keys(await store.listModified())).toHaveLength(1200)
+    expect(sizes.length).toBeGreaterThanOrEqual(6)
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(500)
   })
 
   it('clear removes files, side keys and the dir set', async () => {

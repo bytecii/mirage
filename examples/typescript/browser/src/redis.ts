@@ -26,6 +26,9 @@ async function main(): Promise<void> {
     line('done.', 'ok')
     return
   }
+  // __UPSTASH_REDIS_URL__ is a Vite define, so the password lands in the served
+  // JavaScript: this page is a local demo for a trusted machine, not something to
+  // build or host. A page for other people needs a server-side proxy instead.
   const resource = new RedisResource({
     url: __UPSTASH_REDIS_URL__,
     keyPrefix: 'mirage:browser-demo:',
