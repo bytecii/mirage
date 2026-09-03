@@ -24,6 +24,21 @@ except ImportError as _err:
     raise ImportError("RedisStore requires the 'redis' extra. "
                       "Install with: pip install mirage-ai[redis]") from _err
 
+_GLOB_META = frozenset("*?[]\\")
+
+
+def escape_glob(literal: str) -> str:
+    """Quote a literal for a redis MATCH pattern.
+
+    Args:
+        literal (str): The text that must match verbatim, metacharacters
+            ``*?[]\\`` included.
+
+    Returns:
+        str: The pattern with every glob metacharacter backslash-escaped.
+    """
+    return "".join(f"\\{ch}" if ch in _GLOB_META else ch for ch in literal)
+
 
 def _purge_client(clients_dict: dict[int, Redis], loop_id: int) -> None:
     clients_dict.pop(loop_id, None)
@@ -128,7 +143,7 @@ class RedisStore:
         return bool(await self._client.exists(self._fk(path)))
 
     async def list_files(self, prefix: str = "") -> list[str]:
-        pattern = f"{self._prefix}file:{prefix}*"
+        pattern = f"{escape_glob(f'{self._prefix}file:{prefix}')}*"
         strip = len(f"{self._prefix}file:")
         result: list[str] = []
         async for key in self._client.scan_iter(pattern):
@@ -185,10 +200,12 @@ class RedisStore:
         await self._client.delete(self._ak(path))
 
     async def clear(self) -> None:
+        quoted = escape_glob(self._prefix)
         prefixes = [
-            f"{self._prefix}file:*",
-            f"{self._prefix}modified:*",
-            f"{self._prefix}attrs:*",
+            f"{quoted}file:*",
+            f"{quoted}tmp:*",
+            f"{quoted}modified:*",
+            f"{quoted}attrs:*",
         ]
         for pattern in prefixes:
             keys: list[str | bytes] = []

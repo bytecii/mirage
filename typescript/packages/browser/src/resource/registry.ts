@@ -17,6 +17,7 @@ import type { ResolvedSource } from '@struktoai/mirage-core/secrets/types'
 import type { Resource } from '@struktoai/mirage-core/resource/base'
 import { z } from '@struktoai/mirage-core/resource/secrets'
 import { errorSummary } from '@struktoai/mirage-core/secrets/summary'
+import type { RedisResourceOptions } from './redis/redis.ts'
 import { normalizeFields } from '@struktoai/mirage-core/utils/normalize'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 import { recordResourceRef } from '@struktoai/mirage-core/resource/base'
@@ -167,6 +168,10 @@ const REGISTRY: Record<string, ResourceFactory> = {
     const { QdrantResource } = await import('@struktoai/mirage-core/resource/qdrant/qdrant')
     const { normalizeQdrantConfig } = await import('@struktoai/mirage-core/resource/qdrant/config')
     return new QdrantResource(normalizeQdrantConfig(config))
+  },
+  redis: async (config) => {
+    const { RedisResource } = await import('./redis/redis.ts')
+    return new RedisResource(normalizeFields(config) as unknown as RedisResourceOptions)
   },
   lancedb: (_config) => {
     return Promise.reject(
