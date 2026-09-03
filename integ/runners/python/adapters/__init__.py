@@ -48,7 +48,6 @@ from mirage.commands.cli.types import CLISpec
 from mirage.core.databricks_volume.path import configured_root
 from mirage.core.discord.config import DiscordConfig
 from mirage.core.email.config import EmailConfig
-from mirage.core.sharepoint import resolve as sharepoint_resolver
 from mirage.resource.aliyun import AliyunConfig, AliyunResource
 from mirage.resource.backblaze import BackblazeConfig, BackblazeResource
 from mirage.resource.box import BoxConfig, BoxResource
@@ -1500,13 +1499,6 @@ class LinearService:
         return None
 
 
-def _clear_sharepoint_caches() -> None:
-    # The resolver's site/drive id caches are module globals; a fresh
-    # fake tenant per run must not see ids from the previous one.
-    sharepoint_resolver._site_cache.clear()
-    sharepoint_resolver._drive_cache.clear()
-
-
 class JaegerService:
     """Points jaeger mounts at a real jaeger all-in-one container.
 
@@ -1583,7 +1575,6 @@ class SharePointService:
     async def create(cls, run_id: str, target: dict) -> "SharePointService":
         service = cls(f"{run_id}-{target['id']}",
                       os.environ["ONEDRIVE_URL"].rstrip("/"))
-        _clear_sharepoint_caches()
         for mount in target["mounts"]:
             await service.provision(mount)
         return service
@@ -1637,7 +1628,7 @@ class SharePointService:
                              key_prefix=mount.get("prefix")))
 
     async def teardown(self) -> None:
-        _clear_sharepoint_caches()
+        return None
 
 
 class NotionService:
