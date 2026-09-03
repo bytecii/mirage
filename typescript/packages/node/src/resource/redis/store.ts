@@ -12,9 +12,11 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { escapeGlob } from '@struktoai/mirage-core/core/redis/utils'
+import type { RedisRestore, RedisStoreLike } from '@struktoai/mirage-core/resource/redis/store'
+import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 import type { RedisClientType } from 'redis'
 import { loadOptionalPeer } from '../../optional_peer.ts'
-import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 
 export interface RedisStoreOptions {
   url?: string
@@ -22,7 +24,7 @@ export interface RedisStoreOptions {
   keyPrefix?: string
 }
 
-export class RedisStore {
+export class RedisStore implements RedisStoreLike {
   readonly url: string
   readonly keyPrefix: string
   private readonly providedClient: RedisClientType | null
@@ -69,6 +71,10 @@ export class RedisStore {
       return c
     })()
     return this.clientPromise
+  }
+
+  async open(): Promise<void> {
+    await this.client()
   }
 
   async getFile(path: string): Promise<Uint8Array | null> {
@@ -150,7 +156,7 @@ export class RedisStore {
 
   async listFiles(prefix = ''): Promise<string[]> {
     const c = await this.client()
-    const pattern = `${this.keyPrefix}file:${prefix}*`
+    const pattern = `${escapeGlob(`${this.keyPrefix}file:${prefix}`)}*`
     const strip = `${this.keyPrefix}file:`.length
     const result: string[] = []
     for await (const k of c.scanIterator({ MATCH: pattern })) {
@@ -217,18 +223,56 @@ export class RedisStore {
     await c.del(this.ak(path))
   }
 
+  private async scanKeys(pattern: string): Promise<string[]> {
+    const c = await this.client()
+    const keys: string[] = []
+    for await (const k of c.scanIterator({ MATCH: pattern })) {
+      if (Array.isArray(k)) keys.push(...k)
+      else keys.push(k)
+    }
+    return keys
+  }
+
+  async listAttrs(): Promise<Record<string, Record<string, string>>> {
+    const c = await this.client()
+    const head = `${this.keyPrefix}attrs:`
+    const out: Record<string, Record<string, string>> = {}
+    for (const key of await this.scanKeys(`${escapeGlob(head)}*`)) {
+      out[key.slice(head.length)] = { ...(await c.hGetAll(key)) }
+    }
+    return out
+  }
+
+  async listModified(): Promise<Record<string, string>> {
+    const c = await this.client()
+    const head = `${this.keyPrefix}modified:`
+    const out: Record<string, string> = {}
+    for (const key of await this.scanKeys(`${escapeGlob(head)}*`)) {
+      const val = await c.get(key)
+      if (val !== null) out[key.slice(head.length)] = val
+    }
+    return out
+  }
+
+  async restore(state: RedisRestore): Promise<void> {
+    const c = await this.client()
+    const pipe = c.multi()
+    for (const [path, data] of Object.entries(state.files)) {
+      pipe.set(this.fk(path), Buffer.from(data.buffer, data.byteOffset, data.byteLength))
+    }
+    for (const dir of state.dirs) pipe.sAdd(this.dk(), dir)
+    for (const [path, fields] of Object.entries(state.attrs)) {
+      if (Object.keys(fields).length > 0) pipe.hSet(this.ak(path), fields)
+    }
+    for (const [path, ts] of Object.entries(state.modified)) pipe.set(this.mk(path), ts)
+    await pipe.exec()
+  }
+
   async clear(): Promise<void> {
     const c = await this.client()
-    for (const pattern of [
-      `${this.keyPrefix}file:*`,
-      `${this.keyPrefix}modified:*`,
-      `${this.keyPrefix}attrs:*`,
-    ]) {
-      const keys: string[] = []
-      for await (const k of c.scanIterator({ MATCH: pattern })) {
-        if (Array.isArray(k)) keys.push(...k)
-        else keys.push(k)
-      }
+    const p = escapeGlob(this.keyPrefix)
+    for (const pattern of [`${p}file:*`, `${p}tmp:*`, `${p}modified:*`, `${p}attrs:*`]) {
+      const keys = await this.scanKeys(pattern)
       if (keys.length > 0) await c.del(keys)
     }
     await c.del(this.dk())

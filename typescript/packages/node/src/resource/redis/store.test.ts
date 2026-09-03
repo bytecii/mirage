@@ -112,4 +112,11 @@ describe.skipIf(skip)('RedisStore', () => {
     // after clear, dir set is deleted, so / is no longer seeded
     expect((await store.listDirs()).size).toBe(0)
   })
+
+  it('clear drops a staging key left by a chunked browser write', async () => {
+    const c = await store.client()
+    await c.set(`${prefix}tmp:/big:abc`, 'partial')
+    await store.clear()
+    expect(await c.exists(`${prefix}tmp:/big:abc`)).toBe(0)
+  })
 })

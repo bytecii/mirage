@@ -103,6 +103,7 @@ describe('browser resource registry', () => {
     expect(names).toContain('onedrive')
     expect(names).toContain('sharepoint')
     expect(names).toContain('mem0')
+    expect(names).toContain('redis')
     expect(names).toEqual([...names].sort())
   })
 
