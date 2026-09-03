@@ -723,11 +723,11 @@ function shapeOf(
         }
         return shapeOfLiteral(arg, source, env, packagesRoot, label)
       }
-      if (method === 'extend') {
+      if (method === 'extend' || method === 'safeExtend') {
         const base = shapeOf(callee.expression, source, env, packagesRoot, label)
         const arg = expr.arguments[0]
         if (arg === undefined || !ts.isObjectLiteralExpression(arg)) {
-          throw new Error(`${label}: .extend() without an object literal`)
+          throw new Error(`${label}: .${method}() without an object literal`)
         }
         return { ...base, ...shapeOfLiteral(arg, source, env, packagesRoot, label) }
       }

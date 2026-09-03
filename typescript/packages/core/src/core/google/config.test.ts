@@ -97,7 +97,7 @@ describe('GoogleConfig', () => {
       minAccessRole: 'writer',
       today: '2026-01-01',
     })
-    // `extend` keeps the base's credential check.
+    // `safeExtend` keeps the base's credential check.
     expect(() => normalizeGCalConfig({ time_zone: 'UTC' })).toThrow(GOOGLE_CREDENTIAL_ERROR)
   })
 })

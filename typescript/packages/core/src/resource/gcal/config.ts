@@ -23,9 +23,11 @@ import {
 
 // Calendar-only knobs live here, not on the shared Google base, so a drive
 // or docs mount cannot be handed a time zone that means nothing to it.
-// `extend` keeps the base's credential check. Mirrors python's
-// `GCalConfig(GoogleConfig)`.
-export const GCalConfigSchema = GoogleConfigSchema.extend({
+// `safeExtend` is zod's spelling for extending a refined object: the base's
+// credential check rides along, and unlike `.extend` it cannot throw at
+// import time should a key here ever shadow one of the base's. Mirrors
+// python's `GCalConfig(GoogleConfig)`.
+export const GCalConfigSchema = GoogleConfigSchema.safeExtend({
   // One zone for the whole mount, not one per calendar: the Calendar UI
   // draws its whole grid in the primary zone, and per-calendar bucketing
   // would make the same day directory name mean different 24-hour windows
