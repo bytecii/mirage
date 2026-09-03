@@ -274,6 +274,16 @@ export {
   type GCalConfigRedacted,
 } from '@struktoai/mirage-core/resource/gcal/config'
 export {
+  RedisResource,
+  type RedisResourceOptions,
+  type RedisResourceState,
+} from './resource/redis/redis.ts'
+export { UpstashRedisStore, type UpstashRedisStoreOptions } from './resource/redis/store.ts'
+export { REDIS_PROMPT } from '@struktoai/mirage-core/resource/redis/prompt'
+export { REDIS_OPS } from '@struktoai/mirage-core/ops/redis/index'
+export { REDIS_COMMANDS } from '@struktoai/mirage-core/commands/builtin/redis/index'
+export { RedisAccessor } from '@struktoai/mirage-core/accessor/redis'
+export {
   buildResource,
   knownResources,
   register as registerResourceFactory,

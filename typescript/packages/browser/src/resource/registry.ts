@@ -18,6 +18,7 @@ import type { Resource } from '@struktoai/mirage-core/resource/base'
 import type { ChromaConfig } from '@struktoai/mirage-core/resource/chroma/config'
 import type { DifyConfig } from '@struktoai/mirage-core/resource/dify/config'
 import type { QdrantConfig } from '@struktoai/mirage-core/resource/qdrant/config'
+import type { RedisResourceOptions } from './redis/redis.ts'
 import { normalizeFields } from '@struktoai/mirage-core/utils/normalize'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 
@@ -164,6 +165,10 @@ const REGISTRY: Record<string, ResourceFactory> = {
   qdrant: async (config) => {
     const { QdrantResource } = await import('@struktoai/mirage-core/resource/qdrant/qdrant')
     return new QdrantResource(normalizeFields(config) as unknown as QdrantConfig)
+  },
+  redis: async (config) => {
+    const { RedisResource } = await import('./redis/redis.ts')
+    return new RedisResource(normalizeFields(config) as unknown as RedisResourceOptions)
   },
   lancedb: (_config) => {
     return Promise.reject(

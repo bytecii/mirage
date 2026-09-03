@@ -12,9 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { RedisStoreLike } from '@struktoai/mirage-core/resource/redis/store'
+import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 import type { RedisClientType } from 'redis'
 import { loadOptionalPeer } from '../../optional_peer.ts'
-import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 
 export interface RedisStoreOptions {
   url?: string
@@ -22,7 +23,7 @@ export interface RedisStoreOptions {
   keyPrefix?: string
 }
 
-export class RedisStore {
+export class RedisStore implements RedisStoreLike {
   readonly url: string
   readonly keyPrefix: string
   private readonly providedClient: RedisClientType | null
@@ -69,6 +70,10 @@ export class RedisStore {
       return c
     })()
     return this.clientPromise
+  }
+
+  async open(): Promise<void> {
+    await this.client()
   }
 
   async getFile(path: string): Promise<Uint8Array | null> {
@@ -217,6 +222,37 @@ export class RedisStore {
     await c.del(this.ak(path))
   }
 
+  private async scanKeys(pattern: string): Promise<string[]> {
+    const c = await this.client()
+    const keys: string[] = []
+    for await (const k of c.scanIterator({ MATCH: pattern })) {
+      if (Array.isArray(k)) keys.push(...k)
+      else keys.push(k)
+    }
+    return keys
+  }
+
+  async listAttrs(): Promise<Record<string, Record<string, string>>> {
+    const c = await this.client()
+    const head = `${this.keyPrefix}attrs:`
+    const out: Record<string, Record<string, string>> = {}
+    for (const key of await this.scanKeys(`${head}*`)) {
+      out[key.slice(head.length)] = { ...(await c.hGetAll(key)) }
+    }
+    return out
+  }
+
+  async listModified(): Promise<Record<string, string>> {
+    const c = await this.client()
+    const head = `${this.keyPrefix}modified:`
+    const out: Record<string, string> = {}
+    for (const key of await this.scanKeys(`${head}*`)) {
+      const val = await c.get(key)
+      if (val !== null) out[key.slice(head.length)] = val
+    }
+    return out
+  }
+
   async clear(): Promise<void> {
     const c = await this.client()
     for (const pattern of [
@@ -224,11 +260,7 @@ export class RedisStore {
       `${this.keyPrefix}modified:*`,
       `${this.keyPrefix}attrs:*`,
     ]) {
-      const keys: string[] = []
-      for await (const k of c.scanIterator({ MATCH: pattern })) {
-        if (Array.isArray(k)) keys.push(...k)
-        else keys.push(k)
-      }
+      const keys = await this.scanKeys(pattern)
       if (keys.length > 0) await c.del(keys)
     }
     await c.del(this.dk())

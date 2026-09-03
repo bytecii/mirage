@@ -49,16 +49,16 @@ export {
   type RedisResourceOptions,
   type RedisResourceState,
 } from './resource/redis/redis.ts'
-export { REDIS_PROMPT } from './resource/redis/prompt.ts'
+export { REDIS_PROMPT } from '@struktoai/mirage-core/resource/redis/prompt'
 export { RedisStore, type RedisStoreOptions } from './resource/redis/store.ts'
-export { RedisAccessor } from './accessor/redis.ts'
-export { REDIS_OPS } from './ops/redis/index.ts'
+export { RedisAccessor } from '@struktoai/mirage-core/accessor/redis'
+export { REDIS_OPS } from '@struktoai/mirage-core/ops/redis/index'
 export {
   fileReadProvision,
   headTailProvision,
   metadataProvision,
   type RedisResourceLike,
-} from './commands/builtin/redis/_provision.ts'
+} from '@struktoai/mirage-core/commands/builtin/redis/_provision'
 export { RedisFileCacheStore, type RedisFileCacheOptions } from './cache/file/redis.ts'
 export { FuseManager } from './workspace/fuse.ts'
 export { MirageFS, type MirageFSOptions, type FuseAttr } from './fuse/fs.ts'
@@ -420,7 +420,7 @@ export {
 } from './resource/registry.ts'
 export { MODULE_SUFFIXES, isModulePath, loadAttr, splitRef } from './resource/loader.ts'
 export { DISK_COMMANDS } from './commands/builtin/disk/index.ts'
-export { REDIS_COMMANDS } from './commands/builtin/redis/index.ts'
+export { REDIS_COMMANDS } from '@struktoai/mirage-core/commands/builtin/redis/index'
 export { GRIDFS_COMMANDS } from './commands/builtin/gridfs/index.ts'
 export {
   checkWorkspaceConfig,

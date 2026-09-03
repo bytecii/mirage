@@ -148,7 +148,7 @@ See [Python filesystem](/typescript/python-fs) for the details.
 
 ### 5. Some resource drivers remain Node-only
 
-SSH, LanceDB, Email, Disk, Redis, and the Hugging Face resources are only exposed by `@struktoai/mirage-node` because their drivers need Node APIs or raw TCP. Importing them from `@struktoai/mirage-browser` is a build error.
+SSH, LanceDB, Email, Disk, and the Hugging Face resources are only exposed by `@struktoai/mirage-node` because their drivers need Node APIs or raw TCP. Importing them from `@struktoai/mirage-browser` is a build error. Redis is the exception: the browser package mounts it over the Upstash REST API, see [Redis](/typescript/setup/redis#browser).
 
 Postgres and MongoDB do have browser implementations:
 
@@ -176,6 +176,6 @@ Those HTTP drivers still need a browser-reachable endpoint with the correct CORS
 | Python `open()` writes back through mount | Browser | ✅ on any engine |
 | Postgres through `NeonPgDriver` | Browser | ✅ over HTTP; endpoint must allow the browser origin |
 | MongoDB through `HttpMongoDriver` | Browser | ✅ through an HTTP proxy; direct MongoDB sockets are unavailable |
-| Node-only resources (SSH, LanceDB, Email, Disk, Redis, Hugging Face, GridFS, FUSE) | Browser | ❌ Node APIs or raw TCP required |
+| Node-only resources (SSH, LanceDB, Email, Disk, Hugging Face, GridFS, FUSE) | Browser | ❌ Node APIs or raw TCP required |
 
 The Node limitations are runtime-level, not Mirage design decisions. Python's equivalent behavior is strictly better in each case, so if a workflow absolutely requires ESM-level `fs` patching or large API-backed FUSE reads, consider whether the Python SDK fits better for that specific piece. The Browser limitations are by design (no kernel, no subprocess), so the workarounds there are about choosing the right runtime for the task.
