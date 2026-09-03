@@ -462,7 +462,8 @@ export function createFakeUpstash(options: FakeUpstashOptions = {}): FakeUpstash
     try {
       return { result: encodeReply(redis.exec(args), base64) }
     } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) }
+      if (err instanceof Error) return { error: err.message }
+      return { error: typeof err === 'string' ? err : 'unknown error' }
     }
   }
 

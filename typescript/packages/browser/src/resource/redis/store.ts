@@ -15,6 +15,7 @@
 import type { RedisStoreLike } from '@struktoai/mirage-core/resource/redis/store'
 import type { JsonValue } from '@struktoai/mirage-core/types'
 import { decodeBase64 } from '@struktoai/mirage-core/utils/base64'
+import { rstripSlash } from '@struktoai/mirage-core/utils/slash'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 
 // Upstash caps one REST request at 10 MB on every plan, so a file above this
@@ -84,7 +85,7 @@ function restTarget(options: UpstashRedisStoreOptions): RestTarget {
     if (typeof options.token !== 'string' || options.token === '') {
       throw new Error('redis: token is required, the database REST token from the Upstash console')
     }
-    return { base: options.url.replace(/\/+$/, ''), token: options.token }
+    return { base: rstripSlash(options.url), token: options.token }
   }
   throw new Error('redis: url must be a redis:// or rediss:// url, or an https:// REST url')
 }

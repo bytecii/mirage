@@ -16,7 +16,7 @@ import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType } from '../../types.ts'
 import type { PathSpec } from '../../types.ts'
 import { enoent } from '../../utils/errors.ts'
-import { guessType } from '../../utils/filetype.ts'
+import { contentTypeForPath } from '../../utils/filetype.ts'
 import type { RedisAccessor } from '../../accessor/redis.ts'
 import { basename, norm } from './utils.ts'
 
@@ -62,7 +62,8 @@ export async function stat(
       name: basename(p),
       size,
       modified: await store.getModified(p),
-      type: guessType(p),
+      type: FileType.FILE,
+      content: contentTypeForPath(p),
       mode: attrs.mode ?? null,
       uid: attrs.uid ?? null,
       gid: attrs.gid ?? null,

@@ -80,6 +80,16 @@ class AskOnOps(Policy):
         return Ask("cannot wait here")
 
 
+class SyncDeny(Policy):
+    """A hook written as a plain ``def``, the way TypeScript allows."""
+
+    def pre_command(  # type: ignore[override]
+            self, ctx: CommandContext) -> Action | None:
+        if ctx.command == "rm":
+            return Deny("sync no")
+        return None
+
+
 def _registry() -> MountRegistry:
     registry = MountRegistry()
     registry.mount("/data", RAMResource(), MountMode.WRITE)
@@ -163,6 +173,17 @@ async def test_a_raising_policy_fails_closed():
     assert deny.scope is DenyScope.COMMAND
     assert "Raising" in deny.reason
     assert "boom" in deny.reason
+
+
+@pytest.mark.asyncio
+async def test_a_sync_hook_is_awaited_like_the_typescript_seam():
+    policies = Policies()
+    policies.add(SyncDeny())
+    deny = await policies.pre_command(_ctx("rm"))
+    assert deny is not None
+    assert deny.reason == "sync no"
+    # Silence from a sync hook is silence, not a swallowed TypeError.
+    assert await policies.pre_command(_ctx("ls")) is None
 
 
 @pytest.mark.asyncio

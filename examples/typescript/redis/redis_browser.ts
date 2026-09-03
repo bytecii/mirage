@@ -76,6 +76,11 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
   })
 }
 
+function errorText(err: unknown): string {
+  if (err instanceof Error) return err.message
+  return typeof err === 'string' ? err : 'unknown error'
+}
+
 function reply(res: ServerResponse, status: number, payload: Json): void {
   res.writeHead(status, { 'content-type': 'application/json' })
   res.end(JSON.stringify(payload))
@@ -93,7 +98,7 @@ async function startRestFront(token: string): Promise<{ url: string; close: () =
     try {
       return { result: encodeReply(await client.sendCommand(args, { typeMapping }), base64) }
     } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) }
+      return { error: errorText(err) }
     }
   }
 
@@ -131,7 +136,7 @@ async function startRestFront(token: string): Promise<{ url: string; close: () =
 
   const server = createServer((req, res) => {
     handle(req, res).catch((err: unknown) => {
-      reply(res, 400, { error: err instanceof Error ? err.message : String(err) })
+      reply(res, 400, { error: errorText(err) })
     })
   })
   server.listen(0, '127.0.0.1')
