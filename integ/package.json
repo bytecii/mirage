@@ -77,7 +77,10 @@
     "prisma": "^6.19.3",
     "tsx": "^4.20.0",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.0.0"
+    "typescript-eslint": "^8.0.0",
+    "e2b": "^2.45.0",
+    "playwright-core": "^1.59.1",
+    "vite": "^7.2.6"
   },
   "optionalDependencies": {
     "@zkochan/fuse-native": "^0.1.0"
