@@ -5,11 +5,9 @@ icon: /images/e2b-logo.svg
 ---
 
 `E2BRuntime` connects to a live [E2B](https://e2b.dev) sandbox by id. Create
-it with E2B's CLI or SDK, then expose any shared workspace files at matching
-paths inside it. Using S3 through FUSE requires Mirage and `fuse3` in the
-template; using the sandbox's native files through SSH/SFTP does not. Mirage
-only connects and executes; it never
-creates, starts, stops, or deletes the sandbox.
+it with E2B's CLI or SDK. Programs accessing Mirage mounts as ordinary files
+require Mirage and FUSE inside the sandbox, with mounts at the same paths
+as the host workspace. Sandbox creation and cleanup remain with your application.
 
 See the [Sandbox overview](/typescript/runtime/sandbox) for the shared image and
 matching mount-prefix setup. The in-sandbox mount is served by the Python
