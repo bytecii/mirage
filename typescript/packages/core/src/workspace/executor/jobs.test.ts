@@ -19,7 +19,7 @@ import { Channel } from '../../shell/console/index.ts'
 import { type JobResult, type JobRunner, JobStatus, JobTable } from '../../shell/job_table/index.ts'
 import type { ShellParser } from '../../shell/parse/index.ts'
 import { MountMode } from '../../types.ts'
-import { getTestParser, stdoutStr } from '../fixtures/workspace_fixture.ts'
+import { getTestParser, stdoutStr, stderrStr } from '../fixtures/workspace_fixture.ts'
 import { Workspace } from '../workspace/workspace.ts'
 import { ExecutionNode } from '../types.ts'
 import { handleJobs, handleKill, handlePs, handleWait } from './jobs.ts'
@@ -255,5 +255,42 @@ describe('& inside a compound body', () => {
     const ws = buildWs()
     const io = await ws.execute('set -e; for i in 1; do false & done; echo ok; wait')
     expect(stdoutStr(io)).toBe('ok\n')
+  })
+})
+
+describe('background conditions and function scope', () => {
+  it.each<[string, string, number]>([
+    ['if false & then echo yes; else echo no; fi; wait "$!"', 'yes\n', 1],
+    ['if false; then echo no; elif false & then echo yes; fi; wait "$!"', 'yes\n', 1],
+    ['while false & do echo yes; break; done; wait "$!"', 'yes\n', 1],
+    ['until false & do echo no; break; done; echo yes; wait "$!"', 'yes\n', 1],
+    [
+      'f() { { sleep 0.05; printf "%s:%s:%s\\n" "$1" "$#" "$*"; } & }; f first second; wait',
+      'first:2:first second\n',
+      0,
+    ],
+    [
+      'f() { { sleep 0.05; printf "%s:%s\\n" "$1" "$#"; } & shift; }; f first second; wait',
+      'first:2\n',
+      0,
+    ],
+    [
+      'f() { { shift; sleep 0.05; printf "bg:%s:%s\\n" "$1" "$#"; } & sleep 0.1; printf "fg:%s:%s\\n" "$1" "$#"; wait; }; f first second',
+      'fg:first:2\nbg:second:1\n',
+      0,
+    ],
+    ['f() { return 7 & j=$!; wait "$j"; }; f', '', 7],
+    ['f() { { sleep 0.05; return 9; } & }; f; wait "$!"', '', 9],
+    ['f() { false; return & j=$!; wait "$j"; }; f', '', 1],
+  ])('%s', async (line, expected, code) => {
+    const ws = buildWs()
+    try {
+      const result = await ws.execute(line)
+      expect(stdoutStr(result)).toBe(expected)
+      expect(stderrStr(result)).toBe('')
+      expect(result.exitCode).toBe(code)
+    } finally {
+      await ws.close()
+    }
   })
 })

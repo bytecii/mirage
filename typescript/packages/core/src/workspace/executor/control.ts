@@ -17,11 +17,14 @@ import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
 import { asyncChain } from '../../io/stream.ts'
 import type { ByteSource } from '../../io/types.ts'
 import { IOResult } from '../../io/types.ts'
+import type { HandOff } from '../../policy/types.ts'
+import type { Decisions } from '../../policy/decisions.ts'
 import { PolicyDenied } from '../../policy/errors.ts'
 import { type Policies } from '../../policy/index.ts'
 import { applyBarrier, BarrierPolicy } from '../../shell/barrier.ts'
 import { ArithError, ReadonlyError } from '../../shell/errors.ts'
-import { finishStatement } from './statement.ts'
+import { finishStatement, recordStatus } from './statement.ts'
+import { pipelineTransparent } from '../../shell/node_kind.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
 import { ERREXIT_EXEMPT_TYPES } from '../../shell/constants.ts'
 import type { PathSpec } from '../../types.ts'
@@ -92,6 +95,8 @@ async function executeBody(
   callStack: CallStack | null,
   jobTable: JobTable | null,
   agentId: string | null,
+  handed: HandOff | null,
+  decisions: Decisions | null,
 ): Promise<Result> {
   const allStdout: (ByteSource | null)[] = []
   let mergedIo = new IOResult()
@@ -106,9 +111,11 @@ async function executeBody(
         callStack,
         jobTable,
         agentId,
+        handed,
+        decisions,
       )
       lastExec = execNode
-      const stdout = await finishStatement(rawStdout, io, session)
+      const stdout = await finishStatement(rawStdout, io, session, cmd)
       allStdout.push(stdout)
       mergedIo = await mergedIo.merge(io)
       if (
@@ -122,12 +129,17 @@ async function executeBody(
       }
     } catch (sig) {
       if (sig instanceof BreakSignal) {
+        // The control builtin is a statement the loop leaves through
+        // rather than closes, so its own status (0) is recorded here:
+        // bash leaves `${PIPESTATUS[@]}` at `0` after `break`.
+        recordStatus(session, 0)
         if (sig.stdout !== null) allStdout.push(sig.stdout)
         mergedIo = await mergedIo.merge(sig.io)
         const combined = chainNonNull(allStdout)
         throw new BreakSignal(combined, mergedIo, sig.levels)
       }
       if (sig instanceof ContinueSignal) {
+        recordStatus(session, 0)
         if (sig.stdout !== null) allStdout.push(sig.stdout)
         mergedIo = await mergedIo.merge(sig.io)
         const combined = chainNonNull(allStdout)
@@ -165,17 +177,49 @@ export async function handleIf(
   callStack: CallStack | null = null,
   jobTable: JobTable | null = null,
   agentId: string | null = null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
 ): Promise<Result> {
   for (const [condition, body] of branches) {
-    const [condStdout, condIo] = await executeNode(condition, session, stdin, callStack)
+    const [condStdout, condIo] = await runStatement(
+      executeNode,
+      condition,
+      session,
+      stdin,
+      callStack,
+      jobTable,
+      agentId,
+      handed,
+      decisions,
+    )
     await applyBarrier(condStdout, condIo, BarrierPolicy.STATUS)
-    session.lastExitCode = condIo.exitCode
+    recordStatus(session, condIo.exitCode, pipelineTransparent(condition))
     if (condIo.exitCode === 0) {
-      return executeBody(executeNode, body, session, stdin, callStack, jobTable, agentId)
+      return executeBody(
+        executeNode,
+        body,
+        session,
+        stdin,
+        callStack,
+        jobTable,
+        agentId,
+        handed,
+        decisions,
+      )
     }
   }
   if (elseBody !== null) {
-    return executeBody(executeNode, elseBody, session, stdin, callStack, jobTable, agentId)
+    return executeBody(
+      executeNode,
+      elseBody,
+      session,
+      stdin,
+      callStack,
+      jobTable,
+      agentId,
+      handed,
+      decisions,
+    )
   }
   return [null, new IOResult(), new ExecutionNode({ exitCode: 0 })]
 }
@@ -196,6 +240,8 @@ export async function handleFor(
   policies: Policies | null = null,
   jobTable: JobTable | null = null,
   agentId: string | null = null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
 ): Promise<Result> {
   let mergedIo = new IOResult()
   const allStdout: (ByteSource | null)[] = []
@@ -238,6 +284,8 @@ export async function handleFor(
           callStack,
           jobTable,
           agentId,
+          handed,
+          decisions,
         )
         allStdout.push(stdout)
         mergedIo = await mergedIo.merge(io)
@@ -282,6 +330,8 @@ async function conditionLoop(
   callStack: CallStack | null,
   jobTable: JobTable | null,
   agentId: string | null,
+  handed: HandOff | null,
+  decisions: Decisions | null,
   label: string,
   breakOnZero: boolean,
 ): Promise<Result> {
@@ -297,9 +347,19 @@ async function conditionLoop(
         hitLimit = false
         break
       }
-      const [condStdout, condIo] = await executeNode(condition, session, stdin, callStack)
+      const [condStdout, condIo] = await runStatement(
+        executeNode,
+        condition,
+        session,
+        stdin,
+        callStack,
+        jobTable,
+        agentId,
+        handed,
+        decisions,
+      )
       await applyBarrier(condStdout, condIo, BarrierPolicy.STATUS)
-      session.lastExitCode = condIo.exitCode
+      recordStatus(session, condIo.exitCode, pipelineTransparent(condition))
       if (breakOnZero && condIo.exitCode === 0) {
         hitLimit = false
         break
@@ -317,6 +377,8 @@ async function conditionLoop(
           callStack,
           jobTable,
           agentId,
+          handed,
+          decisions,
         )
         allStdout.push(stdout)
         mergedIo = await mergedIo.merge(io)
@@ -362,7 +424,7 @@ async function conditionLoop(
   }
 }
 
-export type CforEval = (expr: TSNodeLike | null, dflt: number) => Promise<number>
+export type CforEval = (exprs: readonly TSNodeLike[], dflt: number) => Promise<number>
 
 /**
  * Run bash's C-style for: ((init; cond; update)) around a body.
@@ -376,7 +438,7 @@ export type CforEval = (expr: TSNodeLike | null, dflt: number) => Promise<number
  */
 export async function handleCfor(
   executeNode: ExecuteNodeFn,
-  exprs: readonly (TSNodeLike | null)[],
+  exprs: readonly (readonly TSNodeLike[])[],
   body: readonly TSNodeLike[],
   evalExpr: CforEval,
   session: Session,
@@ -384,6 +446,8 @@ export async function handleCfor(
   callStack: CallStack | null = null,
   jobTable: JobTable | null = null,
   agentId: string | null = null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
 ): Promise<Result> {
   let mergedIo = new IOResult()
   const allStdout: (ByteSource | null)[] = []
@@ -393,13 +457,13 @@ export async function handleCfor(
 
   try {
     try {
-      await evalExpr(exprs[0] ?? null, 0)
+      await evalExpr(exprs[0] ?? [], 0)
       for (let i = 0; i < MAX_WHILE; i++) {
         if (session.shellOptions.noexec === true) {
           hitLimit = false
           break
         }
-        if ((await evalExpr(exprs[1] ?? null, 1)) === 0) {
+        if ((await evalExpr(exprs[1] ?? [], 1)) === 0) {
           hitLimit = false
           break
         }
@@ -412,6 +476,8 @@ export async function handleCfor(
             callStack,
             jobTable,
             agentId,
+            handed,
+            decisions,
           )
           allStdout.push(stdout)
           mergedIo = await mergedIo.merge(io)
@@ -431,12 +497,12 @@ export async function handleCfor(
             if (sig.levels > 1) {
               throw new ContinueSignal(chainNonNull(allStdout), mergedIo, sig.levels - 1)
             }
-            await evalExpr(exprs[2] ?? null, 0)
+            await evalExpr(exprs[2] ?? [], 0)
             continue
           }
           throw sig
         }
-        await evalExpr(exprs[2] ?? null, 0)
+        await evalExpr(exprs[2] ?? [], 0)
       }
     } catch (err) {
       // PolicyDenied is a header expression assigning a hidden name,
@@ -483,6 +549,8 @@ export function handleWhile(
   callStack: CallStack | null = null,
   jobTable: JobTable | null = null,
   agentId: string | null = null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
 ): Promise<Result> {
   return conditionLoop(
     executeNode,
@@ -493,6 +561,8 @@ export function handleWhile(
     callStack,
     jobTable,
     agentId,
+    handed,
+    decisions,
     'while',
     false,
   )
@@ -507,6 +577,8 @@ export function handleUntil(
   callStack: CallStack | null = null,
   jobTable: JobTable | null = null,
   agentId: string | null = null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
 ): Promise<Result> {
   return conditionLoop(
     executeNode,
@@ -517,6 +589,8 @@ export function handleUntil(
     callStack,
     jobTable,
     agentId,
+    handed,
+    decisions,
     'until',
     true,
   )
@@ -531,6 +605,8 @@ export async function handleCase(
   callStack: CallStack | null = null,
   jobTable: JobTable | null = null,
   agentId: string | null = null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
 ): Promise<Result> {
   const allStdout: ByteSource[] = []
   let mergedIo = new IOResult()
@@ -550,10 +626,12 @@ export async function handleCase(
         callStack,
         jobTable,
         agentId,
+        handed,
+        decisions,
       )
       stageStdin = null
       lastExec = execNode
-      const stdout = await finishStatement(rawStdout, io, session)
+      const stdout = await finishStatement(rawStdout, io, session, stmt)
       if (stdout !== null) allStdout.push(stdout)
       mergedIo = await mergedIo.merge(io)
     }
@@ -593,6 +671,8 @@ export async function handleSelect(
   policies: Policies | null = null,
   jobTable: JobTable | null = null,
   agentId: string | null = null,
+  handed: HandOff | null = null,
+  decisions: Decisions | null = null,
 ): Promise<Result> {
   let mergedIo = new IOResult()
   const allStdout: (ByteSource | null)[] = []
@@ -659,6 +739,8 @@ export async function handleSelect(
           callStack,
           jobTable,
           agentId,
+          handed,
+          decisions,
         )
         allStdout.push(stdout)
         mergedIo = await mergedIo.merge(io)
@@ -692,15 +774,4 @@ export async function handleSelect(
     session.stdinBuffer = prevBuffer
   }
   return collectLoopResult(allStdout, mergedIo, 'select')
-}
-
-export class ReturnSignal extends Error {
-  readonly exitCode: number
-  readonly stderr: Uint8Array
-  constructor(exitCode: number, stderr: Uint8Array = new Uint8Array()) {
-    super('return')
-    this.name = 'ReturnSignal'
-    this.exitCode = exitCode
-    this.stderr = stderr
-  }
 }

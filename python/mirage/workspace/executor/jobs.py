@@ -23,12 +23,15 @@ from mirage.commands.errors import CommandTimeoutError
 from mirage.io import IOResult
 from mirage.io.types import ByteSource
 from mirage.ops.types import SessionView
+from mirage.policy.decisions import Decisions
+from mirage.policy.types import HandOff
 from mirage.shell.call_stack import CallStack
 from mirage.shell.console import Channel, JobConsole
-from mirage.shell.errors import ExitSignal
+from mirage.shell.errors import ExitSignal, ReturnSignal
 from mirage.shell.helpers import get_text, is_backgrounded
 from mirage.shell.job_table import Job, JobStatus, JobTable
 from mirage.workspace.executor.builtins.getopt import scan_options
+from mirage.workspace.node.occurrence import occurrence_of
 from mirage.workspace.session import (Session, reset_current_session,
                                       set_current_session)
 from mirage.workspace.types import ExecutionNode
@@ -68,9 +71,28 @@ async def handle_background(
     agent_id: str | None,
     stdin: ByteSource | None = None,
     call_stack=None,
+    handed: HandOff | None = None,
+    decisions: Decisions | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
-    """Run left side in background."""
+    """Run left side in background.
+
+    ``handed`` and ``decisions`` are the line's hand-off and the ledger
+    it lives in. The claims the line's pass made for the commands inside
+    the job are copied onto one of the job's own before the job starts
+    (``Decisions.split``): its gates run after the line has returned,
+    and its grants have to stay reserved through the line's end
+    whichever way the line ends, a release for a question left waiting
+    included, and through the launch of the same job again by a loop.
+    The job's whole subtree runs on that hand-off, the lines it
+    evaluates included (the walker binds it into their door), and the
+    job revokes it when it ends, which spends what no other hand-off
+    still holds.
+    """
     bg_session = session.fork()
+    bg_call_stack = call_stack.fork() if call_stack is not None else None
+    job_handed = (decisions.split(session.session_id, handed,
+                                  occurrence_of(left, handed))
+                  if handed is not None and decisions is not None else None)
 
     async def _run_bg(job: Job) -> tuple[IOResult, ExecutionNode]:
         # Background jobs don't receive stdin, matching real shell
@@ -95,8 +117,9 @@ async def handle_background(
                 stdout, io, exec_node = await execute_node(left,
                                                            bg_session,
                                                            None,
-                                                           call_stack,
-                                                           sink=console)
+                                                           bg_call_stack,
+                                                           sink=console,
+                                                           handed=job_handed)
             except CommandTimeoutError as exc:
                 msg = (str(exc) + "\n").encode()
                 stdout = b""
@@ -113,6 +136,13 @@ async def handle_background(
                 exec_node = ExecutionNode(command=cmd_str_inner,
                                           stderr=sig.stderr,
                                           exit_code=sig.contained_code)
+            except ReturnSignal as sig:
+                stdout = None
+                io = IOResult(exit_code=sig.exit_code,
+                              stderr=sig.stderr or None)
+                exec_node = ExecutionNode(command=cmd_str_inner,
+                                          stderr=sig.stderr,
+                                          exit_code=sig.exit_code)
             # Drain inside the rebind: pumping the stream can still run
             # ops that read the ambient session.
             await pump(console, Channel.STDOUT, stdout)
@@ -122,16 +152,27 @@ async def handle_background(
             return io, exec_node
         finally:
             reset_current_session(token)
+            if job_handed is not None and decisions is not None:
+                await decisions.revoke(session.session_id, job_handed)
 
     cmd_str = get_text(left) if hasattr(left, 'text') else str(left)
 
     # Non-interactive bash announces nothing on launch ("[1] <pid>" is
     # interactive-only); the job stays discoverable via $! and `jobs`.
-    job = job_table.submit(command=cmd_str,
-                           run=_run_bg,
-                           cwd=bg_session.cwd,
-                           agent=agent_id or "",
-                           session_id=session.session_id)
+    try:
+        job = job_table.submit(command=cmd_str,
+                               run=_run_bg,
+                               cwd=bg_session.cwd,
+                               agent=agent_id or "",
+                               session_id=session.session_id)
+    except Exception:
+        # A submission that fails (a console the table cannot build)
+        # starts no runner, so nothing would ever revoke the job's
+        # hand-off: its grants would stay reserved for good, neither
+        # spent nor on offer to any later line.
+        if job_handed is not None and decisions is not None:
+            await decisions.revoke(session.session_id, job_handed)
+        raise
     session.last_bg_job_id = job.id
 
     if right is None:
@@ -159,6 +200,8 @@ async def run_statement(
     call_stack: CallStack | None,
     job_table: JobTable | None,
     agent_id: str | None,
+    handed: HandOff | None = None,
+    decisions: Decisions | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     """Run one statement of a compound body, as a job when it ends in ``&``.
 
@@ -180,6 +223,8 @@ async def run_statement(
             the caller wired no job plane, which is a programming
             error once a ``&`` shows up, not a reason to run inline.
         agent_id (str | None): agent identity for job bookkeeping.
+        handed (HandOff | None): approval claims inherited by a job.
+        decisions (Decisions | None): ledger that holds those claims.
     """
     if not is_backgrounded(node):
         return await execute_node(node, session, stdin, call_stack)
@@ -187,7 +232,8 @@ async def run_statement(
         raise RuntimeError(
             f"`{get_text(node)} &` needs a job table; none was wired")
     return await handle_background(execute_node, node, None, session,
-                                   job_table, agent_id, stdin, call_stack)
+                                   job_table, agent_id, stdin, call_stack,
+                                   handed, decisions)
 
 
 _WAIT_USAGE = "wait: usage: wait [-fn] [-p var] [id ...]"

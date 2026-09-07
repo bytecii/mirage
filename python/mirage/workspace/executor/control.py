@@ -22,15 +22,18 @@ from mirage.io.async_line_iterator import AsyncLineIterator
 from mirage.io.stream import async_chain
 from mirage.io.types import ByteSource
 from mirage.policy import Policies, PolicyDenied
+from mirage.policy.decisions import Decisions
+from mirage.policy.types import HandOff
 from mirage.shell.barrier import BarrierPolicy, apply_barrier
 from mirage.shell.call_stack import CallStack
 from mirage.shell.constants import ERREXIT_EXEMPT_TYPES
 from mirage.shell.errors import ArithError, ReadonlyError
 from mirage.shell.job_table import JobTable
+from mirage.shell.node_kind import pipeline_transparent
 from mirage.types import PathSpec, word_text
 from mirage.utils.fnmatch import fnmatch
 from mirage.workspace.executor.jobs import run_statement
-from mirage.workspace.executor.statement import finish_statement
+from mirage.workspace.executor.statement import finish_statement, record_status
 from mirage.workspace.session import Session
 from mirage.workspace.session.state import seed_var, session_view
 from mirage.workspace.types import ExecutionNode
@@ -57,6 +60,8 @@ async def _execute_body(
     call_stack: CallStack | None,
     job_table: JobTable | None,
     agent_id: str | None,
+    handed: HandOff | None,
+    decisions: Decisions | None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     """Execute a list of body commands sequentially.
 
@@ -71,8 +76,12 @@ async def _execute_body(
         try:
             stdout, io, last_exec = await run_statement(
                 execute_node, cmd, session, stdin, call_stack, job_table,
-                agent_id)
+                agent_id, handed, decisions)
         except BreakSignal as sig:
+            # The control builtin is a statement the loop leaves through
+            # rather than closes, so its own status (0) is recorded here:
+            # bash leaves `${PIPESTATUS[@]}` at `0` after `break`.
+            record_status(session, 0)
             if sig.stdout is not None:
                 all_stdout.append(sig.stdout)
             merged_io = await merged_io.merge(sig.io)
@@ -82,6 +91,7 @@ async def _execute_body(
                                          for s in all_stdout) else None
             raise BreakSignal(stdout=combined, io=merged_io, levels=sig.levels)
         except ContinueSignal as sig:
+            record_status(session, 0)
             if sig.stdout is not None:
                 all_stdout.append(sig.stdout)
             merged_io = await merged_io.merge(sig.io)
@@ -92,7 +102,7 @@ async def _execute_body(
             raise ContinueSignal(stdout=combined,
                                  io=merged_io,
                                  levels=sig.levels)
-        stdout = await finish_statement(stdout, io, session)
+        stdout = await finish_statement(stdout, io, session, cmd)
         all_stdout.append(stdout)
         merged_io = await merged_io.merge(io)
         if (io.exit_code != 0 and session.shell_options.get("errexit")
@@ -121,13 +131,6 @@ class ContinueSignal(Exception):
         self.levels = levels
 
 
-class ReturnSignal(Exception):
-
-    def __init__(self, exit_code: int = 0, stderr: bytes = b"") -> None:
-        self.exit_code = exit_code
-        self.stderr = stderr
-
-
 def _chain_streams(all_stdout: list[ByteSource | None]) -> ByteSource | None:
     non_empty = [s for s in all_stdout if s is not None]
     return async_chain(*non_empty) if non_empty else None
@@ -154,18 +157,27 @@ async def handle_if(
     call_stack: CallStack | None = None,
     job_table: JobTable | None = None,
     agent_id: str | None = None,
+    handed: HandOff | None = None,
+    decisions: Decisions | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     for condition, body in branches:
-        cond_stdout, cond_io, _ = await execute_node(condition, session, stdin,
-                                                     call_stack)
+        cond_stdout, cond_io, _ = await run_statement(execute_node, condition,
+                                                      session, stdin,
+                                                      call_stack, job_table,
+                                                      agent_id, handed,
+                                                      decisions)
         await apply_barrier(cond_stdout, cond_io, BarrierPolicy.STATUS)
-        session.last_exit_code = cond_io.exit_code
+        record_status(session,
+                      cond_io.exit_code,
+                      transparent=pipeline_transparent(condition))
         if cond_io.exit_code == 0:
             return await _execute_body(execute_node, body, session, stdin,
-                                       call_stack, job_table, agent_id)
+                                       call_stack, job_table, agent_id, handed,
+                                       decisions)
     if else_body is not None:
         return await _execute_body(execute_node, else_body, session, stdin,
-                                   call_stack, job_table, agent_id)
+                                   call_stack, job_table, agent_id, handed,
+                                   decisions)
     return None, IOResult(), ExecutionNode(exit_code=0)
 
 
@@ -185,6 +197,8 @@ async def handle_for(
     policies: Policies | None = None,
     job_table: JobTable | None = None,
     agent_id: str | None = None,
+    handed: HandOff | None = None,
+    decisions: Decisions | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     merged_io = IOResult()
     all_stdout: list[ByteSource | None] = []
@@ -222,7 +236,8 @@ async def handle_for(
             try:
                 stdout, io, _ = await _execute_body(execute_node, body,
                                                     session, stdin, call_stack,
-                                                    job_table, agent_id)
+                                                    job_table, agent_id,
+                                                    handed, decisions)
             except BreakSignal as sig:
                 if sig.stdout is not None:
                     all_stdout.append(sig.stdout)
@@ -263,6 +278,8 @@ async def _condition_loop(
     break_on_zero: bool,
     job_table: JobTable | None = None,
     agent_id: str | None = None,
+    handed: HandOff | None = None,
+    decisions: Decisions | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     merged_io = IOResult()
     all_stdout: list[ByteSource | None] = []
@@ -276,10 +293,13 @@ async def _condition_loop(
             if session.shell_options.get("noexec"):
                 hit_limit = False
                 break
-            cond_stdout, cond_io, _ = await execute_node(
-                condition, session, stdin, call_stack)
+            cond_stdout, cond_io, _ = await run_statement(
+                execute_node, condition, session, stdin, call_stack, job_table,
+                agent_id, handed, decisions)
             await apply_barrier(cond_stdout, cond_io, BarrierPolicy.STATUS)
-            session.last_exit_code = cond_io.exit_code
+            record_status(session,
+                          cond_io.exit_code,
+                          transparent=pipeline_transparent(condition))
             if break_on_zero and cond_io.exit_code == 0:
                 hit_limit = False
                 break
@@ -289,7 +309,8 @@ async def _condition_loop(
             try:
                 stdout, io, _ = await _execute_body(execute_node, body,
                                                     session, stdin, call_stack,
-                                                    job_table, agent_id)
+                                                    job_table, agent_id,
+                                                    handed, decisions)
             except BreakSignal as sig:
                 hit_limit = False
                 if sig.stdout is not None:
@@ -326,7 +347,7 @@ async def _condition_loop(
 
 async def handle_cfor(
     execute_node: Callable[..., Any],
-    exprs: list[tree_sitter.Node | None],
+    exprs: list[list[tree_sitter.Node]],
     body: list[tree_sitter.Node],
     eval_expr: Callable[..., Any],
     session: Session,
@@ -334,13 +355,16 @@ async def handle_cfor(
     call_stack: CallStack | None = None,
     job_table: JobTable | None = None,
     agent_id: str | None = None,
+    handed: HandOff | None = None,
+    decisions: Decisions | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     """Run bash's C-style for: ((init; cond; update)) around a body.
 
     Args:
         execute_node (Callable): recursive node executor.
-        exprs (list[tree_sitter.Node | None]): init, condition and
-            update expression slots; any may be None (`for ((;;))`).
+        exprs (list[list[tree_sitter.Node]]): init, condition and
+            update expression slots, each the comma-separated
+            expressions it holds; any may be empty (`for ((;;))`).
         body (list[tree_sitter.Node]): do_group statements.
         eval_expr (Callable): async evaluator taking (expr, default)
             and returning the expression's integer value, or the
@@ -354,6 +378,8 @@ async def handle_cfor(
         job_table (JobTable | None): the job plane for a body statement
             ending in ``&``.
         agent_id (str | None): agent identity for job bookkeeping.
+        handed (HandOff | None): approval claims inherited by a job.
+        decisions (Decisions | None): ledger that holds those claims.
     """
     merged_io = IOResult()
     all_stdout: list[ByteSource | None] = []
@@ -375,7 +401,7 @@ async def handle_cfor(
                 try:
                     stdout, io, _ = await _execute_body(
                         execute_node, body, session, stdin, call_stack,
-                        job_table, agent_id)
+                        job_table, agent_id, handed, decisions)
                 except BreakSignal as sig:
                     hit_limit = False
                     if sig.stdout is not None:
@@ -437,6 +463,8 @@ async def handle_while(
     call_stack: CallStack | None = None,
     job_table: JobTable | None = None,
     agent_id: str | None = None,
+    handed: HandOff | None = None,
+    decisions: Decisions | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     return await _condition_loop(execute_node,
                                  condition,
@@ -447,7 +475,9 @@ async def handle_while(
                                  "while",
                                  break_on_zero=False,
                                  job_table=job_table,
-                                 agent_id=agent_id)
+                                 agent_id=agent_id,
+                                 handed=handed,
+                                 decisions=decisions)
 
 
 async def handle_until(
@@ -459,6 +489,8 @@ async def handle_until(
     call_stack: CallStack | None = None,
     job_table: JobTable | None = None,
     agent_id: str | None = None,
+    handed: HandOff | None = None,
+    decisions: Decisions | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     return await _condition_loop(execute_node,
                                  condition,
@@ -469,7 +501,9 @@ async def handle_until(
                                  "until",
                                  break_on_zero=True,
                                  job_table=job_table,
-                                 agent_id=agent_id)
+                                 agent_id=agent_id,
+                                 handed=handed,
+                                 decisions=decisions)
 
 
 async def handle_case(
@@ -481,6 +515,8 @@ async def handle_case(
     call_stack: CallStack | None = None,
     job_table: JobTable | None = None,
     agent_id: str | None = None,
+    handed: HandOff | None = None,
+    decisions: Decisions | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     all_stdout: list[ByteSource] = []
     merged_io = IOResult()
@@ -494,9 +530,9 @@ async def handle_case(
         for stmt in body:
             stdout, io, last_exec = await run_statement(
                 execute_node, stmt, session, stdin, call_stack, job_table,
-                agent_id)
+                agent_id, handed, decisions)
             stdin = None
-            stdout = await finish_statement(stdout, io, session)
+            stdout = await finish_statement(stdout, io, session, stmt)
             if stdout is not None:
                 all_stdout.append(stdout)
             merged_io = await merged_io.merge(io)
@@ -527,6 +563,8 @@ async def handle_select(
     policies: Policies | None = None,
     job_table: JobTable | None = None,
     agent_id: str | None = None,
+    handed: HandOff | None = None,
+    decisions: Decisions | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     """Run bash's select loop: menu to stderr, choice read from stdin.
 
@@ -547,6 +585,8 @@ async def handle_select(
         job_table (JobTable | None): the job plane for a body statement
             ending in ``&``.
         agent_id (str | None): agent identity for job bookkeeping.
+        handed (HandOff | None): approval claims inherited by a job.
+        decisions (Decisions | None): ledger that holds those claims.
     """
     merged_io = IOResult()
     all_stdout: list[ByteSource | None] = []
@@ -603,7 +643,8 @@ async def handle_select(
             try:
                 stdout, io, _ = await _execute_body(execute_node, body,
                                                     session, None, call_stack,
-                                                    job_table, agent_id)
+                                                    job_table, agent_id,
+                                                    handed, decisions)
             except BreakSignal as sig:
                 if sig.stdout is not None:
                     all_stdout.append(sig.stdout)
