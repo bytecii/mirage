@@ -72,22 +72,3 @@ Sandbox creation and bridge lifetime belong to the embedding application.
   both runaway and legitimate long-running commands. See
   [Resource limits](/typescript/runtime/sandbox#resource-limits).
 </Warning>
-
-## Live transport check
-
-From a source checkout with `E2B_API_KEY` in the environment or
-`.env.development`, install the Python dev dependencies and `e2b`/`ssh`
-extras, install the TypeScript workspace dependencies, and build core. Then
-run from the repository root:
-
-```bash
-PYTHONPATH=python python/.venv/bin/python -m integ.runtime.e2b
-```
-
-This opt-in check creates a paid sandbox with a 20-minute maximum lifetime
-and deletes it in `finally`. It exercises both languages: native E2B stdin,
-SSH over WebSocket, concurrent commands, shared files over SFTP, and cache
-invalidation after remote writes. A small real MCP server tests multiple
-stdio requests on the reused SSH connection; it is a transport fixture,
-not the Toolathlon Kubernetes server or a benchmark grade. SSH provisioning
-and the local TCP bridge stay in the test harness, outside the runtime.
