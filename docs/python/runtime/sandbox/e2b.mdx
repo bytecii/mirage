@@ -52,18 +52,8 @@ E2B settings.
 
 ## Standard input
 
-Piped input is sent as bytes to the command's native stdin, followed by an
-explicit EOF. Empty input also sends EOF; a line without piped input starts
-with stdin closed. This requires E2B SDK 2.35.0 or newer and a template
-whose envd supports `CloseStdin`; rebuild an older template if the SDK reports
-that closing stdin is unsupported. Input is buffered by the workspace before
-execution, and stdout/stderr retain the SDK's text encoding.
-
-This is the finite command interface. For an MCP server, keep a persistent
-bidirectional stdio connection open through SSH instead. E2B documents an
-[SSH over WebSocket setup](https://docs.e2b.dev/sandbox/ssh-access); a local
-TCP bridge allows Mirage's existing SSH host/port configuration to use it.
-Sandbox creation and bridge lifetime belong to the embedding application.
+Piped input goes directly to stdin, followed by EOF. Commands without input
+start with stdin closed.
 
 <Warning>
   Cancellation attempts to kill the foreground E2B command and disconnects
