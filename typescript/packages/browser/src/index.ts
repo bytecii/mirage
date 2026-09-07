@@ -340,3 +340,6 @@ export {
 } from '@struktoai/mirage-core/workspace/workspace/types'
 export { Ops } from '@struktoai/mirage-core/ops/ops'
 export { Namespace } from '@struktoai/mirage-core/workspace/mount/namespace/namespace'
+
+export { WandbResource } from '@struktoai/mirage-core/resource/wandb/wandb'
+export { normalizeWandbConfig, type WandbConfig } from '@struktoai/mirage-core/core/wandb/config'

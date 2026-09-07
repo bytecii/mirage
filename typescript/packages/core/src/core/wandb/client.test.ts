@@ -1,0 +1,104 @@
+import { describe, expect, it, vi } from 'vitest'
+import { WandbClient } from './client.ts'
+import { normalizeWandbConfig } from './config.ts'
+import { WandbAPIError } from './errors.ts'
+function connection(cursor: string | null, more: boolean) {
+  return {
+    models: {
+      edges: [{ node: { name: 'one' } }],
+      pageInfo: { endCursor: cursor, hasNextPage: more },
+    },
+  }
+}
+function client(options: Record<string, unknown> = {}) {
+  return new WandbClient(normalizeWandbConfig({ entities: ['lab'], ...options }))
+}
+describe('W&B client', () => {
+  it('paginates independently per call', async () => {
+    const c = client({ page_size: 1 })
+    const request = vi
+      .spyOn(c, 'request')
+      .mockResolvedValueOnce(connection('next', true))
+      .mockResolvedValueOnce(connection(null, false))
+      .mockResolvedValueOnce(connection(null, false))
+    expect(await c.projects('lab')).toHaveLength(2)
+    expect(await c.projects('other')).toHaveLength(1)
+    expect(request.mock.calls.map((call) => call[1].cursor)).toEqual([null, 'next', null])
+  })
+  it('refuses a repeated cursor', async () => {
+    const c = client()
+    const request = vi.spyOn(c, 'request').mockResolvedValue(connection('same', true))
+    await expect(c.projects('lab')).rejects.toThrow('did not advance')
+    expect(request).toHaveBeenCalledTimes(2)
+  })
+  it('fails loudly when the page budget is exhausted', async () => {
+    const c = client({ max_pages: 1 })
+    vi.spyOn(c, 'request').mockResolvedValue(connection('next', true))
+    await expect(c.projects('lab')).rejects.toThrow('limit exceeded')
+  })
+  it('scans past an empty step window and preserves missing metrics', async () => {
+    const c = client({ page_size: 2 })
+    const rows = [
+      { _step: 0, train_step: 100, score: 0.8 },
+      { _step: 5, loss: null },
+    ]
+    const request = vi
+      .spyOn(c, 'request')
+      .mockResolvedValueOnce({ project: { run: { historyKeys: { lastStep: 5 } } } })
+      .mockResolvedValueOnce({ project: { run: { history: [JSON.stringify(rows[0])] } } })
+      .mockResolvedValueOnce({ project: { run: { history: [] } } })
+      .mockResolvedValueOnce({ project: { run: { history: [JSON.stringify(rows[1])] } } })
+    const received = []
+    for await (const row of c.history({ entity: 'lab', project: 'p', run: 'id' }))
+      received.push(row)
+    expect(received).toEqual(rows)
+    expect(request.mock.calls.slice(1).map((call) => call[1].minStep)).toEqual([0, 2, 4])
+  })
+  it('fails on GraphQL errors without exposing response secrets', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(
+            JSON.stringify({ data: { models: null }, errors: [{ message: 'secret-value' }] }),
+          ),
+        ),
+    )
+    try {
+      await expect(client().projects('lab')).rejects.toEqual(
+        new WandbAPIError('W&B GraphQL request failed'),
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+it.each([
+  [1, 0],
+  [1, 3],
+  [3, 3],
+])('preserves a snapshot with page size %i and last step %i', async (size, last) => {
+  const c = client({ page_size: size })
+  const rows = Array.from({ length: last + 2 }, (_, _step) => ({ _step }))
+  vi.spyOn(c, 'request').mockImplementation((query, variables) => {
+    if (query.includes('query HistoryKeys'))
+      return Promise.resolve({ project: { run: { historyKeys: { lastStep: last } } } })
+    const start = variables.minStep as number,
+      stop = variables.maxStep as number
+    expect(stop - start).toBeGreaterThanOrEqual(2)
+    return Promise.resolve({
+      project: {
+        run: {
+          history: rows
+            .filter((row) => start <= row._step && row._step < stop)
+            .map((row) => JSON.stringify(row)),
+        },
+      },
+    })
+  })
+  const result = []
+  for await (const row of c.history({ entity: 'lab', project: 'p', run: 'id' })) result.push(row)
+  expect(result).toEqual(rows.slice(0, -1))
+})
