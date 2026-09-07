@@ -23,8 +23,8 @@ class E2BConfig(SandboxConfig):
 
     Args:
         sandbox_id (str): id of a sandbox you created (`e2b sandbox
-            spawn` or the SDK), booted from a template with fuse3 and
-            mirage installed.
+            spawn` or the SDK), with workspace files visible at matching
+            paths when commands need them.
         api_key (str | None): E2B credential; None reads E2B_API_KEY.
     """
 

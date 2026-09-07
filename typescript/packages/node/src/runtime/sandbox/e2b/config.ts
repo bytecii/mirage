@@ -18,7 +18,7 @@ import type { SandboxConfig } from '@struktoai/mirage-core/runtime/sandbox/confi
 export interface E2BConfig extends SandboxConfig {
   /**
    * Id of a sandbox you created (`e2b sandbox spawn` or the SDK),
-   * booted from a template with fuse3 and mirage installed.
+   * with workspace files visible at matching paths when commands need them.
    */
   sandboxId: string
   /** E2B credential; absent reads E2B_API_KEY. */

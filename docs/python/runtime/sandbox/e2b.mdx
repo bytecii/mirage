@@ -5,8 +5,10 @@ icon: /images/e2b-logo.svg
 ---
 
 `E2BRuntime` connects to a live [E2B](https://e2b.dev) sandbox by id. Create
-it with E2B's CLI or SDK from a template carrying Mirage and `fuse3`, then
-provision the workspace inside it. Mirage only connects and executes; it never
+it with E2B's CLI or SDK, then expose any shared workspace files at matching
+paths inside it. Using S3 through FUSE requires Mirage and `fuse3` in the
+template; using the sandbox's native files through SSH/SFTP does not. Mirage
+only connects and executes; it never
 creates, starts, stops, or deletes the sandbox.
 
 See the [Sandbox overview](/python/runtime/sandbox) for the shared image and
@@ -32,7 +34,7 @@ runtimes:
 
 `api_key` is optional when `E2B_API_KEY` is set. The runtime connects on the
 first captured line and reuses the sandbox client until the workspace closes.
-Closing the workspace releases the client and leaves the sandbox running.
+Closing the workspace leaves the sandbox running.
 
 The same configuration in application code is:
 
@@ -48,9 +50,44 @@ runtime = E2BRuntime(
 Templates, CPU and memory sizing, networking, and lifecycle controls remain
 E2B settings.
 
+## Standard input
+
+Piped input is sent as bytes to the command's native stdin, followed by an
+explicit EOF. Empty input also sends EOF; a line without piped input starts
+with stdin closed. This requires E2B SDK 2.35.0 or newer and a template
+whose envd supports `CloseStdin`; rebuild an older template if the SDK reports
+that closing stdin is unsupported. Input is buffered by the workspace before
+execution, and stdout/stderr retain the SDK's text encoding.
+
+This is the finite command interface. For an MCP server, keep a persistent
+bidirectional stdio connection open through SSH instead. E2B documents an
+[SSH over WebSocket setup](https://docs.e2b.dev/sandbox/ssh-access); a local
+TCP bridge allows Mirage's existing SSH host/port configuration to use it.
+Sandbox creation and bridge lifetime belong to the embedding application.
+
 <Warning>
-  Mirage timeouts stop waiting rather than terminating the remote process. E2B
-  also applies its SDK command timeout, currently 60 seconds by default, to
+  Cancellation attempts to kill the foreground E2B command and disconnects
+  its event stream. It does not guarantee termination of every descendant
+  process. E2B also applies its SDK command timeout, currently 60 seconds by default, to
   both runaway and legitimate long-running commands. See
   [Resource limits](/python/runtime/sandbox#resource-limits).
 </Warning>
+
+## Live transport check
+
+From a source checkout with `E2B_API_KEY` in the environment or
+`.env.development`, install the Python dev dependencies and `e2b`/`ssh`
+extras, install the TypeScript workspace dependencies, and build core. Then
+run from the repository root:
+
+```bash
+PYTHONPATH=python python/.venv/bin/python -m integ.runtime.e2b
+```
+
+This opt-in check creates a paid sandbox with a 20-minute maximum lifetime
+and deletes it in `finally`. It exercises both languages: native E2B stdin,
+SSH over WebSocket, concurrent commands, shared files over SFTP, and cache
+invalidation after remote writes. A small real MCP server tests multiple
+stdio requests on the reused SSH connection; it is a transport fixture,
+not the Toolathlon Kubernetes server or a benchmark grade. SSH provisioning
+and the local TCP bridge stay in the test harness, outside the runtime.

@@ -13,7 +13,6 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { RemoteSandbox } from '@struktoai/mirage-core/runtime/sandbox/base'
-import { stdinPath, stdinRedirect } from '@struktoai/mirage-core/runtime/sandbox/constants'
 import { registerRuntime } from '@struktoai/mirage-core/runtime/table'
 import type { RunResult, RuntimeOptions } from '@struktoai/mirage-core/runtime/types'
 import { loadOptionalPeer } from '@struktoai/mirage-core/utils/optional_peer'
@@ -31,8 +30,8 @@ const ENC = new TextEncoder()
  * You create the sandbox yourself (`e2b sandbox spawn` or the SDK);
  * mirage only connects by `sandboxId` and execs lines. `apiKey` falls
  * back to E2B_API_KEY. E2B's exec reports stdout and stderr
- * separately, so both stream back real; it takes no stdin, so piped
- * bytes are uploaded and redirected in.
+ * separately. Piped bytes use native stdin followed by an explicit
+ * EOF; no input closes stdin when the command starts.
  */
 export class E2BRuntime extends RemoteSandbox<E2BConfig> {
   readonly name = 'e2b'
@@ -76,32 +75,46 @@ export class E2BRuntime extends RemoteSandbox<E2BConfig> {
   ): Promise<RunResult> {
     if (this.sandbox === null) throw new Error('e2b sandbox not connected')
     const sdk = await this.ensureSdk()
-    let command = line
-    if (stdin !== null) {
-      const path = stdinPath()
-      await this.upload(path, stdin)
-      command = stdinRedirect(line, path)
-    }
+    const handle = await this.sandbox.commands.run(line, {
+      envs: env,
+      cwd,
+      background: true,
+      stdin: stdin !== null,
+    })
     let result: Pick<CommandResult, 'stdout' | 'stderr' | 'exitCode'>
     try {
-      result = await this.sandbox.commands.run(command, { envs: env, cwd })
+      try {
+        if (stdin !== null) {
+          if (stdin.byteLength > 0) await handle.sendStdin(stdin)
+          await handle.closeStdin()
+        }
+      } catch (error) {
+        // The command may exit before the input RPC arrives. Wait for its
+        // real exit status rather than reporting the missing process as I/O.
+        // Process RPCs still throw this SDK class; no process-specific replacement exists.
+        // eslint-disable-next-line @typescript-eslint/no-deprecated
+        if (!(error instanceof sdk.NotFoundError)) throw error
+      }
+      result = await handle.wait()
     } catch (error) {
-      if (!(error instanceof sdk.CommandExitError)) throw error
-      result = error
+      if (error instanceof sdk.CommandExitError) {
+        result = error
+      } else {
+        try {
+          await handle.kill()
+        } catch (cleanupError) {
+          console.warn('Failed to stop the E2B command', cleanupError)
+        }
+        throw error
+      }
+    } finally {
+      await handle.disconnect()
     }
     return {
       stdout: ENC.encode(result.stdout),
       stderr: ENC.encode(result.stderr),
       exitCode: result.exitCode,
     }
-  }
-
-  private async upload(path: string, data: Uint8Array): Promise<void> {
-    if (this.sandbox === null) throw new Error('e2b sandbox not connected')
-    const slash = path.lastIndexOf('/')
-    const parent = slash > 0 ? path.slice(0, slash) : ''
-    if (parent !== '') await this.sandbox.files.makeDir(parent)
-    await this.sandbox.files.write(path, new Blob([data]))
   }
 }
 
