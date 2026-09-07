@@ -45,6 +45,12 @@ runtime = E2BRuntime(
 )
 ```
 
+The runtime uses E2B's `AsyncSandbox`, with independent stdin and output
+for concurrent commands.
+
+Use the native E2B SDK runtime for E2B commands. SSH remains useful for
+general remote hosts and persistent MCP stdio connections.
+
 Templates, CPU and memory sizing, networking, and lifecycle controls remain
 E2B settings.
 
