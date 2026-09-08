@@ -295,6 +295,7 @@ export function versionRequest(
  * Inject --help / --version and short-circuit them before the handler.
  * Mirrors GNU coreutils: every registered command accepts both flags,
  * prints to stdout, and exits 0 without running the command body.
+ * A command declaring its own --version handles that flag itself.
  */
 function withHelpSupport(
   name: string,
@@ -321,7 +322,7 @@ function withHelpSupport(
     if (opts.flags.help === true) {
       return [HELP_ENC.encode(helpText), new IOResult()]
     }
-    if (opts.flags.version === true) {
+    if (!hasVersion && opts.flags.version === true) {
       return [HELP_ENC.encode(versionText), new IOResult()]
     }
     return fn(accessor, paths, texts, opts)

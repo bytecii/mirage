@@ -23,6 +23,7 @@ import { resolveScript } from '../utils/operands.ts'
 import { FlagView } from '../../spec/types.ts'
 import {
   moduleSource,
+  runtimeVersion,
   PAYLOAD_ARGV0,
   STDIN_ARGV0,
   STDIN_OPERAND,
@@ -73,6 +74,11 @@ async function pythonCommand(
     ]
   }
 
+  const fl = new FlagView(opts.flags, specOf('python3'))
+  if (fl.asBool('version')) {
+    return runtimeVersion('python3', opts.runtime, opts.env ?? {}, opts.signal, opts.timeoutSeconds)
+  }
+
   if (opts.dispatch === undefined) {
     return [
       null,
@@ -83,7 +89,6 @@ async function pythonCommand(
     ]
   }
 
-  const fl = new FlagView(opts.flags, specOf('python3'))
   const code = fl.asStr('c') ?? null
   const moduleName = fl.asStr('m') ?? null
   const hasCode = code !== null

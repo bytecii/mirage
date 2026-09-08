@@ -14,7 +14,8 @@
 
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.general.interpreter import (resolve_source,
-                                                         run_code)
+                                                         run_code,
+                                                         runtime_version)
 from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
@@ -30,6 +31,9 @@ async def _js(
     opts: CommandOpts,
 ) -> CommandOutput:
     fl = FlagView(opts.flags, spec=SPECS["js"])
+    if fl.as_bool("version"):
+        return await runtime_version("js", opts.runtime, opts.env,
+                                     opts.runtime_unavailable)
     error, prepared = await resolve_source(
         "js",
         paths,

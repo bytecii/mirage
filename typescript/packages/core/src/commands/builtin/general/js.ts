@@ -21,7 +21,7 @@ import { LanguageRuntime } from '../../../runtime/language.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { resolveScript } from '../utils/operands.ts'
 import { FlagView } from '../../spec/types.ts'
-import { STDIN_OPERAND } from './interpreter.ts'
+import { runtimeVersion, STDIN_OPERAND } from './interpreter.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder('utf-8', { fatal: false })
@@ -42,6 +42,11 @@ async function jsCommand(
     ]
   }
 
+  const fl = new FlagView(opts.flags, specOf('js'))
+  if (fl.asBool('version')) {
+    return runtimeVersion('js', opts.runtime, opts.env ?? {}, opts.signal, opts.timeoutSeconds)
+  }
+
   if (opts.dispatch === undefined) {
     return [
       null,
@@ -52,7 +57,6 @@ async function jsCommand(
     ]
   }
 
-  const fl = new FlagView(opts.flags, specOf('js'))
   const code = fl.asStr('e') ?? null
   const hasCode = code !== null
   const module = fl.asBool('module')

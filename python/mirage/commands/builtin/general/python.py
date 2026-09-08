@@ -17,7 +17,8 @@ from typing import Any
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.general.interpreter import (CPYTHON_ARGV0,
                                                          resolve_source,
-                                                         run_code)
+                                                         run_code,
+                                                         runtime_version)
 from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
@@ -33,6 +34,9 @@ async def _python3(
     opts: CommandOpts,
 ) -> CommandOutput:
     fl = FlagView(opts.flags, spec=SPECS["python3"])
+    if fl.as_bool("version"):
+        return await runtime_version("python3", opts.runtime, opts.env,
+                                     opts.runtime_unavailable)
     error, prepared = await resolve_source(
         "python3",
         paths,

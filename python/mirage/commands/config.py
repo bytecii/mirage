@@ -251,11 +251,13 @@ def _with_help_support(
 
     Mirrors GNU coreutils: every registered command accepts both flags,
     prints to stdout, and exits 0 without running the command body.
+    A command declaring its own --version handles that flag itself.
     """
     extras: list[Option] = []
     if not any(o.long == "--help" for o in spec.options):
         extras.append(HELP_OPTION)
-    if not any(o.long == "--version" for o in spec.options):
+    has_version = any(o.long == "--version" for o in spec.options)
+    if not has_version:
         extras.append(_VERSION_OPTION)
     new_spec = (spec if not extras else replace(
         spec, options=spec.options + tuple(extras)))
@@ -267,7 +269,7 @@ def _with_help_support(
                       texts: list[str], opts: CommandOpts) -> CommandFnResult:
         if opts.flags.get("help") is True:
             return yield_bytes(help_text), IOResult()
-        if opts.flags.get("version") is True:
+        if not has_version and opts.flags.get("version") is True:
             return yield_bytes(version_text), IOResult()
         return await fn(accessor, paths, texts, opts)
 
