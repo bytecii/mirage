@@ -646,6 +646,19 @@ async def test_unknown_size_truncate_through_a_link_drops_the_targets_cache():
 
 
 @pytest.mark.asyncio
+async def test_unknown_size_write_refreshes_the_writing_handle(sizeless_fs):
+    # The hydrated bytes on the handle that wrote are refreshed at flush,
+    # so a read-after-write through the same descriptor sees the write.
+    fs, _ = sizeless_fs
+    fh = fs.open("/u.json", os.O_RDWR)
+    fs.write("/u.json", b"J", 0, fh)
+    fs.flush("/u.json", fh)
+    assert fs.read("/u.json", 100, 0, fh) == b"J" + _PAYLOAD[1:]
+    assert fs.getattr("/u.json", fh)["st_size"] == len(_PAYLOAD)
+    fs.release("/u.json", fh)
+
+
+@pytest.mark.asyncio
 async def test_unknown_size_fh_stat_returns_real_size(sizeless_fs):
     fs, _ = sizeless_fs
     fh = fs.open("/u.json", os.O_RDONLY)

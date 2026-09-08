@@ -364,6 +364,24 @@ describe('MirageFS — size=null resources (API-backed)', () => {
     await callOp(mfs, 'release', '/data/api.json', reader)
   })
 
+  it('a flush refreshes the hydrated bytes of the handle that wrote', async () => {
+    // A read-after-write through the same descriptor sees the write.
+    const ws = mkSizeNullWs()
+    await ws.fs.writeFile('/data/api.json', new TextEncoder().encode('hydrated bytes'))
+    vi.spyOn(ws.fs, 'stat').mockResolvedValue(
+      new FileStat({ name: 'api.json', type: FileType.FILE, content: ContentType.JSON }),
+    )
+    const mfs = new MirageFS(ws.fs)
+    const [, fh] = await callOp<[number, number]>(mfs, 'open', '/data/api.json', fsConstants.O_RDWR)
+    const j = Buffer.from('J')
+    await callOp(mfs, 'write', '/data/api.json', fh, j, j.byteLength, 0)
+    await callOp(mfs, 'flush', '/data/api.json', fh)
+    const out = Buffer.alloc(100)
+    const [n] = await callOp<[number]>(mfs, 'read', '/data/api.json', fh, out, 100, 0)
+    expect(out.subarray(0, n).toString()).toBe('Jydrated bytes')
+    await callOp(mfs, 'release', '/data/api.json', fh)
+  })
+
   it('a nonzero truncate rehydrates a reader with the settled writes', async () => {
     // A truncate lands after another handle's buffered write, and the
     // hydrated reader must see both: the settled write and the cut.

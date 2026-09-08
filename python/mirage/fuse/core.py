@@ -278,15 +278,16 @@ class MountCore:
         Returns:
             bytes | None: cached content, or None when nothing fresh is held.
         """
+        key = self.identity(path)
         for ctx in self._handles.values():
-            if ctx.path == path and ctx.data is not None:
+            if ctx.key == key and ctx.data is not None:
                 return ctx.data
-        entry = self._prefetch.get(path)
+        entry = self._prefetch.get(key)
         if entry is None:
             return None
         data, expires = entry
         if time.monotonic() >= expires:
-            del self._prefetch[path]
+            del self._prefetch[key]
             return None
         return data
 
@@ -322,7 +323,8 @@ class MountCore:
             return None
         # No inflight dedup: FUSE mounts run nothreads=True, so callbacks are
         # serialized and two opens cannot race (TS needs the dedup map).
-        self._prefetch[path] = (data, time.monotonic() + PREFETCH_TTL)
+        self._prefetch[self.identity(path)] = (data,
+                                               time.monotonic() + PREFETCH_TTL)
         return data
 
     def getattr(self, path: str, fh: int | None = None) -> dict[str, Any]:
@@ -439,7 +441,7 @@ class MountCore:
             pass
         merged = merge_writes(existing, writes)
         self._run(self._ops.write(self.resolve(path), merged))
-        self._forget_prefetch(path)
+        self._changed(path)
 
     def write(self, path: str, data: bytes, offset: int,
               fh: int | None) -> int:
@@ -471,7 +473,7 @@ class MountCore:
             int: the new handle id.
         """
         self._run(self._ops.create(self.resolve(path)))
-        self._forget_prefetch(path)
+        self._changed(path)
         return self._handles.add(Handle(path=path, key=self.identity(path)))
 
     def mkdir(self, path: str) -> None:
@@ -537,8 +539,8 @@ class MountCore:
         moved = self._xattrs.pop(old, None)
         if moved is not None:
             self._xattrs[new] = moved
-        self._forget_prefetch(old)
-        self._forget_prefetch(new)
+        self._changed(old, rehydrate=False)
+        self._changed(new, rehydrate=False)
 
     def rmdir(self, path: str) -> None:
         self._run(self._ops.rmdir(self.resolve(path)))
@@ -694,7 +696,29 @@ class MountCore:
                 self._apply_writes(ctx.path, ctx.write_buf)
                 ctx.write_buf = []
         self._run(self._ops.truncate(self.resolve(path), length))
-        self._forget_prefetch(path)
+        self._changed(path)
+
+    def _changed(self, path: str, rehydrate: bool = True) -> None:
+        """The one door every mutation of a file's bytes goes through.
+
+        Every cache the core keeps for a file is keyed by its identity
+        (the mount path with namespace links followed), and this is the
+        only place they are invalidated, so a new mutating op cannot
+        forget one of them and a link alias cannot slip past. The TTL
+        entry is dropped; hydrated handles on the file are refreshed
+        from the backend in one read, so fstat and read through any of
+        them, including the handle that wrote, see the new bytes. A
+        removal or rename passes ``rehydrate=False``: POSIX keeps an
+        open descriptor on the bytes it had.
+
+        Args:
+            path (str): mount path whose bytes changed.
+            rehydrate (bool): refresh hydrated handles from the backend.
+        """
+        key = self.identity(path)
+        self._prefetch.pop(key, None)
+        if not rehydrate:
+            return
         hydrated = [
             ctx for ctx in self._handles.values()
             if ctx.key == key and ctx.data is not None
@@ -704,18 +728,6 @@ class MountCore:
             for ctx in hydrated:
                 ctx.data = data
 
-    def _forget_prefetch(self, path: str) -> None:
-        """Drop cached bytes for a file, matched by identity so a link's
-        entry goes when its target changes and vice versa.
-
-        Args:
-            path (str): mount path whose file changed.
-        """
-        key = self.identity(path)
-        for cached in list(self._prefetch):
-            if self.identity(cached) == key:
-                del self._prefetch[cached]
-
     def _forget(self, path: str) -> None:
         self._xattrs.pop(path, None)
-        self._forget_prefetch(path)
+        self._changed(path, rehydrate=False)

@@ -225,21 +225,17 @@ export class MountCore {
   }
 
   cachedSize(path: string): number | null {
-    for (const ctx of this.handles.values()) {
-      if (ctx.path === path && ctx.data !== undefined) return ctx.data.byteLength
-    }
-    const entry = this.prefetchCache.get(path)
-    if (entry !== undefined && entry.expires > Date.now()) return entry.data.byteLength
-    return null
+    return this.cachedData(path)?.byteLength ?? null
   }
 
   cachedData(path: string): Uint8Array | null {
+    const key = this.identity(path)
     for (const ctx of this.handles.values()) {
-      if (ctx.path === path && ctx.data !== undefined) return ctx.data
+      if (ctx.key === key && ctx.data !== undefined) return ctx.data
     }
-    const entry = this.prefetchCache.get(path)
+    const entry = this.prefetchCache.get(key)
     if (entry !== undefined && entry.expires > Date.now()) return entry.data
-    if (entry !== undefined) this.prefetchCache.delete(path)
+    if (entry !== undefined) this.prefetchCache.delete(key)
     return null
   }
 
@@ -253,37 +249,39 @@ export class MountCore {
   async prefetch(path: string): Promise<Uint8Array | null> {
     const cached = this.cachedData(path)
     if (cached !== null) return cached
-    const inflight = this.prefetchInflight.get(path)
+    const key = this.identity(path)
+    const inflight = this.prefetchInflight.get(key)
     if (inflight !== undefined) return inflight
     const promise = (async (): Promise<Uint8Array | null> => {
       try {
         for (;;) {
-          const gen = this.prefetchGen.get(path) ?? 0
+          const gen = this.prefetchGen.get(key) ?? 0
           const data = await this.ops.readFile(this.resolve(path))
           // The file changed while this read was out: what came back is
           // stale, so read again rather than install it.
-          if ((this.prefetchGen.get(path) ?? 0) !== gen) continue
-          this.prefetchCache.set(path, { data, expires: Date.now() + PREFETCH_TTL_MS })
+          if ((this.prefetchGen.get(key) ?? 0) !== gen) continue
+          this.prefetchCache.set(key, { data, expires: Date.now() + PREFETCH_TTL_MS })
           return data
         }
       } catch {
         return null
       } finally {
-        this.prefetchInflight.delete(path)
-        this.prefetchGen.delete(path)
+        this.prefetchInflight.delete(key)
+        this.prefetchGen.delete(key)
       }
     })()
-    this.prefetchInflight.set(path, promise)
+    this.prefetchInflight.set(key, promise)
     return promise
   }
 
   /**
-   * Run `fn` after every persist or truncation already queued for the
-   * file, and let the next one wait for it. Serialization is per identity,
+   * Run one mutation of a file after every mutation already queued for
+   * it, and let the next one wait for it. Serialization is per identity,
    * so a flush through a link and a truncate through its target queue
-   * behind each other.
+   * behind each other, and a flush still landing cannot be overtaken by a
+   * truncate that would then be undone when the flush completes.
    */
-  private serialized<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  private mutate<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.pending.get(key) ?? Promise.resolve()
     const run = prev.then(fn, fn)
     const tail: Promise<void> = run.then(
@@ -321,7 +319,7 @@ export class MountCore {
       // missing file: start from empty; the write creates it
     }
     await this.writeFile(path, mergeWrites(existing, writes))
-    this.invalidatePrefetch(path)
+    await this.changed(path)
   }
 
   // ── POSIX surface (throws; adapters classify) ────────────────────
@@ -402,16 +400,20 @@ export class MountCore {
   }
 
   async create(path: string): Promise<number> {
-    // Route through the resource's `create` op so backends that distinguish
-    // "create empty" from "write bytes" get the right code path. Falls back
-    // to writeFile(empty) when the resource doesn't expose `create`.
-    try {
-      await this.ops.create(this.resolve(path))
-    } catch (dispatchErr) {
-      if (!isMissingOp(dispatchErr, 'create')) throw dispatchErr
-      await this.writeFile(path, new Uint8Array(0))
-    }
-    return this.handles.add({ path, key: this.identity(path) })
+    const key = this.identity(path)
+    await this.mutate(key, async () => {
+      // Route through the resource's `create` op so backends that distinguish
+      // "create empty" from "write bytes" get the right code path. Falls back
+      // to writeFile(empty) when the resource doesn't expose `create`.
+      try {
+        await this.ops.create(this.resolve(path))
+      } catch (dispatchErr) {
+        if (!isMissingOp(dispatchErr, 'create')) throw dispatchErr
+        await this.writeFile(path, new Uint8Array(0))
+      }
+      await this.changed(path)
+    })
+    return this.handles.add({ path, key })
   }
 
   async mkdir(path: string): Promise<void> {
@@ -451,25 +453,39 @@ export class MountCore {
    * hides. Mirrors Python's MountCore.unlink.
    */
   async unlink(path: string): Promise<void> {
-    await this.ops.unlink(this.resolve(path))
-    this.xattrs.delete(path)
-    this.invalidatePrefetch(path)
+    await this.mutate(this.identity(path), async () => {
+      await this.ops.unlink(this.resolve(path))
+      this.xattrs.delete(path)
+      await this.changed(path, false)
+    })
   }
 
   /**
-   * Drop cached bytes for a file and outdate any prefetch still in flight
-   * for it. Matched by identity, so a link's cache entry goes when its
-   * target changes and vice versa.
+   * The one door every mutation of a file's bytes goes through. Every
+   * cache the core keeps for a file is keyed by its identity (the mount
+   * path with namespace links followed), and this is the only place they
+   * are invalidated, so a new mutating op cannot forget one of them and a
+   * link alias cannot slip past. The TTL entry is dropped, a prefetch
+   * still in flight is outdated so it re-reads instead of installing
+   * what it fetched, and hydrated handles on the file are refreshed from
+   * the backend in one read, so fstat and read through any of them,
+   * including the handle that wrote, see the new bytes. A removal or
+   * rename passes `rehydrate = false`: POSIX keeps an open descriptor on
+   * the bytes it had. Mirrors Python's `_changed`.
    */
-  private invalidatePrefetch(path: string): void {
+  private async changed(path: string, rehydrate = true): Promise<void> {
     const key = this.identity(path)
-    for (const cached of [...this.prefetchCache.keys()]) {
-      if (this.identity(cached) === key) this.prefetchCache.delete(cached)
+    this.prefetchCache.delete(key)
+    if (this.prefetchInflight.has(key)) {
+      this.prefetchGen.set(key, (this.prefetchGen.get(key) ?? 0) + 1)
     }
-    for (const inflight of this.prefetchInflight.keys()) {
-      if (this.identity(inflight) === key) {
-        this.prefetchGen.set(inflight, (this.prefetchGen.get(inflight) ?? 0) + 1)
-      }
+    if (!rehydrate) return
+    const hydrated = [...this.handles.values()].filter(
+      (ctx) => ctx.key === key && ctx.data !== undefined,
+    )
+    if (hydrated.length > 0) {
+      const data = await this.ops.readFile(this.resolve(path))
+      for (const ctx of hydrated) ctx.data = data
     }
   }
 
@@ -478,14 +494,16 @@ export class MountCore {
     // which is what makes `mv` between two backends fall back to
     // copy+unlink instead of addressing the destination against the
     // source's backend.
-    await this.ops.rename(this.resolve(src), this.resolve(dst))
-    this.invalidatePrefetch(src)
-    this.invalidatePrefetch(dst)
-    const moved = this.xattrs.get(src)
-    if (moved !== undefined) {
-      this.xattrs.delete(src)
-      this.xattrs.set(dst, moved)
-    }
+    await this.mutate(this.identity(src), async () => {
+      await this.ops.rename(this.resolve(src), this.resolve(dst))
+      await this.changed(src, false)
+      await this.changed(dst, false)
+      const moved = this.xattrs.get(src)
+      if (moved !== undefined) {
+        this.xattrs.delete(src)
+        this.xattrs.set(dst, moved)
+      }
+    })
   }
 
   // No emptiness pre-check here, matching the python MountCore. Every
@@ -516,7 +534,7 @@ export class MountCore {
    */
   private settle(ctx: Handle): Promise<void> {
     if (ctx.writeBuf === undefined || ctx.writeBuf.length === 0) return Promise.resolve()
-    return this.serialized(ctx.key, () => this.persistBuffered(ctx))
+    return this.mutate(ctx.key, () => this.persistBuffered(ctx))
   }
 
   private async persistBuffered(ctx: Handle): Promise<void> {
@@ -539,7 +557,7 @@ export class MountCore {
     // were opened through, so a link alias is settled too. Mirrors
     // Python's MountCore.truncate.
     const key = this.identity(path)
-    await this.serialized(key, async () => {
+    await this.mutate(key, async () => {
       for (const ctx of this.handles.values()) {
         if (ctx.key === key) await this.persistBuffered(ctx)
       }
@@ -557,17 +575,7 @@ export class MountCore {
         out.set(data.subarray(0, Math.min(data.byteLength, size)), 0)
         await this.writeFile(path, out)
       }
-      this.invalidatePrefetch(path)
-      // Hydrated handles on the file are rehydrated from the resized file,
-      // so fstat and read through them see the settled writes and the new
-      // length rather than the bytes they opened on.
-      const hydrated = [...this.handles.values()].filter(
-        (ctx) => ctx.key === key && ctx.data !== undefined,
-      )
-      if (hydrated.length > 0) {
-        const data = await this.ops.readFile(this.resolve(path))
-        for (const ctx of hydrated) ctx.data = data
-      }
+      await this.changed(path)
     })
   }
 
