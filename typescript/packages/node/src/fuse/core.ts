@@ -442,12 +442,13 @@ export class MountCore {
     // A write the kernel already acknowledged on another handle precedes
     // this truncation in POSIX order, so it is flushed first rather than
     // left queued to land over the shortened file at that handle's
-    // release. Mirrors Python's MountCore.truncate.
+    // release. The buffer is cleared only once the write has landed, so a
+    // failed settlement leaves the acknowledged bytes for the handle's own
+    // flush to retry. Mirrors Python's MountCore.truncate.
     for (const ctx of this.handles.values()) {
       if (ctx.path === path && ctx.writeBuf !== undefined && ctx.writeBuf.length > 0) {
-        const writes = ctx.writeBuf
+        await this.applyWrites(path, ctx.writeBuf)
         ctx.writeBuf = []
-        await this.applyWrites(path, writes)
       }
     }
     // Prefer the resource's dedicated `truncate` op (atomic on most
@@ -465,14 +466,15 @@ export class MountCore {
       await this.writeFile(path, out)
     }
     this.prefetchCache.delete(path)
-    // Hydrated bytes on other handles are cut to the new length so fstat
-    // and read through them stop serving the old body.
-    for (const ctx of this.handles.values()) {
-      if (ctx.path === path && ctx.data !== undefined) {
-        const cut = new Uint8Array(size)
-        cut.set(ctx.data.subarray(0, Math.min(ctx.data.byteLength, size)), 0)
-        ctx.data = cut
-      }
+    // Hydrated handles on the path are rehydrated from the resized file,
+    // so fstat and read through them see the settled writes and the new
+    // length rather than the bytes they opened on.
+    const hydrated = [...this.handles.values()].filter(
+      (ctx) => ctx.path === path && ctx.data !== undefined,
+    )
+    if (hydrated.length > 0) {
+      const data = await this.ops.readFile(this.resolve(path))
+      for (const ctx of hydrated) ctx.data = data
     }
   }
 
@@ -548,8 +550,9 @@ export class MountCore {
   async flush(path: string, fd: number): Promise<void> {
     const ctx = this.handles.get(fd)
     if (ctx?.writeBuf === undefined || ctx.writeBuf.length === 0) return
-    const writes = ctx.writeBuf
+    // Cleared only once the write has landed, so a failed flush leaves the
+    // acknowledged bytes for release to retry instead of dropping them.
+    await this.applyWrites(path, ctx.writeBuf)
     ctx.writeBuf = []
-    await this.applyWrites(path, writes)
   }
 }

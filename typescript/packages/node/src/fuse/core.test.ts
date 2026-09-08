@@ -182,6 +182,24 @@ describe('MountCore', () => {
     expect(new TextDecoder().decode(body)).toBe('BB\n')
   })
 
+  it("keeps the other handle's buffer when the settlement flush is refused", async () => {
+    // The acknowledged bytes must stay buffered so that handle's own
+    // flush reports the refusal rather than succeeding over an empty
+    // buffer.
+    const resource = new RAMResource()
+    const seed = new Workspace({ '/data/': resource }, { mode: MountMode.WRITE })
+    await seed.fs.writeFile('/data/existing.txt', 'seed')
+    const core = new MountCore(new Workspace({ '/data/': resource }, { mode: MountMode.READ }).fs)
+    const first = await core.open('/data/existing.txt', fsConstants.O_WRONLY)
+    await core.write('/data/existing.txt', first, new TextEncoder().encode('QUEUED'), 0)
+    await expect(
+      core.open('/data/existing.txt', fsConstants.O_WRONLY | fsConstants.O_TRUNC),
+    ).rejects.toThrow()
+    await expect(core.flush('/data/existing.txt', first)).rejects.toThrow()
+    const body = await seed.fs.readFile('/data/existing.txt')
+    expect(new TextDecoder().decode(body)).toBe('seed')
+  })
+
   it('keeps the body when the open carries no O_TRUNC', async () => {
     const core = await mkCore()
     const fh = await core.open('/data/greeting.txt', fsConstants.O_RDWR)

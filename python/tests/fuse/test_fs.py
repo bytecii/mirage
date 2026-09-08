@@ -613,6 +613,22 @@ async def test_unknown_size_truncate_cuts_the_hydrated_handle(sizeless_fs):
 
 
 @pytest.mark.asyncio
+async def test_unknown_size_truncate_rehydrates_with_settled_writes(
+        sizeless_fs):
+    # A nonzero truncate lands after another handle's buffered write, and
+    # the hydrated reader must see both: the settled write and the cut.
+    fs, _ = sizeless_fs
+    reader = fs.open("/u.json", os.O_RDONLY)
+    writer = fs.open("/u.json", os.O_WRONLY)
+    fs.write("/u.json", b"J", 0, writer)
+    fs.truncate("/u.json", 5)
+    assert fs.getattr("/u.json", reader)["st_size"] == 5
+    assert fs.read("/u.json", 100, 0, reader) == b"J" + _PAYLOAD[1:5]
+    fs.release("/u.json", writer)
+    fs.release("/u.json", reader)
+
+
+@pytest.mark.asyncio
 async def test_unknown_size_fh_stat_returns_real_size(sizeless_fs):
     fs, _ = sizeless_fs
     fh = fs.open("/u.json", os.O_RDONLY)

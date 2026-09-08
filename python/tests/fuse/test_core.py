@@ -128,6 +128,24 @@ async def test_o_trunc_open_settles_writes_buffered_on_another_handle(seeded):
 
 
 @pytest.mark.asyncio
+async def test_failed_settlement_keeps_the_other_handles_buffer():
+    # When the settling flush is refused, the acknowledged bytes must stay
+    # buffered on their handle so its own flush reports the refusal rather
+    # than silently succeeding over an empty buffer.
+    res = RAMResource()
+    seed = Workspace({"/": res}, mode=MountMode.WRITE)
+    await seed.execute("tee /a.txt", stdin=b"seed")
+    core = MountCore(Workspace({"/": res}, mode=MountMode.READ).fs)
+    first = core.open("/a.txt", os.O_WRONLY)
+    core.write("/a.txt", b"QUEUED", 0, first)
+    with pytest.raises(OSError):
+        core.open("/a.txt", os.O_WRONLY | os.O_TRUNC)
+    with pytest.raises(OSError):
+        core.flush("/a.txt", first)
+    assert await seed.fs.read("/a.txt") == b"seed"
+
+
+@pytest.mark.asyncio
 async def test_open_without_o_trunc_keeps_the_body(seeded):
     fh = seeded.open("/a.txt", os.O_RDWR)
     seeded.write("/a.txt", b"J", 0, fh)

@@ -664,8 +664,9 @@ class MountCore:
         A write the kernel already acknowledged on another handle precedes
         this truncation in POSIX order, so it is flushed first rather than
         left queued to land over the shortened file at that handle's
-        release. Hydrated bytes on other handles are cut to the new length
-        so fstat and read through them stop serving the old body.
+        release. Hydrated handles on the path are then rehydrated from
+        the resized file, so fstat and read through them see the settled
+        writes and the new length rather than the bytes they opened on.
 
         Args:
             path (str): mount path to resize.
@@ -677,9 +678,14 @@ class MountCore:
                 ctx.write_buf = []
         self._run(self._ops.truncate(self.resolve(path), length))
         self._prefetch.pop(path, None)
-        for ctx in self._handles.values():
-            if ctx.path == path and ctx.data is not None:
-                ctx.data = ctx.data[:length].ljust(length, b"\0")
+        hydrated = [
+            ctx for ctx in self._handles.values()
+            if ctx.path == path and ctx.data is not None
+        ]
+        if hydrated:
+            data = self._run(self._ops.read(self.resolve(path)))
+            for ctx in hydrated:
+                ctx.data = data
 
     def _forget(self, path: str) -> None:
         self._xattrs.pop(path, None)
