@@ -12,9 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IndexEntry, LookupStatus } from './config.ts'
-import { RedisIndexCacheStore } from './redis.ts'
+import { RedisIndexCacheStore, type RedisClientLike } from './redis.ts'
 
 describe('RedisIndexCacheStore default keyPrefix', () => {
   it('namespaces keys under mirage:index: by default', () => {
@@ -110,7 +110,7 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
       expect((await s.listDir('/tmp')).entries).toEqual(['/tmp/x'])
       await new Promise((r) => setTimeout(r, 1100))
       const r = await s.listDir('/tmp')
-      expect(r.status === LookupStatus.NOT_FOUND || r.status === LookupStatus.EXPIRED).toBe(true)
+      expect(r.status).toBe(LookupStatus.EXPIRED)
     } finally {
       await s.clear()
       await s.close()
@@ -148,5 +148,87 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
     await store.clear()
     expect((await store.get('/a')).status).toBe(LookupStatus.NOT_FOUND)
     expect((await store.listDir('/')).status).toBe(LookupStatus.NOT_FOUND)
+  })
+})
+
+describe('deferred Redis seeds', () => {
+  function client() {
+    const pipeline: ReturnType<RedisClientLike['multi']> = {
+      set: vi.fn(),
+      del: vi.fn(),
+      exec: vi.fn().mockResolvedValue([]),
+    }
+    const value: RedisClientLike = {
+      get: vi.fn().mockResolvedValue(null),
+      mGet: vi.fn().mockResolvedValue([null, null]),
+      set: vi.fn().mockResolvedValue('OK'),
+      del: vi.fn().mockResolvedValue(0),
+      multi: () => pipeline,
+      scanIterator: () => {
+        throw new Error('unexpected scan')
+      },
+      connect: vi.fn().mockResolvedValue(undefined),
+      quit: vi.fn().mockResolvedValue(undefined),
+      isOpen: true,
+    }
+    return { value, pipeline }
+  }
+
+  it('retains failed seeds for a close retry', async () => {
+    const { value, pipeline } = client()
+    vi.mocked(pipeline.exec).mockRejectedValueOnce(new Error('retry'))
+    vi.mocked(value.get).mockResolvedValue('g')
+    const store = new RedisIndexCacheStore({ client: value })
+    store.seed(
+      new Map([['/a', entry('a', 'a')]]),
+      new Map([['/', ['/a']]]),
+      new Date(Date.now() + 3600000),
+    )
+    await expect(store.close()).rejects.toThrow('retry')
+    await store.close()
+    await store.close()
+    expect(pipeline.exec).toHaveBeenCalledTimes(2)
+    const writes = vi.mocked(pipeline.set).mock.calls
+    expect(writes.slice(0, 2)).toEqual(writes.slice(2))
+    expect(value.quit).not.toHaveBeenCalled()
+  })
+
+  it('flushes a seed once across concurrent readers', async () => {
+    const { value, pipeline } = client()
+    const store = new RedisIndexCacheStore({ client: value })
+    store.seed(
+      new Map([['/a', entry('a', 'a')]]),
+      new Map([['/', ['/a']]]),
+      new Date(Date.now() + 3600000),
+    )
+    await Promise.all([store.get('/a'), store.get('/a')])
+    expect(pipeline.exec).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps listings stale when their generation key is evicted', async () => {
+    const { value, pipeline } = client()
+    const raw = JSON.stringify({ entries: [], expires_at: 4102444800, generation: 'old' })
+    vi.mocked(value.mGet).mockResolvedValue([raw, null])
+    const store = new RedisIndexCacheStore({ client: value })
+    expect((await store.listDir('/old')).status).toBe(LookupStatus.EXPIRED)
+    await store.setDir('/new', [])
+    const generation = vi.mocked(value.set).mock.calls[0]?.[1]
+    expect(generation).toBeDefined()
+    expect(generation).not.toBe('old')
+    expect(pipeline.set).toHaveBeenCalled()
+    vi.mocked(value.mGet).mockResolvedValue([raw, generation ?? null])
+    expect((await store.listDir('/old')).status).toBe(LookupStatus.EXPIRED)
+  })
+
+  it('reads a listing and its invalidation generation in one request', async () => {
+    const { value } = client()
+    vi.mocked(value.mGet).mockResolvedValue([
+      JSON.stringify({ entries: [], expires_at: 4102444800, generation: 'g' }),
+      'g',
+    ])
+    const store = new RedisIndexCacheStore({ client: value })
+    expect((await store.listDir('/')).entries).toEqual([])
+    expect(value.mGet).toHaveBeenCalledTimes(1)
+    expect(value.get).not.toHaveBeenCalled()
   })
 })

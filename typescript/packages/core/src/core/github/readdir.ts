@@ -59,12 +59,13 @@ export async function readdir(
   if (listing.entries !== undefined && listing.entries !== null) {
     return listing.entries
   }
-  if (listing.status === LookupStatus.NOT_FOUND) {
-    if (accessor.truncated) {
-      return fallbackReaddir(accessor, key, index, prefix)
-    }
-    throw enoent(path)
+  if (
+    accessor.truncated &&
+    (listing.status === LookupStatus.NOT_FOUND || listing.status === LookupStatus.EXPIRED)
+  ) {
+    return fallbackReaddir(accessor, key, index, prefix)
   }
+  if (listing.status === LookupStatus.NOT_FOUND) throw enoent(path)
   return []
 }
 

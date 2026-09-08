@@ -15,6 +15,8 @@
 import { describe, expect, it } from 'vitest'
 import { GitHubAccessor } from '../../accessor/github.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
+import { RedisIndexCacheStore } from '../../cache/index/redis.ts'
+import { IndexEntry } from '../../cache/index/config.ts'
 import { PathSpec } from '../../types.ts'
 import { populateIndex } from './tree.ts'
 import { readdir } from './readdir.ts'
@@ -78,3 +80,40 @@ describe('github readdir freshness', () => {
     expect(probe.trees).toBe(0)
   })
 })
+
+for (const backend of ['ram', 'redis']) {
+  it.skipIf(backend === 'redis' && process.env.REDIS_URL === undefined)(
+    `refills an expired truncated-tree directory with ${backend}`,
+    async () => {
+      const url = process.env.REDIS_URL
+      const index =
+        backend === 'ram'
+          ? new RAMIndexCacheStore()
+          : new RedisIndexCacheStore({
+              ...(url === undefined ? {} : { url }),
+              keyPrefix: `github-contract:${crypto.randomUUID()}:`,
+            })
+      const probe = { trees: 0 }
+      const accessor = accessorFor(probe)
+      accessor.truncated = true
+      await index.setDir('/repo', [
+        ['src', new IndexEntry({ id: 'src-sha', name: 'src', resourceType: 'folder' })],
+      ])
+      await index.setDir('/repo/src', [], new Date(Date.now() - 1000))
+      const path = new PathSpec({
+        resourcePath: 'src',
+        virtual: '/repo/src',
+        directory: '/repo/src',
+      })
+      try {
+        const got = await readdir(accessor, path, index)
+        expect(got).toContain('/repo/src/README.md')
+        expect(await readdir(accessor, path, index)).toEqual(got)
+        expect(probe.trees).toBe(1)
+      } finally {
+        await index.clear()
+        await index.close()
+      }
+    },
+  )
+}

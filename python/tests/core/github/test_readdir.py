@@ -14,13 +14,15 @@
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fakeredis.aioredis import FakeRedis
 
 import mirage.core.github.tree
 from mirage.cache.index import IndexEntry
 from mirage.cache.index.ram import RAMIndexCacheStore
+from mirage.cache.index.redis import RedisIndexCacheStore
 from mirage.core.github.readdir import readdir
 from mirage.core.github.tree_entry import TreeEntry
 from mirage.types import PathSpec
@@ -163,3 +165,31 @@ async def test_readdir_does_not_refill_on_a_real_miss(tree, monkeypatch):
                      virtual="/nonexistent",
                      directory="/nonexistent"), index)
     assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["ram", "redis"])
+async def test_truncated_tree_refills_expired_directory(backend, monkeypatch):
+    client = FakeRedis()
+    index = RAMIndexCacheStore() if backend == "ram" else RedisIndexCacheStore(
+        client=client)
+    folder = IndexEntry(id="src-sha", name="src", resource_type="folder")
+    await index.set_dir("/repo", [("src", folder)])
+    await index.set_dir("/repo/src", [],
+                        datetime.now(timezone.utc) - timedelta(seconds=1))
+    fetch = AsyncMock(return_value=[
+        TreeEntry(path="new.py", type="blob", sha="new", size=2)
+    ])
+    monkeypatch.setitem(readdir.__globals__, "fetch_dir_tree", fetch)
+    accessor = MagicMock()
+    accessor.truncated = True
+    path = PathSpec(resource_path="src",
+                    virtual="/repo/src",
+                    directory="/repo/src")
+    try:
+        assert await readdir(accessor, path, index) == ["/repo/src/new.py"]
+        assert await readdir(accessor, path, index) == ["/repo/src/new.py"]
+        assert fetch.await_count == 1
+    finally:
+        await index.close()
+        await client.aclose()

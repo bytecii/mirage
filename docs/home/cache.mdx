@@ -101,6 +101,37 @@ await ws.execute('grep alert /s3/data/log.jsonl')
 
 </CodeGroup>
 
+## Metadata Index Contract
+
+The RAM and Redis metadata indexes share the same lookup states: a directory
+never listed is `NOT_FOUND`, a cached empty directory is a successful empty
+listing, and a listing at or past its deadline is `EXPIRED`. Entry metadata
+remains readable after a directory expires. `invalidate()` expires listings
+without deleting their metadata; `invalidate_dir` / `invalidateDir` removes a
+listing and its direct children's entries, and prefix invalidation removes a
+whole subtree. `clear()` removes all index data.
+
+`seed()` merges snapshots by path and copies their child lists. Redis queues
+these synchronous calls and flushes them before the next index operation or
+`close()`; `clear()` discards queued snapshots. Multiple seeds accumulate, and
+failed flushes remain queued for retry. `entries()` returns all stored metadata,
+including entries whose directory listing has expired.
+
+Redis stores directory children and their deadline in one JSON record under
+`mirage:idx:directory:v2:`. A per-store generation token makes global
+invalidation atomic across clients; a single `MGET` reads the listing and its
+generation. Missing generation tokens expire listings, and newly initialized
+tokens are unique so server eviction cannot revive an invalidated listing.
+Existing list-format cache records are not reused.
+Like RAM, these records retain expired listings until explicit removal; they do
+not use Redis TTL deletion. Redis server eviction can still turn any cached
+record into a miss. Configure Redis `maxmemory` for server-side size limits.
+
+The Redis **file cache** likewise uses server-side limits instead of RAM's
+`cache_size`, `cache_entries`, or LRU. File bytes and metadata occupy separate
+keys, so server eviction can remove either independently: a freshness check
+alone does not guarantee the bytes remain cached.
+
 ## Relationship To Snapshots
 
 The file cache is exactly what a [snapshot](/home/snapshot) serializes: `ws.snapshot()` writes the cached bytes for every touched path into the tar, and `Workspace.load()` restores them into the file cache so a replayed run reads from local state. The index cache is not snapshotted; it rebuilds lazily after load.

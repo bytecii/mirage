@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { toIsoZ } from '@struktoai/mirage-core/utils/dates'
 import { type PathSpec, type WalkEntry } from '@struktoai/mirage-core/types'
 import { mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { stripSlash } from '@struktoai/mirage-core/utils/slash'
@@ -54,7 +55,7 @@ async function* descend(
       yield* descend(sftp, root, child)
       continue
     }
-    const modified = new Date(entry.attrs.mtime * 1000).toISOString()
+    const modified = toIsoZ(new Date(entry.attrs.mtime * 1000))
     yield {
       virtual: child,
       isDir: false,

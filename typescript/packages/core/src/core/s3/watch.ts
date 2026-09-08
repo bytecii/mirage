@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { toIsoZ } from '../../utils/dates.ts'
 import type { S3Accessor } from '../../accessor/s3.ts'
 import type { DeltaHook } from '../../watch/base.ts'
 import { ListingDeltaHook } from '../../watch/delta.ts'
@@ -31,7 +32,7 @@ interface ListedObject {
 
 function isoOf(value: Date | string | undefined): string | null {
   if (value === undefined) return null
-  return value instanceof Date ? value.toISOString() : value
+  return value instanceof Date ? toIsoZ(value) : value
 }
 
 /**

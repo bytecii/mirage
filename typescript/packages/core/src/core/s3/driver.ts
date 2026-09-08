@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { toIsoZ } from '../../utils/dates.ts'
 import type { S3Accessor } from '../../accessor/s3.ts'
 import type { S3Config } from '../../resource/s3/config.ts'
 import { ResourceName } from '../../types.ts'
@@ -52,7 +53,7 @@ interface Listing {
 }
 
 function isoOf(modified: Date | string | undefined): string {
-  if (modified instanceof Date) return modified.toISOString()
+  if (modified instanceof Date) return toIsoZ(modified)
   return typeof modified === 'string' ? modified : ''
 }
 
@@ -147,7 +148,7 @@ async function head(conn: S3Conn, key: string): Promise<ObjectMeta | null> {
   if (revision === 'null') revision = null
   return {
     size: resp.ContentLength ?? null,
-    modified: resp.LastModified?.toISOString() ?? null,
+    modified: resp.LastModified === undefined ? null : toIsoZ(resp.LastModified),
     fingerprint: etag !== '' ? etag : null,
     revision,
     extra: etag !== '' ? { etag } : {},

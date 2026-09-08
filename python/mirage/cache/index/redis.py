@@ -12,9 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Awaitable
-from datetime import datetime, timezone
-from typing import cast
+import asyncio
+from datetime import datetime, timedelta, timezone
 
 try:
     from redis.asyncio import Redis
@@ -22,14 +21,15 @@ except ImportError as _err:
     raise ImportError("RedisIndexCacheStore requires the 'redis' extra. "
                       "Install with: pip install mirage-ai[redis]") from _err
 
-from mirage.cache.index.config import (IndexEntry, ListResult, LookupResult,
-                                       LookupStatus)
+from mirage.cache.index.config import (IndexDirectory, IndexEntry, ListResult,
+                                       LookupResult, LookupStatus)
 from mirage.cache.index.store import IndexCacheStore
 from mirage.core.timeutil import to_iso_z
+from mirage.utils.ids import uuid7
 from mirage.utils.key_prefix import under_path
 
 ENTRY_PREFIX = "mirage:idx:entry:"
-CHILDREN_PREFIX = "mirage:idx:children:"
+CHILDREN_PREFIX = "mirage:idx:directory:v2:"
 
 
 def _text(value: str | bytes) -> str:
@@ -59,14 +59,17 @@ class RedisIndexCacheStore(IndexCacheStore):
     """Redis-backed index cache for remote resource metadata.
 
     Stores IndexEntry objects as JSON strings and directory children as
-    Redis lists. Directory TTL is managed via native Redis key expiration.
+    JSON records holding children and expiry, including empty listings.
+    Like RAM, stale records remain until explicitly cleared or invalidated by
+    path, so expiry is distinguishable from absence. Redis eviction may still
+    remove records; size limits belong to the server, not this store.
     All writes within set_dir are batched in a single pipeline for efficiency.
 
     Multiple stores can share one Redis server by using distinct key_prefix
     values (e.g. "gdrive:", "s3:"). The full key layout is::
 
         {key_prefix}mirage:idx:entry:{resource_path}     -> JSON string
-        {key_prefix}mirage:idx:children:{resource_path}  -> Redis list
+        {key_prefix}mirage:idx:directory:v2:{resource_path} -> JSON listing
 
     Args:
         ttl (float): Default time-to-live in seconds for directory listings.
@@ -89,11 +92,13 @@ class RedisIndexCacheStore(IndexCacheStore):
         self._client = (client if client is not None else Redis.from_url(
             url, decode_responses=True))
         self._owns_client = client is None
-        self._pending_seed: tuple[dict[str, IndexEntry], dict[str, list[str]],
-                                  datetime] | None = None
+        self._pending_seeds: list[tuple[dict[str, IndexEntry],
+                                        dict[str, list[str]], datetime]] = []
+        self._seed_lock = asyncio.Lock()
         p = key_prefix or ""
         self._entry_prefix = f"{p}{ENTRY_PREFIX}"
         self._children_prefix = f"{p}{CHILDREN_PREFIX}"
+        self._generation_key = f"{p}mirage:idx:generation"
 
     def _entry_key(self, resource_path: str) -> str:
         return f"{self._entry_prefix}{resource_path}"
@@ -103,33 +108,46 @@ class RedisIndexCacheStore(IndexCacheStore):
 
     def seed(self, entries: dict[str, IndexEntry],
              children: dict[str, list[str]], expires_at: datetime) -> None:
-        self._pending_seed = (dict(entries), {
+        now_iso = to_iso_z(datetime.now(timezone.utc))
+        self._pending_seeds.append(({
+            path:
+            entry if entry.index_time else entry.model_copy(
+                update={"index_time": now_iso})
+            for path, entry in entries.items()
+        }, {
             path: list(keys)
             for path, keys in children.items()
-        }, expires_at)
+        }, expires_at))
+
+    async def _generation(self) -> str:
+        current = await self._client.get(self._generation_key)
+        if current is not None:
+            return _text(current)
+        # A new token after eviction must never revive an old listing.
+        generation = uuid7()
+        await self._client.set(self._generation_key, generation, nx=True)
+        current = await self._client.get(self._generation_key)
+        return _text(current) if current is not None else generation
 
     async def _flush_seed(self) -> None:
-        pending = self._pending_seed
-        if pending is None:
-            return
-        entries, children, expires_at = pending
-        now = datetime.now(timezone.utc)
-        now_iso = to_iso_z(now)
-        ttl_seconds = max(1, int((expires_at - now).total_seconds()))
-        pipe = self._client.pipeline()
-        for resource_path, entry in entries.items():
-            if not entry.index_time:
-                entry = entry.model_copy(update={"index_time": now_iso})
-            pipe.set(self._entry_key(resource_path), entry.model_dump_json())
-        for resource_path, child_keys in children.items():
-            key = self._children_key(resource_path)
-            pipe.delete(key)
-            if child_keys:
-                pipe.rpush(key, *child_keys)
-                pipe.expire(key, ttl_seconds)
-        await pipe.execute()
-        if self._pending_seed is pending:
-            self._pending_seed = None
+        async with self._seed_lock:
+            while self._pending_seeds:
+                pending = list(self._pending_seeds)
+                generation = await self._generation()
+                pipe = self._client.pipeline()
+                for entries, children, expires_at in pending:
+                    for resource_path, entry in entries.items():
+                        pipe.set(self._entry_key(resource_path),
+                                 entry.model_dump_json())
+                    for resource_path, child_keys in children.items():
+                        listing = IndexDirectory(
+                            entries=child_keys,
+                            expires_at=expires_at.timestamp(),
+                            generation=generation)
+                        pipe.set(self._children_key(resource_path),
+                                 listing.model_dump_json())
+                await pipe.execute()
+                del self._pending_seeds[:len(pending)]
 
     async def get(self, resource_path: str) -> LookupResult:
         await self._flush_seed()
@@ -150,15 +168,14 @@ class RedisIndexCacheStore(IndexCacheStore):
     async def list_dir(self, resource_path: str) -> ListResult:
         await self._flush_seed()
         key = self._children_key(resource_path)
-        exists = await self._client.exists(key)
-        if not exists:
+        raw, current = await self._client.mget(key, self._generation_key)
+        if raw is None:
             return ListResult(status=LookupStatus.NOT_FOUND)
-        ttl_remaining = await self._client.ttl(key)
-        if ttl_remaining == -2:
+        listing = IndexDirectory.model_validate_json(raw)
+        if (current is None or listing.generation != _text(current) or
+                datetime.now(timezone.utc).timestamp() >= listing.expires_at):
             return ListResult(status=LookupStatus.EXPIRED)
-        raw = await cast("Awaitable[list[str | bytes]]",
-                         self._client.lrange(key, 0, -1))
-        return ListResult(entries=[_text(entry) for entry in raw])
+        return ListResult(entries=listing.entries)
 
     async def set_dir(
         self,
@@ -171,6 +188,7 @@ class RedisIndexCacheStore(IndexCacheStore):
         now_iso = to_iso_z(now)
         prefix = "/" if resource_path == "/" else resource_path + "/"
 
+        generation = await self._generation()
         pipe = self._client.pipeline()
         child_keys: list[str] = []
         for name, entry in entries:
@@ -180,16 +198,12 @@ class RedisIndexCacheStore(IndexCacheStore):
             pipe.set(self._entry_key(full_path), entry.model_dump_json())
             child_keys.append(full_path)
 
-        children_key = self._children_key(resource_path)
-        pipe.delete(children_key)
-        if child_keys:
-            pipe.rpush(children_key, *child_keys)
-
-        if expired_at:
-            ttl_seconds = max(1, int((expired_at - now).total_seconds()))
-        else:
-            ttl_seconds = max(1, int(self._ttl))
-        pipe.expire(children_key, ttl_seconds)
+        expiry = expired_at if expired_at is not None else now + timedelta(
+            seconds=self._ttl)
+        listing = IndexDirectory(entries=child_keys,
+                                 expires_at=expiry.timestamp(),
+                                 generation=generation)
+        pipe.set(self._children_key(resource_path), listing.model_dump_json())
 
         await pipe.execute()
 
@@ -199,7 +213,9 @@ class RedisIndexCacheStore(IndexCacheStore):
         cursor = 0
         while True:
             cursor, keys = await self._client.scan(
-                cursor, match=f"{self._entry_prefix}*", count=500)
+                cursor,
+                match=f"{_glob_escape(self._entry_prefix)}*",
+                count=500)
             for key in keys:
                 key_text = _text(key)
                 raw = await self._client.get(key)
@@ -212,12 +228,13 @@ class RedisIndexCacheStore(IndexCacheStore):
 
     async def invalidate_dir(self, resource_path: str) -> None:
         await self._flush_seed()
-        children_key = f"{self._children_prefix}{resource_path}"
-        child_paths = await cast("Awaitable[list[str | bytes]]",
-                                 self._client.lrange(children_key, 0, -1))
+        children_key = self._children_key(resource_path)
+        raw = await self._client.get(children_key)
+        child_paths = IndexDirectory.model_validate_json(
+            raw).entries if raw is not None else []
         pipe = self._client.pipeline()
         for child in child_paths:
-            pipe.delete(self._entry_key(_text(child)))
+            pipe.delete(self._entry_key(child))
         pipe.delete(children_key)
         await pipe.execute()
 
@@ -228,7 +245,7 @@ class RedisIndexCacheStore(IndexCacheStore):
             prefix (str): Key namespace to scan (entries or children).
             resource_path (str): Mount-absolute root of the subtree.
         """
-        pattern = f"{prefix}{_glob_escape(resource_path.rstrip('/'))}*"
+        pattern = f"{_glob_escape(prefix + resource_path.rstrip('/'))}*"
         cursor = 0
         while True:
             cursor, keys = await self._client.scan(cursor,
@@ -249,46 +266,22 @@ class RedisIndexCacheStore(IndexCacheStore):
         await self._scan_delete(self._children_prefix, resource_path)
 
     async def invalidate(self) -> None:
-        """Clear rather than expire, because redis cannot say "stale" here.
-
-        The RAM store marks entries expired in place, so a later lookup
-        answers EXPIRED and a backend whose index *is* its listing knows to
-        refetch. A redis key carries a real TTL and an expired one is
-        simply gone, so absent and stale read the same and this can only
-        clear. The consequence, deliberately chosen: a github mount on a
-        redis index answers ENOENT after a CLI write instead of refetching
-        (``ls`` reports the mount root missing). That is a loud failure,
-        not a wrong answer -- a no-op here would instead serve the
-        pre-write tree as if it were current, and quietly wrong is the
-        worse of the two. Closing this properly means an ``invalidated_at``
-        marker key compared against each entry's ``index_time``, which
-        needs no schema change and can ride the same round trip.
-        """
-        await self.clear()
+        await self._flush_seed()
+        # One atomic generation change expires all listings without racing
+        # another client's refill or resurrecting a concurrently removed path.
+        await self._client.set(self._generation_key, uuid7())
 
     async def clear(self) -> None:
-        self._pending_seed = None
-        cursor = 0
-        while True:
-            cursor, keys = await self._client.scan(
-                cursor, match=f"{self._entry_prefix}*", count=500)
-            if keys:
-                await self._client.delete(*keys)
-            if cursor == 0:
-                break
-        cursor = 0
-        while True:
-            cursor, keys = await self._client.scan(
-                cursor, match=f"{self._children_prefix}*", count=500)
-            if keys:
-                await self._client.delete(*keys)
-            if cursor == 0:
-                break
+        async with self._seed_lock:
+            self._pending_seeds.clear()
+            await self._scan_delete(self._entry_prefix, "/")
+            await self._scan_delete(self._children_prefix, "/")
+            await self._client.delete(self._generation_key)
 
     async def close(self) -> None:
         if self._closed:
             return
+        await self._flush_seed()
         if self._owns_client:
             await self._client.aclose()
-        self._pending_seed = None
         await super().close()

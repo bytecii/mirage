@@ -78,4 +78,15 @@ describe('S3 cache consistency (mocked)', () => {
     expect(DEC.decode(second.stdout)).toBe('v1')
     await ws.close()
   })
+  it('keeps stat type=text after tee and touch', async () => {
+    const ws = new Workspace({ '/s3': new S3Resource(makeConfig()) }, { mode: MountMode.WRITE })
+    try {
+      const result = await ws.execute('tee /s3/c.txt <<< x; touch /s3/c.txt; stat /s3/c.txt')
+      expect(result.exitCode).toBe(0)
+      expect(DEC.decode(result.stdout)).toContain('name=c.txt size=2')
+      expect(DEC.decode(result.stdout)).toContain('type=text')
+    } finally {
+      await ws.close()
+    }
+  })
 })

@@ -48,10 +48,11 @@ async def readdir(
             listing = await index.list_dir(virtual_key)
     if listing.entries is not None:
         return listing.entries
+    if accessor.truncated and listing.status in (LookupStatus.NOT_FOUND,
+                                                 LookupStatus.EXPIRED):
+        return await _fallback_readdir(accessor, virtual_key, index, virtual,
+                                       prefix)
     if listing.status == LookupStatus.NOT_FOUND:
-        if accessor.truncated:
-            return await _fallback_readdir(accessor, virtual_key, index,
-                                           virtual, prefix)
         raise enoent(virtual)
     return []
 
