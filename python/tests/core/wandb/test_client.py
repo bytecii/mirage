@@ -2,11 +2,46 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
+from aioresponses import aioresponses
+from pydantic import SecretStr
 
 from mirage.core.api.client import SessionPool
 from mirage.core.wandb.client import WandbClient
 from mirage.core.wandb.config import WandbConfig
 from mirage.core.wandb.errors import WandbAPIError
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("base", "target", "authenticated"), [
+    ("https://api.test:443", "https://api.test/file", True),
+    ("https://API.TEST", "https://api.test/file", True),
+    ("https://api.test", "https://API.TEST:443/file", True),
+    ("http://API.TEST:80", "http://api.test/file", True),
+    ("https://API.TEST:8443", "https://api.test:8443/file", True),
+    ("https://api.test", "/files/a", True),
+    ("https://api.test", "https://storage.test/file", False),
+    ("https://api.test", "http://api.test/file", False),
+    ("https://api.test", "https://api.test:8443/file", False),
+    ("https://api.test:8443", "https://api.test/file", False),
+])
+async def test_download_auth_uses_normalized_origin(
+        base: str, target: str, authenticated: bool) -> None:
+    pool = SessionPool()
+    client = WandbClient(
+        WandbConfig(entities=["lab"],
+                    base_url=base,
+                    api_key=SecretStr("fixture-key")), pool)
+    try:
+        with aioresponses() as mocked:
+            mocked.get(base + target if target.startswith("/") else target,
+                       body=b"file bytes")
+            assert b"".join([chunk async for chunk in client.download(target)
+                             ]) == b"file bytes"
+            call = next(iter(mocked.requests.values()))[0]
+            assert call.kwargs["headers"] == (client.headers()
+                                              if authenticated else {})
+    finally:
+        await pool.close()
 
 
 def connection(cursor: str | None, more: bool) -> dict:

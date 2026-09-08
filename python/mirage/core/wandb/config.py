@@ -1,8 +1,17 @@
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, SecretStr
 
-Name = Annotated[str, Field(pattern=r"^[^/\\]+$", min_length=1)]
+
+def entity_name(value: str) -> str:
+    if value in (".", ".."):
+        raise ValueError("entity must be a filesystem name")
+    return value
+
+
+Name = Annotated[str,
+                 Field(pattern=r"^[^/\\\x00]+$", min_length=1),
+                 AfterValidator(entity_name)]
 
 
 class WandbConfig(BaseModel):

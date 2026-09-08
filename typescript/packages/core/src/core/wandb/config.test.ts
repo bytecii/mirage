@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { normalizeWandbConfig, redactWandbConfig } from './config.ts'
+import { safeName } from './pathing.ts'
 describe('W&B config', () => {
+  it.each(['', '.', '..', '\0', 'a\0b', 'a/b', 'a\\b', 'lab', '.lab', 'a..b', '...', 'café'])(
+    'matches filesystem validation for entity %j',
+    (name) => {
+      if (safeName(name))
+        expect(normalizeWandbConfig({ entities: [name] }).entities).toEqual([name])
+      else expect(() => normalizeWandbConfig({ entities: [name] })).toThrow()
+    },
+  )
   it.each([
     { entities: [] },
     { entities: ['a/b'] },

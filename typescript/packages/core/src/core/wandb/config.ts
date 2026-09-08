@@ -14,7 +14,8 @@ export const WandbConfigSchema = z
         z
           .string()
           .min(1)
-          .regex(/^[^/\\]+$/),
+          .regex(/^[^/\\\0]+$/)
+          .refine((value) => !['.', '..'].includes(value)),
       )
       .min(1),
     apiKey: secretStr().default(''),

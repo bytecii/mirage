@@ -14,6 +14,35 @@ function client(options: Record<string, unknown> = {}) {
   return new WandbClient(normalizeWandbConfig({ entities: ['lab'], ...options }))
 }
 describe('W&B client', () => {
+  it.each([
+    ['https://api.test:443', 'https://api.test/file', true],
+    ['https://API.TEST', 'https://api.test/file', true],
+    ['https://api.test', 'https://API.TEST:443/file', true],
+    ['http://API.TEST:80', 'http://api.test/file', true],
+    ['https://API.TEST:8443', 'https://api.test:8443/file', true],
+    ['https://api.test', '/files/a', true],
+    ['https://api.test', 'https://storage.test/file', false],
+    ['https://api.test', 'http://api.test/file', false],
+    ['https://api.test', 'https://api.test:8443/file', false],
+    ['https://api.test:8443', 'https://api.test/file', false],
+  ] as const)(
+    'compares normalized download origins: %s -> %s',
+    async (base_url, target, authenticated) => {
+      const c = client({ base_url, api_key: 'fixture-key' })
+      const request = vi.fn<typeof fetch>().mockResolvedValue(new Response('file bytes'))
+      vi.stubGlobal('fetch', request)
+      try {
+        const chunks = []
+        for await (const chunk of c.download(target)) chunks.push(new TextDecoder().decode(chunk))
+        expect(chunks.join('')).toBe('file bytes')
+        expect(request).toHaveBeenCalledExactlyOnceWith(new URL(target, base_url + '/'), {
+          headers: authenticated ? c.headers() : {},
+        })
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    },
+  )
   it.each([undefined, 'fixture-key'])('sends JSON with api_key=%s', async (api_key) => {
     const request = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
       const sent = new Request(input, init)
