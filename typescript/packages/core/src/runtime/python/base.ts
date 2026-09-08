@@ -47,6 +47,8 @@ export abstract class PythonRuntime extends LanguageRuntime {
     signal?: AbortSignal,
     timeoutSeconds?: number,
   ): Promise<RunResult> {
+    // Process runtimes must supply a probe that cannot run startup hooks.
+    if (this.reach !== 'vfs') return super.version(env, signal, timeoutSeconds)
     return this.run({
       code: `import sys\nprint('Python ' + sys.version.split()[0] + ${JSON.stringify(this.versionSuffix)})`,
       args: [],

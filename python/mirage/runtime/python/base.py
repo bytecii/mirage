@@ -39,6 +39,9 @@ class PythonRuntime(LanguageRuntime):
     version_suffix: ClassVar[str] = ""
 
     async def version(self, env: dict[str, str]) -> RunResult:
+        # Process runtimes must supply a probe that cannot run startup hooks.
+        if self.reach != "vfs":
+            return await super().version(env)
         return await self.run(
             RunArgs(code=("import sys\n"
                           "print('Python ' + sys.version.split()[0] + "
