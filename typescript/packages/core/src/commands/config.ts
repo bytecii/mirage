@@ -283,12 +283,17 @@ export function versionRequest(
   spec: CommandSpec | null,
   argv: string[],
 ): Uint8Array | null {
-  if (!spec?.options.some((o) => o === VERSION_OPTION)) return null
+  if (!hasInjectedVersion(spec)) return null
   for (const arg of argv) {
     if (arg === '--') return null
     if (arg === '--version') return HELP_ENC.encode(versionLine(name))
   }
   return null
+}
+
+/** Whether the wrapper supplies this spec's version response. */
+export function hasInjectedVersion(spec: CommandSpec | null): boolean {
+  return spec?.options.some((o) => o === VERSION_OPTION) ?? false
 }
 
 /**
