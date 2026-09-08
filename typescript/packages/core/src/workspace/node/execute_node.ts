@@ -87,7 +87,7 @@ import {
   visibleEnv,
 } from '../session/state.ts'
 import { Channel, type JobConsole } from '../../shell/console/index.ts'
-import { type ExecuteNodeOpts, pump } from '../executor/jobs.ts'
+import { type ExecuteNodeOpts, pump, runStatement } from '../executor/jobs.ts'
 
 const STREAMING_KINDS: ReadonlySet<NodeKind> = new Set([
   NodeKind.PROGRAM,
@@ -741,7 +741,17 @@ async function executeNodeBody(
     let lastExec = new ExecutionNode({ command: '{}', exitCode: 0 })
     for (const child of node.namedChildren) {
       if (child.type === NT.COMMENT) continue
-      const [rawStdout, io, execNode] = await stream(child, session, stdin, callStack)
+      const [rawStdout, io, execNode] = await runStatement(
+        stream,
+        child,
+        session,
+        stdin,
+        callStack,
+        jobTable,
+        agentId,
+        deps.handed ?? null,
+        registry.decisions,
+      )
       lastExec = execNode
       const stdout = await finishStatement(rawStdout, io, session, child)
       if (stdout !== null) allStdout.push(stdout)
@@ -766,14 +776,37 @@ async function executeNodeBody(
 
   if (kind === NodeKind.IF) {
     const [branches, elseBody] = getIfBranches(node)
-    return handleIf(stream, branches, elseBody, session, stdin, callStack)
+    return handleIf(
+      stream,
+      branches,
+      elseBody,
+      session,
+      stdin,
+      callStack,
+      jobTable,
+      agentId,
+      deps.handed ?? null,
+      registry.decisions,
+    )
   }
 
   if (kind === NodeKind.CFOR) {
     const [exprs, body] = getCforParts(node)
     const evalExpr: CforEval = (e, d) =>
       evalCforExpr(e, d, session, executeFn, callStack, sessionView(session, registry.policies))
-    return handleCfor(stream, exprs, body, evalExpr, session, stdin, callStack)
+    return handleCfor(
+      stream,
+      exprs,
+      body,
+      evalExpr,
+      session,
+      stdin,
+      callStack,
+      jobTable,
+      agentId,
+      deps.handed ?? null,
+      registry.decisions,
+    )
   }
 
   if (kind === NodeKind.FOR || kind === NodeKind.SELECT) {
@@ -806,17 +839,56 @@ async function executeNodeBody(
         stdin,
         callStack,
         registry.policies,
+        jobTable,
+        agentId,
+        deps.handed ?? null,
+        registry.decisions,
       )
     }
-    return handleFor(stream, variable, resolved, body, session, stdin, callStack, registry.policies)
+    return handleFor(
+      stream,
+      variable,
+      resolved,
+      body,
+      session,
+      stdin,
+      callStack,
+      registry.policies,
+      jobTable,
+      agentId,
+      deps.handed ?? null,
+      registry.decisions,
+    )
   }
 
   if (kind === NodeKind.WHILE || kind === NodeKind.UNTIL) {
     const [condition, body] = getWhileParts(node)
     if (kind === NodeKind.UNTIL) {
-      return handleUntil(stream, condition, body, session, stdin, callStack)
+      return handleUntil(
+        stream,
+        condition,
+        body,
+        session,
+        stdin,
+        callStack,
+        jobTable,
+        agentId,
+        deps.handed ?? null,
+        registry.decisions,
+      )
     }
-    return handleWhile(stream, condition, body, session, stdin, callStack)
+    return handleWhile(
+      stream,
+      condition,
+      body,
+      session,
+      stdin,
+      callStack,
+      jobTable,
+      agentId,
+      deps.handed ?? null,
+      registry.decisions,
+    )
   }
 
   if (kind === NodeKind.CASE) {
@@ -844,7 +916,18 @@ async function executeNodeBody(
       }
       items.push([patterns, body, terminator])
     }
-    return handleCase(stream, word, items, session, stdin, callStack)
+    return handleCase(
+      stream,
+      word,
+      items,
+      session,
+      stdin,
+      callStack,
+      jobTable,
+      agentId,
+      deps.handed ?? null,
+      registry.decisions,
+    )
   }
 
   if (kind === NodeKind.FUNCTION_DEF) {
