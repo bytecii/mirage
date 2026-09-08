@@ -23,7 +23,7 @@ interface MockPool {
 }
 
 const pools: MockPool[] = []
-const PoolCtor = vi.fn(() => {
+const PoolCtor = vi.fn(function () {
   const pool: MockPool = {
     query: vi.fn((sql: string, params?: unknown[]) => Promise.resolve(handleQuery(sql, params))),
     end: vi.fn(() => Promise.resolve()),

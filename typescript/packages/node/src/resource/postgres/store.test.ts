@@ -18,12 +18,12 @@ import { PostgresStore } from './store.ts'
 
 interface MockPool {
   query: ReturnType<typeof vi.fn>
-  end: ReturnType<typeof vi.fn>
+  end: ReturnType<typeof vi.fn<() => Promise<void>>>
   options: Record<string, unknown>
 }
 
 const pools: MockPool[] = []
-const PoolCtor = vi.fn((options: Record<string, unknown>) => {
+const PoolCtor = vi.fn(function (options: Record<string, unknown>) {
   const pool: MockPool = {
     options,
     query: vi.fn((_sql: string, _params?: unknown[]) =>
@@ -47,7 +47,7 @@ describe('PostgresStore', () => {
   })
 
   afterEach(async () => {
-    await Promise.all(pools.map((p) => p.end() as Promise<void>))
+    await Promise.all(pools.map((p) => p.end()))
   })
 
   it('does not create a pool until first query', () => {
@@ -87,7 +87,7 @@ describe('PostgresStore', () => {
     const store = new PostgresStore(resolvePostgresConfig({ dsn: 'postgres://localhost/acme' }))
     pools.length = 0
     PoolCtor.mockClear()
-    PoolCtor.mockImplementationOnce((options: Record<string, unknown>) => {
+    PoolCtor.mockImplementationOnce(function (options: Record<string, unknown>) {
       const pool: MockPool = {
         options,
         query: vi.fn(() => Promise.resolve({ rows: [{ db: 'acme' }], rowCount: 1 })),

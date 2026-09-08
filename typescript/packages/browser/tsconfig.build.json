@@ -1,5 +1,6 @@
 {
   "extends": "./tsconfig.json",
+  "compilerOptions": { "types": [] },
   "exclude": [
     "src/**/*.test.ts",
     "src/**/_test_utils.ts",

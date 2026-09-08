@@ -25,7 +25,7 @@ interface MockClient {
 
 const clients: MockClient[] = []
 
-const ClientCtor = vi.fn((_uri: string) => {
+const ClientCtor = vi.fn(function (_uri: string) {
   const profilesDocs = [
     { _id: '1', name: 'alice', email: 'alice@example.com' },
     { _id: '2', name: 'bob', email: 'bob@example.com' },

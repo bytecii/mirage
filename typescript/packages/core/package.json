@@ -67,7 +67,7 @@
     "quickjs-emscripten": "^0.32.0",
     "tree-sitter-bash": "^0.25.1",
     "typescript": "^6.0.0",
-    "vitest": "^3.2.6",
+    "vitest": "^4.1.11",
     "e2b": "^2.45.0"
   },
   "dependencies": {

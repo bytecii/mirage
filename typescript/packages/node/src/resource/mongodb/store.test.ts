@@ -18,12 +18,12 @@ import { MongoDBStore } from './store.ts'
 interface MockClient {
   connect: ReturnType<typeof vi.fn>
   db: ReturnType<typeof vi.fn>
-  close: ReturnType<typeof vi.fn>
+  close: ReturnType<typeof vi.fn<() => Promise<void>>>
 }
 
 const clients: MockClient[] = []
 
-const ClientCtor = vi.fn((_uri: string) => {
+const ClientCtor = vi.fn(function (_uri: string) {
   const cursor = {
     sort: vi.fn(() => cursor),
     skip: vi.fn(() => cursor),
@@ -68,12 +68,7 @@ describe('MongoDBStore', () => {
   })
 
   afterEach(async () => {
-    await Promise.all(
-      clients.map((c) => {
-        const ret = c.close() as unknown
-        return ret instanceof Promise ? ret : Promise.resolve(ret)
-      }),
-    )
+    await Promise.all(clients.map((c) => c.close()))
   })
 
   it('does not connect until first method', () => {

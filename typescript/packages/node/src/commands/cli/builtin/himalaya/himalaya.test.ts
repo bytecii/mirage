@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cliSpecFor } from '@struktoai/mirage-core/commands/cli/specs'
 import type { CLIDoors } from '@struktoai/mirage-core/commands/cli/types'
 import { materialize } from '@struktoai/mirage-core/io/types'
@@ -109,6 +109,10 @@ beforeEach(() => {
     append: appendMock,
   } as unknown as Awaited<ReturnType<EmailAccessor['getImap']>>)
   vi.spyOn(EmailAccessor.prototype, 'close').mockResolvedValue()
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
 })
 
 function leaf(...path: string[]) {
