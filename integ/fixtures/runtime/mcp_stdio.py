@@ -12,20 +12,15 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from typing import Any
+from mcp.server.fastmcp import FastMCP
 
-AsyncSandbox: Any
-CommandExitException: Any
-NotFoundException: Any
-try:
-    from e2b import AsyncSandbox as _AsyncSandbox
-    from e2b import CommandExitException as _CommandExitException
-    from e2b import NotFoundException as _NotFoundException
-except ImportError:
-    AsyncSandbox = None
-    CommandExitException = None
-    NotFoundException = None
-else:
-    AsyncSandbox = _AsyncSandbox
-    CommandExitException = _CommandExitException
-    NotFoundException = _NotFoundException
+server = FastMCP("Mirage SSH transport probe")
+
+
+@server.tool()
+def echo(value: str) -> str:
+    return value
+
+
+if __name__ == "__main__":
+    server.run(transport="stdio")

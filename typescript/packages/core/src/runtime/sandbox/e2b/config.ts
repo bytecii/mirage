@@ -12,4 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-export { E2BRuntime, type E2bSdk } from '@struktoai/mirage-core/runtime/sandbox/e2b/runtime'
+import type { SandboxConfig } from '../config.ts'
+
+/** How to reach the user's live E2B sandbox. */
+export interface E2BConfig extends SandboxConfig {
+  /**
+   * Id of a sandbox you created (`e2b sandbox spawn` or the SDK),
+   * with workspace files visible at matching paths when commands need them.
+   */
+  sandboxId: string
+  /** E2B credential; required in browsers; Node falls back to E2B_API_KEY. */
+  apiKey?: string
+}
+
+export const E2B_CONFIG_KEYS: readonly string[] = ['env', 'sandboxId', 'apiKey']
