@@ -659,8 +659,27 @@ class MountCore:
         self._handles.pop(fh)
 
     def truncate(self, path: str, length: int) -> None:
+        """Resize a file, settling every open handle on the same path.
+
+        A write the kernel already acknowledged on another handle precedes
+        this truncation in POSIX order, so it is flushed first rather than
+        left queued to land over the shortened file at that handle's
+        release. Hydrated bytes on other handles are cut to the new length
+        so fstat and read through them stop serving the old body.
+
+        Args:
+            path (str): mount path to resize.
+            length (int): the new byte length.
+        """
+        for ctx in self._handles.values():
+            if ctx.path == path and ctx.write_buf:
+                self._apply_writes(path, ctx.write_buf)
+                ctx.write_buf = []
         self._run(self._ops.truncate(self.resolve(path), length))
         self._prefetch.pop(path, None)
+        for ctx in self._handles.values():
+            if ctx.path == path and ctx.data is not None:
+                ctx.data = ctx.data[:length].ljust(length, b"\0")
 
     def _forget(self, path: str) -> None:
         self._xattrs.pop(path, None)

@@ -329,6 +329,40 @@ describe('MirageFS — size=null resources (API-backed)', () => {
     expect(code).toBe(0)
     expect(attr.size).toBe(bytes.byteLength)
   })
+
+  it('an O_TRUNC open elsewhere cuts the bytes a hydrated handle serves', async () => {
+    // A reader hydrated the file at open; truncation through another
+    // handle must not leave it serving the pre-truncation body.
+    const ws = mkSizeNullWs()
+    const bytes = new TextEncoder().encode('hydrated bytes')
+    await ws.fs.writeFile('/data/api.json', bytes)
+    vi.spyOn(ws.fs, 'stat').mockResolvedValue(
+      new FileStat({ name: 'api.json', type: FileType.FILE, content: ContentType.JSON }),
+    )
+    const mfs = new MirageFS(ws.fs)
+    const [, reader] = await callOp<[number, number]>(mfs, 'open', '/data/api.json', 0)
+    const [, writer] = await callOp<[number, number]>(
+      mfs,
+      'open',
+      '/data/api.json',
+      fsConstants.O_WRONLY | fsConstants.O_TRUNC,
+    )
+    const [code, attr] = await callOp<[number, FuseAttr]>(mfs, 'fgetattr', '/data/api.json', reader)
+    expect(code).toBe(0)
+    expect(attr.size).toBe(0)
+    const [readCode] = await callOp<[number]>(
+      mfs,
+      'read',
+      '/data/api.json',
+      reader,
+      Buffer.alloc(100),
+      100,
+      0,
+    )
+    expect(readCode).toBe(0)
+    await callOp(mfs, 'release', '/data/api.json', writer)
+    await callOp(mfs, 'release', '/data/api.json', reader)
+  })
 })
 
 describe('MirageFS — release flushes pending writes', () => {

@@ -114,6 +114,20 @@ async def test_open_with_o_trunc_drops_the_old_body(seeded):
 
 
 @pytest.mark.asyncio
+async def test_o_trunc_open_settles_writes_buffered_on_another_handle(seeded):
+    # A write the kernel already acknowledged on handle A precedes the
+    # O_TRUNC open on handle B, so it must land before the truncation,
+    # not stay queued to overwrite B's body when A is released.
+    first = seeded.open("/a.txt", os.O_WRONLY)
+    seeded.write("/a.txt", b"QUEUED", 0, first)
+    second = seeded.open("/a.txt", os.O_WRONLY | os.O_TRUNC)
+    seeded.write("/a.txt", b"BB\n", 0, second)
+    seeded.release(second)
+    seeded.release(first)
+    assert seeded.read("/a.txt", 100, 0, None) == b"BB\n"
+
+
+@pytest.mark.asyncio
 async def test_open_without_o_trunc_keeps_the_body(seeded):
     fh = seeded.open("/a.txt", os.O_RDWR)
     seeded.write("/a.txt", b"J", 0, fh)

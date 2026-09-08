@@ -599,6 +599,20 @@ async def test_unknown_size_o_trunc_open_fetches_nothing(sizeless_fs):
 
 
 @pytest.mark.asyncio
+async def test_unknown_size_truncate_cuts_the_hydrated_handle(sizeless_fs):
+    # A reader hydrated the file at open; an O_TRUNC open elsewhere must
+    # not leave that handle serving the pre-truncation bytes.
+    fs, _ = sizeless_fs
+    reader = fs.open("/u.json", os.O_RDONLY)
+    assert fs.getattr("/u.json", reader)["st_size"] == len(_PAYLOAD)
+    writer = fs.open("/u.json", os.O_WRONLY | os.O_TRUNC)
+    assert fs.getattr("/u.json", reader)["st_size"] == 0
+    assert fs.read("/u.json", 100, 0, reader) == b""
+    fs.release("/u.json", writer)
+    fs.release("/u.json", reader)
+
+
+@pytest.mark.asyncio
 async def test_unknown_size_fh_stat_returns_real_size(sizeless_fs):
     fs, _ = sizeless_fs
     fh = fs.open("/u.json", os.O_RDONLY)

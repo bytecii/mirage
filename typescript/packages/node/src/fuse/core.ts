@@ -439,6 +439,17 @@ export class MountCore {
   }
 
   async truncate(path: string, size: number): Promise<void> {
+    // A write the kernel already acknowledged on another handle precedes
+    // this truncation in POSIX order, so it is flushed first rather than
+    // left queued to land over the shortened file at that handle's
+    // release. Mirrors Python's MountCore.truncate.
+    for (const ctx of this.handles.values()) {
+      if (ctx.path === path && ctx.writeBuf !== undefined && ctx.writeBuf.length > 0) {
+        const writes = ctx.writeBuf
+        ctx.writeBuf = []
+        await this.applyWrites(path, writes)
+      }
+    }
     // Prefer the resource's dedicated `truncate` op (atomic on most
     // backends). Fall back to read/resize/write for resources that don't
     // expose one.
@@ -454,6 +465,15 @@ export class MountCore {
       await this.writeFile(path, out)
     }
     this.prefetchCache.delete(path)
+    // Hydrated bytes on other handles are cut to the new length so fstat
+    // and read through them stop serving the old body.
+    for (const ctx of this.handles.values()) {
+      if (ctx.path === path && ctx.data !== undefined) {
+        const cut = new Uint8Array(size)
+        cut.set(ctx.data.subarray(0, Math.min(ctx.data.byteLength, size)), 0)
+        ctx.data = cut
+      }
+    }
   }
 
   statfs(): Record<string, number> {

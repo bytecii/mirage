@@ -165,6 +165,23 @@ describe('MountCore', () => {
     expect(new TextDecoder().decode(body)).toBe('BB\n')
   })
 
+  it('settles writes buffered on another handle before an O_TRUNC open truncates', async () => {
+    // A write the kernel already acknowledged on handle A precedes the
+    // O_TRUNC open on handle B, so it must land before the truncation,
+    // not stay queued to overwrite B's body when A is released.
+    const core = await mkCore()
+    const first = await core.open('/data/greeting.txt', fsConstants.O_WRONLY)
+    await core.write('/data/greeting.txt', first, new TextEncoder().encode('QUEUED'), 0)
+    const second = await core.open('/data/greeting.txt', fsConstants.O_WRONLY | fsConstants.O_TRUNC)
+    await core.write('/data/greeting.txt', second, new TextEncoder().encode('BB\n'), 0)
+    await core.release(second)
+    await core.release(first)
+    const after = await core.open('/data/greeting.txt')
+    const body = await core.read('/data/greeting.txt', after, 0, 100)
+    await core.release(after)
+    expect(new TextDecoder().decode(body)).toBe('BB\n')
+  })
+
   it('keeps the body when the open carries no O_TRUNC', async () => {
     const core = await mkCore()
     const fh = await core.open('/data/greeting.txt', fsConstants.O_RDWR)
