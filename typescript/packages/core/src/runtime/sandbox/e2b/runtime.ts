@@ -40,8 +40,8 @@ export class E2BRuntime extends RemoteSandbox<E2BConfig> {
 
   constructor(options: RuntimeOptions<E2BConfig> | Record<string, unknown> = {}) {
     super(options, E2B_CONFIG_KEYS)
-    if (!this.config.sandboxId) {
-      throw new Error('e2b config needs sandboxId: the id of a live sandbox you created')
+    if (typeof this.config.sandboxId !== 'string' || !this.config.sandboxId.trim()) {
+      throw new Error('e2b config needs a nonblank sandboxId')
     }
   }
 
@@ -72,9 +72,13 @@ export class E2BRuntime extends RemoteSandbox<E2BConfig> {
     stdin: Uint8Array | null,
     env: Record<string, string>,
     cwd: string,
+    signal?: AbortSignal,
   ): Promise<RunResult> {
+    signal?.throwIfAborted()
     if (this.sandbox === null) throw new Error('e2b sandbox not connected')
     const sdk = await this.ensureSdk()
+    signal?.throwIfAborted()
+    // Keep the startup result even if aborted in flight, so its process can be killed.
     const handle = await this.sandbox.commands.run(line, {
       envs: env,
       cwd,
@@ -83,10 +87,11 @@ export class E2BRuntime extends RemoteSandbox<E2BConfig> {
     })
     let result: Pick<CommandResult, 'stdout' | 'stderr' | 'exitCode'>
     try {
+      signal?.throwIfAborted()
       try {
         if (stdin !== null) {
-          if (stdin.byteLength > 0) await handle.sendStdin(stdin)
-          await handle.closeStdin()
+          if (stdin.byteLength > 0) await this.waitFor(handle.sendStdin(stdin), signal)
+          await this.waitFor(handle.closeStdin(), signal)
         }
       } catch (error) {
         // The command may exit before the input RPC arrives. Wait for its
@@ -95,9 +100,10 @@ export class E2BRuntime extends RemoteSandbox<E2BConfig> {
         // eslint-disable-next-line @typescript-eslint/no-deprecated
         if (!(error instanceof sdk.NotFoundError)) throw error
       }
-      result = await handle.wait()
+      result = await this.waitFor(handle.wait(), signal)
+      signal?.throwIfAborted()
     } catch (error) {
-      if (error instanceof sdk.CommandExitError) {
+      if (!signal?.aborted && error instanceof sdk.CommandExitError) {
         result = error
       } else {
         try {
@@ -105,6 +111,7 @@ export class E2BRuntime extends RemoteSandbox<E2BConfig> {
         } catch (cleanupError) {
           console.warn('Failed to stop the E2B command', cleanupError)
         }
+        if (signal?.aborted) throw new DOMException('execute aborted', 'AbortError')
         throw error
       }
     } finally {

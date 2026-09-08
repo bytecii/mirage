@@ -527,6 +527,7 @@ async function runParsedLine(
         env.registry.allMounts(),
         env.registry.policies,
         () => env.invalidateAllAfterRemote(),
+        killed,
       )
       recordStatus(targetSession, result.exitCode)
       if (isLine) {

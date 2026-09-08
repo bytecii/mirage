@@ -12,7 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { E2BRuntime, MountMode, RAMResource, Workspace } from '@struktoai/mirage-browser'
+import { E2BRuntime, Limit, MountMode, RAMResource, Workspace } from '@struktoai/mirage-browser'
+
+import { exerciseCancellation } from './e2b_cancel.ts'
 
 const dec = new TextDecoder()
 
@@ -108,6 +110,23 @@ export async function exercise(config: { sandboxId: string; apiKey: string }): P
     }
   } finally {
     await runtime.close()
+  }
+  const cancellable = new E2BRuntime({ config })
+  const cancelWorkspace = new Workspace(
+    { '/home/user': new RAMResource() },
+    {
+      mode: MountMode.EXEC,
+      runtimes: [cancellable, 'vfs'],
+      commandLimits: { '/home/user': { exec: new Limit({ timeoutSeconds: 5 }) } },
+    },
+  )
+  try {
+    await exerciseCancellation(cancellable, cancelWorkspace)
+    checks.push(
+      'caller cancellation and workspace timeout stop the PID and preserve concurrent commands',
+    )
+  } finally {
+    await cancelWorkspace.close()
   }
   return checks
 }

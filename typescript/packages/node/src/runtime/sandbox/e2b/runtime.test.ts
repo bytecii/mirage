@@ -13,7 +13,10 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { buildRuntime } from '@struktoai/mirage-core/runtime/table'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Workspace } from '../../../workspace.ts'
+import { RAMResource } from '@struktoai/mirage-core/resource/ram/ram'
+import { Limit, MountMode } from '@struktoai/mirage-core/types'
 import { E2BRuntime, type E2bSdk } from './runtime.ts'
 
 const DEC = new TextDecoder()
@@ -49,6 +52,8 @@ class FakeHandle {
     return Promise.resolve()
   }
   wait() {
+    if (this.command === 'sleep')
+      return new Promise<{ stdout: string; stderr: string; exitCode: number }>(() => undefined)
     if (this.command === 'exit 3')
       return Promise.reject(new FakeExitError(3, 'partial', 'boom-err'))
     expect(this.eof).toBe(true)
@@ -113,6 +118,7 @@ function makeRuntime() {
 
 beforeEach(() => {
   FakeSandbox.connected = []
+  vi.restoreAllMocks()
 })
 
 describe('E2BRuntime', () => {
@@ -192,5 +198,150 @@ describe('E2BRuntime', () => {
     const runtime = buildRuntime('e2b', { config: { sandboxId: 'sb-live' } })
     expect(runtime).toBeInstanceOf(E2BRuntime)
     expect(runtime.captures).toEqual(['*'])
+  })
+})
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: Error) => void
+  const promise = new Promise<T>((ok, fail) => {
+    resolve = ok
+    reject = fail
+  })
+  return { promise, resolve, reject }
+}
+
+describe('E2B cancellation and validation', () => {
+  it.each([null, '', ' \t\n', 0, 1, false, [], {}].map((sandboxId) => ({ sandboxId })))(
+    'rejects an invalid sandbox id before connecting: $sandboxId',
+    ({ sandboxId }) => {
+      expect(() => new E2BRuntime({ config: { sandboxId } })).toThrow('nonblank sandboxId')
+      expect(FakeSandbox.connected).toEqual([])
+    },
+  )
+
+  it('does not connect for an already aborted call', async () => {
+    const abort = new AbortController()
+    abort.abort()
+    await expect(makeRuntime().runLine('cat', null, {}, '/', abort.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    expect(FakeSandbox.connected).toEqual([])
+  })
+
+  it('cancels one connection waiter without cancelling another', async () => {
+    const connection = deferred<FakeSandbox>()
+    const connect = vi.spyOn(FakeSandbox, 'connect').mockReturnValue(connection.promise)
+    const runtime = makeRuntime()
+    const abort = new AbortController()
+    const cancelled = runtime.runLine('sleep', null, {}, '/', abort.signal)
+    const rejected = expect(cancelled).rejects.toMatchObject({ name: 'AbortError' })
+    const other = runtime.runLine('cat', new Uint8Array([7]), {}, '/')
+    abort.abort()
+    await rejected
+    const sandbox = new FakeSandbox()
+    connection.resolve(sandbox)
+    expect(DEC.decode((await other).stdout)).toBe('07')
+    expect(connect).toHaveBeenCalledTimes(1)
+    expect(sandbox.commands.calls).toHaveLength(1)
+  })
+
+  it('kills a handle that arrives after startup was aborted', async () => {
+    const runtime = makeRuntime()
+    await runtime.connect()
+    const startup = deferred<FakeHandle>()
+    const start = vi.spyOn(FakeSandbox.last.commands, 'run').mockReturnValue(startup.promise)
+    const abort = new AbortController()
+    const cancelled = runtime.execLine('sleep', null, {}, '/', abort.signal)
+    const rejected = expect(cancelled).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.waitFor(() => {
+      expect(start).toHaveBeenCalledOnce()
+    })
+    abort.abort()
+    const handle = new FakeHandle('sleep', true)
+    startup.resolve(handle)
+    await rejected
+    expect(handle).toMatchObject({ killed: true, disconnected: true })
+  })
+
+  it('cancels an in-flight stdin write and removes its abort listener', async () => {
+    const input = deferred<undefined>()
+    const send = vi.spyOn(FakeHandle.prototype, 'sendStdin').mockReturnValue(input.promise)
+    const runtime = makeRuntime()
+    const abort = new AbortController()
+    const added = vi.spyOn(abort.signal, 'addEventListener')
+    const removed = vi.spyOn(abort.signal, 'removeEventListener')
+    const cancelled = runtime.runLine('cat', new Uint8Array([1]), {}, '/', abort.signal)
+    const rejected = expect(cancelled).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalledOnce()
+    })
+    abort.abort()
+    await rejected
+    expect(FakeSandbox.last.commands.handles[0]).toMatchObject({ killed: true, disconnected: true })
+    expect(removed).toHaveBeenCalledTimes(added.mock.calls.length)
+    input.reject(new Error('late input failure'))
+  })
+
+  it('stops only the cancelled command and keeps the sandbox usable', async () => {
+    const runtime = makeRuntime()
+    const abort = new AbortController()
+    const cancelled = runtime.runLine('sleep', null, {}, '/', abort.signal)
+    const rejected = expect(cancelled).rejects.toMatchObject({ name: 'AbortError' })
+    const other = runtime.runLine('cat', new Uint8Array([9]), {}, '/')
+    await vi.waitFor(() => {
+      expect(FakeSandbox.last.commands.handles).toHaveLength(2)
+    })
+    abort.abort()
+    await rejected
+    expect(DEC.decode((await other).stdout)).toBe('09')
+    expect(FakeSandbox.last.commands.handles.find((h) => h.command === 'sleep')).toMatchObject({
+      killed: true,
+      disconnected: true,
+    })
+    expect(FakeSandbox.last.commands.handles.find((h) => h.command === 'cat')).toMatchObject({
+      killed: false,
+      disconnected: true,
+    })
+    expect((await runtime.runLine('cat', null, {}, '/')).exitCode).toBe(0)
+    expect(FakeSandbox.connected).toHaveLength(1)
+  })
+
+  it.each(['caller', 'timeout'])('propagates %s cancellation from a workspace', async (kind) => {
+    const runtime = makeRuntime()
+    const abort = new AbortController()
+    const workspace = new Workspace(
+      { '/data': new RAMResource() },
+      {
+        mode: MountMode.EXEC,
+        runtimes: [runtime, 'vfs'],
+        ...(kind === 'timeout'
+          ? { commandLimits: { '/data': { sleep: new Limit({ timeoutSeconds: 0.05 }) } } }
+          : {}),
+      },
+    )
+    try {
+      const run = workspace.execute('sleep', { signal: abort.signal })
+      if (kind === 'caller') {
+        const rejected = expect(run).rejects.toMatchObject({ name: 'AbortError' })
+        await vi.waitFor(() => {
+          expect(FakeSandbox.last.commands.handles).toHaveLength(1)
+        })
+        abort.abort()
+        await rejected
+      } else {
+        const result = await run
+        expect(result.exitCode).toBe(124)
+        expect(result.stderrText).toContain('timed out')
+      }
+      await vi.waitFor(() => {
+        expect(FakeSandbox.last.commands.handles[0]).toMatchObject({
+          killed: true,
+          disconnected: true,
+        })
+      })
+    } finally {
+      await workspace.close()
+    }
   })
 })

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import pytest
 from e2b import CommandExitException, NotFoundException
 
-from mirage.runtime.sandbox.e2b import E2BRuntime, sdk
+from mirage.runtime.sandbox.e2b import E2BConfig, E2BRuntime, sdk
 
 
 @dataclass
@@ -196,3 +196,12 @@ async def test_missing_sdk_fails_with_install_hint(monkeypatch):
     runtime = E2BRuntime(config={"sandbox_id": "sb-live"})
     with pytest.raises(ImportError, match=r"mirage-ai\[e2b\]"):
         await runtime.connect()
+
+
+@pytest.mark.parametrize("value", [None, "", " \t\n", 0, 1, False, [], {}])
+def test_invalid_sandbox_id_is_rejected_before_connecting(value):
+    with pytest.raises(ValueError, match="nonblank sandbox_id"):
+        E2BConfig(sandbox_id=value)
+    with pytest.raises(ValueError, match="nonblank sandbox_id"):
+        E2BRuntime(config={"sandbox_id": value})
+    assert FakeSandbox.connected == []

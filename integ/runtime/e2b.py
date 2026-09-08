@@ -20,6 +20,7 @@ import os
 import shlex
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 import asyncssh
@@ -28,7 +29,8 @@ from e2b import AsyncSandbox
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosedError
 
-from mirage import MountMode, Workspace
+from mirage import Limit, MountMode, Workspace
+from mirage.resource.ram import RAMResource
 from mirage.resource.ssh import SSHConfig, SSHResource
 from mirage.runtime.sandbox.e2b import E2BRuntime
 from mirage.runtime.sandbox.ssh import SSHRuntime
@@ -110,6 +112,66 @@ async def exercise(runtime, label):
            seconds=round(time.monotonic() - start, 2))
 
 
+async def wait_for_remote(runtime, command):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        result = await runtime.run_line(command, None, {}, '/home/user')
+        if result.exit_code == 0:
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError(
+        'Remote cancellation check did not reach the expected process state')
+
+
+async def exercise_cancellation(runtime):
+    workspace = Workspace(
+        {
+            '/home/user': (RAMResource(), MountMode.EXEC, {
+                'exec': Limit(timeout_seconds=5)
+            })
+        },
+        mode=MountMode.EXEC,
+        runtimes=[runtime, 'vfs'])
+    try:
+        for mode in ('caller', 'timeout'):
+            path = f'/home/user/mirage-cancel-{uuid.uuid4().hex}.pid'
+            code = ('import os,time; from pathlib import Path; '
+                    f'Path("{path}").write_text(str(os.getpid())); '
+                    'time.sleep(60)')
+            task = asyncio.create_task(
+                workspace.execute(f'exec python3 -c {shlex.quote(code)}',
+                                  cwd='/home/user'))
+            try:
+                await wait_for_remote(runtime, f'test -s {path}')
+                survivor = asyncio.create_task(
+                    runtime.run_line('sleep 1; printf survivor', None, {},
+                                     '/home/user'))
+                if mode == 'caller':
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        assert task.cancelled()
+                    else:
+                        raise AssertionError(
+                            'Cancelled command returned successfully')
+                else:
+                    assert (await task).exit_code == 124
+                await wait_for_remote(runtime,
+                                      f'! kill -0 $(cat {path}) 2>/dev/null')
+                assert (await survivor).stdout == b'survivor'
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                await runtime.run_line(
+                    f'if test -s {path}; then kill -9 $(cat {path}) '
+                    f'2>/dev/null || true; fi; rm -f {path}', None, {},
+                    '/home/user')
+        passed('python_e2b_caller_and_timeout_kill_pid')
+    finally:
+        await workspace.close()
+
+
 async def main():
     load_dotenv(find_dotenv('.env.development', usecwd=True))
     key = os.environ['E2B_API_KEY']
@@ -125,6 +187,7 @@ async def main():
             'api_key': key
         })
         await exercise(e2b, 'python_e2b')
+        await exercise_cancellation(e2b)
         passed('bootstrap_started')
         install = await sandbox.commands.run(
             'sudo apt-get update -qq && '

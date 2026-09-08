@@ -30,3 +30,7 @@ class E2BConfig(SandboxConfig):
 
     sandbox_id: str
     api_key: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.sandbox_id, str) or not self.sandbox_id.strip():
+            raise ValueError("e2b config needs a nonblank sandbox_id")

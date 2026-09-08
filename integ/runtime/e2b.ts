@@ -16,9 +16,12 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { Workspace } from '../../typescript/packages/node/src/workspace.ts'
 import { SSHResource } from '../../typescript/packages/node/src/resource/ssh/ssh.ts'
-import { MountMode } from '../../typescript/packages/core/src/types.ts'
+import { Limit, MountMode } from '../../typescript/packages/core/src/types.ts'
 import { E2BRuntime } from '../../typescript/packages/node/src/runtime/sandbox/e2b/runtime.ts'
 import { SSHRuntime } from '../../typescript/packages/node/src/runtime/sandbox/ssh/runtime.ts'
+
+import { RAMResource } from '../../typescript/packages/core/src/resource/ram/ram.ts'
+import { exerciseCancellation } from '../fixtures/runtime/e2b_cancel.ts'
 
 const dec = new TextDecoder()
 const hash = (data: Uint8Array) => createHash('sha256').update(data).digest('hex')
@@ -75,6 +78,20 @@ const sshConfig = {
 const ssh = new SSHRuntime({ captures: ['python3'], config: sshConfig })
 try {
   await exercise(e2b, 'typescript_e2b')
+  const cancelWorkspace = new Workspace(
+    { '/home/user': new RAMResource() },
+    {
+      mode: MountMode.EXEC,
+      runtimes: [e2b, 'vfs'],
+      commandLimits: { '/home/user': { exec: new Limit({ timeoutSeconds: 5 }) } },
+    },
+  )
+  try {
+    await exerciseCancellation(e2b, cancelWorkspace)
+    console.log(JSON.stringify({ check: 'typescript_e2b_caller_and_timeout_kill_pid' }))
+  } finally {
+    await cancelWorkspace.close()
+  }
   await exercise(ssh, 'typescript_ssh')
   const ws = new Workspace(
     { '/home/user/work': new SSHResource({ ...sshConfig, root: '/home/user/work' }) },
