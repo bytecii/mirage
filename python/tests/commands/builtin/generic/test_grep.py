@@ -238,7 +238,7 @@ async def test_grep_recursive_finds_files_in_subdirs():
 
 
 @pytest.mark.asyncio
-async def test_grep_recursive_single_file_prefixes_filename():
+async def test_grep_recursive_single_file_keeps_single_file_output():
     readdir, stat, rb, rs = _make_backend({
         "/log.txt":
         b"one\nerror here\ntwo\nerror again\n",
@@ -256,7 +256,7 @@ async def test_grep_recursive_single_file_prefixes_filename():
         read_stream=rs,
     )
     decoded = (await _drain_async(output)).decode()
-    assert decoded == "/log.txt:2:error here\n/log.txt:4:error again\n"
+    assert decoded == "2:error here\n4:error again\n"
 
 
 @pytest.mark.asyncio

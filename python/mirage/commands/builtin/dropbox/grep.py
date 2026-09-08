@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from dataclasses import replace
+
 from mirage.accessor.dropbox import DropboxAccessor
 from mirage.commands.builtin.dropbox.pushdown import narrow_scope
 from mirage.commands.builtin.generic.grep import grep as generic_grep
@@ -50,10 +52,14 @@ async def grep(accessor: DropboxAccessor, paths: list[PathSpec],
             fixed_string=fl.as_bool("F"),
             recursive=fl.as_bool("r") or fl.as_bool("R"),
             whole_word=fl.as_bool("w"),
-            exact_file_set=fl.as_bool("v") or fl.as_bool("c"),
+            exact_file_set=fl.as_bool("v") or fl.as_bool("c")
+            or fl.as_bool("text") or fl.as_str("binary_files") == "text",
         )
         if used_search and not resolved:
             return b"", IOResult(exit_code=1)
+
+    if used_search:
+        opts = replace(opts, flags={**(opts.flags or {}), "H": True})
 
     return await generic_grep(
         resolved,

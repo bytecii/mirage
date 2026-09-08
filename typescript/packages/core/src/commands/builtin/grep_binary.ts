@@ -1,0 +1,237 @@
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+import { byteChar, encodeText } from '../../shell/bytes.ts'
+import { closeQuietly } from '../../io/stream.ts'
+import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
+import type { IOResult } from '../../io/types.ts'
+import type { WalkFilters } from './grep_select.ts'
+
+const ENC = new TextEncoder()
+const DEC = new TextDecoder('utf-8', { ignoreBOM: true })
+
+export interface FlagSet {
+  filters: WalkFilters
+  binaryMode: string
+  recursive: boolean
+  ignoreCase: boolean
+  invert: boolean
+  lineNumbers: boolean
+  countOnly: boolean
+  filesOnly: boolean
+  wholeWord: boolean
+  fixedString: boolean
+  basicRegexp: boolean
+  onlyMatching: boolean
+  maxCount: number | null
+  quiet: boolean
+  withFilename: boolean
+  noFilename: boolean
+  afterContext: number
+  beforeContext: number
+}
+
+export class BinaryInput {
+  nul = false
+  constructor(readonly mode: string) {}
+
+  async *read(source: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
+    for await (const chunk of binaryBlocks(source)) {
+      if (this.mode !== 'text' && chunk.includes(0)) {
+        this.nul = true
+        if (this.mode === 'without-match') return
+      }
+      yield this.nul ? chunk.map((byte) => (byte === 0 ? 10 : byte)) : chunk
+    }
+  }
+}
+
+export function validUtf8(data: Uint8Array): boolean {
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(data)
+    return true
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error
+    return false
+  }
+}
+
+function outputLine(
+  raw: Uint8Array,
+  number: number,
+  selected: boolean,
+  path: string,
+  showFilename: boolean,
+  f: FlagSet,
+): Uint8Array {
+  const separator = selected ? ':' : '-'
+  const prefix = ENC.encode(
+    (showFilename ? path + separator : '') + (f.lineNumbers ? String(number) + separator : ''),
+  )
+  const out = new Uint8Array(prefix.length + raw.length + 1)
+  out.set(prefix)
+  out.set(raw, prefix.length)
+  out[out.length - 1] = 10
+  return out
+}
+
+export async function* grepInput(
+  source: AsyncIterable<Uint8Array>,
+  pat: RegExp,
+  f: FlagSet,
+  path: string,
+  showFilename: boolean,
+  io: IOResult,
+): AsyncIterable<Uint8Array> {
+  io.exitCode = 1
+  pat = utf8Pattern(pat)
+  const binary = new BinaryInput(f.binaryMode)
+  let count = 0
+  let notified = false
+  const previous: [number, Uint8Array][] = []
+  let lastPrinted = 0
+  let afterUntil = 0
+  const hasContext = (f.afterContext > 0 || f.beforeContext > 0) && !f.onlyMatching
+  if (f.maxCount === 0) {
+    if (f.countOnly && !(f.quiet || f.filesOnly))
+      yield ENC.encode((showFilename ? path + ':' : '') + '0\n')
+    return
+  }
+  let number = 0
+  const input = binary.read(source)
+  try {
+    for await (const raw of new AsyncLineIterator(input)) {
+      if (binary.nul && f.binaryMode === 'without-match') break
+      number += 1
+      const line = decodeLine(raw)
+      let hit = pat.test(line) !== f.invert
+      if (f.maxCount !== null && count >= f.maxCount) hit = false
+      if (hit) {
+        count += 1
+        io.exitCode = 0
+        if (f.quiet) return
+        if (f.filesOnly) {
+          yield ENC.encode(path + '\n')
+          return
+        }
+      }
+      if (f.countOnly) {
+        if (f.maxCount !== null && count >= f.maxCount) break
+        continue
+      }
+      const chunks: Uint8Array[] = []
+      if (hit) {
+        if (f.onlyMatching) {
+          if (!f.invert) {
+            const re = new RegExp(pat.source, pat.flags.includes('g') ? pat.flags : pat.flags + 'g')
+            for (const m of line.matchAll(re)) {
+              if (m[0] !== '')
+                chunks.push(outputLine(encodeText(m[0]), number, true, path, showFilename, f))
+            }
+          }
+        } else {
+          if (hasContext) {
+            const pending = previous.filter(([n]) => n > lastPrinted)
+            const first = pending[0]?.[0] ?? number
+            if (lastPrinted && first > lastPrinted + 1) chunks.push(ENC.encode('--\n'))
+            for (const [n, data] of pending)
+              chunks.push(outputLine(data, n, false, path, showFilename, f))
+          }
+          chunks.push(outputLine(raw, number, true, path, showFilename, f))
+          lastPrinted = number
+          afterUntil = number + f.afterContext
+        }
+      } else if (hasContext && number <= afterUntil) {
+        chunks.push(outputLine(raw, number, false, path, showFilename, f))
+        lastPrinted = number
+      }
+      for (const chunk of chunks) {
+        if (f.binaryMode !== 'text' && (binary.nul || !validUtf8(chunk))) {
+          if (f.binaryMode === 'binary' && !notified) {
+            const old = io.stderr instanceof Uint8Array ? io.stderr : new Uint8Array()
+            const notice = ENC.encode(`grep: ${path}: binary file matches\n`)
+            const err = new Uint8Array(old.length + notice.length)
+            err.set(old)
+            err.set(notice, old.length)
+            io.stderr = err
+            notified = true
+          }
+          continue
+        }
+        yield chunk
+      }
+      if (binary.nul && count && f.binaryMode === 'binary') return
+      previous.push([number, raw])
+      if (previous.length > f.beforeContext) previous.shift()
+      if (f.maxCount !== null && count >= f.maxCount && number >= afterUntil) break
+    }
+  } finally {
+    await closeQuietly(input)
+    await closeQuietly(source)
+  }
+
+  if (f.countOnly && !(f.quiet || f.filesOnly))
+    yield ENC.encode((showFilename ? path + ':' : '') + String(count) + '\n')
+}
+
+async function* binaryBlocks(source: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
+  // Inspect available bytes without pulling ahead from a remote row stream.
+  // Like GNU, detection can suppress only input not already emitted.
+  for await (const chunk of source) {
+    for (let offset = 0; offset < chunk.length; offset += 32768)
+      yield chunk.subarray(offset, offset + 32768)
+  }
+}
+
+function decodeLine(raw: Uint8Array): string {
+  if (validUtf8(raw)) return DEC.decode(raw)
+  let text = ''
+  for (let i = 0; i < raw.length; ) {
+    const byte = raw[i]
+    if (byte === undefined) break
+    const width = byte < 0x80 ? 1 : byte < 0xe0 ? 2 : byte < 0xf0 ? 3 : 4
+    const part = raw.subarray(i, i + width)
+    if (part.length === width && validUtf8(part)) {
+      text += DEC.decode(part)
+      i += width
+    } else {
+      text += byteChar(byte)
+      i += 1
+    }
+  }
+  return text
+}
+
+function utf8Pattern(pat: RegExp): RegExp {
+  let pattern = ''
+  let escaped = false
+  let inClass = false
+  for (const char of pat.source) {
+    if (escaped) {
+      pattern += char
+      escaped = false
+    } else if (char === '\\') {
+      pattern += char
+      escaped = true
+    } else if (char === '[') {
+      pattern += char
+      inClass = true
+    } else if (char === ']') {
+      pattern += char
+      inClass = false
+    } else if (char === '.' && !inClass) pattern += '[^\\n\\udc80-\\udcff]'
+    else pattern += char
+  }
+  return new RegExp(pattern, pat.flags)
+}

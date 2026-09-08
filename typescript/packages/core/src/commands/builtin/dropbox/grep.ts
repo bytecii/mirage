@@ -41,10 +41,15 @@ async function grepCommand(
       fixedString: fl.asBool('F'),
       recursive: fl.asBool('r') || fl.asBool('R'),
       wholeWord: fl.asBool('w'),
-      exactFileSet: fl.asBool('v') || fl.asBool('c'),
+      exactFileSet:
+        fl.asBool('v') ||
+        fl.asBool('c') ||
+        fl.asBool('text') ||
+        fl.asStr('binary_files') === 'text',
       ...(opts.index !== null ? { index: opts.index } : {}),
     })
     resolved = narrowed.resolved
+    if (narrowed.usedSearch) opts = { ...opts, flags: { ...opts.flags, H: true } }
     if (narrowed.usedSearch && resolved.length === 0) {
       return [new Uint8Array(), new IOResult({ exitCode: 1 })]
     }

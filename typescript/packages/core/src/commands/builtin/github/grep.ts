@@ -51,7 +51,9 @@ async function grepCommand(
       recursive,
       fl.asBool('w'),
       opts.index ?? undefined,
+      fl.asBool('v') || fl.asBool('c') || fl.asBool('text') || fl.asStr('binary_files') === 'text',
     )
+    if (narrowed.usedSearch) opts = { ...opts, flags: { ...opts.flags, H: true } }
     resolved = narrowed.resolved
     if (narrowed.fileCount > SCOPE_ERROR) {
       return [

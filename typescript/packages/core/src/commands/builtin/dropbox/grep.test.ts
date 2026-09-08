@@ -92,6 +92,7 @@ describe('dropbox grep push-down', () => {
     narrow.mockResolvedValue({ resolved: hits, usedSearch: true })
     await runGrep({ r: true })
     expect(generic.mock.calls[0]?.[1]).toEqual(hits)
+    expect(generic.mock.calls[0]?.[3].flags.H).toBe(true)
   })
 
   it('exits 1 without reading when the narrowed set is empty', async () => {
@@ -103,4 +104,9 @@ describe('dropbox grep push-down', () => {
     expect(io.exitCode).toBe(1)
     expect(generic).not.toHaveBeenCalled()
   })
+})
+
+it.each([{ text: true }, { binary_files: 'text' }])('scans raw files for %j', async (flags) => {
+  await runGrep({ r: true, ...flags })
+  expect(narrow.mock.calls[0]?.[3]?.exactFileSet).toBe(true)
 })

@@ -1,0 +1,393 @@
+{
+  "cases": [
+    {
+      "id": "grep_binary_integ_default",
+      "seq": 990100,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'needle\\000tail\\n' > /data/grep-binary.pdf; grep  needle /data/grep-binary.pdf",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": "grep: /data/grep-binary.pdf: binary file matches\n"
+      }
+    },
+    {
+      "id": "grep_binary_integ_skip",
+      "seq": 990101,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'needle\\000tail\\n' > /data/grep-binary.pdf; grep -I needle /data/grep-binary.pdf",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_text",
+      "seq": 990102,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'needle\\000tail\\n' > /data/grep-binary.pdf; grep -an needle /data/grep-binary.pdf",
+      "expect": {
+        "exit": 0,
+        "stdout": "1:needle\u0000tail\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_long_skip",
+      "seq": 990103,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'needle\\000tail\\n' > /data/grep-binary.pdf; grep --binary-files=without-match needle /data/grep-binary.pdf",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_long_text",
+      "seq": 990104,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'needle\\000tail\\n' > /data/grep-binary.pdf; grep --binary-files=text -n needle /data/grep-binary.pdf",
+      "expect": {
+        "exit": 0,
+        "stdout": "1:needle\u0000tail\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_count",
+      "seq": 990105,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'needle\\000tail\\n' > /data/grep-binary.pdf; grep -c needle /data/grep-binary.pdf",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_skip_count",
+      "seq": 990106,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'needle\\000tail\\n' > /data/grep-binary.pdf; grep -Ic needle /data/grep-binary.pdf",
+      "expect": {
+        "exit": 1,
+        "stdout": "0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_files",
+      "seq": 990107,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'needle\\000tail\\n' > /data/grep-binary.pdf; grep -l needle /data/grep-binary.pdf",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/grep-binary.pdf\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_docs_rendered",
+      "seq": 10,
+      "targets": [
+        "gapps"
+      ],
+      "command": "grep -Irq . /docs/owned",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_sheets_rendered",
+      "seq": 10,
+      "targets": [
+        "gapps"
+      ],
+      "command": "grep -Irq . /sheets/owned",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_slides_rendered",
+      "seq": 10,
+      "targets": [
+        "gapps"
+      ],
+      "command": "grep -Irq . /slides/owned",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_gmail_0",
+      "seq": 10,
+      "targets": [
+        "gmail"
+      ],
+      "command": "grep -I -rw 'worker-3' /mail/INBOX | cut -d: -f1",
+      "expect": {
+        "exit": 0,
+        "stdout": "/mail/INBOX/2026-01-07/Server_alert_worker-3__msg0003.gmail.json\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_gmail_1",
+      "seq": 11,
+      "targets": [
+        "gmail"
+      ],
+      "command": "grep -a -rw 'worker-3' /mail/INBOX | cut -d: -f1",
+      "expect": {
+        "exit": 0,
+        "stdout": "/mail/INBOX/2026-01-07/Server_alert_worker-3__msg0003.gmail.json\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_gmail_2",
+      "seq": 12,
+      "targets": [
+        "gmail"
+      ],
+      "command": "grep --binary-files=without-match -rw 'worker-3' /mail/INBOX | cut -d: -f1",
+      "expect": {
+        "exit": 0,
+        "stdout": "/mail/INBOX/2026-01-07/Server_alert_worker-3__msg0003.gmail.json\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_email_0",
+      "seq": 10,
+      "targets": [
+        "email"
+      ],
+      "command": "grep -I -rw 'worker-3' /mail/INBOX | cut -d: -f1",
+      "expect": {
+        "exit": 0,
+        "stdout": "/mail/INBOX/2026-01-07/Server_alert_worker-3__3.email.json\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_email_1",
+      "seq": 11,
+      "targets": [
+        "email"
+      ],
+      "command": "grep -a -rw 'worker-3' /mail/INBOX | cut -d: -f1",
+      "expect": {
+        "exit": 0,
+        "stdout": "/mail/INBOX/2026-01-07/Server_alert_worker-3__3.email.json\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_email_2",
+      "seq": 12,
+      "targets": [
+        "email"
+      ],
+      "command": "grep --binary-files=without-match -rw 'worker-3' /mail/INBOX | cut -d: -f1",
+      "expect": {
+        "exit": 0,
+        "stdout": "/mail/INBOX/2026-01-07/Server_alert_worker-3__3.email.json\n",
+        "stderr": ""
+      }
+    }
+  ]
+}
