@@ -144,16 +144,23 @@ async def test_run_wraps_the_interpreter_in_the_sandlock_cli(cli, spawned):
 
 
 @pytest.mark.asyncio
-async def test_read_only_version_keeps_confinement_and_uses_native_flag(
-        cli, spawned, monkeypatch):
+@pytest.mark.parametrize("mode",
+                         [MountMode.READ, MountMode.WRITE, MountMode.EXEC])
+async def test_version_keeps_confinement_and_uses_only_config_environment(
+        cli, spawned, monkeypatch, mode):
     monkeypatch.setenv("MIRAGE_TEST_HOST_ONLY", "not-in-child")
     runtime = SandlockRuntime(config={"home": "python", "env": {"TZ": "UTC"}})
-    ws = Workspace({"/": RAMResource()},
-                   mode=MountMode.READ,
-                   runtimes=[runtime, "vfs"])
+    ws = Workspace({"/": RAMResource()}, mode=mode, runtimes=[runtime, "vfs"])
     try:
         io = await ws.execute("python --version",
-                              env={"PYTHONPATH": "/startup"})
+                              env={
+                                  "PYTHONPATH": "/startup",
+                                  "LD_PRELOAD": "/session/library.so",
+                                  "DYLD_INSERT_LIBRARIES":
+                                  "/session/library.dylib",
+                                  "PATH": "/session/bin",
+                                  "TZ": "session-override",
+                              })
         assert io.exit_code == 0
         assert await io.stdout_str() == "out"
         assert spawned == [{
@@ -162,9 +169,7 @@ async def test_read_only_version_keeps_confinement_and_uses_native_flag(
                 "/usr/bin/python", "--version"
             ],
             "env": {
-                "TZ": "UTC",
-                "PWD": "/",
-                "PYTHONPATH": "/startup"
+                "TZ": "UTC"
             },
         }]
     finally:

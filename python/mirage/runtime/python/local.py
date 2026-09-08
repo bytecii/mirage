@@ -70,7 +70,8 @@ class LocalRuntime(PythonRuntime):
             self._python = sys.executable
 
     async def version(self, env: dict[str, str]) -> RunResult:
-        return await self._run(["--version"], env)
+        # Session loader variables can execute code before --version is read.
+        return await self._run(["--version"], {})
 
     async def run(self, args: RunArgs) -> RunResult:
         # Honoring the init switches is just handing them back to the

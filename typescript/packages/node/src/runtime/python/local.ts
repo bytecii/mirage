@@ -49,8 +49,9 @@ export class LocalRuntime extends PythonRuntime {
     this.python = chosen !== undefined && chosen !== '' ? chosen : 'python3'
   }
 
-  override version(env: Record<string, string>, signal?: AbortSignal): Promise<RunResult> {
-    return this.runProcess(['--version'], env, null, signal)
+  override version(_env: Record<string, string>, signal?: AbortSignal): Promise<RunResult> {
+    // Session loader variables can execute code before --version is read.
+    return this.runProcess(['--version'], {}, null, signal)
   }
 
   run(args: RunArgs): Promise<RunResult> {

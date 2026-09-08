@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import json
 import sys
 import time
 
@@ -66,6 +67,41 @@ def test_local_exit_code_and_stderr():
 
 def test_local_name():
     assert LocalRuntime().name == "local"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode",
+                         [MountMode.READ, MountMode.WRITE, MountMode.EXEC])
+async def test_version_process_uses_only_host_environment(
+        tmp_path, monkeypatch, mode):
+    monkeypatch.setenv("MIRAGE_TEST_VERSION_ENV", "host")
+    session = {
+        "LD_PRELOAD": str(tmp_path / "session.so"),
+        "LD_LIBRARY_PATH": str(tmp_path),
+        "DYLD_INSERT_LIBRARIES": str(tmp_path / "session.dylib"),
+        "DYLD_LIBRARY_PATH": str(tmp_path),
+        "PATH": str(tmp_path),
+        "MIRAGE_TEST_VERSION_ENV": "session",
+    }
+    probe = tmp_path / "python-probe"
+    probe.write_text(
+        f"#!{sys.executable}\nimport json, os\n"
+        f"keys = {list(session)!r}\n"
+        "print(json.dumps({k: os.environ.get(k) for k in keys}))\n")
+    probe.chmod(0o755)
+    runtime = LocalRuntime(config={"home": str(probe)})
+    baseline = await runtime.version({})
+    expected = json.loads(baseline.stdout)
+    assert expected["MIRAGE_TEST_VERSION_ENV"] == "host"
+    ws = Workspace({"/": RAMResource()}, mode=mode, runtimes=[runtime, "vfs"])
+    try:
+        for line in ["python --version", "python3 -V", "python -VV"]:
+            io = await ws.execute(line, env=session)
+            assert io.exit_code == 0
+            assert json.loads(await io.stdout_str()) == expected
+            assert await io.stderr_str() == ""
+    finally:
+        await ws.close()
 
 
 @pytest.mark.asyncio

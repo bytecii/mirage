@@ -136,7 +136,8 @@ class SandlockRuntime(PythonRuntime):
         return argv
 
     async def version(self, env: dict[str, str]) -> RunResult:
-        return await self._run(["--version"], env)
+        # Loader variables affect the wrapper before confinement starts.
+        return await self._run(["--version"], {})
 
     async def run(self, args: RunArgs) -> RunResult:
         return await self._run([
