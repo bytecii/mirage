@@ -18,6 +18,19 @@ import { makeWorkspace, stderrStr, stdoutStr } from '../../fixtures/workspace_fi
 // Mirrors the Python `node`/`js` command tests; both run on quickjs so a
 // script behaves identically across languages.
 describe('node/js: quickjs runtime', () => {
+  it('uses the invoked alias in script errors', async () => {
+    const { ws } = await makeWorkspace()
+    try {
+      for (const name of ['python', 'python3', 'js', 'node']) {
+        const io = await ws.execute(`${name} /missing-script`)
+        expect(io.exitCode).toBe(1)
+        expect(stderrStr(io)).toBe(`${name}: /missing-script: No such file\n`)
+      }
+    } finally {
+      await ws.close()
+    }
+  })
+
   it('identifies QuickJS for both aliases and both version flags', async () => {
     const { ws } = await makeWorkspace()
     try {

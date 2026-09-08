@@ -512,6 +512,7 @@ export class MountEntry {
         flags,
         filetypeFns: isFiletypeCmd ? null : filetypeFns,
         mountPrefix,
+        command: cmdName,
         cwd: context.cwd ?? ROOT_CWD,
         ...(this.index !== undefined ? { index: this.index } : {}),
         ...(context.dispatch !== undefined ? { dispatch: context.dispatch } : {}),

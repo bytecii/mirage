@@ -617,6 +617,7 @@ class MountEntry:
             # reads the fields it wants and ignores the rest, so there is no
             # opt-in registry (mirrors Mount.executeCmd building CommandOpts).
             opts = CommandOpts(
+                command=cmd_name,
                 stdin=stdin,
                 flags=flags,
                 cwd=PathSpec(

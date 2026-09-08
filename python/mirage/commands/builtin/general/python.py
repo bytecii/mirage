@@ -33,12 +33,13 @@ async def _python3(
     texts: list[str],
     opts: CommandOpts,
 ) -> CommandOutput:
+    label = opts.command or "python3"
     fl = FlagView(opts.flags, spec=SPECS["python3"])
     if fl.as_bool("version"):
-        return await runtime_version("python3", opts.runtime, opts.env,
+        return await runtime_version(label, opts.runtime, opts.env,
                                      opts.runtime_unavailable)
     error, prepared = await resolve_source(
-        "python3",
+        label,
         paths,
         texts,
         fl.as_str("c"),
@@ -73,8 +74,8 @@ async def _python3(
         "X": fl.as_list("X"),
         "check_hash_based_pycs": fl.as_str("check_hash_based_pycs"),
     }
-    return await run_code("python3", prepared, opts.env, init_flags,
-                          opts.runtime, opts.runtime_unavailable)
+    return await run_code(label, prepared, opts.env, init_flags, opts.runtime,
+                          opts.runtime_unavailable)
 
 
 python3 = command("python3", resource=None, spec=SPECS["python3"])(_python3)

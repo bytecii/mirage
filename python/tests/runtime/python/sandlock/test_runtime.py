@@ -18,6 +18,7 @@ import sys
 
 import pytest
 
+from mirage import MountMode, RAMResource, Workspace
 from mirage.runtime.python.sandlock import (SandlockRuntime,
                                             interpreter_readable)
 from mirage.runtime.types import RunArgs
@@ -140,6 +141,34 @@ async def test_run_wraps_the_interpreter_in_the_sandlock_cli(cli, spawned):
     assert ["-w", "/mnt/ws"] == argv[separator - 2:separator]
     assert argv[separator + 1] == sys.executable
     assert "-c" in argv[separator:]
+
+
+@pytest.mark.asyncio
+async def test_read_only_version_keeps_confinement_and_uses_native_flag(
+        cli, spawned, monkeypatch):
+    monkeypatch.setenv("MIRAGE_TEST_HOST_ONLY", "not-in-child")
+    runtime = SandlockRuntime(config={"home": "python", "env": {"TZ": "UTC"}})
+    ws = Workspace({"/": RAMResource()},
+                   mode=MountMode.READ,
+                   runtimes=[runtime, "vfs"])
+    try:
+        io = await ws.execute("python --version",
+                              env={"PYTHONPATH": "/startup"})
+        assert io.exit_code == 0
+        assert await io.stdout_str() == "out"
+        assert spawned == [{
+            "argv": [
+                SANDLOCK_BIN, "run", *runtime.policy_argv(), "--",
+                "/usr/bin/python", "--version"
+            ],
+            "env": {
+                "TZ": "UTC",
+                "PWD": "/",
+                "PYTHONPATH": "/startup"
+            },
+        }]
+    finally:
+        await ws.close()
 
 
 @pytest.mark.asyncio

@@ -101,15 +101,25 @@ async def test_program_version_operand_is_not_intercepted(ws, line):
 
 
 @pytest.mark.asyncio
-async def test_version_without_a_runtime_does_not_claim_mirage():
+@pytest.mark.parametrize("name", ["python", "python3", "js", "node"])
+async def test_version_without_a_runtime_uses_the_invoked_name(name):
     ws = Workspace({"/": RAMResource()}, runtimes=[])
     try:
-        io = await ws.execute("python3 --version")
+        io = await ws.execute(f"{name} --version")
         assert io.exit_code == 127
         assert await materialize(io.stdout) == b""
-        assert b"command not found" in await materialize(io.stderr)
+        assert await materialize(io.stderr
+                                 ) == f"{name}: command not found\n".encode()
     finally:
         await ws.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["python", "python3", "js", "node"])
+async def test_missing_script_uses_the_invoked_name(ws, name):
+    io = await ws.execute(f"{name} /missing-script")
+    assert io.exit_code == 1
+    assert await io.stderr_str() == f"{name}: /missing-script: No such file\n"
 
 
 @pytest.mark.asyncio

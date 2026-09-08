@@ -32,19 +32,20 @@ async function jsCommand(
   texts: string[],
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
+  const label = opts.command ?? 'js'
   if (!(opts.runtime instanceof LanguageRuntime)) {
     return [
       null,
       new IOResult({
         exitCode: 127,
-        stderr: ENC.encode('js: command not found\n'),
+        stderr: ENC.encode(`${label}: command not found\n`),
       }),
     ]
   }
 
   const fl = new FlagView(opts.flags, specOf('js'))
   if (fl.asBool('version')) {
-    return runtimeVersion('js', opts.runtime, opts.env ?? {}, opts.signal, opts.timeoutSeconds)
+    return runtimeVersion(label, opts.runtime, opts.env ?? {}, opts.signal, opts.timeoutSeconds)
   }
 
   if (opts.dispatch === undefined) {
@@ -52,7 +53,7 @@ async function jsCommand(
       null,
       new IOResult({
         exitCode: 1,
-        stderr: ENC.encode('js: no dispatch available\n'),
+        stderr: ENC.encode(`${label}: no dispatch available\n`),
       }),
     ]
   }
@@ -91,7 +92,7 @@ async function jsCommand(
         null,
         new IOResult({
           exitCode: 126,
-          stderr: ENC.encode(`js: ${display}: not in EXEC mode\n`),
+          stderr: ENC.encode(`${label}: ${display}: not in EXEC mode\n`),
         }),
       ]
     }
@@ -100,7 +101,7 @@ async function jsCommand(
       null,
       new IOResult({
         exitCode: 126,
-        stderr: ENC.encode("js: root mount '/' is not in EXEC mode\n"),
+        stderr: ENC.encode(`${label}: root mount '/' is not in EXEC mode\n`),
       }),
     ]
   }
@@ -120,6 +121,7 @@ async function jsCommand(
     scriptPath,
     argStrs,
     {
+      command: label,
       stdin: stdinForRuntime,
       env: opts.env ?? {},
       code: resolvedCode,

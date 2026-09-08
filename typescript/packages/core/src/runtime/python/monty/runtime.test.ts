@@ -822,11 +822,11 @@ describe('Workspace with the monty runtime', () => {
       { shellParser: await getTestParser(), runtimes: ['vfs'] },
     )
     try {
-      for (const line of ['python3 --version', 'python -V', 'node --version', 'js -v']) {
-        const io = await ws.execute(line)
+      for (const name of ['python3', 'python', 'node', 'js']) {
+        const io = await ws.execute(`${name} --version`)
         expect(io.exitCode).toBe(127)
         expect(new TextDecoder().decode(io.stdout)).toBe('')
-        expect(new TextDecoder().decode(io.stderr)).toContain('command not found')
+        expect(new TextDecoder().decode(io.stderr)).toBe(`${name}: command not found\n`)
       }
     } finally {
       await ws.close()

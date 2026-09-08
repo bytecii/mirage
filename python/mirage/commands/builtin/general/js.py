@@ -30,12 +30,13 @@ async def _js(
     texts: list[str],
     opts: CommandOpts,
 ) -> CommandOutput:
+    label = opts.command or "js"
     fl = FlagView(opts.flags, spec=SPECS["js"])
     if fl.as_bool("version"):
-        return await runtime_version("js", opts.runtime, opts.env,
+        return await runtime_version(label, opts.runtime, opts.env,
                                      opts.runtime_unavailable)
     error, prepared = await resolve_source(
-        "js",
+        label,
         paths,
         texts,
         fl.as_str("e"),
@@ -50,7 +51,7 @@ async def _js(
     as_module = fl.as_bool("module") or (
         prepared.script_path is not None
         and prepared.script_path.virtual.endswith(".mjs"))
-    return await run_code("js", prepared, opts.env, {"module": as_module},
+    return await run_code(label, prepared, opts.env, {"module": as_module},
                           opts.runtime, opts.runtime_unavailable)
 
 

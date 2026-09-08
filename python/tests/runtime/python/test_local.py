@@ -13,10 +13,12 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import sys
 import time
 
 import pytest
 
+from mirage import MountMode, RAMResource, Workspace
 from mirage.runtime.python import LocalRuntime
 from mirage.runtime.types import RunArgs
 
@@ -64,6 +66,34 @@ def test_local_exit_code_and_stderr():
 
 def test_local_name():
     assert LocalRuntime().name == "local"
+
+
+@pytest.mark.asyncio
+async def test_read_only_version_does_not_run_startup_code(tmp_path):
+    marker = tmp_path / "startup-ran"
+    (tmp_path / "sitecustomize.py"
+     ).write_text(f"open({str(marker)!r}, 'w').write('ran')\n")
+    env = {"PYTHONPATH": str(tmp_path)}
+    runtime = LocalRuntime(config={"home": sys.executable})
+    ws = Workspace({"/": RAMResource()},
+                   mode=MountMode.READ,
+                   runtimes=[runtime, "vfs"])
+    try:
+        for line in ["python --version", "python3 -V", "python -VV"]:
+            io = await ws.execute(line, env=env)
+            assert io.exit_code == 0
+            assert await io.stdout_str(
+            ) == f"Python {sys.version.split()[0]}\n"
+            assert await io.stderr_str() == ""
+            assert not marker.exists()
+        refused = await ws.execute("python -c 'pass'", env=env)
+        assert refused.exit_code == 126
+        assert not marker.exists()
+        control = await runtime.run(RunArgs(code="pass", env=env))
+        assert control.exit_code == 0
+        assert marker.read_text() == "ran"
+    finally:
+        await ws.close()
 
 
 @pytest.mark.asyncio
