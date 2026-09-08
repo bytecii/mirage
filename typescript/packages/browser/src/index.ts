@@ -321,7 +321,6 @@ export {
 } from '@struktoai/mirage-core/policy/index'
 export { LanguageRuntime } from '@struktoai/mirage-core/runtime/language'
 export { RemoteSandbox } from '@struktoai/mirage-core/runtime/sandbox/base'
-export { E2BRuntime } from './runtime/sandbox/e2b/runtime.ts'
 export type { E2BConfig } from './runtime/sandbox/e2b/config.ts'
 export type { HomeConfig, RuntimeConfig } from '@struktoai/mirage-core/runtime/config'
 export { knownRuntimes, registerRuntime } from '@struktoai/mirage-core/runtime/table'

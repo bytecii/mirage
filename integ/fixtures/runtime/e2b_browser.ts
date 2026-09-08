@@ -12,7 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { E2BRuntime, Limit, MountMode, RAMResource, Workspace } from '@struktoai/mirage-browser'
+import { Limit, MountMode, RAMResource, Workspace } from '@struktoai/mirage-browser'
+import { E2BRuntime } from '@struktoai/mirage-browser/runtime/sandbox/e2b/runtime'
 
 import { exerciseCancellation } from './e2b_cancel.ts'
 
