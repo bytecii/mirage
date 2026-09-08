@@ -101,6 +101,27 @@ async def test_release_flushes_buffered_writes(seeded):
 
 
 @pytest.mark.asyncio
+async def test_open_with_o_trunc_drops_the_old_body(seeded):
+    # libfuse 3 negotiates atomic O_TRUNC, so the kernel never sends a
+    # separate truncate before an O_TRUNC open; the flag on the open has
+    # to do it. Ignoring it left `printf BB > f` holding BB plus the tail
+    # of the longer body it replaced (#1032).
+    fh = seeded.open("/a.txt", os.O_WRONLY | os.O_TRUNC)
+    assert seeded.getattr("/a.txt", fh)["st_size"] == 0
+    seeded.write("/a.txt", b"BB\n", 0, fh)
+    seeded.release(fh)
+    assert seeded.read("/a.txt", 100, 0, None) == b"BB\n"
+
+
+@pytest.mark.asyncio
+async def test_open_without_o_trunc_keeps_the_body(seeded):
+    fh = seeded.open("/a.txt", os.O_RDWR)
+    seeded.write("/a.txt", b"J", 0, fh)
+    seeded.release(fh)
+    assert seeded.read("/a.txt", 100, 0, None) == b"Jello world"
+
+
+@pytest.mark.asyncio
 async def test_write_then_read(seeded):
     seeded.write("/new.txt", b"written", 0, None)
     assert seeded.read("/new.txt", 100, 0, None) == b"written"

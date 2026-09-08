@@ -613,11 +613,13 @@ class MountCore:
         self._apply_writes(path, ctx.write_buf)
         ctx.write_buf = []
 
-    def open(self, path: str) -> int:
+    def open(self, path: str, flags: int = 0) -> int:
         """Open a path, hydrating it when its size is unknown.
 
         Args:
             path (str): mount path to open.
+            flags (int): the open(2) flags the kernel passed. Only
+                ``O_TRUNC`` is read here.
 
         Returns:
             int: the new handle id.
@@ -627,7 +629,19 @@ class MountCore:
         """
         s = self._run(self._ops.stat(self.resolve(path)))
         ctx = Handle(path=path)
-        if s.size is None and s.type != FileType.DIRECTORY:
+        if s.type == FileType.DIRECTORY:
+            return self._handles.add(ctx)
+        if flags & os.O_TRUNC:
+            # libfuse 3 negotiates FUSE_CAP_ATOMIC_O_TRUNC by default, so the
+            # kernel sends no SETATTR ahead of an O_TRUNC open: the flag on
+            # the open is the whole truncation. libfuse 2 (macFUSE, the
+            # libfuse2 CI installs) strips the flag and truncates through
+            # setattr first, which is why dropping it here only showed on a
+            # fuse3-only host, where a shorter overwrite kept the old tail.
+            self.truncate(path, 0)
+            if s.size is None:
+                ctx.data = b""
+        elif s.size is None:
             # API resources cannot size a file without fetching it, so hydrate
             # now: getattr(fh) and read() then serve real bytes, and the TTL
             # cache keeps release-then-stat bursts from refetching.

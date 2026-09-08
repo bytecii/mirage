@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { constants as fsConstants } from 'node:fs'
 import { posix } from 'node:path'
 import type { OpRecord } from '@struktoai/mirage-core/observe/record'
 import type { Ops } from '@struktoai/mirage-core/ops/ops'
@@ -452,6 +453,7 @@ export class MountCore {
       out.set(data.subarray(0, Math.min(data.byteLength, size)), 0)
       await this.writeFile(path, out)
     }
+    this.prefetchCache.delete(path)
   }
 
   statfs(): Record<string, number> {
@@ -490,10 +492,21 @@ export class MountCore {
     this.xattrs.get(path)?.delete(name)
   }
 
-  async open(path: string): Promise<number> {
+  async open(path: string, flags = 0): Promise<number> {
     const s = await this.ops.stat(this.resolve(path))
     const ctx: Handle = { path }
-    if (s.size === null && s.type !== FileType.DIRECTORY) {
+    if (s.type === FileType.DIRECTORY) return this.handles.add(ctx)
+    if ((flags & fsConstants.O_TRUNC) !== 0) {
+      // libfuse 3 negotiates FUSE_CAP_ATOMIC_O_TRUNC by default, so the
+      // kernel sends no SETATTR ahead of an O_TRUNC open: the flag on the
+      // open is the whole truncation. libfuse 2 (what fuse-native and
+      // macFUSE speak) strips the flag and truncates through setattr
+      // first, so this branch is what keeps a shorter overwrite from
+      // holding the old tail once the kernel stops doing that for us
+      // (#1032). Mirrors Python's MountCore.open.
+      await this.truncate(path, 0)
+      if (s.size === null) ctx.data = new Uint8Array(0)
+    } else if (s.size === null) {
       const data = await this.prefetch(path)
       if (data !== null) ctx.data = data
     }

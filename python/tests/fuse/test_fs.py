@@ -227,6 +227,21 @@ async def test_write_at_offset(rw_ws):
 
 
 @pytest.mark.asyncio
+async def test_open_forwards_o_trunc(rw_ws):
+    # The adapter used to drop the open flags, so a fuse3 O_TRUNC open
+    # (no separate truncate op arrives) merged the new bytes over the
+    # old body (#1032).
+    await rw_ws.execute("tee /f.txt", stdin=b"AAAAAAAAAAAAAAAAAAAA\n")
+    fs = MirageFS(rw_ws.fs)
+    fh = fs.open("/f.txt", os.O_WRONLY | os.O_TRUNC)
+    fs.write("/f.txt", b"BB\n", 0, fh)
+    fs.flush("/f.txt", fh)
+    fs.release("/f.txt", fh)
+    result = await rw_ws.execute("cat /f.txt")
+    assert result.stdout == b"BB\n"
+
+
+@pytest.mark.asyncio
 async def test_statfs(seed_ws):
     fs = MirageFS(seed_ws.fs)
     result = fs.statfs("/")
@@ -569,6 +584,18 @@ async def test_unknown_size_preopen_stats_zero(sizeless_fs):
     attrs = fs.getattr("/u.json")
     assert attrs["st_size"] == 0
     assert ops.read_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_unknown_size_o_trunc_open_fetches_nothing(sizeless_fs):
+    # A size-unknown file is hydrated at open so fstat can answer; under
+    # O_TRUNC there is nothing left to fetch, and fstat must say 0 at once.
+    fs, ops = sizeless_fs
+    fh = fs.open("/u.json", os.O_WRONLY | os.O_TRUNC)
+    assert fs.getattr("/u.json", fh)["st_size"] == 0
+    assert fs.read("/u.json", 100, 0, fh) == b""
+    assert ops.read_calls == 0
+    fs.release("/u.json", fh)
 
 
 @pytest.mark.asyncio

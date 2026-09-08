@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { constants as fsConstants } from 'node:fs'
 import { runWithSession } from '@struktoai/mirage-core/context/session_context'
 import { RAMResource } from '@struktoai/mirage-core/resource/ram/ram'
 import { ContentType, FileStat, FileType, MountMode } from '@struktoai/mirage-core/types'
@@ -146,6 +147,33 @@ describe('MountCore', () => {
     const body = await core.read('/data/greeting.txt', after, 0, 100)
     await core.release(after)
     expect(new TextDecoder().decode(body)).toBe('rewritten, longer than before\n')
+  })
+
+  it('drops the old body when the open carries O_TRUNC', async () => {
+    // libfuse 3 negotiates atomic O_TRUNC, so the kernel never sends a
+    // separate truncate before an O_TRUNC open; the flag on the open has
+    // to do it. Ignoring it left `printf BB > f` holding BB plus the tail
+    // of the longer body it replaced (#1032).
+    const core = await mkCore()
+    const fh = await core.open('/data/greeting.txt', fsConstants.O_WRONLY | fsConstants.O_TRUNC)
+    expect((await core.fgetattr('/data/greeting.txt', fh)).size).toBe(0)
+    await core.write('/data/greeting.txt', fh, new TextEncoder().encode('BB\n'), 0)
+    await core.release(fh)
+    const after = await core.open('/data/greeting.txt')
+    const body = await core.read('/data/greeting.txt', after, 0, 100)
+    await core.release(after)
+    expect(new TextDecoder().decode(body)).toBe('BB\n')
+  })
+
+  it('keeps the body when the open carries no O_TRUNC', async () => {
+    const core = await mkCore()
+    const fh = await core.open('/data/greeting.txt', fsConstants.O_RDWR)
+    await core.write('/data/greeting.txt', fh, new TextEncoder().encode('J'), 0)
+    await core.release(fh)
+    const after = await core.open('/data/greeting.txt')
+    const body = await core.read('/data/greeting.txt', after, 0, 100)
+    await core.release(after)
+    expect(new TextDecoder().decode(body)).toBe('Jello world\n')
   })
 
   it('reports a link with the node row its own stamps live on', async () => {

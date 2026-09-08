@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { constants as fsConstants } from 'node:fs'
 import type { Action, OpsResultContext, Policy } from '@struktoai/mirage-core/policy/index'
 import { RAMResource } from '@struktoai/mirage-core/resource/ram/ram'
 import { ContentType, FileStat, FileType, MountMode } from '@struktoai/mirage-core/types'
@@ -161,7 +162,22 @@ describe('MirageFS — read-only mount write consistency', () => {
     const [createCode] = await callOp<[number]>(mfs, 'create', '/data/new.txt', 0o100644)
     expect(createCode).toBe(EROFS)
 
-    const [openCode, fh] = await callOp<[number, number]>(mfs, 'open', '/data/existing.txt', 0x8401)
+    // An O_TRUNC open is itself a write, so it is refused at open time
+    // the way open(2) refuses one on a read-only filesystem.
+    const [truncOpenCode] = await callOp<[number]>(
+      mfs,
+      'open',
+      '/data/existing.txt',
+      fsConstants.O_WRONLY | fsConstants.O_TRUNC,
+    )
+    expect(truncOpenCode).toBe(EROFS)
+
+    const [openCode, fh] = await callOp<[number, number]>(
+      mfs,
+      'open',
+      '/data/existing.txt',
+      fsConstants.O_WRONLY,
+    )
     expect(openCode).toBe(0)
 
     const bytes = Buffer.from('changed')
@@ -341,6 +357,26 @@ describe('MirageFS — release flushes pending writes', () => {
     await callOp(mfs, 'release', '/data/greeting.txt', fh)
     const after = await ws.fs.readFile('/data/greeting.txt')
     expect(new TextDecoder().decode(after)).toBe('CLOBBER world\n')
+  })
+
+  it('open forwards O_TRUNC so a shorter overwrite truncates', async () => {
+    // The adapter used to drop the open flags, so a fuse3 O_TRUNC open
+    // (no separate truncate op arrives) merged the new bytes over the
+    // old body (#1032).
+    const ws = await mkWs()
+    const mfs = new MirageFS(ws.fs)
+    const [, fh] = await callOp<[number, number]>(
+      mfs,
+      'open',
+      '/data/greeting.txt',
+      fsConstants.O_WRONLY | fsConstants.O_TRUNC,
+    )
+    const data = Buffer.from('BB\n')
+    await callOp(mfs, 'write', '/data/greeting.txt', fh, data, data.byteLength, 0)
+    await callOp(mfs, 'flush', '/data/greeting.txt', fh)
+    await callOp(mfs, 'release', '/data/greeting.txt', fh)
+    const after = await ws.fs.readFile('/data/greeting.txt')
+    expect(new TextDecoder().decode(after)).toBe('BB\n')
   })
 })
 
