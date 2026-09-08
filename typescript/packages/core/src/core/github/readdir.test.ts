@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { GitHubAccessor } from '../../accessor/github.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { RedisIndexCacheStore } from '../../cache/index/redis.ts'
@@ -82,38 +82,79 @@ describe('github readdir freshness', () => {
 })
 
 for (const backend of ['ram', 'redis']) {
-  it.skipIf(backend === 'redis' && process.env.REDIS_URL === undefined)(
-    `refills an expired truncated-tree directory with ${backend}`,
-    async () => {
-      const url = process.env.REDIS_URL
-      const index =
-        backend === 'ram'
-          ? new RAMIndexCacheStore()
-          : new RedisIndexCacheStore({
-              ...(url === undefined ? {} : { url }),
-              keyPrefix: `github-contract:${crypto.randomUUID()}:`,
+  for (const replacement of ['tree', 'blob', 'missing']) {
+    it.skipIf(backend === 'redis' && process.env.REDIS_URL === undefined)(
+      `resolves an expired truncated-tree directory from the current ref (${backend}, ${replacement})`,
+      async () => {
+        const url = process.env.REDIS_URL
+        const index =
+          backend === 'ram'
+            ? new RAMIndexCacheStore()
+            : new RedisIndexCacheStore({
+                ...(url === undefined ? {} : { url }),
+                keyPrefix: `github-contract:${crypto.randomUUID()}:`,
+              })
+        const get = vi.fn((path: string) => {
+          if (path.endsWith('/git/trees/main')) {
+            return Promise.resolve({ tree: [{ path: 'src', type: 'tree', sha: 'new-src' }] })
+          }
+          if (path.endsWith('/git/trees/new-src')) {
+            return Promise.resolve({
+              tree:
+                replacement === 'missing'
+                  ? []
+                  : [{ path: 'nested', type: replacement, sha: 'new-nested' }],
             })
-      const probe = { trees: 0 }
-      const accessor = accessorFor(probe)
-      accessor.truncated = true
-      await index.setDir('/repo', [
-        ['src', new IndexEntry({ id: 'src-sha', name: 'src', resourceType: 'folder' })],
-      ])
-      await index.setDir('/repo/src', [], new Date(Date.now() - 1000))
-      const path = new PathSpec({
-        resourcePath: 'src',
-        virtual: '/repo/src',
-        directory: '/repo/src',
-      })
-      try {
-        const got = await readdir(accessor, path, index)
-        expect(got).toContain('/repo/src/README.md')
-        expect(await readdir(accessor, path, index)).toEqual(got)
-        expect(probe.trees).toBe(1)
-      } finally {
-        await index.clear()
-        await index.close()
-      }
-    },
-  )
+          }
+          if (path.endsWith('/git/trees/new-nested')) {
+            return Promise.resolve({
+              tree: [{ path: 'new.py', type: 'blob', sha: 'new', size: 2 }],
+            })
+          }
+          throw new Error(`Unexpected request: ${path}`)
+        })
+        const accessor = new GitHubAccessor({
+          transport: { get, request: vi.fn() },
+          owner: 'acme',
+          repo: 'proj',
+          ref: 'main',
+          defaultBranch: 'main',
+        })
+        accessor.truncated = true
+        try {
+          await index.setDir('/repo', [
+            ['src', new IndexEntry({ id: 'old-src', name: 'src', resourceType: 'folder' })],
+          ])
+          await index.setDir('/repo/src', [
+            [
+              'nested',
+              new IndexEntry({ id: 'old-nested', name: 'nested', resourceType: 'folder' }),
+            ],
+          ])
+          await index.setDir('/repo/src/nested', [], new Date(Date.now() - 1000))
+          const path = new PathSpec({
+            resourcePath: 'src/nested',
+            virtual: '/repo/src/nested',
+            directory: '/repo/src/nested',
+          })
+          if (replacement === 'tree') {
+            for (let i = 0; i < 2; i++) {
+              expect(await readdir(accessor, path, index)).toEqual(['/repo/src/nested/new.py'])
+            }
+            expect(get.mock.calls.map(([p]) => p.split('/').at(-1))).toEqual([
+              'main',
+              'new-src',
+              'new-nested',
+            ])
+          } else {
+            await expect(readdir(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
+            expect(get.mock.calls.map(([p]) => p.split('/').at(-1))).toEqual(['main', 'new-src'])
+          }
+        } finally {
+          await index.clear()
+          await index.close()
+        }
+      },
+    )
+  }
 }

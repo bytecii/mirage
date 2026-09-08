@@ -138,6 +138,8 @@ def index_rows(
     # of one; `ls` on it also read as ENOENT rather than as empty.
     dirs[stem or "/"] = []
     for path, entry in tree.items():
+        if entry.type == "tree":
+            dirs.setdefault(stem + "/" + path, [])
         parts = path.rsplit("/", 1)
         if len(parts) == 2:
             parent, name = stem + "/" + parts[0], parts[1]

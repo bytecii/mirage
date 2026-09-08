@@ -76,7 +76,7 @@ async function fallbackReaddir(
   prefix: string,
 ): Promise<string[]> {
   const parentSha = await resolveDirSha(accessor, key, index, prefix)
-  if (parentSha === null) throw enoent(`${prefix}/${key}`)
+  if (parentSha === null) throw enoent(key)
   const entries = await fetchDirTree(accessor.transport, accessor.owner, accessor.repo, parentSha)
   const childKeys: string[] = []
   const childEntries: [string, IndexEntry][] = []
@@ -107,10 +107,8 @@ async function resolveDirSha(
   index: IndexCacheStore,
   prefix: string,
 ): Promise<string | null> {
-  const result = await index.get(key)
-  if (result.entry !== undefined && result.entry !== null) {
-    return result.entry.id
-  }
+  // Cached directory SHAs may belong to an older branch head, even when
+  // their parent listing is still fresh. Resolve the path from the ref.
   const stem = rstripSlash(prefix)
   const rest = stem !== '' && key.startsWith(stem) ? key.slice(stem.length) : key
   const parts = stripSlash(rest)
@@ -125,7 +123,7 @@ async function resolveDirSha(
       accessor.repo,
       currentSha,
     )
-    const found = entries.find((e) => e.path === part)
+    const found = entries.find((e) => e.path === part && e.type === 'tree')
     if (found === undefined) return null
     currentSha = found.sha
     currentPath += `/${part}`

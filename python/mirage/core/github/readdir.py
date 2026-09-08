@@ -107,7 +107,8 @@ async def _resolve_dir_sha(
 ) -> str | None:
     """Get the tree SHA for a directory path.
 
-    Walks from root if needed, fetching per-directory trees.
+    Walks from the current ref, fetching per-directory trees. A cached
+    entry may name an old tree even when its parent's listing is fresh.
 
     Args:
         accessor (GitHubAccessor): backend handle.
@@ -116,9 +117,6 @@ async def _resolve_dir_sha(
         prefix (str): the mount prefix the keys are built against.
     """
     norm = virtual_key.rstrip("/") or "/"
-    result = await index.get(norm)
-    if result.entry is not None:
-        return result.entry.id
     stem = prefix.rstrip("/")
     rest = norm[len(stem):] if stem and norm.startswith(stem) else norm
     parts = [p for p in rest.strip("/").split("/") if p]
@@ -130,7 +128,7 @@ async def _resolve_dir_sha(
                                        accessor.pool)
         found = False
         for entry in entries:
-            if entry.path == part:
+            if entry.path == part and entry.type == "tree":
                 current_sha = entry.sha
                 current_path += "/" + part
                 idx_entry = IndexEntry(

@@ -43,6 +43,9 @@ export async function populateIndex(
   // index, and `ensureLiveIndex` would refetch on every read of one.
   dirs.set(stem === '' ? '/' : stem, [])
   for (const item of Object.values(tree)) {
+    if (item.type === 'tree' && !dirs.has(`${stem}/${item.path}`)) {
+      dirs.set(`${stem}/${item.path}`, [])
+    }
     const parts = item.path.split('/')
     const name = parts[parts.length - 1] ?? item.path
     const parent =

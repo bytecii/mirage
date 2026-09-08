@@ -36,20 +36,23 @@ async def stat(
     if not rel:
         return FileStat(name="/", type=FileType.DIRECTORY)
     key = prefix + "/" + rel if prefix else "/" + rel
+    # Entries survive invalidation and replacement listings. Only the
+    # parent's current listing establishes freshness and membership.
+    parent_path = key.rsplit("/", 1)[0] or "/"
+    try:
+        children = await _readdir(
+            accessor,
+            PathSpec(virtual=parent_path,
+                     directory=parent_path,
+                     resource_path=mount_key(parent_path, prefix)),
+            index=index,
+        )
+    except FileNotFoundError as exc:
+        logger.debug("stat populate failed for %s: %s", key, exc)
+        raise enoent(virtual) from exc
+    if key not in children:
+        raise enoent(virtual)
     result = await index.get(key)
-    if result.entry is None:
-        parent_path = key.rsplit("/", 1)[0] or "/"
-        try:
-            await _readdir(
-                accessor,
-                PathSpec(virtual=parent_path,
-                         directory=parent_path,
-                         resource_path=mount_key(parent_path, prefix)),
-                index=index,
-            )
-        except FileNotFoundError as exc:
-            logger.debug("stat populate failed for %s: %s", key, exc)
-        result = await index.get(key)
     if result.entry is not None:
         if result.entry.resource_type == "folder":
             return FileStat(

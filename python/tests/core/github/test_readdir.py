@@ -169,27 +169,48 @@ async def test_readdir_does_not_refill_on_a_real_miss(tree, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["ram", "redis"])
-async def test_truncated_tree_refills_expired_directory(backend, monkeypatch):
+@pytest.mark.parametrize("replacement", ["tree", "blob", "missing"])
+async def test_truncated_tree_refills_expired_directory(
+        backend, replacement, monkeypatch):
     client = FakeRedis()
     index = RAMIndexCacheStore() if backend == "ram" else RedisIndexCacheStore(
         client=client)
-    folder = IndexEntry(id="src-sha", name="src", resource_type="folder")
-    await index.set_dir("/repo", [("src", folder)])
-    await index.set_dir("/repo/src", [],
+    await index.set_dir("/repo", [
+        ("src", IndexEntry(id="old-src", name="src", resource_type="folder"))
+    ])
+    await index.set_dir(
+        "/repo/src",
+        [("nested",
+          IndexEntry(id="old-nested", name="nested", resource_type="folder"))])
+    await index.set_dir("/repo/src/nested", [],
                         datetime.now(timezone.utc) - timedelta(seconds=1))
-    fetch = AsyncMock(return_value=[
-        TreeEntry(path="new.py", type="blob", sha="new", size=2)
+    parent = [] if replacement == "missing" else [
+        TreeEntry(path="nested", type=replacement, sha="new-nested", size=None)
+    ]
+    fetch = AsyncMock(side_effect=[
+        [TreeEntry(path="src", type="tree", sha="new-src", size=None)],
+        parent,
+        [TreeEntry(path="new.py", type="blob", sha="new", size=2)],
     ])
     monkeypatch.setitem(readdir.__globals__, "fetch_dir_tree", fetch)
     accessor = MagicMock()
+    accessor.ref = "main"
     accessor.truncated = True
-    path = PathSpec(resource_path="src",
-                    virtual="/repo/src",
-                    directory="/repo/src")
+    path = PathSpec(resource_path="src/nested",
+                    virtual="/repo/src/nested",
+                    directory="/repo/src/nested")
     try:
-        assert await readdir(accessor, path, index) == ["/repo/src/new.py"]
-        assert await readdir(accessor, path, index) == ["/repo/src/new.py"]
-        assert fetch.await_count == 1
+        if replacement == "tree":
+            for _ in range(2):
+                assert await readdir(accessor, path,
+                                     index) == ["/repo/src/nested/new.py"]
+            assert [call.args[3] for call in fetch.await_args_list
+                    ] == ["main", "new-src", "new-nested"]
+        else:
+            with pytest.raises(FileNotFoundError):
+                await readdir(accessor, path, index)
+            assert [call.args[3]
+                    for call in fetch.await_args_list] == ["main", "new-src"]
     finally:
         await index.close()
         await client.aclose()
