@@ -17,7 +17,9 @@ from functools import partial
 
 from mirage.cache.index import (NULL_INDEX, IndexCacheStore, IndexEntry,
                                 ResourceType)
-from mirage.core.object_store.driver import A, C, ObjectStoreDriver, ReaddirFn
+from mirage.core.object_store.driver import (A, C, FindHints,
+                                             ObjectStoreDriver, ReaddirFn,
+                                             TreeEntry)
 from mirage.types import PathSpec
 from mirage.utils import key_prefix as kp
 from mirage.utils.errors import listing_error
@@ -111,7 +113,9 @@ def make_readdir(driver: ObjectStoreDriver[A, C]) -> ReaddirFn[A]:
                 # their own, so there is no mtime or size to record.
                 entry = IndexEntry(id=e,
                                    name=name,
-                                   resource_type=ResourceType.FOLDER)
+                                   resource_type=ResourceType.FOLDER,
+                                   extra={"object_store_collision": True}
+                                   if e in sizes else {})
             else:
                 entry = IndexEntry(id=e,
                                    name=name,
@@ -123,3 +127,146 @@ def make_readdir(driver: ObjectStoreDriver[A, C]) -> ReaddirFn[A]:
         return virtual_entries
 
     return readdir
+
+
+async def cached_tree(index: IndexCacheStore, virtual: str,
+                      key: str) -> list[TreeEntry] | None:
+    """Read a complete subtree only while every directory listing is fresh.
+
+    Args:
+        index (IndexCacheStore): metadata from previous listings.
+        virtual (str): virtual directory root.
+        key (str): corresponding backend prefix.
+    """
+    if index is NULL_INDEX:
+        return None
+    found: list[TreeEntry] = []
+    pending = [(virtual, key)]
+    while pending:
+        directory, prefix = pending.pop()
+        listing = await index.list_dir(directory)
+        if listing.entries is None:
+            return None
+        for child in listing.entries:
+            hit = await index.get(child)
+            entry = hit.entry
+            if entry is None or entry.extra.get("object_store_collision"):
+                return None
+            child_key = prefix + child.rsplit("/", 1)[-1]
+            if entry.resource_type == ResourceType.FOLDER:
+                found.append(TreeEntry(key=child_key + "/"))
+                pending.append((child, child_key + "/"))
+            elif entry.size is None:
+                return None
+            else:
+                found.append(
+                    TreeEntry(key=child_key,
+                              size=entry.size,
+                              modified=entry.remote_time))
+    # A cached empty listing proves that the directory exists.
+    return found or [TreeEntry(key=key)]
+
+
+async def cache_tree(index: IndexCacheStore, virtual: str, key: str,
+                     entries: list[TreeEntry]) -> None:
+    """Publish complete directory listings after a successful recursive walk.
+
+    Args:
+        index (IndexCacheStore): metadata index to populate.
+        virtual (str): virtual directory root.
+        key (str): corresponding backend prefix.
+        entries (list[TreeEntry]): unfiltered backend rows, including markers.
+    """
+    if index is NULL_INDEX:
+        return
+    if any(row.size is None and not row.key.endswith("/") for row in entries):
+        return
+    directories: dict[str, dict[str, IndexEntry]] = {virtual: {}}
+    files: set[str] = set()
+    for row in entries:
+        if not row.key.startswith(key) or row.key == key:
+            continue
+        relative = row.key[len(key):].rstrip("/")
+        parts = relative.split("/")
+        parent = virtual
+        for i, name in enumerate(parts):
+            child = parent.rstrip("/") + "/" + name
+            is_dir = i < len(parts) - 1 or row.key.endswith("/")
+            if is_dir:
+                directories.setdefault(child, {})
+            else:
+                files.add(child)
+            directories[parent][name] = IndexEntry(
+                id=child,
+                name=name,
+                resource_type=ResourceType.FOLDER
+                if is_dir else ResourceType.FILE,
+                size=None if is_dir else row.size,
+                remote_time="" if is_dir else row.modified)
+            parent = child
+    # A single index path cannot represent both a file and a prefix.
+    if files.intersection(directories):
+        return
+    for directory, children in directories.items():
+        await index.set_dir(directory, list(children.items()))
+
+
+async def read_tree(
+        driver: ObjectStoreDriver[A, C],
+        accessor: A,
+        path: PathSpec,
+        index: IndexCacheStore,
+        hints: FindHints | None = None) -> tuple[list[TreeEntry], bool]:
+    """Reuse a complete tree, or cache a successful backend listing.
+
+    Args:
+        driver (ObjectStoreDriver): backend primitives.
+        accessor (Accessor): backend connection configuration.
+        path (PathSpec): operand root.
+        index (IndexCacheStore): invocation's metadata index.
+        hints (FindHints | None): find pushdown; None includes a file root.
+    """
+    kpfx = driver.key_prefix_of(accessor)
+    stem = kp.apply(kpfx, path.mount_path).rstrip("/")
+    prefix = stem + "/" if stem else ""
+    virtual = path.virtual.rstrip("/") or "/"
+    root = await index.get(virtual)
+    collision = root.entry is not None and root.entry.extra.get(
+        "object_store_collision")
+    known_directory = (not path.mount_path.strip("/") or
+                       (root.entry is not None
+                        and root.entry.resource_type == ResourceType.FOLDER))
+    cached = (await cached_tree(index, virtual, prefix) if not collision and
+              (hints is not None or known_directory) else None)
+    if cached is not None:
+        return cached, False
+    if hints is None:
+        hit = root
+        parent = await index.list_dir(virtual.rsplit("/", 1)[0] or "/")
+        if (parent.entries is not None and virtual in parent.entries
+                and hit.entry is not None
+                and hit.entry.resource_type == ResourceType.FILE
+                and hit.entry.size is not None):
+            return [TreeEntry(key=stem, size=hit.entry.size)], False
+    async with driver.connect(accessor) as conn:
+        narrowed = False
+        if hints is None:
+            iterator = driver.list_subtree(conn, stem)
+        elif driver.find_tree is not None:
+            iterator, narrowed = driver.find_tree(conn, prefix, hints)
+        else:
+            iterator = driver.list_tree(conn, prefix)
+        entries = [entry async for entry in iterator]
+        exists = narrowed and not entries and await driver.probe_prefix(
+            conn, prefix)
+    if not narrowed and not any(e.key == stem for e in entries) and (any(
+            e.key.startswith(prefix)
+            for e in entries) or not path.mount_path.strip("/")):
+        await cache_tree(index, virtual, prefix, entries)
+        if hints is None:
+            await index.put(
+                virtual,
+                IndexEntry(id=virtual,
+                           name=virtual.rsplit("/", 1)[-1] or "/",
+                           resource_type=ResourceType.FOLDER))
+    return entries, exists

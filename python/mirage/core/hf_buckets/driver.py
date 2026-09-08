@@ -94,7 +94,7 @@ async def _list_tree(op: AsyncOperator, pfx: str) -> AsyncIterator[TreeEntry]:
             if is_dir:
                 yield TreeEntry(key=rel.rstrip("/") + "/")
                 continue
-            size = int(meta.content_length or 0) if meta is not None else 0
+            size = meta.content_length if meta is not None else None
             yield TreeEntry(key=rel, size=size)
     except NotFound:
         return
@@ -120,7 +120,7 @@ async def _list_subtree(op: AsyncOperator,
             if not rel or rel.endswith("/"):
                 continue
             meta = entry.metadata
-            size = int(meta.content_length or 0) if meta is not None else 0
+            size = meta.content_length if meta is not None else None
             yield TreeEntry(key=rel, size=size)
     except NotFound:
         return

@@ -14,8 +14,14 @@
 
 import asyncio
 
+import pytest
+
+from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.object_store.du import make_du_entries, make_du_size
-from tests.core.object_store.conftest import FakeStore, make_driver, spec
+from mirage.core.object_store.find import make_find
+from mirage.core.object_store.readdir import make_readdir
+from tests.core.object_store.conftest import (FakeAccessor, FakeStore,
+                                              make_driver, spec)
 
 _STORE = {
     "data/a.txt": b"12345",
@@ -41,3 +47,106 @@ def test_du_size_matches_the_entries_total(accessor):
 def test_du_of_a_single_file_counts_just_it(accessor):
     size = make_du_size(make_driver(FakeStore(_STORE)))
     assert asyncio.run(size(accessor, spec("/data/a.txt"))) == 5
+
+
+@pytest.mark.asyncio
+async def test_walks_share_complete_index(accessor):
+    store = FakeStore(_STORE)
+    driver = make_driver(store)
+    index = RAMIndexCacheStore()
+    entries = make_du_entries(driver)
+    cold = await entries(accessor, spec('/data'), index)
+    store.connects = 0
+    assert await entries(accessor, spec('/data'), index) == cold
+    assert await make_find(driver)(accessor,
+                                   spec('/data'),
+                                   type='f',
+                                   index=index) == [
+                                       '/data/a.txt', '/data/sub/b.txt'
+                                   ]
+    assert await make_readdir(driver)(accessor, spec('/data/sub'),
+                                      index) == ['/mnt/data/sub/b.txt']
+    assert store.connects == 0
+    await index.invalidate()
+    await entries(accessor, spec('/data'), index)
+    assert store.connects == 1
+
+
+@pytest.mark.asyncio
+async def test_readdir_warms_only_complete_subtrees(accessor):
+    store = FakeStore(_STORE)
+    driver = make_driver(store)
+    index = RAMIndexCacheStore()
+    readdir = make_readdir(driver)
+    await readdir(accessor, spec('/data'), index)
+    store.connects = 0
+    assert await make_du_size(driver)(accessor, spec('/data'), index) == 8
+    assert store.connects == 1
+    store.connects = 0
+    assert await make_du_size(driver)(accessor, spec('/data/a.txt'),
+                                      index) == 5
+    assert store.connects == 0
+
+
+@pytest.mark.asyncio
+async def test_filtered_find_never_publishes_partial_listing(accessor):
+    store = FakeStore(_STORE)
+    driver = make_driver(store, find_narrowing=True)
+    index = RAMIndexCacheStore()
+    assert await make_find(driver)(accessor,
+                                   spec('/data'),
+                                   name='a.txt',
+                                   type='f',
+                                   index=index) == ['/data/a.txt']
+    assert (await index.list_dir('/mnt/data')).entries is None
+    assert await make_du_size(driver)(accessor, spec('/data'), index) == 8
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('objects', [
+    {
+        'data/': b''
+    },
+    {
+        'data': b'root',
+        'data/sub.txt': b'child'
+    },
+    {
+        'data/a': b'file',
+        'data/a/b': b'deep'
+    },
+])
+async def test_markers_and_file_prefix_collisions_remain_consistent(
+        accessor, objects):
+    driver = make_driver(FakeStore(objects))
+    index = RAMIndexCacheStore()
+    entries = make_du_entries(driver)
+    expected = await entries(accessor, spec('/data'))
+    await make_readdir(driver)(accessor, spec('/'), index)
+    await make_readdir(driver)(accessor, spec('/data'), index)
+    assert await entries(accessor, spec('/data'), index) == expected
+    assert await entries(accessor, spec('/data'), index) == expected
+
+
+@pytest.mark.asyncio
+async def test_find_cannot_hide_a_coexisting_file_root(accessor):
+    driver = make_driver(FakeStore({
+        'data': b'root',
+        'data/sub.txt': b'child'
+    }))
+    index = RAMIndexCacheStore()
+    await make_find(driver)(accessor, spec('/data'), index=index)
+    assert await make_du_size(driver)(accessor, spec('/data'), index) == 9
+
+
+@pytest.mark.asyncio
+async def test_warm_tree_preserves_key_prefix_and_metadata():
+    accessor = FakeAccessor('team/')
+    driver = make_driver(FakeStore({'team/data/a.txt': b'123'}))
+    index = RAMIndexCacheStore()
+    await make_du_size(driver)(accessor, spec('/data'), index)
+    assert await make_find(driver)(accessor,
+                                   spec('/data'),
+                                   type='f',
+                                   index=index) == ['/data/a.txt']
+    assert (await index.get('/mnt/data/a.txt')).entry.size == 3

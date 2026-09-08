@@ -98,7 +98,7 @@ type RenameOp<A extends Accessor = Accessor> = MoveFn<[accessor: A, src: PathSpe
 type CopyOp<A extends Accessor = Accessor> = CopyFn<[accessor: A, src: PathSpec, dst: PathSpec]>
 
 type FindOp<A extends Accessor = Accessor> = FindFn<
-  [accessor: A, path: PathSpec, options: FindOptions]
+  [accessor: A, path: PathSpec, options: FindOptions, index?: IndexCacheStore]
 >
 
 type DuSizeOp<A extends Accessor = Accessor> = (

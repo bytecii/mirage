@@ -67,6 +67,7 @@ export async function operandStat(
     row = await stat(path)
   } catch (e) {
     if (!isFsError(e)) throw e
+    if (mounts?.visibleDescendants(path.virtual).length === 0) throw e
     const fallback =
       statPath === undefined || statPath === null ? null : await statPath(path.virtual)
     if (fallback === null) throw e

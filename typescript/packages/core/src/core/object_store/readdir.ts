@@ -12,6 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { PathSpec } from '../../types.ts'
+import type { IndexCacheStore } from '../../cache/index/store.ts'
+import type { FindHints, TreeEntry } from './driver.ts'
 import type { Accessor } from '../../accessor/base.ts'
 import { IndexEntry, ResourceType } from '../../cache/index/config.ts'
 import { listingError } from '../../utils/errors.ts'
@@ -114,7 +117,15 @@ export function makeReaddir<A extends Accessor, C>(driver: ObjectStoreDriver<A, 
         if (dirKeys.has(e)) {
           // Store "folders" are synthetic prefixes with no object of their
           // own, so there is no mtime or size to record.
-          return [name, new IndexEntry({ id: e, name, resourceType: ResourceType.FOLDER })]
+          return [
+            name,
+            new IndexEntry({
+              id: e,
+              name,
+              resourceType: ResourceType.FOLDER,
+              extra: sizes.has(e) ? { object_store_collision: true } : {},
+            }),
+          ]
         }
         return [
           name,
@@ -131,4 +142,140 @@ export function makeReaddir<A extends Accessor, C>(driver: ObjectStoreDriver<A, 
     }
     return virtualEntries
   }
+}
+
+/** Read a subtree only while every directory listing is complete and fresh. */
+async function cachedTree(
+  index: IndexCacheStore | undefined,
+  virtual: string,
+  key: string,
+): Promise<TreeEntry[] | null> {
+  if (index === undefined) return null
+  const found: TreeEntry[] = []
+  const pending: [string, string][] = [[virtual, key]]
+  while (pending.length > 0) {
+    const next = pending.pop()
+    if (next === undefined) break
+    const [directory, prefix] = next
+    const listing = await index.listDir(directory)
+    if (listing.entries == null) return null
+    for (const child of listing.entries) {
+      const { entry } = await index.get(child)
+      if (entry == null || entry.extra.object_store_collision) return null
+      const childKey = prefix + child.slice(child.lastIndexOf('/') + 1)
+      if (entry.resourceType === ResourceType.FOLDER) {
+        found.push({ key: childKey + '/' })
+        pending.push([child, childKey + '/'])
+      } else if (entry.size == null) return null
+      else found.push({ key: childKey, size: entry.size, modified: entry.remoteTime })
+    }
+  }
+  return found.length > 0 ? found : [{ key }]
+}
+
+/** Publish complete listings only after the recursive backend walk succeeds. */
+async function cacheTree(
+  index: IndexCacheStore | undefined,
+  virtual: string,
+  key: string,
+  entries: TreeEntry[],
+): Promise<void> {
+  if (index === undefined) return
+  if (entries.some((row) => row.size === undefined && !row.key.endsWith('/'))) return
+  const directories = new Map<string, Map<string, IndexEntry>>([[virtual, new Map()]])
+  const files = new Set<string>()
+  for (const row of entries) {
+    if (!row.key.startsWith(key) || row.key === key) continue
+    const parts = rstripSlash(row.key.slice(key.length)).split('/')
+    let parent = virtual
+    for (const [i, name] of parts.entries()) {
+      const child = rstripSlash(parent) + '/' + name
+      const isDir = i < parts.length - 1 || row.key.endsWith('/')
+      if (isDir) {
+        if (!directories.has(child)) directories.set(child, new Map())
+      } else files.add(child)
+      const children = directories.get(parent)
+      if (children === undefined) throw new Error('Missing parent in object-store listing')
+      children.set(
+        name,
+        new IndexEntry({
+          id: child,
+          name,
+          resourceType: isDir ? ResourceType.FOLDER : ResourceType.FILE,
+          size: isDir ? null : (row.size ?? 0),
+          remoteTime: isDir ? '' : (row.modified ?? ''),
+        }),
+      )
+      parent = child
+    }
+  }
+  if ([...files].some((file) => directories.has(file))) return
+  for (const [directory, children] of directories) {
+    await index.setDir(directory, [...children])
+  }
+}
+
+/** Reuse complete metadata trees; narrowed searches never publish listings. */
+export async function readTree<A extends Accessor, C>(
+  driver: ObjectStoreDriver<A, C>,
+  accessor: A,
+  path: PathSpec,
+  index?: IndexCacheStore,
+  hints?: FindHints,
+): Promise<[TreeEntry[], boolean]> {
+  const kpfx = driver.keyPrefixOf(accessor)
+  const stem = rstripSlash(kp.apply(kpfx, path.mountPath))
+  const prefix = stem === '' ? '' : stem + '/'
+  const virtual = rstripSlash(path.virtual) || '/'
+  const root = await index?.get(virtual)
+  const knownDirectory =
+    path.mountPath.replaceAll('/', '') === '' || root?.entry?.resourceType === ResourceType.FOLDER
+  const cached =
+    !root?.entry?.extra.object_store_collision && (hints !== undefined || knownDirectory)
+      ? await cachedTree(index, virtual, prefix)
+      : null
+  if (cached !== null) return [cached, false]
+  if (hints === undefined && index !== undefined) {
+    const entry = root?.entry
+    const parent = await index.listDir(virtual.slice(0, virtual.lastIndexOf('/')) || '/')
+    if (
+      parent.entries?.includes(virtual) === true &&
+      entry?.resourceType === ResourceType.FILE &&
+      entry.size != null
+    ) {
+      return [[{ key: stem, size: entry.size }], false]
+    }
+  }
+  const { conn, close } = await driver.connect(accessor)
+  let narrowed = false
+  const entries: TreeEntry[] = []
+  let exists = false
+  try {
+    let iterator: AsyncIterable<TreeEntry>
+    if (hints === undefined) iterator = driver.listSubtree(conn, stem)
+    else if (driver.findTree !== undefined)
+      [iterator, narrowed] = driver.findTree(conn, prefix, hints)
+    else iterator = driver.listTree(conn, prefix)
+    for await (const entry of iterator) entries.push(entry)
+    exists = narrowed && entries.length === 0 && (await driver.probePrefix(conn, prefix))
+  } finally {
+    await close()
+  }
+  if (
+    !narrowed &&
+    !entries.some((e) => e.key === stem) &&
+    (entries.some((e) => e.key.startsWith(prefix)) || path.mountPath.replaceAll('/', '') === '')
+  ) {
+    await cacheTree(index, virtual, prefix, entries)
+    if (hints === undefined)
+      await index?.put(
+        virtual,
+        new IndexEntry({
+          id: virtual,
+          name: virtual.slice(virtual.lastIndexOf('/') + 1) || '/',
+          resourceType: ResourceType.FOLDER,
+        }),
+      )
+  }
+  return [entries, exists]
 }

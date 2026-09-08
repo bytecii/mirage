@@ -78,6 +78,8 @@ async def operand_stat(
     try:
         row = await stat_fn(path)
     except FS_ERRORS:
+        if mounts is not None and not mounts.visible_descendants(path.virtual):
+            raise
         fallback = None if stat_path is None else await stat_path(path.virtual)
         if fallback is None:
             raise
