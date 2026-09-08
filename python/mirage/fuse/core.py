@@ -42,6 +42,8 @@ WriteBuf = list[tuple[int, bytes]]
 @dataclass(slots=True)
 class Handle:
     path: str
+    # Where the path really points once namespace links are followed.
+    key: str
     data: bytes | None = None
     write_buf: WriteBuf = field(default_factory=list)
 
@@ -470,7 +472,7 @@ class MountCore:
         """
         self._run(self._ops.create(self.resolve(path)))
         self._prefetch.pop(path, None)
-        return self._handles.add(Handle(path=path))
+        return self._handles.add(Handle(path=path, key=self.identity(path)))
 
     def mkdir(self, path: str) -> None:
         self._run(self._ops.mkdir(self.resolve(path)))
@@ -628,7 +630,7 @@ class MountCore:
             FileNotFoundError: no such entry.
         """
         s = self._run(self._ops.stat(self.resolve(path)))
-        ctx = Handle(path=path)
+        ctx = Handle(path=path, key=self.identity(path))
         if s.type == FileType.DIRECTORY:
             return self._handles.add(ctx)
         if flags & os.O_TRUNC:
@@ -658,29 +660,44 @@ class MountCore:
             self.flush(ctx.path, fh)
         self._handles.pop(fh)
 
+    def identity(self, path: str) -> str:
+        """Where a mount path really points: the mount-resolved path with
+        every namespace link followed, so two handles opened through a
+        link and its target are recognised as the same file.
+
+        Args:
+            path (str): mount path to identify.
+        """
+        virtual = self.resolve(path)
+        links = self._ops.links
+        return virtual if links is None else links.follow(virtual)
+
     def truncate(self, path: str, length: int) -> None:
-        """Resize a file, settling every open handle on the same path.
+        """Resize a file, settling every open handle on the same file.
 
         A write the kernel already acknowledged on another handle precedes
         this truncation in POSIX order, so it is flushed first rather than
         left queued to land over the shortened file at that handle's
-        release. Hydrated handles on the path are then rehydrated from
-        the resized file, so fstat and read through them see the settled
-        writes and the new length rather than the bytes they opened on.
+        release. Handles are matched by identity, not by the path they
+        were opened through, so a link alias is settled too. Hydrated
+        handles are then rehydrated from the resized file, so fstat and
+        read through them see the settled writes and the new length
+        rather than the bytes they opened on.
 
         Args:
             path (str): mount path to resize.
             length (int): the new byte length.
         """
+        key = self.identity(path)
         for ctx in self._handles.values():
-            if ctx.path == path and ctx.write_buf:
-                self._apply_writes(path, ctx.write_buf)
+            if ctx.key == key and ctx.write_buf:
+                self._apply_writes(ctx.path, ctx.write_buf)
                 ctx.write_buf = []
         self._run(self._ops.truncate(self.resolve(path), length))
         self._prefetch.pop(path, None)
         hydrated = [
             ctx for ctx in self._handles.values()
-            if ctx.path == path and ctx.data is not None
+            if ctx.key == key and ctx.data is not None
         ]
         if hydrated:
             data = self._run(self._ops.read(self.resolve(path)))

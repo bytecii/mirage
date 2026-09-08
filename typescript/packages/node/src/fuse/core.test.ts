@@ -17,7 +17,7 @@ import { runWithSession } from '@struktoai/mirage-core/context/session_context'
 import { RAMResource } from '@struktoai/mirage-core/resource/ram/ram'
 import { ContentType, FileStat, FileType, MountMode } from '@struktoai/mirage-core/types'
 import { mtimeMs } from '@struktoai/mirage-core/utils/stat_view'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Workspace } from '../workspace.ts'
 import { MountCore } from './core.ts'
 
@@ -180,6 +180,56 @@ describe('MountCore', () => {
     const body = await core.read('/data/greeting.txt', after, 0, 100)
     await core.release(after)
     expect(new TextDecoder().decode(body)).toBe('BB\n')
+  })
+
+  it('settles a handle opened on the target when the O_TRUNC open comes through a link', async () => {
+    // The dispatcher follows both paths to one file, so a handle opened on
+    // the target and an O_TRUNC open through a link to it are the same
+    // file: the queued write lands first and the truncation wins.
+    const ws = new Workspace({ '/data/': new RAMResource() }, { mode: MountMode.WRITE })
+    await ws.execute("echo 'hello world' | tee /data/greeting.txt")
+    await ws.execute('ln -s greeting.txt /data/lk')
+    const core = new MountCore(ws.fs)
+    const first = await core.open('/data/greeting.txt', fsConstants.O_WRONLY)
+    await core.write('/data/greeting.txt', first, new TextEncoder().encode('QUEUED'), 0)
+    const second = await core.open('/data/lk', fsConstants.O_WRONLY | fsConstants.O_TRUNC)
+    await core.write('/data/lk', second, new TextEncoder().encode('BB\n'), 0)
+    await core.release(second)
+    await core.release(first)
+    const after = await core.open('/data/greeting.txt')
+    const body = await core.read('/data/greeting.txt', after, 0, 100)
+    await core.release(after)
+    expect(new TextDecoder().decode(body)).toBe('BB\n')
+  })
+
+  it('a prefetch in flight across a truncate re-reads rather than installing stale bytes', async () => {
+    // The first open's read was out when the O_TRUNC open landed; what it
+    // fetched is the old body, and installing it would let that handle
+    // and later stats serve pre-truncation content.
+    const ws = new Workspace({ '/data/': new RAMResource() }, { mode: MountMode.WRITE })
+    await ws.fs.writeFile('/data/api.json', new TextEncoder().encode('hydrated bytes'))
+    vi.spyOn(ws.fs, 'stat').mockResolvedValue(
+      new FileStat({ name: 'api.json', type: FileType.FILE, content: ContentType.JSON }),
+    )
+    const original = ws.fs.readFile.bind(ws.fs)
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let calls = 0
+    vi.spyOn(ws.fs, 'readFile').mockImplementation(async (...args: Parameters<typeof original>) => {
+      calls += 1
+      if (calls === 1) await gate
+      return original(...args)
+    })
+    const core = new MountCore(ws.fs)
+    const pending = core.open('/data/api.json')
+    const writer = await core.open('/data/api.json', fsConstants.O_WRONLY | fsConstants.O_TRUNC)
+    release()
+    const reader = await pending
+    expect((await core.fgetattr('/data/api.json', reader)).size).toBe(0)
+    await core.release(writer)
+    await core.release(reader)
   })
 
   it("keeps the other handle's buffer when the settlement flush is refused", async () => {

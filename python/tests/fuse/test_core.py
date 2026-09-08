@@ -128,6 +128,24 @@ async def test_o_trunc_open_settles_writes_buffered_on_another_handle(seeded):
 
 
 @pytest.mark.asyncio
+async def test_o_trunc_open_through_a_link_settles_the_targets_handle():
+    # The dispatcher follows both paths to one file, so a handle opened on
+    # the target and an O_TRUNC open through a link to it are the same
+    # file: the queued write lands first and the truncation wins.
+    ws = Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+    await ws.execute("tee /a.txt", stdin=b"hello world")
+    await ws.execute("ln -s a.txt /lk")
+    core = MountCore(ws.fs)
+    first = core.open("/a.txt", os.O_WRONLY)
+    core.write("/a.txt", b"QUEUED", 0, first)
+    second = core.open("/lk", os.O_WRONLY | os.O_TRUNC)
+    core.write("/lk", b"BB\n", 0, second)
+    core.release(second)
+    core.release(first)
+    assert core.read("/a.txt", 100, 0, None) == b"BB\n"
+
+
+@pytest.mark.asyncio
 async def test_failed_settlement_keeps_the_other_handles_buffer():
     # When the settling flush is refused, the acknowledged bytes must stay
     # buffered on their handle so its own flush reports the refusal rather

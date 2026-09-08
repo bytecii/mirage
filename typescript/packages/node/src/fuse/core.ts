@@ -40,6 +40,8 @@ export interface FuseAttr {
 
 export interface Handle {
   path: string
+  /** Where the path really points once namespace links are followed. */
+  key: string
   data?: Uint8Array
   writeBuf?: [number, Uint8Array][]
 }
@@ -91,6 +93,10 @@ export class MountCore {
   readonly xattrs = new Map<string, Map<string, Buffer>>()
   readonly prefetchCache = new Map<string, PrefetchEntry>()
   private readonly prefetchInflight = new Map<string, Promise<Uint8Array | null>>()
+  // Bumped whenever the file changes underneath an in-flight prefetch, so
+  // a read that started before a truncate or write cannot install the
+  // bytes it fetched as the file's current content.
+  private readonly prefetchGen = new Map<string, number>()
   private readonly uid: number
   private readonly gid: number
 
@@ -245,9 +251,15 @@ export class MountCore {
     if (inflight !== undefined) return inflight
     const promise = (async (): Promise<Uint8Array | null> => {
       try {
-        const data = await this.ops.readFile(this.resolve(path))
-        this.prefetchCache.set(path, { data, expires: Date.now() + PREFETCH_TTL_MS })
-        return data
+        for (;;) {
+          const gen = this.prefetchGen.get(path) ?? 0
+          const data = await this.ops.readFile(this.resolve(path))
+          // The file changed while this read was out: what came back is
+          // stale, so read again rather than install it.
+          if ((this.prefetchGen.get(path) ?? 0) !== gen) continue
+          this.prefetchCache.set(path, { data, expires: Date.now() + PREFETCH_TTL_MS })
+          return data
+        }
       } catch {
         return null
       } finally {
@@ -282,6 +294,7 @@ export class MountCore {
       // missing file: start from empty; the write creates it
     }
     await this.writeFile(path, mergeWrites(existing, writes))
+    this.invalidatePrefetch(path)
   }
 
   // ── POSIX surface (throws; adapters classify) ────────────────────
@@ -371,7 +384,7 @@ export class MountCore {
       if (!isMissingOp(dispatchErr, 'create')) throw dispatchErr
       await this.writeFile(path, new Uint8Array(0))
     }
-    return this.handles.add({ path })
+    return this.handles.add({ path, key: this.identity(path) })
   }
 
   async mkdir(path: string): Promise<void> {
@@ -413,7 +426,13 @@ export class MountCore {
   async unlink(path: string): Promise<void> {
     await this.ops.unlink(this.resolve(path))
     this.xattrs.delete(path)
+    this.invalidatePrefetch(path)
+  }
+
+  /** Drop cached bytes for a path and outdate any prefetch still in flight. */
+  private invalidatePrefetch(path: string): void {
     this.prefetchCache.delete(path)
+    this.prefetchGen.set(path, (this.prefetchGen.get(path) ?? 0) + 1)
   }
 
   async rename(src: string, dst: string): Promise<void> {
@@ -422,6 +441,8 @@ export class MountCore {
     // copy+unlink instead of addressing the destination against the
     // source's backend.
     await this.ops.rename(this.resolve(src), this.resolve(dst))
+    this.invalidatePrefetch(src)
+    this.invalidatePrefetch(dst)
     const moved = this.xattrs.get(src)
     if (moved !== undefined) {
       this.xattrs.delete(src)
@@ -438,18 +459,45 @@ export class MountCore {
     this.xattrs.delete(path)
   }
 
+  /**
+   * Where a mount path really points: the mount-resolved path with every
+   * namespace link followed, so two handles opened through a link and
+   * its target are recognised as the same file.
+   */
+  identity(path: string): string {
+    const virtual = this.resolve(path)
+    const links = this.ops.links
+    return links === null ? virtual : links.follow(virtual)
+  }
+
+  /**
+   * Persist a handle's buffered writes. The buffer is detached before the
+   * await so a write arriving meanwhile is not lost to the clear, and
+   * restored ahead of those later writes when persistence fails, so the
+   * acknowledged bytes stay for the handle's own flush to retry.
+   */
+  private async settle(ctx: Handle): Promise<void> {
+    if (ctx.writeBuf === undefined || ctx.writeBuf.length === 0) return
+    const writes = ctx.writeBuf
+    ctx.writeBuf = []
+    try {
+      await this.applyWrites(ctx.path, writes)
+    } catch (err) {
+      ctx.writeBuf = [...writes, ...ctx.writeBuf]
+      throw err
+    }
+  }
+
   async truncate(path: string, size: number): Promise<void> {
     // A write the kernel already acknowledged on another handle precedes
     // this truncation in POSIX order, so it is flushed first rather than
     // left queued to land over the shortened file at that handle's
-    // release. The buffer is cleared only once the write has landed, so a
-    // failed settlement leaves the acknowledged bytes for the handle's own
-    // flush to retry. Mirrors Python's MountCore.truncate.
+    // release. Handles are matched by identity, not by the path they
+    // were opened through, so a link alias is settled too. Mirrors
+    // Python's MountCore.truncate.
+    const key = this.identity(path)
     for (const ctx of this.handles.values()) {
-      if (ctx.path === path && ctx.writeBuf !== undefined && ctx.writeBuf.length > 0) {
-        await this.applyWrites(path, ctx.writeBuf)
-        ctx.writeBuf = []
-      }
+      if (ctx.key === key) await this.settle(ctx)
     }
     // Prefer the resource's dedicated `truncate` op (atomic on most
     // backends). Fall back to read/resize/write for resources that don't
@@ -465,12 +513,12 @@ export class MountCore {
       out.set(data.subarray(0, Math.min(data.byteLength, size)), 0)
       await this.writeFile(path, out)
     }
-    this.prefetchCache.delete(path)
-    // Hydrated handles on the path are rehydrated from the resized file,
+    this.invalidatePrefetch(path)
+    // Hydrated handles on the file are rehydrated from the resized file,
     // so fstat and read through them see the settled writes and the new
     // length rather than the bytes they opened on.
     const hydrated = [...this.handles.values()].filter(
-      (ctx) => ctx.path === path && ctx.data !== undefined,
+      (ctx) => ctx.key === key && ctx.data !== undefined,
     )
     if (hydrated.length > 0) {
       const data = await this.ops.readFile(this.resolve(path))
@@ -516,7 +564,7 @@ export class MountCore {
 
   async open(path: string, flags = 0): Promise<number> {
     const s = await this.ops.stat(this.resolve(path))
-    const ctx: Handle = { path }
+    const ctx: Handle = { path, key: this.identity(path) }
     if (s.type === FileType.DIRECTORY) return this.handles.add(ctx)
     if ((flags & fsConstants.O_TRUNC) !== 0) {
       // libfuse 3 negotiates FUSE_CAP_ATOMIC_O_TRUNC by default, so the
@@ -547,12 +595,8 @@ export class MountCore {
     this.handles.pop(fd)
   }
 
-  async flush(path: string, fd: number): Promise<void> {
+  async flush(_path: string, fd: number): Promise<void> {
     const ctx = this.handles.get(fd)
-    if (ctx?.writeBuf === undefined || ctx.writeBuf.length === 0) return
-    // Cleared only once the write has landed, so a failed flush leaves the
-    // acknowledged bytes for release to retry instead of dropping them.
-    await this.applyWrites(path, ctx.writeBuf)
-    ctx.writeBuf = []
+    if (ctx !== undefined) await this.settle(ctx)
   }
 }
