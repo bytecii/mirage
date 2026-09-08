@@ -439,7 +439,7 @@ class MountCore:
             pass
         merged = merge_writes(existing, writes)
         self._run(self._ops.write(self.resolve(path), merged))
-        self._prefetch.pop(path, None)
+        self._forget_prefetch(path)
 
     def write(self, path: str, data: bytes, offset: int,
               fh: int | None) -> int:
@@ -471,7 +471,7 @@ class MountCore:
             int: the new handle id.
         """
         self._run(self._ops.create(self.resolve(path)))
-        self._prefetch.pop(path, None)
+        self._forget_prefetch(path)
         return self._handles.add(Handle(path=path, key=self.identity(path)))
 
     def mkdir(self, path: str) -> None:
@@ -537,8 +537,8 @@ class MountCore:
         moved = self._xattrs.pop(old, None)
         if moved is not None:
             self._xattrs[new] = moved
-        self._prefetch.pop(old, None)
-        self._prefetch.pop(new, None)
+        self._forget_prefetch(old)
+        self._forget_prefetch(new)
 
     def rmdir(self, path: str) -> None:
         self._run(self._ops.rmdir(self.resolve(path)))
@@ -694,7 +694,7 @@ class MountCore:
                 self._apply_writes(ctx.path, ctx.write_buf)
                 ctx.write_buf = []
         self._run(self._ops.truncate(self.resolve(path), length))
-        self._prefetch.pop(path, None)
+        self._forget_prefetch(path)
         hydrated = [
             ctx for ctx in self._handles.values()
             if ctx.key == key and ctx.data is not None
@@ -704,6 +704,18 @@ class MountCore:
             for ctx in hydrated:
                 ctx.data = data
 
+    def _forget_prefetch(self, path: str) -> None:
+        """Drop cached bytes for a file, matched by identity so a link's
+        entry goes when its target changes and vice versa.
+
+        Args:
+            path (str): mount path whose file changed.
+        """
+        key = self.identity(path)
+        for cached in list(self._prefetch):
+            if self.identity(cached) == key:
+                del self._prefetch[cached]
+
     def _forget(self, path: str) -> None:
         self._xattrs.pop(path, None)
-        self._prefetch.pop(path, None)
+        self._forget_prefetch(path)

@@ -629,6 +629,23 @@ async def test_unknown_size_truncate_rehydrates_with_settled_writes(
 
 
 @pytest.mark.asyncio
+async def test_unknown_size_truncate_through_a_link_drops_the_targets_cache():
+    # The target was opened and released as /u.json, leaving its bytes in
+    # the TTL cache; an O_TRUNC open through a link to it must drop that
+    # entry too, or the next stat of /u.json serves the old length.
+    ws = Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+    await ws.execute("tee /u.json", stdin=_PAYLOAD)
+    await ws.execute("ln -s u.json /lk")
+    fs = MirageFS(_SizelessOps(ws.fs))
+    fh = fs.open("/u.json", os.O_RDONLY)
+    fs.release("/u.json", fh)
+    assert fs.getattr("/u.json")["st_size"] == len(_PAYLOAD)
+    writer = fs.open("/lk", os.O_WRONLY | os.O_TRUNC)
+    fs.release("/lk", writer)
+    assert fs.getattr("/u.json")["st_size"] == 0
+
+
+@pytest.mark.asyncio
 async def test_unknown_size_fh_stat_returns_real_size(sizeless_fs):
     fs, _ = sizeless_fs
     fh = fs.open("/u.json", os.O_RDONLY)

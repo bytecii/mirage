@@ -95,8 +95,14 @@ export class MountCore {
   private readonly prefetchInflight = new Map<string, Promise<Uint8Array | null>>()
   // Bumped whenever the file changes underneath an in-flight prefetch, so
   // a read that started before a truncate or write cannot install the
-  // bytes it fetched as the file's current content.
+  // bytes it fetched as the file's current content. An entry exists only
+  // while that path's prefetch is in flight.
   private readonly prefetchGen = new Map<string, number>()
+  // One chain per file identity that persists and truncations join in
+  // order, so a truncate cannot slip in between a flush detaching its
+  // buffer and that buffer landing, which would let the flush restore the
+  // old body over a truncation that already succeeded.
+  private readonly pending = new Map<string, Promise<void>>()
   private readonly uid: number
   private readonly gid: number
 
@@ -264,10 +270,31 @@ export class MountCore {
         return null
       } finally {
         this.prefetchInflight.delete(path)
+        this.prefetchGen.delete(path)
       }
     })()
     this.prefetchInflight.set(path, promise)
     return promise
+  }
+
+  /**
+   * Run `fn` after every persist or truncation already queued for the
+   * file, and let the next one wait for it. Serialization is per identity,
+   * so a flush through a link and a truncate through its target queue
+   * behind each other.
+   */
+  private serialized<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.pending.get(key) ?? Promise.resolve()
+    const run = prev.then(fn, fn)
+    const tail: Promise<void> = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    this.pending.set(key, tail)
+    void tail.then(() => {
+      if (this.pending.get(key) === tail) this.pending.delete(key)
+    })
+    return run
   }
 
   /** Drain and return accumulated op records (mirrors Python's drainOps). */
@@ -429,10 +456,21 @@ export class MountCore {
     this.invalidatePrefetch(path)
   }
 
-  /** Drop cached bytes for a path and outdate any prefetch still in flight. */
+  /**
+   * Drop cached bytes for a file and outdate any prefetch still in flight
+   * for it. Matched by identity, so a link's cache entry goes when its
+   * target changes and vice versa.
+   */
   private invalidatePrefetch(path: string): void {
-    this.prefetchCache.delete(path)
-    this.prefetchGen.set(path, (this.prefetchGen.get(path) ?? 0) + 1)
+    const key = this.identity(path)
+    for (const cached of [...this.prefetchCache.keys()]) {
+      if (this.identity(cached) === key) this.prefetchCache.delete(cached)
+    }
+    for (const inflight of this.prefetchInflight.keys()) {
+      if (this.identity(inflight) === key) {
+        this.prefetchGen.set(inflight, (this.prefetchGen.get(inflight) ?? 0) + 1)
+      }
+    }
   }
 
   async rename(src: string, dst: string): Promise<void> {
@@ -476,7 +514,12 @@ export class MountCore {
    * restored ahead of those later writes when persistence fails, so the
    * acknowledged bytes stay for the handle's own flush to retry.
    */
-  private async settle(ctx: Handle): Promise<void> {
+  private settle(ctx: Handle): Promise<void> {
+    if (ctx.writeBuf === undefined || ctx.writeBuf.length === 0) return Promise.resolve()
+    return this.serialized(ctx.key, () => this.persistBuffered(ctx))
+  }
+
+  private async persistBuffered(ctx: Handle): Promise<void> {
     if (ctx.writeBuf === undefined || ctx.writeBuf.length === 0) return
     const writes = ctx.writeBuf
     ctx.writeBuf = []
@@ -496,34 +539,36 @@ export class MountCore {
     // were opened through, so a link alias is settled too. Mirrors
     // Python's MountCore.truncate.
     const key = this.identity(path)
-    for (const ctx of this.handles.values()) {
-      if (ctx.key === key) await this.settle(ctx)
-    }
-    // Prefer the resource's dedicated `truncate` op (atomic on most
-    // backends). Fall back to read/resize/write for resources that don't
-    // expose one.
-    try {
-      await this.ops.truncate(this.resolve(path), size)
-    } catch (dispatchErr) {
-      if (!isMissingOp(dispatchErr, 'truncate')) throw dispatchErr
-      const data = await this.ops
-        .readFile(this.resolve(path), { raw: true })
-        .catch(() => new Uint8Array(0))
-      const out = new Uint8Array(size)
-      out.set(data.subarray(0, Math.min(data.byteLength, size)), 0)
-      await this.writeFile(path, out)
-    }
-    this.invalidatePrefetch(path)
-    // Hydrated handles on the file are rehydrated from the resized file,
-    // so fstat and read through them see the settled writes and the new
-    // length rather than the bytes they opened on.
-    const hydrated = [...this.handles.values()].filter(
-      (ctx) => ctx.key === key && ctx.data !== undefined,
-    )
-    if (hydrated.length > 0) {
-      const data = await this.ops.readFile(this.resolve(path))
-      for (const ctx of hydrated) ctx.data = data
-    }
+    await this.serialized(key, async () => {
+      for (const ctx of this.handles.values()) {
+        if (ctx.key === key) await this.persistBuffered(ctx)
+      }
+      // Prefer the resource's dedicated `truncate` op (atomic on most
+      // backends). Fall back to read/resize/write for resources that don't
+      // expose one.
+      try {
+        await this.ops.truncate(this.resolve(path), size)
+      } catch (dispatchErr) {
+        if (!isMissingOp(dispatchErr, 'truncate')) throw dispatchErr
+        const data = await this.ops
+          .readFile(this.resolve(path), { raw: true })
+          .catch(() => new Uint8Array(0))
+        const out = new Uint8Array(size)
+        out.set(data.subarray(0, Math.min(data.byteLength, size)), 0)
+        await this.writeFile(path, out)
+      }
+      this.invalidatePrefetch(path)
+      // Hydrated handles on the file are rehydrated from the resized file,
+      // so fstat and read through them see the settled writes and the new
+      // length rather than the bytes they opened on.
+      const hydrated = [...this.handles.values()].filter(
+        (ctx) => ctx.key === key && ctx.data !== undefined,
+      )
+      if (hydrated.length > 0) {
+        const data = await this.ops.readFile(this.resolve(path))
+        for (const ctx of hydrated) ctx.data = data
+      }
+    })
   }
 
   statfs(): Record<string, number> {

@@ -232,6 +232,77 @@ describe('MountCore', () => {
     await core.release(reader)
   })
 
+  it('queues an O_TRUNC open behind a flush that is still landing', async () => {
+    // The flush detached its buffer and is awaiting the backend write when
+    // the O_TRUNC open arrives. Truncating right away would let the flush
+    // finish afterwards and restore the old body over the truncation.
+    const ws = new Workspace({ '/data/': new RAMResource() }, { mode: MountMode.WRITE })
+    await ws.execute("echo 'hello world' | tee /data/greeting.txt")
+    const original = ws.fs.writeFile.bind(ws.fs)
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let calls = 0
+    vi.spyOn(ws.fs, 'writeFile').mockImplementation(
+      async (...args: Parameters<typeof original>) => {
+        calls += 1
+        if (calls === 1) await gate
+        return original(...args)
+      },
+    )
+    const core = new MountCore(ws.fs)
+    const first = await core.open('/data/greeting.txt', fsConstants.O_WRONLY)
+    await core.write('/data/greeting.txt', first, new TextEncoder().encode('QUEUED'), 0)
+    const flushing = core.flush('/data/greeting.txt', first)
+    const opening = core.open('/data/greeting.txt', fsConstants.O_WRONLY | fsConstants.O_TRUNC)
+    release()
+    await flushing
+    const second = await opening
+    await core.write('/data/greeting.txt', second, new TextEncoder().encode('BB\n'), 0)
+    await core.release(second)
+    await core.release(first)
+    const body = await ws.fs.readFile('/data/greeting.txt')
+    expect(new TextDecoder().decode(body)).toBe('BB\n')
+  })
+
+  it('an O_TRUNC open through a link drops the cached bytes of its target', async () => {
+    // The target was opened and released as greeting.txt, leaving its
+    // bytes in the TTL cache; truncating through the link must drop that
+    // entry too, or the next stat of the target serves the old length.
+    const ws = new Workspace({ '/data/': new RAMResource() }, { mode: MountMode.WRITE })
+    await ws.execute("echo 'hello world' | tee /data/greeting.txt")
+    await ws.execute('ln -s greeting.txt /data/lk')
+    const realStat = ws.fs.stat.bind(ws.fs)
+    vi.spyOn(ws.fs, 'stat').mockImplementation(async (path) => {
+      const s = await realStat(path)
+      return s.type === FileType.FILE
+        ? new FileStat({ name: s.name, type: s.type, content: s.content })
+        : s
+    })
+    const core = new MountCore(ws.fs)
+    const fh = await core.open('/data/greeting.txt')
+    await core.release(fh)
+    expect((await core.getattr('/data/greeting.txt')).size).toBe(12)
+    const writer = await core.open('/data/lk', fsConstants.O_WRONLY | fsConstants.O_TRUNC)
+    await core.release(writer)
+    expect((await core.getattr('/data/greeting.txt')).size).toBe(0)
+  })
+
+  it('keeps no prefetch generation once the prefetch has settled', async () => {
+    const ws = new Workspace({ '/data/': new RAMResource() }, { mode: MountMode.WRITE })
+    await ws.execute("echo 'hello world' | tee /data/greeting.txt")
+    const core = new MountCore(ws.fs)
+    const generations = (core as unknown as { prefetchGen: Map<string, number> }).prefetchGen
+    for (const name of ['a', 'b', 'c']) {
+      const fh = await core.create(`/data/${name}.txt`)
+      await core.write(`/data/${name}.txt`, fh, new TextEncoder().encode(name), 0)
+      await core.release(fh)
+      await core.truncate(`/data/${name}.txt`, 0)
+    }
+    expect(generations.size).toBe(0)
+  })
+
   it("keeps the other handle's buffer when the settlement flush is refused", async () => {
     // The acknowledged bytes must stay buffered so that handle's own
     // flush reports the refusal rather than succeeding over an empty
