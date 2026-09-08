@@ -14,6 +14,28 @@ function client(options: Record<string, unknown> = {}) {
   return new WandbClient(normalizeWandbConfig({ entities: ['lab'], ...options }))
 }
 describe('W&B client', () => {
+  it.each([undefined, 'fixture-key'])('sends JSON with api_key=%s', async (api_key) => {
+    const request = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+      const sent = new Request(input, init)
+      expect(sent.url).toBe('https://api.wandb.ai/graphql')
+      expect(sent.method).toBe('POST')
+      expect(sent.headers.get('Content-Type')).toBe('application/json')
+      expect(sent.headers.get('Authorization')).toBe(
+        api_key ? `Basic ${btoa(`api:${api_key}`)}` : null,
+      )
+      expect(await sent.json()).toEqual({ query: '{ viewer { id } }', variables: {} })
+      return Response.json({ data: { viewer: { id: 'caller' } } })
+    })
+    vi.stubGlobal('fetch', request)
+    try {
+      expect(await client({ api_key }).request('{ viewer { id } }', {})).toEqual({
+        viewer: { id: 'caller' },
+      })
+      expect(request).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
   it('paginates independently per call', async () => {
     const c = client({ page_size: 1 })
     const request = vi

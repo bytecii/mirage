@@ -23,7 +23,7 @@ export class WandbClient {
   async request<T>(query: string, variables: Record<string, unknown>): Promise<T> {
     const result = (await apiRequest('POST', this.config.baseUrl.replace(/\/$/, '') + '/graphql', {
       errorOf: responseError,
-      headers: this.headers(),
+      headers: { ...this.headers(), 'Content-Type': 'application/json' },
       json: { query, variables },
     })) as { data?: T; errors?: unknown[] }
     if (result.errors?.length) throw new WandbAPIError('W&B GraphQL request failed')

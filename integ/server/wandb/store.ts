@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { fixturePath } from '../kit/typescript/fixture.ts'
 
 export const API_KEY = '0123456789abcdef0123456789abcdef01234567'
 
@@ -53,9 +55,12 @@ export interface Fixture {
     }
   >
 }
-export function loadFixture(): Fixture {
+export function loadFixture(name = 'v1', root?: string): Fixture {
   return JSON.parse(
-    readFileSync(new URL('../../fixtures/wandb/v1.json', import.meta.url), 'utf8'),
+    readFileSync(
+      fixturePath('wandb', name, root === undefined ? undefined : resolve(root)),
+      'utf8',
+    ),
   ) as Fixture
 }
 export function fileBytes(file: FileData): Buffer {

@@ -21,6 +21,43 @@ export async function selftest(): Promise<void> {
   }
   try {
     assert.equal((await fetch(server.base + '/graphql', { method: 'POST' })).status, 401)
+    for (const contentType of [undefined, 'text/plain;charset=UTF-8']) {
+      const response = await fetch(server.base + '/graphql', {
+        method: 'POST',
+        headers: {
+          Authorization: headers.Authorization,
+          ...(contentType ? { 'Content-Type': contentType } : {}),
+        },
+        body: new TextEncoder().encode(JSON.stringify({ query: '{ viewer { id } }' })),
+      })
+      assert.equal(response.status, 415, 'GraphQL must require a JSON media type')
+      assert.deepEqual(await response.json(), {
+        errors: [{ message: 'Content-Type must be application/json' }],
+      })
+    }
+    const charset = await fetch(server.base + '/graphql', {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ query: '{ viewer { entity } }' }),
+    })
+    assert.equal(charset.status, 200)
+    assert.deepEqual(await charset.json(), { data: { viewer: { entity: 'lab' } } })
+    const syntax = await query('{')
+    assert.deepEqual(syntax, {
+      errors: [
+        {
+          message: 'Syntax Error: Expected Name, found <EOF>.',
+          locations: [{ line: 1, column: 2 }],
+        },
+      ],
+    })
+    const malformed = await fetch(server.base + '/graphql', {
+      method: 'POST',
+      headers,
+      body: 'private-input-is-not-json',
+    })
+    assert.equal(malformed.status, 400)
+    assert.deepEqual(await malformed.json(), { errors: [{ message: 'Invalid request' }] })
     const result = await query(
       `query Alternate($owner: String!, $filter: JSONString!) {
    experiment: project(entityName: $owner, name: "experiments") {

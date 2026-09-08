@@ -8,8 +8,12 @@ Run `pnpm run wandb:integ` from `integ/` after installing the Python and TypeScr
 workspace dependencies. It starts the mock on a loopback ephemeral port, executes
 `cases.json` in both languages, checks the API contract and streaming behavior,
 and closes the server. Set `MIRAGE_PYTHON` to choose a Python interpreter.
-`pnpm run wandb:server` starts the standalone API on port 5093; the optional
-positional argument chooses another port. The synthetic fixture key is `0123456789abcdef0123456789abcdef01234567`
+`pnpm run wandb:server` starts the standalone API on port 5093; `--port` chooses
+another port (0 selects an ephemeral port). `--fixture` selects a fixture name and
+`--fixture-root` selects a root containing `wandb/<name>.json`. The shared launcher
+accepts the same settings as `{"wandb":{"port":0,"fixture":"v1"}}`, including
+`fixtureRoot` and an optional announcement `token`; the default is `WANDB_BASE_URL`.
+Each instance loads its own fixture at startup. The synthetic fixture key is `0123456789abcdef0123456789abcdef01234567`
 (40 characters, accepted by both pinned SDKs).
 Mirage's `base_url` and an upstream SDK's `WANDB_BASE_URL` take the printed origin.
 The endpoint never forwards an unhandled request to live W&B.

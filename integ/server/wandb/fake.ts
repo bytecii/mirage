@@ -9,8 +9,8 @@ export interface RequestRecord {
   variables: Record<string, unknown>
   errors?: string[]
 }
-export async function startWandb(port = 0) {
-  const fixture = loadFixture()
+export async function startWandb(port = 0, fixtureName = 'v1', fixtureRoot?: string) {
+  const fixture = loadFixture(fixtureName, fixtureRoot)
   const requests: RequestRecord[] = []
   let base = ''
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -26,6 +26,11 @@ export async function startWandb(port = 0) {
       return
     }
     if (req.method === 'POST' && url.pathname === '/graphql') {
+      if (req.headers['content-type']?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
+        res.writeHead(415, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ errors: [{ message: 'Content-Type must be application/json' }] }))
+        return
+      }
       const chunks: Buffer[] = []
       for await (const chunk of req) chunks.push(Buffer.from(chunk as Uint8Array))
       const body = JSON.parse(Buffer.concat(chunks).toString()) as {
@@ -39,10 +44,12 @@ export async function startWandb(port = 0) {
       try {
         document = parse(body.query)
       } catch (error) {
-        const failure = error instanceof GraphQLError ? error : new GraphQLError(String(error))
-        record.errors = [failure.message]
+        if (!(error instanceof GraphQLError)) throw error
+        record.errors = [error.message]
         res.writeHead(400, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ errors: [failure] }))
+        res.end(
+          JSON.stringify({ errors: [{ message: error.message, locations: error.locations }] }),
+        )
         return
       }
       const errors = validate(schema, document)
@@ -83,8 +90,9 @@ export async function startWandb(port = 0) {
   }
   const server = createServer((req, res) => {
     void handle(req, res).catch((error: unknown) => {
-      res.writeHead(400)
-      res.end(JSON.stringify({ error: String(error) }))
+      console.error('W&B mock request failed', error)
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ errors: [{ message: 'Invalid request' }] }))
     })
   })
   await new Promise<void>((resolve, reject) => {
