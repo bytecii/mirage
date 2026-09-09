@@ -14,6 +14,7 @@
 
 from mirage.cache.index import NULL_INDEX, IndexCacheStore, ResourceType
 from mirage.core.object_store.driver import A, C, ObjectStoreDriver, StatFn
+from mirage.core.object_store.readdir import cached_entry
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils import key_prefix as kp
 from mirage.utils.errors import enoent
@@ -55,9 +56,8 @@ def make_stat(driver: ObjectStoreDriver[A, C]) -> StatFn[A]:
         # and file sizes, so stat can return instantly for known paths.
         virtual_key = (original_prefix + "/" +
                        stripped if original_prefix else "/" + stripped)
-        lookup = await index.get(virtual_key)
-        if lookup.entry is not None:
-            entry = lookup.entry
+        entry = await cached_entry(index, virtual_key)
+        if entry is not None:
             # Store "folders" are synthetic prefixes with no object,
             # so readdir() records no time or size for them.
             if entry.resource_type == ResourceType.FOLDER:

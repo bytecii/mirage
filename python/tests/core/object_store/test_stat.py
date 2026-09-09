@@ -14,6 +14,8 @@
 
 import asyncio
 import os
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -21,6 +23,8 @@ import pytest_asyncio
 
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.cache.index.redis import RedisIndexCacheStore
+from mirage.core.object_store.du import make_du_size
+from mirage.core.object_store.find import make_find
 from mirage.core.object_store.readdir import make_readdir
 from mirage.core.object_store.stat import make_stat
 from mirage.types import FileType
@@ -88,6 +92,74 @@ def test_stat_listed_parent_negative_caches_enoent(accessor):
     with pytest.raises(FileNotFoundError):
         asyncio.run(make_stat(driver)(accessor, spec("/.git"), index=index))
     assert store.connects == connects
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('warmup', ['find', 'du'])
+@pytest.mark.parametrize('expiry', ['expired', 'missing'])
+@pytest.mark.parametrize('replacement', ['deleted', 'file', 'directory'])
+async def test_recursive_metadata_requires_a_fresh_listing(
+        accessor, warmup, expiry, replacement):
+    store = FakeStore({'data/old.txt': b'old'})
+    driver = make_driver(store)
+    index = RAMIndexCacheStore(ttl=60)
+    path = spec('/data')
+    stat = make_stat(driver)
+    find = make_find(driver)
+    size = make_du_size(driver)
+    with patch('mirage.cache.index.ram.datetime') as clock:
+        clock.now.return_value = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        if warmup == 'find':
+            await find(accessor, path, index=index)
+        else:
+            await size(accessor, path, index)
+        store.connects = 0
+        assert (await stat(accessor, path, index)).type == FileType.DIRECTORY
+        assert store.connects == 0
+        store.objects.clear()
+        if replacement == 'file':
+            store.objects['data'] = b'new file'
+        elif replacement == 'directory':
+            store.objects['data/new.txt'] = b'new contents'
+        if expiry == 'expired':
+            clock.now.return_value += timedelta(seconds=61)
+        else:
+            await index.invalidate_dir(path.virtual)
+        if replacement == 'deleted':
+            with pytest.raises(FileNotFoundError):
+                await stat(accessor, path, index)
+            assert await find(accessor, path, index=index) == []
+        else:
+            current = await stat(accessor, path, index)
+            assert current.type == (FileType.FILE if replacement == 'file' else
+                                    FileType.DIRECTORY)
+        with pytest.raises(FileNotFoundError):
+            await stat(accessor, spec('/data/old.txt'), index)
+        assert await size(accessor, path,
+                          index) == sum(map(len, store.objects.values()))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('refresh', ['find', 'readdir'])
+async def test_refresh_does_not_revive_an_expired_folder(accessor, refresh):
+    store = FakeStore({'data/old.txt': b'old'})
+    driver = make_driver(store)
+    index = RAMIndexCacheStore(ttl=60)
+    path = spec('/data')
+    find = make_find(driver)
+    with patch('mirage.cache.index.ram.datetime') as clock:
+        clock.now.return_value = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        await find(accessor, path, index=index)
+        store.objects.clear()
+        store.objects.update({'data': b'file', 'data/new.txt': b'new'})
+        clock.now.return_value += timedelta(seconds=61)
+        if refresh == 'find':
+            await find(accessor, path, index=index)
+        else:
+            await make_readdir(driver)(accessor, path, index)
+        assert (await make_stat(driver)(accessor, path,
+                                        index)).type == FileType.FILE
+        assert await make_du_size(driver)(accessor, path, index) == 7
 
 
 @pytest_asyncio.fixture(params=["ram", "redis"])
