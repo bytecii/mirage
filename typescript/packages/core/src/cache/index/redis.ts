@@ -31,6 +31,8 @@ import { IndexCacheStore } from './store.ts'
 // Entries and listings must go cold together when the cache format changes.
 const ENTRY_PREFIX = 'mirage:idx:entry:v2:'
 const CHILDREN_PREFIX = 'mirage:idx:directory:v2:'
+const LEGACY_ENTRY_PREFIX = 'mirage:idx:entry:'
+const LEGACY_CHILDREN_PREFIX = 'mirage:idx:children:'
 const DEFAULT_KEY_PREFIX = 'mirage:index:'
 
 /**
@@ -46,7 +48,7 @@ function globEscape(value: string): string {
 }
 
 interface RedisPipeline {
-  set: (key: string, value: string) => RedisPipeline
+  set: (key: string, value: string, options?: { NX: boolean }) => RedisPipeline
   del: (key: string) => RedisPipeline
   exec: () => Promise<unknown>
 }
@@ -78,7 +80,10 @@ export class RedisIndexCacheStore extends IndexCacheStore {
   private readonly providedClient: RedisClientLike | null
   private readonly entryPrefix: string
   private readonly childrenPrefix: string
+  private readonly legacyEntryPrefix: string
+  private readonly legacyChildrenPrefix: string
   private readonly generationKey: string
+  private readonly initializingGenerations = new Map<string, Promise<string>>()
   private clientPromise: Promise<RedisClientLike> | null = null
 
   private readonly seedLock = new KeyLock()
@@ -97,7 +102,11 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     const prefix = options.keyPrefix ?? DEFAULT_KEY_PREFIX
     this.entryPrefix = `${prefix}${ENTRY_PREFIX}`
     this.childrenPrefix = `${prefix}${CHILDREN_PREFIX}`
-    this.generationKey = `${prefix}mirage:idx:generation`
+    this.legacyEntryPrefix = `${prefix}${LEGACY_ENTRY_PREFIX}`
+    this.legacyChildrenPrefix = `${prefix}${LEGACY_CHILDREN_PREFIX}`
+    // This signal is permanent across payload versions. Legacy global clears
+    // must find it, while its non-path suffix keeps it outside directory data.
+    this.generationKey = `${this.legacyChildrenPrefix}!generation`
   }
 
   private entryKey(path: string): string {
@@ -146,13 +155,25 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     })
   }
 
-  private async generation(c: RedisClientLike): Promise<string> {
-    const current = await c.get(this.generationKey)
-    if (current !== null) return current
-    // A new token after eviction must never revive an old listing.
-    const generation = uuid7()
-    await c.set(this.generationKey, generation, { NX: true })
-    return (await c.get(this.generationKey)) ?? generation
+  private generation(c: RedisClientLike, key: string): Promise<string> {
+    const pending = this.initializingGenerations.get(key)
+    if (pending !== undefined) return pending
+    // Parallel directory refills in this store share one global initializer.
+    // Do not retain it afterwards: the next read must observe invalidations.
+    const initialized = (async () => {
+      const current = await c.get(key)
+      if (current !== null) return current
+      // A new token after eviction must never revive an old listing.
+      const generation = uuid7()
+      await c.set(key, generation, { NX: true })
+      // Even when NX loses, keep our attempted token. A later read could adopt
+      // a replacement written by an invalidation/refill and revive old data.
+      return generation
+    })().finally(() => {
+      this.initializingGenerations.delete(key)
+    })
+    this.initializingGenerations.set(key, initialized)
+    return initialized
   }
 
   private flushSeed(): Promise<void> {
@@ -160,7 +181,28 @@ export class RedisIndexCacheStore extends IndexCacheStore {
       while (this.pendingSeeds.length > 0) {
         const pending = [...this.pendingSeeds]
         const c = await this.client()
-        const generation = await this.generation(c)
+        const generation = await this.generation(c, this.generationKey)
+        const directories = new Map<string, string>()
+        const paths = [...new Set(pending.flatMap((seed) => [...seed.children.keys()]))]
+        if (paths.length > 0) {
+          const current = await c.mGet(paths.map((path) => `${this.generationKey}:${path}`))
+          const missing = new Map<string, string>()
+          // Keep observed tokens: rereading them after a concurrent invalidation
+          // could stamp the pending snapshot with a replacement generation.
+          for (const [i, path] of paths.entries()) {
+            const token = current[i]
+            if (token == null) missing.set(path, uuid7())
+            else directories.set(path, token)
+          }
+          if (missing.size > 0) {
+            const initialize = c.multi()
+            for (const [path, token] of missing) {
+              initialize.set(`${this.generationKey}:${path}`, token, { NX: true })
+            }
+            await initialize.exec()
+            for (const [path, token] of missing) directories.set(path, token)
+          }
+        }
         const pipe = c.multi()
         for (const seed of pending) {
           for (const [path, entry] of seed.entries) {
@@ -170,7 +212,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
             const listing: IndexDirectory = {
               entries: keys,
               expires_at: seed.expiresAt,
-              generation,
+              generation: `${generation}:${directories.get(path) ?? ''}`,
             }
             pipe.set(this.childrenKey(path), JSON.stringify(listing))
           }
@@ -218,10 +260,19 @@ export class RedisIndexCacheStore extends IndexCacheStore {
   async listDir(resourcePath: string): Promise<ListResult> {
     await this.flushSeed()
     const c = await this.client()
-    const [raw, current] = await c.mGet([this.childrenKey(resourcePath), this.generationKey])
+    const [raw, current, directory] = await c.mGet([
+      this.childrenKey(resourcePath),
+      this.generationKey,
+      `${this.generationKey}:${resourcePath}`,
+    ])
     if (raw == null) return { status: LookupStatus.NOT_FOUND }
     const listing = JSON.parse(raw) as IndexDirectory
-    if (listing.generation !== current || Date.now() / 1000 >= listing.expires_at)
+    if (
+      current == null ||
+      directory == null ||
+      listing.generation !== `${current}:${directory}` ||
+      Date.now() / 1000 >= listing.expires_at
+    )
       return { status: LookupStatus.EXPIRED }
     return { entries: listing.entries }
   }
@@ -236,7 +287,8 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     const now = new Date()
     const nowIso = toIsoZ(now)
     const prefix = resourcePath === '/' ? '/' : `${resourcePath}/`
-    const generation = await this.generation(c)
+    const generation = await this.generation(c, this.generationKey)
+    const directory = await this.generation(c, `${this.generationKey}:${resourcePath}`)
     const pipe = c.multi()
     const childKeys: string[] = []
     for (const [name, entry] of entries) {
@@ -247,7 +299,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     }
     const listing: IndexDirectory = {
       entries: childKeys,
-      generation,
+      generation: `${generation}:${directory}`,
       expires_at: (expiredAt?.getTime() ?? now.getTime() + this.ttl * 1000) / 1000,
     }
     pipe.set(this.childrenKey(resourcePath), JSON.stringify(listing))
@@ -264,26 +316,38 @@ export class RedisIndexCacheStore extends IndexCacheStore {
       pipe.del(this.entryKey(child))
     }
     pipe.del(this.childrenKey(resourcePath))
+    pipe.del(`${this.generationKey}:${resourcePath}`)
     await pipe.exec()
+    await this.invalidateLegacyPrefix(resourcePath)
   }
 
-  private async scanDelete(prefix: string, resourcePath: string): Promise<void> {
+  private async scanDelete(prefix: string, resourcePath: string, legacy = false): Promise<void> {
     const c = await this.client()
     const pattern = `${globEscape(prefix + rstripSlash(resourcePath))}*`
     const keys: string[] = []
     for await (const k of c.scanIterator({ MATCH: pattern })) {
       const batch = Array.isArray(k) ? k : [k]
       for (const key of batch) {
-        if (underPath(key.slice(prefix.length), resourcePath)) keys.push(key)
+        const path = key.slice(prefix.length)
+        // Legacy entry scans overlap entry:v2; retain versioned payloads and
+        // the shared generation by deleting only absolute-path legacy rows.
+        if ((!legacy || path.startsWith('/')) && underPath(path, resourcePath)) keys.push(key)
       }
     }
     if (keys.length > 0) await c.del(keys)
+  }
+
+  private async invalidateLegacyPrefix(resourcePath: string): Promise<void> {
+    await this.scanDelete(this.legacyEntryPrefix, resourcePath, true)
+    await this.scanDelete(this.legacyChildrenPrefix, resourcePath, true)
   }
 
   async invalidatePrefix(resourcePath: string): Promise<void> {
     await this.flushSeed()
     await this.scanDelete(this.entryPrefix, resourcePath)
     await this.scanDelete(this.childrenPrefix, resourcePath)
+    await this.scanDelete(`${this.generationKey}:`, resourcePath)
+    await this.invalidateLegacyPrefix(resourcePath)
   }
 
   async invalidate(): Promise<void> {
@@ -291,6 +355,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     const c = await this.client()
     // Atomically expire listings without overwriting concurrent refills/deletions.
     await c.set(this.generationKey, uuid7())
+    await this.invalidateLegacyPrefix('/')
   }
 
   clear(): Promise<void> {
@@ -298,6 +363,8 @@ export class RedisIndexCacheStore extends IndexCacheStore {
       this.pendingSeeds.length = 0
       await this.scanDelete(this.entryPrefix, '/')
       await this.scanDelete(this.childrenPrefix, '/')
+      await this.scanDelete(`${this.generationKey}:`, '/')
+      await this.invalidateLegacyPrefix('/')
       const c = await this.client()
       await c.del(this.generationKey)
     })

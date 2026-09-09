@@ -122,16 +122,39 @@ failed flushes remain queued for retry. `entries()` returns all stored metadata,
 including entries whose directory listing has expired.
 
 Redis stores directory children and their deadline in one JSON record under
-`mirage:idx:directory:v2:`. A per-store generation token makes global
-invalidation atomic across clients; a single `MGET` reads the listing and its
-generation. Missing generation tokens expire listings, and newly initialized
-tokens are unique so server eviction cannot revive an invalidated listing.
+`mirage:idx:directory:v2:`. Invalidation uses permanent keys independent of the
+payload format: `mirage:idx:children:!generation` for the whole store and
+`mirage:idx:children:!generation:<absolute-directory>` for each directory.
+Each listing records both tokens, and one `MGET` reads the listing and its two
+current tokens. A missing or changed token makes the listing `EXPIRED`.
+New tokens are unique so eviction or a refill cannot revive an old listing.
+Competing initializers retain their attempted tokens; a worker that loses
+initialization incurs a cache refill instead of adopting a later generation.
+Global invalidation rotates the global token atomically. Directory invalidation
+removes that directory's token; subtree invalidation removes tokens under that
+path. These signals invalidate every participating payload version while
+preserving fresh listings outside a scoped invalidation. Future formats must
+retain this protocol, even when their payload keys or schemas change.
 Metadata uses `mirage:idx:entry:v2:` so legacy listings and their metadata both
 start cold after an upgrade. Existing list-format cache records and entry rows
 are not reused; the first lookup fetches current backend metadata.
 Like RAM, these records retain expired listings until explicit removal; they do
 not use Redis TTL deletion. Redis server eviction can still turn any cached
 record into a miss. Configure Redis `maxmemory` for server-side size limits.
+
+During a rolling deployment, a legacy worker's global `invalidate()` or
+`clear()` deletes the shared tokens because they remain under its original
+`mirage:idx:children:*` scan. New workers also remove legacy data rows when
+invalidating, so service-wide invalidation reaches both versions. The versioned
+metadata survives a new worker's global invalidation.
+
+Legacy workers that do not implement the directory-token protocol cannot safely
+share ordinary filesystem writes or scoped cache invalidation with new workers.
+For example, deleting an absent legacy children key for an empty directory
+leaves no signal another version can observe. Drain those workers and clear the
+shared index before allowing these operations on the new version; flushing
+while legacy workers remain active is insufficient. Versions that implement
+the shared protocol can roll between payload formats without this restriction.
 
 The Redis **file cache** likewise uses server-side limits instead of RAM's
 `cache_size`, `cache_entries`, or LRU. File bytes and metadata occupy separate

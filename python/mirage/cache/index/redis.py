@@ -31,6 +31,8 @@ from mirage.utils.key_prefix import under_path
 # Entries and listings must go cold together when the cache format changes.
 ENTRY_PREFIX = "mirage:idx:entry:v2:"
 CHILDREN_PREFIX = "mirage:idx:directory:v2:"
+LEGACY_ENTRY_PREFIX = "mirage:idx:entry:"
+LEGACY_CHILDREN_PREFIX = "mirage:idx:children:"
 
 
 def _text(value: str | bytes) -> str:
@@ -96,10 +98,16 @@ class RedisIndexCacheStore(IndexCacheStore):
         self._pending_seeds: list[tuple[dict[str, IndexEntry],
                                         dict[str, list[str]], datetime]] = []
         self._seed_lock = asyncio.Lock()
+        self._generation_tasks: dict[str, asyncio.Task[str]] = {}
         p = key_prefix or ""
         self._entry_prefix = f"{p}{ENTRY_PREFIX}"
         self._children_prefix = f"{p}{CHILDREN_PREFIX}"
-        self._generation_key = f"{p}mirage:idx:generation"
+        self._legacy_entry_prefix = f"{p}{LEGACY_ENTRY_PREFIX}"
+        self._legacy_children_prefix = f"{p}{LEGACY_CHILDREN_PREFIX}"
+        # Keep this signal independent of payload versions and under the
+        # legacy clear scan. Old workers delete it when invalidating globally.
+        self._generation_key = f"{self._legacy_children_prefix}!generation"
+        self._directory_generation_prefix = f"{self._generation_key}:"
 
     def _entry_key(self, resource_path: str) -> str:
         return f"{self._entry_prefix}{resource_path}"
@@ -120,21 +128,70 @@ class RedisIndexCacheStore(IndexCacheStore):
             for path, keys in children.items()
         }, expires_at))
 
-    async def _generation(self) -> str:
-        current = await self._client.get(self._generation_key)
-        if current is not None:
-            return _text(current)
-        # A new token after eviction must never revive an old listing.
-        generation = uuid7()
-        await self._client.set(self._generation_key, generation, nx=True)
-        current = await self._client.get(self._generation_key)
-        return _text(current) if current is not None else generation
+    async def _generation(self, key: str) -> str:
+        task = self._generation_tasks.get(key)
+        if task is None or task.done():
+
+            async def initialize() -> str:
+                current = await self._client.get(key)
+                if current is not None:
+                    return _text(current)
+                generation = uuid7()
+                await self._client.set(key, generation, nx=True)
+                # Never adopt a later token: a concurrent invalidation may
+                # have replaced it. Losing safely costs one extra refill.
+                return generation
+
+            def finished(completed: asyncio.Task[str]) -> None:
+                if self._generation_tasks.get(key) is completed:
+                    self._generation_tasks.pop(key, None)
+                # Retrieve failures even if every waiter was cancelled.
+                if not completed.cancelled():
+                    completed.exception()
+
+            task = asyncio.create_task(initialize())
+            self._generation_tasks[key] = task
+            task.add_done_callback(finished)
+        # Parallel directory writes in one store share token initialization;
+        # cancellation of one waiter must not cancel the others.
+        return await asyncio.shield(task)
+
+    async def _directory_generations(self,
+                                     directories: set[str]) -> dict[str, str]:
+        if not directories:
+            return {}
+        paths = list(directories)
+        keys = [f"{self._directory_generation_prefix}{path}" for path in paths]
+        current = await self._client.mget(keys)
+        generations = {
+            path: _text(token)
+            for path, token in zip(paths, current) if token is not None
+        }
+        missing = {path: uuid7() for path in paths if path not in generations}
+        if missing:
+            pipe = self._client.pipeline()
+            for path, token in missing.items():
+                pipe.set(f"{self._directory_generation_prefix}{path}",
+                         token,
+                         nx=True)
+            await pipe.execute()
+            generations.update(missing)
+        # Keep observed or attempted tokens, including failed NX attempts:
+        # rereading could adopt a token created after an invalidation.
+        return generations
 
     async def _flush_seed(self) -> None:
         async with self._seed_lock:
             while self._pending_seeds:
                 pending = list(self._pending_seeds)
-                generation = await self._generation()
+                generation = await self._generation(self._generation_key)
+                directories = {
+                    path
+                    for _, children, _ in pending
+                    for path in children
+                }
+                directory_generations = await self._directory_generations(
+                    directories)
                 pipe = self._client.pipeline()
                 for entries, children, expires_at in pending:
                     for resource_path, entry in entries.items():
@@ -144,7 +201,9 @@ class RedisIndexCacheStore(IndexCacheStore):
                         listing = IndexDirectory(
                             entries=child_keys,
                             expires_at=expires_at.timestamp(),
-                            generation=generation)
+                            generation=
+                            f"{generation}:{directory_generations[resource_path]}"
+                        )
                         pipe.set(self._children_key(resource_path),
                                  listing.model_dump_json())
                 await pipe.execute()
@@ -169,12 +228,16 @@ class RedisIndexCacheStore(IndexCacheStore):
     async def list_dir(self, resource_path: str) -> ListResult:
         await self._flush_seed()
         key = self._children_key(resource_path)
-        raw, current = await self._client.mget(key, self._generation_key)
+        raw, current, directory = await self._client.mget(
+            key, self._generation_key,
+            f"{self._directory_generation_prefix}{resource_path}")
         if raw is None:
             return ListResult(status=LookupStatus.NOT_FOUND)
         listing = IndexDirectory.model_validate_json(raw)
-        if (current is None or listing.generation != _text(current) or
-                datetime.now(timezone.utc).timestamp() >= listing.expires_at):
+        if (current is None or directory is None
+                or listing.generation != f"{_text(current)}:{_text(directory)}"
+                or datetime.now(
+                    timezone.utc).timestamp() >= listing.expires_at):
             return ListResult(status=LookupStatus.EXPIRED)
         return ListResult(entries=listing.entries)
 
@@ -189,7 +252,9 @@ class RedisIndexCacheStore(IndexCacheStore):
         now_iso = to_iso_z(now)
         prefix = "/" if resource_path == "/" else resource_path + "/"
 
-        generation = await self._generation()
+        generation = await self._generation(self._generation_key)
+        directory_generation = await self._generation(
+            f"{self._directory_generation_prefix}{resource_path}")
         pipe = self._client.pipeline()
         child_keys: list[str] = []
         for name, entry in entries:
@@ -201,9 +266,10 @@ class RedisIndexCacheStore(IndexCacheStore):
 
         expiry = expired_at if expired_at is not None else now + timedelta(
             seconds=self._ttl)
-        listing = IndexDirectory(entries=child_keys,
-                                 expires_at=expiry.timestamp(),
-                                 generation=generation)
+        listing = IndexDirectory(
+            entries=child_keys,
+            expires_at=expiry.timestamp(),
+            generation=f"{generation}:{directory_generation}")
         pipe.set(self._children_key(resource_path), listing.model_dump_json())
 
         await pipe.execute()
@@ -237,14 +303,20 @@ class RedisIndexCacheStore(IndexCacheStore):
         for child in child_paths:
             pipe.delete(self._entry_key(child))
         pipe.delete(children_key)
+        pipe.delete(f"{self._directory_generation_prefix}{resource_path}")
         await pipe.execute()
+        await self._invalidate_legacy_prefix(resource_path)
 
-    async def _scan_delete(self, prefix: str, resource_path: str) -> None:
+    async def _scan_delete(self,
+                           prefix: str,
+                           resource_path: str,
+                           legacy: bool = False) -> None:
         """Delete every key under ``prefix`` naming a path in the subtree.
 
         Args:
             prefix (str): Key namespace to scan (entries or children).
             resource_path (str): Mount-absolute root of the subtree.
+            legacy (bool): Delete only unversioned absolute-path rows.
         """
         pattern = f"{_glob_escape(prefix + resource_path.rstrip('/'))}*"
         cursor = 0
@@ -253,30 +325,47 @@ class RedisIndexCacheStore(IndexCacheStore):
                                                    match=pattern,
                                                    count=500)
             doomed = [
-                key for key in keys
-                if under_path(_text(key).removeprefix(prefix), resource_path)
+                key for key in keys if
+                (not legacy or _text(key).removeprefix(prefix).startswith("/"))
+                and under_path(_text(key).removeprefix(prefix), resource_path)
             ]
             if doomed:
                 await self._client.delete(*doomed)
             if cursor == 0:
                 return
 
+    async def _invalidate_legacy_prefix(self, resource_path: str) -> None:
+        # The legacy entry namespace also contains entry:v2:*; the path
+        # filter preserves versioned metadata and the shared generation key.
+        await self._scan_delete(self._legacy_entry_prefix,
+                                resource_path,
+                                legacy=True)
+        await self._scan_delete(self._legacy_children_prefix,
+                                resource_path,
+                                legacy=True)
+
     async def invalidate_prefix(self, resource_path: str) -> None:
         await self._flush_seed()
         await self._scan_delete(self._entry_prefix, resource_path)
         await self._scan_delete(self._children_prefix, resource_path)
+        await self._scan_delete(self._directory_generation_prefix,
+                                resource_path)
+        await self._invalidate_legacy_prefix(resource_path)
 
     async def invalidate(self) -> None:
         await self._flush_seed()
         # One atomic generation change expires all listings without racing
         # another client's refill or resurrecting a concurrently removed path.
         await self._client.set(self._generation_key, uuid7())
+        await self._invalidate_legacy_prefix("/")
 
     async def clear(self) -> None:
         async with self._seed_lock:
             self._pending_seeds.clear()
             await self._scan_delete(self._entry_prefix, "/")
             await self._scan_delete(self._children_prefix, "/")
+            await self._scan_delete(self._directory_generation_prefix, "/")
+            await self._invalidate_legacy_prefix("/")
             await self._client.delete(self._generation_key)
 
     async def close(self) -> None:
