@@ -93,3 +93,20 @@ async def test_recursive_walks_share_complete_index(counted_s3):
     found_text = await found.stdout_str()
     assert 'a.txt' in found_text and 'b.txt' in found_text
     assert counts == {}
+
+
+@pytest.mark.asyncio
+async def test_find_warms_du_on_a_non_root_directory(counted_s3):
+    ws, counts = counted_s3
+    found = await ws.execute('find /s3/d')
+    assert found.exit_code == 0
+    assert 'b.txt' in await found.stdout_str()
+    counts.clear()
+    first = await ws.execute('du -a /s3/d')
+    first_text = await first.stdout_str()
+    assert first.exit_code == 0
+    assert counts == {}
+    counts.clear()
+    second = await ws.execute('du -a /s3/d')
+    assert await second.stdout_str() == first_text
+    assert counts == {}

@@ -20,6 +20,7 @@ from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.object_store.du import make_du_entries, make_du_size
 from mirage.core.object_store.find import make_find
 from mirage.core.object_store.readdir import make_readdir
+from mirage.types import PathSpec
 from tests.core.object_store.conftest import (FakeAccessor, FakeStore,
                                               make_driver, spec)
 
@@ -150,3 +151,47 @@ async def test_warm_tree_preserves_key_prefix_and_metadata():
                                    type='f',
                                    index=index) == ['/data/a.txt']
     assert (await index.get('/mnt/data/a.txt')).entry.size == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('warmup', ['find', 'du'])
+@pytest.mark.parametrize('virtual', ['/', '/mnt'])
+@pytest.mark.parametrize('objects', [{'/': b''}, {'/': b'', 'a.txt': b'abc'}])
+async def test_root_marker_never_becomes_its_own_child(accessor, warmup,
+                                                       virtual, objects):
+    store = FakeStore(objects)
+    driver = make_driver(store)
+    index = RAMIndexCacheStore()
+    root = PathSpec(virtual=virtual, directory=virtual, resource_path='')
+    find = make_find(driver)
+    size = make_du_size(driver)
+    expected = await find(accessor, root)
+    if warmup == 'find':
+        await find(accessor, root, index=index)
+    else:
+        await size(accessor, root, index)
+    children = (await index.list_dir(virtual)).entries
+    assert children is not None
+    assert all(child.rstrip('/') != virtual.rstrip('/') for child in children)
+    store.connects = 0
+    assert await size(accessor, root, index) == sum(map(len, objects.values()))
+    assert await find(accessor, root, index=index) == expected
+    assert store.connects == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('objects', [_STORE, {'data/': b''}])
+@pytest.mark.parametrize('prefix', ['', 'team/'])
+async def test_find_warms_du_without_relisting(objects, prefix):
+    accessor = FakeAccessor(prefix)
+    store = FakeStore({prefix + key: value for key, value in objects.items()})
+    driver = make_driver(store)
+    index = RAMIndexCacheStore()
+    path = spec('/data')
+    entries = make_du_entries(driver)
+    expected = await entries(accessor, path)
+    await make_find(driver)(accessor, path, index=index)
+    store.connects = 0
+    assert await entries(accessor, path, index) == expected
+    assert await entries(accessor, path, index) == expected
+    assert store.connects == 0

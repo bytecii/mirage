@@ -187,6 +187,8 @@ async def cache_tree(index: IndexCacheStore, virtual: str, key: str,
         if not row.key.startswith(key) or row.key == key:
             continue
         relative = row.key[len(key):].rstrip("/")
+        if not relative:
+            continue
         parts = relative.split("/")
         parent = virtual
         for i, name in enumerate(parts):
@@ -259,14 +261,18 @@ async def read_tree(
         entries = [entry async for entry in iterator]
         exists = narrowed and not entries and await driver.probe_prefix(
             conn, prefix)
-    if not narrowed and not any(e.key == stem for e in entries) and (any(
-            e.key.startswith(prefix)
-            for e in entries) or not path.mount_path.strip("/")):
-        await cache_tree(index, virtual, prefix, entries)
-        if hints is None:
-            await index.put(
-                virtual,
-                IndexEntry(id=virtual,
-                           name=virtual.rsplit("/", 1)[-1] or "/",
-                           resource_type=ResourceType.FOLDER))
+        if not narrowed and not any(e.key == stem for e in entries) and (any(
+                e.key.startswith(prefix)
+                for e in entries) or not path.mount_path.strip("/")):
+            await cache_tree(index, virtual, prefix, entries)
+            # A find prefix omits a coexisting file root. Verify that slot
+            # before publishing a folder that later commands trust.
+            if (hints is None or (known_directory and not collision)
+                    or (index is not NULL_INDEX
+                        and await driver.head(conn, stem) is None)):
+                await index.put(
+                    virtual,
+                    IndexEntry(id=virtual,
+                               name=virtual.rsplit("/", 1)[-1] or "/",
+                               resource_type=ResourceType.FOLDER))
     return entries, exists

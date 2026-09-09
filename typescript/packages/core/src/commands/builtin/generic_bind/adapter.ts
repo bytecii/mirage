@@ -435,9 +435,9 @@ export function withHiddenGuard<A extends Accessor = Accessor>(ops: CommandIO<A>
   }
   const fd = ops.find
   if (fd !== undefined) {
-    guarded.find = (accessor, path, options) => {
+    guarded.find = (accessor, path, options, index) => {
       refuseHidden(path, false)
-      return fd(accessor, path, options)
+      return fd(accessor, path, options, index)
     }
   }
   return guarded

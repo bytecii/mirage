@@ -186,7 +186,9 @@ async function cacheTree(
   const files = new Set<string>()
   for (const row of entries) {
     if (!row.key.startsWith(key) || row.key === key) continue
-    const parts = rstripSlash(row.key.slice(key.length)).split('/')
+    const relative = rstripSlash(row.key.slice(key.length))
+    if (relative === '') continue
+    const parts = relative.split('/')
     let parent = virtual
     for (const [i, name] of parts.entries()) {
       const child = rstripSlash(parent) + '/' + name
@@ -258,24 +260,30 @@ export async function readTree<A extends Accessor, C>(
     else iterator = driver.listTree(conn, prefix)
     for await (const entry of iterator) entries.push(entry)
     exists = narrowed && entries.length === 0 && (await driver.probePrefix(conn, prefix))
+    if (
+      !narrowed &&
+      !entries.some((e) => e.key === stem) &&
+      (entries.some((e) => e.key.startsWith(prefix)) || path.mountPath.replaceAll('/', '') === '')
+    ) {
+      await cacheTree(index, virtual, prefix, entries)
+      // A find prefix omits a coexisting file root. Verify that slot
+      // before publishing a folder that later commands trust.
+      if (
+        hints === undefined ||
+        (knownDirectory && !root?.entry?.extra.object_store_collision) ||
+        (index !== undefined && (await driver.head(conn, stem)) === null)
+      )
+        await index?.put(
+          virtual,
+          new IndexEntry({
+            id: virtual,
+            name: virtual.slice(virtual.lastIndexOf('/') + 1) || '/',
+            resourceType: ResourceType.FOLDER,
+          }),
+        )
+    }
   } finally {
     await close()
-  }
-  if (
-    !narrowed &&
-    !entries.some((e) => e.key === stem) &&
-    (entries.some((e) => e.key.startsWith(prefix)) || path.mountPath.replaceAll('/', '') === '')
-  ) {
-    await cacheTree(index, virtual, prefix, entries)
-    if (hints === undefined)
-      await index?.put(
-        virtual,
-        new IndexEntry({
-          id: virtual,
-          name: virtual.slice(virtual.lastIndexOf('/') + 1) || '/',
-          resourceType: ResourceType.FOLDER,
-        }),
-      )
   }
   return [entries, exists]
 }
