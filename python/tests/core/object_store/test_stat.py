@@ -13,10 +13,14 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import os
+from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 
 from mirage.cache.index.ram import RAMIndexCacheStore
+from mirage.cache.index.redis import RedisIndexCacheStore
 from mirage.core.object_store.readdir import make_readdir
 from mirage.core.object_store.stat import make_stat
 from mirage.types import FileType
@@ -84,3 +88,56 @@ def test_stat_listed_parent_negative_caches_enoent(accessor):
     with pytest.raises(FileNotFoundError):
         asyncio.run(make_stat(driver)(accessor, spec("/.git"), index=index))
     assert store.connects == connects
+
+
+@pytest_asyncio.fixture(params=["ram", "redis"])
+async def index_store(request):
+    if request.param == "redis":
+        url = os.environ.get("REDIS_URL")
+        if not url:
+            pytest.skip("REDIS_URL not set")
+        index = RedisIndexCacheStore(url=url, key_prefix=f"stat:{uuid4()}:")
+    else:
+        index = RAMIndexCacheStore()
+    try:
+        yield index
+    finally:
+        await index.clear()
+        await index.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path,kind", [("/a.txt", FileType.FILE),
+                                       ("/dir", FileType.DIRECTORY)])
+async def test_stat_listed_child_without_metadata(accessor, index_store, path,
+                                                  kind):
+    store = FakeStore({"a.txt": b"hi", "dir/f.txt": b"x"})
+    driver = make_driver(store)
+    await make_readdir(driver)(accessor, spec("/"), index=index_store)
+    # Drop only this child's metadata, leaving fresh membership intact.
+    await index_store.invalidate_prefix("/mnt" + path)
+    assert (await index_store.get("/mnt" + path)).entry is None
+    assert "/mnt" + path in (await index_store.list_dir("/mnt")).entries
+    connects = store.connects
+    st = await make_stat(driver)(accessor, spec(path), index=index_store)
+    assert st.type == kind
+    assert store.connects > connects
+    if kind == FileType.FILE:
+        assert st.size == 2
+        assert st.fingerprint == "fp-a.txt"
+    connects = store.connects
+    with pytest.raises(FileNotFoundError):
+        await make_stat(driver)(accessor, spec("/.git"), index=index_store)
+    assert store.connects == connects
+
+
+@pytest.mark.asyncio
+async def test_stat_stale_membership_cannot_prove_absence(
+        accessor, index_store):
+    store = FakeStore({"a.txt": b"hi"})
+    driver = make_driver(store)
+    await make_readdir(driver)(accessor, spec("/"), index=index_store)
+    await index_store.invalidate()
+    store.objects["new.txt"] = b"new"
+    st = await make_stat(driver)(accessor, spec("/new.txt"), index=index_store)
+    assert st.size == 3

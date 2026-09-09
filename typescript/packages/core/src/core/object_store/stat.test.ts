@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
+import { RedisIndexCacheStore } from '../../cache/index/redis.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { FileType } from '../../types.ts'
 import { codeOf, FakeAccessor, FakeStore, makeDriver, MODIFIED, spec } from './fakes.ts'
@@ -84,3 +85,50 @@ describe('object_store stat', () => {
     expect(store.connects).toBe(connects)
   })
 })
+
+for (const type of ['ram', 'redis']) {
+  describe.skipIf(type === 'redis' && process.env.REDIS_URL === undefined)(
+    `object_store stat membership (${type})`,
+    () => {
+      it.each(['/a.txt', '/dir'])(
+        'resolves listed %s from the backend after metadata eviction',
+        async (path) => {
+          const index =
+            type === 'redis'
+              ? new RedisIndexCacheStore({
+                  ...(process.env.REDIS_URL === undefined ? {} : { url: process.env.REDIS_URL }),
+                  keyPrefix: `stat:${crypto.randomUUID()}:`,
+                })
+              : new RAMIndexCacheStore()
+          try {
+            const store = new FakeStore({ 'a.txt': 'hi', 'dir/f.txt': 'x' })
+            const driver = makeDriver(store)
+            await makeReaddir(driver)(accessor, spec('/'), index)
+            await index.invalidatePrefix('/mnt' + path)
+            expect((await index.get('/mnt' + path)).entry).toBeUndefined()
+            expect((await index.listDir('/mnt')).entries).toContain('/mnt' + path)
+            const connects = store.connects
+            const st = await makeStat(driver)(accessor, spec(path), index)
+            expect(st.type).toBe(path === '/dir' ? FileType.DIRECTORY : FileType.FILE)
+            expect(store.connects).toBeGreaterThan(connects)
+            if (path === '/a.txt') {
+              expect(st.size).toBe(2)
+              expect(st.fingerprint).toBe('fp-a.txt')
+            }
+            const beforeMissing = store.connects
+            await expect(codeOf(makeStat(driver)(accessor, spec('/.git'), index))).resolves.toBe(
+              'ENOENT',
+            )
+            expect(store.connects).toBe(beforeMissing)
+            await index.invalidate()
+            store.objects.set('new.txt', new TextEncoder().encode('new'))
+            expect((await makeStat(driver)(accessor, spec('/new.txt'), index)).size).toBe(3)
+          } finally {
+            await index.clear()
+            await index.close()
+          }
+        },
+      )
+    },
+  )
+}
