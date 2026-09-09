@@ -177,17 +177,22 @@ def utf8_pattern(pat: re.Pattern[str]) -> re.Pattern[str]:
     parts: list[str] = []
     escaped = False
     in_class = False
-    for char in pat.pattern:
+    class_start = 0
+    for index, char in enumerate(pat.pattern):
         if escaped:
             parts.append(char)
             escaped = False
         elif char == "\\":
             parts.append(char)
             escaped = True
-        elif char == "[":
+        elif char == "[" and not in_class:
             parts.append(char)
             in_class = True
-        elif char == "]":
+            # A leading ] after an optional ^ is a class member.
+            class_start = index + 1
+            if pat.pattern[class_start:class_start + 1] == "^":
+                class_start += 1
+        elif char == "]" and in_class and index > class_start:
             parts.append(char)
             in_class = False
         elif char == "." and not in_class:

@@ -52,6 +52,10 @@ def parse_flags(fl: FlagView, never_match: bool) -> GrepFlags:
             a regex, so it suppresses -F.
     """
     mode = binary_mode(fl)
+    filename: bool | None = None
+    for name in fl.typed_order("H", "h"):
+        if fl.as_bool(name):
+            filename = name == "H"
     a_ctx = fl.as_int("A")
     b_ctx = fl.as_int("B")
     c_ctx = fl.as_int("C")
@@ -69,8 +73,8 @@ def parse_flags(fl: FlagView, never_match: bool) -> GrepFlags:
         only_matching=fl.as_bool("o"),
         quiet=fl.as_bool("q"),
         recursive=fl.as_bool("r") or fl.as_bool("R"),
-        with_filename=fl.as_bool("H"),
-        no_filename=fl.as_bool("h"),
+        with_filename=filename is True,
+        no_filename=filename is False,
         max_count=fl.as_int("m"),
         after_context=a_ctx if a_ctx is not None else (c_ctx or 0),
         before_context=b_ctx if b_ctx is not None else (c_ctx or 0),

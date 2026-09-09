@@ -1786,6 +1786,300 @@
         "stdout_text": "/data/plain.txt:1\n/data/late.txt:0\n",
         "stderr_text": ""
       }
+    },
+    {
+      "id": "grep_review_bracket_0",
+      "cmd": "printf ']\\na\\n.\\nx\\n]x\\nax\\n.x\\nxx\\n' > /data/brackets.txt; grep  '[]a.]' /data/brackets.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "]\na\n.\n]x\nax\n.x\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_review_bracket_1",
+      "cmd": "printf ']\\na\\n.\\nx\\n]x\\nax\\n.x\\nxx\\n' > /data/brackets.txt; grep  '[^]a.]' /data/brackets.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "x\n]x\nax\n.x\nxx\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_review_bracket_2",
+      "cmd": "printf ']\\na\\n.\\nx\\n]x\\nax\\n.x\\nxx\\n' > /data/brackets.txt; grep  '[]a.].' /data/brackets.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "]x\nax\n.x\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_review_bracket_4",
+      "cmd": "printf ']\\na\\n.\\nx\\n]x\\nax\\n.x\\nxx\\n' > /data/brackets.txt; grep -a '[]a.]' /data/brackets.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "]\na\n.\n]x\nax\n.x\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_review_filename_0",
+      "cmd": "printf 'needle\\n' > /data/name.txt; grep -hH needle /data/name.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "/data/name.txt:needle\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_review_filename_1",
+      "cmd": "printf 'needle\\n' > /data/name.txt; grep -Hh needle /data/name.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "needle\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_review_filename_2",
+      "cmd": "printf 'needle\\n' > /data/name.txt; grep -hHhH needle /data/name.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "/data/name.txt:needle\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_review_filename_3",
+      "cmd": "printf 'needle\\n' > /data/name.txt; grep -h -H needle /data/name.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "/data/name.txt:needle\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_review_filename_4",
+      "cmd": "printf 'needle\\n' > /data/name.txt; grep -H -h needle /data/name.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "needle\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_review_filename_5",
+      "cmd": "printf 'needle\\n' > /data/name.txt; grep -chH needle /data/name.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "/data/name.txt:1\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_review_filename_6",
+      "cmd": "printf 'needle\\n' > /data/name.txt; grep -chHh needle /data/name.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "1\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_review_filename_stdin",
+      "cmd": "printf 'needle\\n' | grep -hH needle",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "(standard input):needle\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_review_filename_multi",
+      "cmd": "printf 'needle\\n' > /data/name.txt; grep -Hh needle /data/name.txt /data/name.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "needle\nneedle\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_review_filename_recursive",
+      "cmd": "mkdir -p /data/prefix; printf 'needle\\n' > /data/prefix/name.txt; grep -rHh needle /data/prefix",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "needle\n",
+        "stderr_text": ""
+      }
     }
   ]
 }

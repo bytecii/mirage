@@ -50,6 +50,10 @@ function binaryMode(fl: FlagView): string {
 
 export function parseFlags(fl: FlagView): FlagSet {
   const mode = binaryMode(fl)
+  let filename: boolean | null = null
+  for (const name of fl.typedOrder('H', 'h')) {
+    if (fl.asBool(name)) filename = name === 'H'
+  }
   const aCtx = fl.asInt('A')
   const bCtx = fl.asInt('B')
   const cCtx = fl.asInt('C')
@@ -74,8 +78,8 @@ export function parseFlags(fl: FlagView): FlagSet {
     onlyMatching: fl.asBool('o'),
     maxCount: fl.asInt('m') ?? null,
     quiet: fl.asBool('q'),
-    withFilename: fl.asBool('H'),
-    noFilename: fl.asBool('h'),
+    withFilename: filename === true,
+    noFilename: filename === false,
     afterContext: aCtx ?? cCtx ?? 0,
     beforeContext: bCtx ?? cCtx ?? 0,
   }

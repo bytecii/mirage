@@ -223,17 +223,22 @@ function utf8Pattern(pat: RegExp): RegExp {
   let pattern = ''
   let escaped = false
   let inClass = false
-  for (const char of pat.source) {
+  let classStart = 0
+  for (let index = 0; index < pat.source.length; index += 1) {
+    const char = pat.source.charAt(index)
     if (escaped) {
       pattern += char
       escaped = false
     } else if (char === '\\') {
       pattern += char
       escaped = true
-    } else if (char === '[') {
+    } else if (char === '[' && !inClass) {
       pattern += char
       inClass = true
-    } else if (char === ']') {
+      // A leading ] after an optional ^ is a class member.
+      classStart = index + 1
+      if (pat.source.charAt(classStart) === '^') classStart += 1
+    } else if (char === ']' && inClass && index > classStart) {
       pattern += char
       inClass = false
     } else if (char === '.' && !inClass) pattern += '[^\\n\\udc80-\\udcff]'
