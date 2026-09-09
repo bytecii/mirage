@@ -70,13 +70,17 @@ export function makeStat<A extends Accessor, C>(driver: ObjectStoreDriver<A, C>)
       // (e.g. .git, HEAD, .hg during cd).
       const parent = virtualKey.replace(/\/[^/]*$/, '') || '/'
       const parentListing = await index.listDir(parent)
-      if (parentListing.entries !== undefined && parentListing.entries !== null) {
+      if (
+        parentListing.entries !== undefined &&
+        parentListing.entries !== null &&
+        !parentListing.entries.includes(virtualKey)
+      ) {
         throw enoent(path)
       }
     }
 
-    // Slow path: no index cache available, or parent directory not yet
-    // listed. Hit the store.
+    // A listed child can lose its metadata to independent eviction.
+    // Missing cache information must fall back to the store.
     const kpfx = driver.keyPrefixOf(accessor)
     const key = kp.apply(kpfx, rawPath)
     const { conn, close } = await driver.connect(accessor)
