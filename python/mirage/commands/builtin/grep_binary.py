@@ -135,6 +135,8 @@ async def grep_input(source: AsyncIterator[bytes],
     has_context = bool(f.after_context
                        or f.before_context) and not f.only_matching
     if f.max_count == 0:
+        # Nothing is read, but the backend already opened the source.
+        await close_quietly(source)
         if f.count_only and not (f.quiet or f.files_only):
             yield output_line(b"0", 0, True, path, show_filename,
                               replace(f, line_numbers=False))

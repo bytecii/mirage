@@ -253,3 +253,27 @@ it.each([
   expect(DEC.decode((io.stderr as Uint8Array | null) ?? undefined)).toBe(stderr)
   expect(io.exitCode).toBe(0)
 })
+
+it.each([
+  [{ m: 0 }, ''],
+  [{ m: 0, c: true }, '0\n'],
+])('closes the unread source under -m0 with %j', async (flags, expected) => {
+  // A source whose resources are already held before the first read.
+  let closed = false
+  const source: AsyncIterableIterator<Uint8Array> = {
+    [Symbol.asyncIterator]() {
+      return this
+    },
+    next: () => Promise.reject(new Error('read under -m0')),
+    return: () => {
+      closed = true
+      return Promise.resolve({ done: true as const, value: undefined })
+    },
+  }
+  const f = parseFlags(new FlagView(flags, specOf('grep')))
+  const io = new IOResult()
+  const out = await materialize(grepInput(source, /needle/, f, '/remote/rows.jsonl', false, io))
+  expect(DEC.decode(out)).toBe(expected)
+  expect(io.exitCode).toBe(1)
+  expect(closed).toBe(true)
+})

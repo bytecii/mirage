@@ -141,6 +141,8 @@ export async function* grepInput(
   let afterUntil = 0
   const hasContext = (f.afterContext > 0 || f.beforeContext > 0) && !f.onlyMatching
   if (f.maxCount === 0) {
+    // Nothing is read, but the backend already opened the source.
+    await closeQuietly(source)
     if (f.countOnly && !(f.quiet || f.filesOnly))
       yield ENC.encode((showFilename ? path + ':' : '') + '0\n')
     return

@@ -303,3 +303,37 @@ async def test_zero_width_only_matching_still_notices_a_nul(
     out = await materialize(
         grep_input(_lines(data), re.compile(pattern), f, "/data/z", False, io))
     assert (out, io.stderr or b"", io.exit_code) == (b"", stderr, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags, expected", [({
+    "m": 0
+}, b""), ({
+    "m": 0,
+    "c": True
+}, b"0\n")])
+async def test_max_count_zero_closes_the_unread_source(flags, expected):
+    source = _OpenSource()
+    f = parse_flags(FlagView(flags, spec=SPECS["grep"]), False)
+    io = IOResult()
+    out = await materialize(
+        grep_input(source, re.compile("needle"), f, "/remote/rows.jsonl",
+                   False, io))
+    assert (out, io.exit_code) == (expected, 1)
+    assert source.closed
+
+
+class _OpenSource:
+    """A source whose resources are already held before the first read."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def __aiter__(self) -> "_OpenSource":
+        return self
+
+    async def __anext__(self) -> bytes:
+        raise AssertionError("read under -m0")
+
+    async def aclose(self) -> None:
+        self.closed = True
