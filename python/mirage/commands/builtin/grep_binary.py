@@ -64,9 +64,26 @@ def output_line(raw: bytes, number: int, selected: bool, path: str,
     return prefix + raw + b"\n"
 
 
-async def grep_input(source: AsyncIterator[bytes], pat: re.Pattern[str],
-                     f: GrepFlags, path: str, show_filename: bool,
-                     io: IOResult) -> AsyncIterator[bytes]:
+async def grep_input(source: AsyncIterator[bytes],
+                     pat: re.Pattern[str],
+                     f: GrepFlags,
+                     path: str,
+                     show_filename: bool,
+                     io: IOResult,
+                     after_output: bool = False) -> AsyncIterator[bytes]:
+    """Scan one input, yielding grep's output for it.
+
+    Args:
+        source (AsyncIterator[bytes]): the input's bytes.
+        pat (re.Pattern[str]): the compiled pattern.
+        f (GrepFlags): parsed flags.
+        path (str): the name output lines carry.
+        show_filename (bool): whether output lines carry the name.
+        io (IOResult): receives the exit status and any notice.
+        after_output (bool): whether an earlier input already printed
+            lines; GNU then opens this input's first context group with
+            the separator, as it does between groups within one input.
+    """
     io.exit_code = 1
     pat = utf8_pattern(pat)
     binary = BinaryInput(f.binary_mode)
@@ -122,7 +139,8 @@ async def grep_input(source: AsyncIterator[bytes], pat: re.Pattern[str],
                         pending = [(n, data) for n, data in previous
                                    if n > last_printed]
                         first = pending[0][0] if pending else number
-                        if last_printed and first > last_printed + 1:
+                        if (last_printed and first > last_printed + 1) or (
+                                not last_printed and after_output):
                             chunks.append(b"--\n")
                         chunks.extend(
                             output_line(data, n, False, path, show_filename, f)

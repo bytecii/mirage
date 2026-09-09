@@ -220,3 +220,39 @@ async def test_without_match_early_stop_does_not_read_ahead(flags, expected):
                    False, io))
     assert (out, io.stderr or b"", io.exit_code) == (expected, b"", 0)
     assert closed
+
+
+async def _lines(*rows: bytes):
+    for row in rows:
+        yield row
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags, after_output, expected", [
+    ({
+        "A": 1
+    }, True, b"--\nf:a\nf-b\n"),
+    ({
+        "A": 1
+    }, False, b"f:a\nf-b\n"),
+    ({
+        "B": 1
+    }, True, b"--\nf:a\n"),
+    ({
+        "c": True,
+        "A": 1
+    }, True, b"f:1\n"),
+    ({
+        "o": True,
+        "A": 1
+    }, True, b"f:a\n"),
+    ({}, True, b"f:a\n"),
+])
+async def test_context_group_after_an_earlier_input_opens_with_separator(
+        flags, after_output, expected):
+    f = parse_flags(FlagView(flags, spec=SPECS["grep"]), False)
+    io = IOResult()
+    out = await materialize(
+        grep_input(_lines(b"a\nb\n"), re.compile("a"), f, "f", True, io,
+                   after_output))
+    assert out == expected

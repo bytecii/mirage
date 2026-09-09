@@ -2206,6 +2206,132 @@
         "stdout_text": "world\n",
         "stderr_text": ""
       }
+    },
+    {
+      "id": "grep_context_separator_between_files_after",
+      "cmd": "printf 'a\\nb\\nc\\n' > /data/g1; printf 'x\\na\\ny\\n' > /data/g2; grep -A1 a /data/g1 /data/g2",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "/data/g1:a\n/data/g1-b\n--\n/data/g2:a\n/data/g2-y\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_context_separator_between_files_before",
+      "cmd": "printf 'a\\nb\\nc\\n' > /data/g1; printf 'x\\na\\ny\\n' > /data/g2; grep -B1 a /data/g1 /data/g2",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "/data/g1:a\n--\n/data/g2-x\n/data/g2:a\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_context_separator_between_files_numbered",
+      "cmd": "printf 'a\\nb\\nc\\n' > /data/g1; printf 'x\\na\\ny\\n' > /data/g2; grep -n -A1 a /data/g1 /data/g2",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "/data/g1:1:a\n/data/g1-2-b\n--\n/data/g2:2:a\n/data/g2-3-y\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_context_separator_between_files_no_filename",
+      "cmd": "printf 'a\\nb\\nc\\n' > /data/g1; printf 'x\\na\\ny\\n' > /data/g2; grep -h -A1 a /data/g1 /data/g2",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "a\nb\n--\na\ny\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_context_separator_not_for_counts",
+      "cmd": "printf 'a\\nb\\nc\\n' > /data/g1; printf 'x\\na\\ny\\n' > /data/g2; grep -c -A1 a /data/g1 /data/g2",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "/data/g1:1\n/data/g2:1\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_context_separator_needs_earlier_output",
+      "cmd": "printf 'a\\nb\\nc\\n' > /data/g1; printf 'x\\na\\ny\\n' > /data/g2; printf 'zzz\\n' > /data/g0; grep -A1 a /data/g0 /data/g2",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "/data/g2:a\n/data/g2-y\n",
+        "stderr_text": ""
+      }
     }
   ]
 }

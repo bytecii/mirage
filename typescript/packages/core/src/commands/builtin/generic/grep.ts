@@ -220,6 +220,7 @@ export async function grepGeneric(
   const warnings: string[] = []
   const notices: Uint8Array[] = []
   let matched = false
+  let printed = false
 
   function warn(message: string): void {
     warnings.push(message)
@@ -260,7 +261,10 @@ export async function grepGeneric(
       if (!fileAdmitted(p.virtual, f.filters)) return
       const fileIO = new IOResult({ exitCode: 1 })
       const show = !f.noFilename && (f.withFilename || walked || paths.length > 1)
-      yield* grepInput(stream(p), pat, f, p.rawPath, show, fileIO)
+      for await (const chunk of grepInput(stream(p), pat, f, p.rawPath, show, fileIO, printed)) {
+        printed = true
+        yield chunk
+      }
       matched ||= fileIO.exitCode === 0
       if (fileIO.stderr instanceof Uint8Array) notices.push(fileIO.stderr)
     } catch (error) {

@@ -172,3 +172,25 @@ it.each([
   expect(io.exitCode).toBe(0)
   expect(closed).toBe(true)
 })
+
+async function* lines(text: string): AsyncIterable<Uint8Array> {
+  await Promise.resolve()
+  yield ENC.encode(text)
+}
+
+it.each([
+  [{ A: 1 }, true, '--\nf:a\nf-b\n'],
+  [{ A: 1 }, false, 'f:a\nf-b\n'],
+  [{ B: 1 }, true, '--\nf:a\n'],
+  [{ c: true, A: 1 }, true, 'f:1\n'],
+  [{ o: true, A: 1 }, true, 'f:a\n'],
+  [{}, true, 'f:a\n'],
+])(
+  'opens a context group after earlier output with the separator %j %s',
+  async (flags, afterOutput, expected) => {
+    const f = parseFlags(new FlagView(flags, specOf('grep')))
+    const io = new IOResult()
+    const out = await materialize(grepInput(lines('a\nb\n'), /a/, f, 'f', true, io, afterOutput))
+    expect(new TextDecoder().decode(out)).toBe(expected)
+  },
+)

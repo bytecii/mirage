@@ -93,6 +93,10 @@ export async function* grepInput(
   path: string,
   showFilename: boolean,
   io: IOResult,
+  // Whether an earlier input already printed lines; GNU then opens this
+  // input's first context group with the separator, as it does between
+  // groups within one input.
+  afterOutput = false,
 ): AsyncIterable<Uint8Array> {
   io.exitCode = 1
   pat = utf8Pattern(pat)
@@ -144,7 +148,8 @@ export async function* grepInput(
           if (hasContext) {
             const pending = previous.filter(([n]) => n > lastPrinted)
             const first = pending[0]?.[0] ?? number
-            if (lastPrinted && first > lastPrinted + 1) chunks.push(ENC.encode('--\n'))
+            if ((lastPrinted && first > lastPrinted + 1) || (!lastPrinted && afterOutput))
+              chunks.push(ENC.encode('--\n'))
             for (const [n, data] of pending)
               chunks.push(outputLine(data, n, false, path, showFilename, f))
           }

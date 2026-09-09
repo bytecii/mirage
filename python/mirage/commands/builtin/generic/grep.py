@@ -195,13 +195,14 @@ async def grep(
     warnings: list[str] = []
     diagnostics: list[bytes] = []
     matched = False
+    printed = False
 
     def warn(message: str) -> None:
         warnings.append(message)
         diagnostics.append((message + "\n").encode())
 
     async def scan(p: PathSpec, walked: bool = False) -> AsyncIterator[bytes]:
-        nonlocal matched
+        nonlocal matched, printed
         try:
             info = await st(p.virtual)
             if info.type == FileType.DIRECTORY:
@@ -238,7 +239,8 @@ async def grep(
             show = not f.no_filename and (f.with_filename or walked
                                           or len(paths) > 1)
             async for chunk in grep_input(source, pat, f, p.raw_path, show,
-                                          file_io):
+                                          file_io, printed):
+                printed = True
                 yield chunk
             matched = matched or file_io.exit_code == 0
             if file_io.stderr:

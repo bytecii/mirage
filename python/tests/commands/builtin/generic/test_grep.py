@@ -803,3 +803,80 @@ async def test_excluded_entry_that_fails_stat_does_not_stop_the_walk():
             _drain_async(output)) == b"/data/a.txt:apple\n/data/b.txt:apple\n"
     assert io.stderr == b"grep: /data/0ghost: No such file or directory\n"
     assert io.exit_code == 2
+
+
+@pytest.mark.parametrize("flags, expected", [
+    ({
+        "A": "1"
+    }, b"/g1:a\n/g1-b\n--\n/g2:a\n/g2-y\n"),
+    ({
+        "B": "1"
+    }, b"/g1:a\n--\n/g2-x\n/g2:a\n"),
+    ({
+        "h": True,
+        "A": "1"
+    }, b"a\nb\n--\na\ny\n"),
+    ({
+        "c": True,
+        "A": "1"
+    }, b"/g1:1\n/g2:1\n"),
+    ({}, b"/g1:a\n/g2:a\n"),
+])
+@pytest.mark.asyncio
+async def test_grep_separates_context_groups_between_files(flags, expected):
+    readdir, stat, rb, rs = _make_backend({
+        "/g1": b"a\nb\nc\n",
+        "/g2": b"x\na\ny\n",
+    })
+    output, io = await grep(
+        [_spec("/g1"), _spec("/g2")],
+        ["a"],
+        CommandOpts(flags=flags),
+        readdir=readdir,
+        stat=stat,
+        read_bytes=rb,
+        read_stream=rs,
+    )
+    assert await _drain_async(output) == expected
+    assert io.exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_grep_context_separator_needs_earlier_output():
+    readdir, stat, rb, rs = _make_backend({
+        "/g0": b"zzz\n",
+        "/g2": b"x\na\ny\n",
+    })
+    output, io = await grep(
+        [_spec("/g0"), _spec("/g2")],
+        ["a"],
+        CommandOpts(flags={"A": "1"}),
+        readdir=readdir,
+        stat=stat,
+        read_bytes=rb,
+        read_stream=rs,
+    )
+    assert await _drain_async(output) == b"/g2:a\n/g2-y\n"
+
+
+@pytest.mark.asyncio
+async def test_grep_recursive_separates_context_groups_between_files():
+    readdir, stat, rb, rs = _make_backend({
+        "/d/f1": b"a\nb\n",
+        "/d/f2": b"x\na\ny\n",
+    })
+    output, io = await grep(
+        [_spec("/d")],
+        ["a"],
+        CommandOpts(flags={
+            "r": True,
+            "A": "1"
+        }),
+        readdir=readdir,
+        stat=stat,
+        read_bytes=rb,
+        read_stream=rs,
+    )
+    assert (
+        await
+        _drain_async(output)) == b"/d/f1:a\n/d/f1-b\n--\n/d/f2:a\n/d/f2-y\n"
