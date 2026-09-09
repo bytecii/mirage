@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from mirage.commands.builtin.generic.grep import parse_flags
-from mirage.commands.builtin.grep_binary import grep_input
+from mirage.commands.builtin.grep_binary import PROBE_BLOCK_BYTES, grep_input
 from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagView
@@ -12,7 +12,7 @@ from mirage.io.types import IOResult, materialize
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("chunk_size", [1, 2, 7, 1024, 32768])
+@pytest.mark.parametrize("chunk_size", [1, 2, 7, 1024, PROBE_BLOCK_BYTES])
 @pytest.mark.parametrize("mode,stdout,stderr,code", [
     ("binary", b"", b"grep: /remote/data.pdf: binary file matches\n", 0),
     ("without-match", b"", b"", 1),
@@ -39,7 +39,7 @@ async def test_binary_result_is_independent_of_backend_chunks(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("chunk_size", [1, 2, 3, 7, 32768])
+@pytest.mark.parametrize("chunk_size", [1, 2, 3, 7, PROBE_BLOCK_BYTES])
 async def test_multibyte_text_survives_split_reads(chunk_size):
     data = "é needle 😀\n".encode()
 
@@ -59,7 +59,7 @@ async def test_multibyte_text_survives_split_reads(chunk_size):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("flags", [{"args_I": True}, {"q": True}, {}])
 async def test_binary_scan_stops_after_bounded_probe(flags):
-    block = b"needle\0" + b"x" * (32768 - 7)
+    block = b"needle\0" + b"x" * (PROBE_BLOCK_BYTES - 7)
 
     closed = False
 
@@ -80,13 +80,13 @@ async def test_binary_scan_stops_after_bounded_probe(flags):
 
 
 @pytest.mark.asyncio
-async def test_max_count_does_not_prefetch_remote_rows():
+async def test_max_count_does_not_read_past_the_probe_block():
     closed = False
 
     async def source() -> AsyncIterator[bytes]:
         nonlocal closed
         try:
-            yield b"needle\n"
+            yield b"needle\n" + b"x" * (PROBE_BLOCK_BYTES - 7)
             raise AssertionError("read past the requested match")
         finally:
             closed = True
@@ -148,7 +148,8 @@ def test_invalid_binary_mode(value):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("chunk_size", [1024, 32768, 65536])
+@pytest.mark.parametrize("chunk_size",
+                         [1024, PROBE_BLOCK_BYTES, 2 * PROBE_BLOCK_BYTES])
 @pytest.mark.parametrize("line_end", [b"", b"\n"])
 @pytest.mark.parametrize("count_only", [False, True])
 @pytest.mark.parametrize("binary_flag", [{
@@ -158,8 +159,8 @@ def test_invalid_binary_mode(value):
 }])
 async def test_late_nul_discards_earlier_matches(chunk_size, line_end,
                                                  count_only, binary_flag):
-    data = (b"needle\n" + b"x" * (32761 - len(line_end)) + line_end +
-            b"\0tail\n")
+    data = (b"needle\n" + b"x" * (PROBE_BLOCK_BYTES - 7 - len(line_end)) +
+            line_end + b"\0tail\n")
     closed = False
 
     async def source() -> AsyncIterator[bytes]:
@@ -205,7 +206,7 @@ async def test_without_match_early_stop_does_not_read_ahead(flags, expected):
     async def source() -> AsyncIterator[bytes]:
         nonlocal closed
         try:
-            yield b"needle\n"
+            yield b"needle\n" + b"x" * (PROBE_BLOCK_BYTES - 7)
             raise AssertionError("read past the requested match")
         finally:
             closed = True
@@ -256,3 +257,31 @@ async def test_context_group_after_an_earlier_input_opens_with_separator(
         grep_input(_lines(b"a\nb\n"), re.compile("a"), f, "f", True, io,
                    after_output))
     assert out == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,stdout,stderr,code", [
+    ("binary", b"", b"grep: /remote/data.pdf: binary file matches\n", 0),
+    ("without-match", b"", b"", 1),
+    ("text", b"needle\n", b"", 0),
+])
+async def test_nul_in_a_later_chunk_still_governs_the_earlier_line(
+        mode, stdout, stderr, code):
+    closed = False
+
+    async def source() -> AsyncIterator[bytes]:
+        nonlocal closed
+        try:
+            yield b"needle\n"
+            yield b"\0tail\n"
+        finally:
+            closed = True
+
+    f = parse_flags(FlagView({"binary_files": mode}, spec=SPECS["grep"]),
+                    False)
+    io = IOResult(exit_code=1)
+    out = await materialize(
+        grep_input(source(), re.compile("needle"), f, "/remote/data.pdf",
+                   False, io))
+    assert (out, io.stderr or b"", io.exit_code) == (stdout, stderr, code)
+    assert closed

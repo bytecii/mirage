@@ -32,6 +32,10 @@ class GrepFlags:
     filters: WalkFilters
 
 
+# GNU grep's INITIAL_BUFSIZE: the window it examines before printing from it.
+PROBE_BLOCK_BYTES = 96 * 1024
+
+
 class BinaryInput:
 
     def __init__(self, mode: str) -> None:
@@ -39,12 +43,53 @@ class BinaryInput:
         self.nul = False
 
     async def read(self, source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
-        async for chunk in binary_blocks(source):
-            if self.mode != "text" and b"\0" in chunk:
-                self.nul = True
-                if self.mode == "without-match":
+        """Regroup the transport's chunks into GNU-sized probe blocks.
+
+        GNU reads a whole buffer before printing from it, so a NUL anywhere
+        in the window suppresses the lines ahead of it however the
+        transport chunked them. A NUL is acted on the moment it arrives,
+        and nothing past the block the scanner asked for is read.
+
+        Args:
+            source (AsyncIterator[bytes]): the input as the backend serves it.
+        """
+        pending: list[bytes] = []
+        size = 0
+        async for chunk in source:
+            pending.append(chunk)
+            size += len(chunk)
+            if size < PROBE_BLOCK_BYTES:
+                # Still inside one block, so a NUL here is that block's.
+                if self.stops(chunk):
                     return
-            yield chunk.replace(b"\0", b"\n") if self.nul else chunk
+                continue
+            data = b"".join(pending)
+            whole = len(data) - len(data) % PROBE_BLOCK_BYTES
+            for offset in range(0, whole, PROBE_BLOCK_BYTES):
+                block = data[offset:offset + PROBE_BLOCK_BYTES]
+                if self.stops(block):
+                    return
+                yield self.deliver(block)
+            rest = data[whole:]
+            pending = [rest] if rest else []
+            size = len(rest)
+            if rest and self.stops(rest):
+                return
+        if size:
+            yield self.deliver(b"".join(pending))
+
+    def stops(self, data: bytes) -> bool:
+        """Note a NUL in data; True when without-match must stop reading.
+
+        Args:
+            data (bytes): bytes that all belong to the block being probed.
+        """
+        if self.mode != "text" and not self.nul and b"\0" in data:
+            self.nul = True
+        return self.nul and self.mode == "without-match"
+
+    def deliver(self, block: bytes) -> bytes:
+        return block.replace(b"\0", b"\n") if self.nul else block
 
 
 def valid_utf8(data: bytes) -> bool:
@@ -181,14 +226,6 @@ async def grep_input(source: AsyncIterator[bytes],
     if f.count_only and not (f.quiet or f.files_only):
         yield (f"{path}:"
                if show_filename else "").encode() + f"{count}\n".encode()
-
-
-async def binary_blocks(source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
-    # Inspect available bytes without pulling ahead from a remote row stream.
-    # Like GNU, detection can suppress only input not already emitted.
-    async for chunk in source:
-        for offset in range(0, len(chunk), 32768):
-            yield chunk[offset:offset + 32768]
 
 
 def utf8_pattern(pat: re.Pattern[str]) -> re.Pattern[str]:

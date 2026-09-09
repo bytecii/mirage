@@ -15,6 +15,7 @@
 import { byteChar, encodeText } from '../../shell/bytes.ts'
 import { closeQuietly } from '../../io/stream.ts'
 import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
+import { concat } from '../../io/cachable_iterator.ts'
 import type { IOResult } from '../../io/types.ts'
 import type { WalkFilters } from './grep_select.ts'
 
@@ -42,18 +43,55 @@ export interface FlagSet {
   beforeContext: number
 }
 
+// GNU grep's INITIAL_BUFSIZE: the window it examines before printing from it.
+export const PROBE_BLOCK_BYTES = 96 * 1024
+
 export class BinaryInput {
   nul = false
   constructor(readonly mode: string) {}
 
+  /**
+   * Regroup the transport's chunks into GNU-sized probe blocks. GNU reads a
+   * whole buffer before printing from it, so a NUL anywhere in the window
+   * suppresses the lines ahead of it however the transport chunked them. A
+   * NUL is acted on the moment it arrives, and nothing past the block the
+   * scanner asked for is read.
+   */
   async *read(source: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
-    for await (const chunk of binaryBlocks(source)) {
-      if (this.mode !== 'text' && chunk.includes(0)) {
-        this.nul = true
-        if (this.mode === 'without-match') return
+    let pending: Uint8Array[] = []
+    let size = 0
+    for await (const chunk of source) {
+      pending.push(chunk)
+      size += chunk.length
+      if (size < PROBE_BLOCK_BYTES) {
+        // Still inside one block, so a NUL here is that block's.
+        if (this.stops(chunk)) return
+        continue
       }
-      yield this.nul ? chunk.map((byte) => (byte === 0 ? 10 : byte)) : chunk
+      const data = concat(pending)
+      const whole = data.length - (data.length % PROBE_BLOCK_BYTES)
+      for (let offset = 0; offset < whole; offset += PROBE_BLOCK_BYTES) {
+        const block = data.subarray(offset, offset + PROBE_BLOCK_BYTES)
+        if (this.stops(block)) return
+        yield this.deliver(block)
+      }
+      const rest = data.subarray(whole)
+      pending = rest.length > 0 ? [rest] : []
+      size = rest.length
+      if (rest.length > 0 && this.stops(rest)) return
     }
+    if (size > 0) yield this.deliver(concat(pending))
+  }
+
+  // Note a NUL in data, which all belongs to the block being probed; true
+  // when without-match must stop reading.
+  private stops(data: Uint8Array): boolean {
+    if (this.mode !== 'text' && !this.nul && data.includes(0)) this.nul = true
+    return this.nul && this.mode === 'without-match'
+  }
+
+  private deliver(block: Uint8Array): Uint8Array {
+    return this.nul ? block.map((byte) => (byte === 0 ? 10 : byte)) : block
   }
 }
 
@@ -194,15 +232,6 @@ export async function* grepInput(
 
   if (f.countOnly && !(f.quiet || f.filesOnly))
     yield ENC.encode((showFilename ? path + ':' : '') + String(count) + '\n')
-}
-
-async function* binaryBlocks(source: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
-  // Inspect available bytes without pulling ahead from a remote row stream.
-  // Like GNU, detection can suppress only input not already emitted.
-  for await (const chunk of source) {
-    for (let offset = 0; offset < chunk.length; offset += 32768)
-      yield chunk.subarray(offset, offset + 32768)
-  }
 }
 
 function decodeLine(raw: Uint8Array): string {
