@@ -36,9 +36,10 @@ async def entry_or_warm(
 
     A missing parent listing does not prove a retained entry is current: a
     partial warm may have stored the child without publishing the listing.
-    Such a child is dropped before the refresh and can only be reused when the
-    refresh publishes it in a complete listing. A parent that is simply absent
-    is not an error here -- the caller reports ENOENT against the operand,
+    Such a child is dropped before the refresh. A newly warmed child is usable
+    for this lookup; without a complete parent, each lookup refreshes again.
+    A parent that is simply absent is not an error here -- the caller reports
+    ENOENT against the operand,
     which is the path GNU names (``rm nodir/f`` says "cannot remove 'nodir/f'",
     not "nodir"). Every other failure propagates: an expired token or a
     dropped connection reported as "no such file" both misdiagnoses the fault

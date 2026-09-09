@@ -30,12 +30,11 @@ async def test_grep_i_keeps_rendered_google_json(kind, module):
                     directory=f"/drive/{name}",
                     resource_path=name,
                     resolved=True)
-    await index.put(
-        path.virtual,
-        IndexEntry(id="file1",
-                   name="Report",
-                   resource_type=f"gdrive/{kind}",
-                   vfs_name=name))
+    await index.set_dir("/drive", [(path.virtual.rsplit("/", 1)[-1],
+                                    IndexEntry(id="file1",
+                                               name="Report",
+                                               resource_type=f"gdrive/{kind}",
+                                               vfs_name=name))])
     cmd = CommandCatalog(COMMANDS).require("grep")
     with patch(f"mirage.core.{module}.read.google_get",
                new=AsyncMock(return_value={"title": "needle\0tail"})):
@@ -66,12 +65,11 @@ async def test_grep_classifies_raw_drive_download(flags, code):
                     directory="/drive/report.pdf",
                     resource_path="report.pdf",
                     resolved=True)
-    await index.put(
-        path.virtual,
-        IndexEntry(id="pdf1",
-                   name="report.pdf",
-                   resource_type="gdrive/file",
-                   vfs_name="report.pdf"))
+    await index.set_dir("/drive", [(path.virtual.rsplit("/", 1)[-1],
+                                    IndexEntry(id="pdf1",
+                                               name="report.pdf",
+                                               resource_type="gdrive/file",
+                                               vfs_name="report.pdf"))])
     cmd = CommandCatalog(COMMANDS).require("grep")
     with patch("mirage.core.gdrive.read.download_file",
                new=AsyncMock(return_value=b"needle\0tail\n")):
