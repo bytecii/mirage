@@ -16,6 +16,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Callable
 
+from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.types import DriftPolicy
 from mirage.workspace.mount.mount import MountEntry
 from mirage.workspace.snapshot.keys import FingerprintKey
@@ -252,8 +253,9 @@ async def check_drift(mount_for: TryMountFor,
         return
     if not getattr(mount.resource, "SUPPORTS_SNAPSHOT", False):
         return
+    # Resolve backend IDs afresh without consulting the restored index.
     try:
-        stat = await mount.execute_op("stat", path)
+        stat = await mount.execute_op("stat", path, index=RAMIndexCacheStore())
     except FileNotFoundError as exc:
         if mount_for(path) is not mount:
             return

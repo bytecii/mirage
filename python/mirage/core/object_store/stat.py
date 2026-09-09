@@ -81,8 +81,8 @@ def make_stat(driver: ObjectStoreDriver[A, C]) -> StatFn[A]:
                 and virtual_key not in parent_listing.entries):
             raise enoent(virtual)
 
-        # Slow path: no index cache available, or parent directory not
-        # yet listed. Hit the store.
+        # A listed child can lose its metadata to independent eviction.
+        # Missing cache information must fall back to the store.
         kpfx = driver.key_prefix_of(accessor)
         key = kp.apply(kpfx, path)
         async with driver.connect(accessor) as conn:

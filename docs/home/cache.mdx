@@ -11,6 +11,10 @@ Every `Workspace` ships with a **two-layer cache** so repeated work against remo
 - **Index cache.** Listings and metadata. The first directory walk hits the API; subsequent ones serve from the index until the TTL expires.
 - **File cache.** Object bytes. The first read streams from origin; later pipelines read from cache.
 
+Under `ConsistencyPolicy.ALWAYS`, cached file bytes are checked against live backend metadata, bypassing the index. A changed fingerprint triggers a fresh read; a deleted file is evicted. If the backend cannot supply a fingerprint or its probe fails, the read must fetch current bytes or report an error. `LAZY` continues to trust cached bytes.
+
+A fresh directory listing proves a child absent only when that child is not listed. If a listed child's metadata has been evicted independently, object-store stat fetches it from the backend.
+
 ## Stores
 
 Each layer is a pluggable store with two built-ins:
