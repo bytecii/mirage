@@ -60,11 +60,15 @@ export async function lookup(
   await ensureLiveIndex(accessor, index, prefix)
   let result = await index.get(key)
   let listing = await index.listDir(key)
+  const parent =
+    key === keyOf(prefix, '')
+      ? listing
+      : await index.listDir(key.replace(/\/+$/, '').replace(/\/[^/]+$/, '') || '/')
   // The index is the whole listing rather than a cache in front of one, so an
   // *expired* answer means the tree aged out, not that the path is gone.
   // Refetch once and ask again; a miss against a live index is a real absence
   // and must not cost a tree fetch.
-  if (result.status === LookupStatus.EXPIRED || listing.status === LookupStatus.EXPIRED) {
+  if (parent.status === LookupStatus.EXPIRED || listing.status === LookupStatus.EXPIRED) {
     if (await refillIndex(accessor, index, prefix)) {
       result = await index.get(key)
       listing = await index.listDir(key)

@@ -283,12 +283,14 @@ export async function refillIndex(
   accessor.tree = await fetchTree(accessor)
   accessor.treeLoaded = true
   accessor.rowsCache = null
+  // Refilling replaces the snapshot; merging would retain deleted paths.
+  await index.invalidatePrefix(prefix.replace(/\/+$/, '') || '/')
   await seedIndex(accessor, index, prefix)
   return true
 }
 
 /**
- * Refetch when the index holds no listing at all.
+ * Refetch when the root listing is missing or expired.
  *
  * Every reader treats a missing listing as a real absence, which is right
  * against a *live* index and wrong against one that was never filled or has
@@ -303,7 +305,8 @@ export async function ensureLiveIndex(
 ): Promise<boolean> {
   const root = prefix.replace(/\/+$/, '')
   const listing = await index.listDir(root === '' ? '/' : root)
-  if (listing.status !== LookupStatus.NOT_FOUND) return false
+  if (listing.status !== LookupStatus.NOT_FOUND && listing.status !== LookupStatus.EXPIRED)
+    return false
   return refillIndex(accessor, index, prefix)
 }
 
