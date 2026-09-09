@@ -232,9 +232,8 @@ describe('MountCore', () => {
     })
     vi.spyOn(ws.fs, 'truncate').mockImplementation(
       async (...args: Parameters<typeof realTruncate>) => {
-        const result = await realTruncate(...args)
+        await realTruncate(...args)
         truncated()
-        return result
       },
     )
     const core = new MountCore(ws.fs)
