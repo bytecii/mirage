@@ -44,6 +44,25 @@ def binary_mode(fl: FlagView) -> str:
     return mode
 
 
+def context_length(fl: FlagView, name: str) -> int | None:
+    """One -A/-B/-C value, refused the way GNU refuses it.
+
+    Args:
+        fl (FlagView): spec-validated view over the raw flag kwargs.
+        name (str): the context option to read.
+    """
+    raw = fl.as_str(name)
+    try:
+        value = fl.as_int(name)
+    except ValueError as exc:
+        raise UsageError(
+            f"grep: {raw}: invalid context length argument") from exc
+    if value is not None and value < 0:
+        shown = raw if raw is not None else str(value)
+        raise UsageError(f"grep: {shown}: invalid context length argument")
+    return value
+
+
 def filename_mode(fl: FlagView) -> bool | None:
     """The winning filename flag: True for -H, False for -h, None for neither.
 
@@ -83,9 +102,15 @@ def parse_flags(fl: FlagView, never_match: bool) -> GrepFlags:
     """
     mode = binary_mode(fl)
     filename = filename_mode(fl)
-    a_ctx = fl.as_int("A")
-    b_ctx = fl.as_int("B")
-    c_ctx = fl.as_int("C")
+    # GNU checks each context option as it is read, so the first bad one
+    # on the line is the one named.
+    contexts = {
+        name: context_length(fl, name)
+        for name in fl.typed_order("A", "B", "C")
+    }
+    a_ctx = contexts.get("A")
+    b_ctx = contexts.get("B")
+    c_ctx = contexts.get("C")
     return GrepFlags(
         ignore_case=fl.as_bool("i"),
         invert=fl.as_bool("v"),

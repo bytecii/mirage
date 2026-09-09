@@ -28,6 +28,7 @@ import { getExtension } from '../../resolve.ts'
 import { grepInput, type FlagSet } from '../grep_binary.ts'
 import { fileAdmitted, dirAdmitted, parseFileGlobs } from '../grep_select.ts'
 import { resolveSource } from '../utils/stream.ts'
+import { UsageError } from '../../errors.ts'
 
 const ENC = new TextEncoder()
 type Stat = (p: PathSpec) => Promise<FileStat>
@@ -46,6 +47,21 @@ function binaryMode(fl: FlagView): string {
     }
   }
   return mode
+}
+
+/** One -A/-B/-C value, refused the way GNU refuses it. */
+function contextLength(fl: FlagView, name: string): number | undefined {
+  const raw = fl.asStr(name)
+  let value: number | undefined
+  try {
+    value = fl.asInt(name)
+  } catch {
+    throw new UsageError(`grep: ${raw ?? ''}: invalid context length argument`)
+  }
+  if (value !== undefined && value < 0) {
+    throw new UsageError(`grep: ${raw ?? String(value)}: invalid context length argument`)
+  }
+  return value
 }
 
 /** The winning filename flag: true for -H, false for -h, null for neither. */
@@ -75,9 +91,13 @@ function reason(error: unknown): string {
 export function parseFlags(fl: FlagView): FlagSet {
   const mode = binaryMode(fl)
   const filename = filenameMode(fl)
-  const aCtx = fl.asInt('A')
-  const bCtx = fl.asInt('B')
-  const cCtx = fl.asInt('C')
+  // GNU checks each context option as it is read, so the first bad one on
+  // the line is the one named.
+  const contexts = new Map<string, number | undefined>()
+  for (const name of fl.typedOrder('A', 'B', 'C')) contexts.set(name, contextLength(fl, name))
+  const aCtx = contexts.get('A')
+  const bCtx = contexts.get('B')
+  const cCtx = contexts.get('C')
   return {
     binaryMode: mode,
     recursive: fl.asBool('r') || fl.asBool('R'),

@@ -100,6 +100,46 @@ async def test_max_count_does_not_prefetch_remote_rows():
     assert closed
 
 
+@pytest.mark.parametrize("flags, shown", [
+    ({
+        "B": "-1"
+    }, "-1"),
+    ({
+        "A": "-1"
+    }, "-1"),
+    ({
+        "C": "-1"
+    }, "-1"),
+    ({
+        "A": "x"
+    }, "x"),
+    ({
+        "B": "1.5"
+    }, "1.5"),
+    ({
+        "B": -1
+    }, "-1"),
+    ({
+        "B": "-1",
+        "A": "x"
+    }, "-1"),
+    ({
+        "A": "x",
+        "B": "-1"
+    }, "x"),
+])
+def test_invalid_context_length(flags, shown):
+    with pytest.raises(
+            UsageError,
+            match=f"grep: {shown}: invalid context length argument"):
+        parse_flags(FlagView(flags, spec=SPECS["grep"]), False)
+
+
+@pytest.mark.parametrize("flags", [{"B": "-0"}, {"A": "0"}, {"C": 2}])
+def test_valid_context_length(flags):
+    parse_flags(FlagView(flags, spec=SPECS["grep"]), False)
+
+
 @pytest.mark.parametrize("value", ["", "bogus"])
 def test_invalid_binary_mode(value):
     with pytest.raises(UsageError, match="unknown binary-files type"):

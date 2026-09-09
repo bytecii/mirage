@@ -2080,6 +2080,132 @@
         "stdout_text": "needle\n",
         "stderr_text": ""
       }
+    },
+    {
+      "id": "grep_context_negative_before",
+      "cmd": "grep -B -1 world /data/a.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 2,
+        "stdout_text": "",
+        "stderr_text": "grep: -1: invalid context length argument\n"
+      }
+    },
+    {
+      "id": "grep_context_negative_after",
+      "cmd": "grep -A -1 world /data/a.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 2,
+        "stdout_text": "",
+        "stderr_text": "grep: -1: invalid context length argument\n"
+      }
+    },
+    {
+      "id": "grep_context_negative_both",
+      "cmd": "grep -C -1 world /data/a.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 2,
+        "stdout_text": "",
+        "stderr_text": "grep: -1: invalid context length argument\n"
+      }
+    },
+    {
+      "id": "grep_context_not_a_number",
+      "cmd": "grep -A x world /data/a.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 2,
+        "stdout_text": "",
+        "stderr_text": "grep: x: invalid context length argument\n"
+      }
+    },
+    {
+      "id": "grep_context_first_bad_value_wins",
+      "cmd": "grep -B -1 -A x world /data/a.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 2,
+        "stdout_text": "",
+        "stderr_text": "grep: -1: invalid context length argument\n"
+      }
+    },
+    {
+      "id": "grep_context_negative_zero",
+      "cmd": "grep -B -0 world /data/a.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "world\n",
+        "stderr_text": ""
+      }
     }
   ]
 }

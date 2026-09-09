@@ -4,6 +4,7 @@ import { FlagView } from '../spec/types.ts'
 import { IOResult, materialize } from '../../io/types.ts'
 import { parseFlags } from './generic/grep.ts'
 import { grepInput } from './grep_binary.ts'
+import { UsageError } from '../errors.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
@@ -84,6 +85,25 @@ it('does not prefetch remote rows beyond max-count', async () => {
   ).toEqual(ENC.encode('needle\n'))
   expect(io.exitCode).toBe(0)
   expect(closed).toBe(true)
+})
+
+it.each([
+  [{ B: '-1' }, '-1'],
+  [{ A: '-1' }, '-1'],
+  [{ C: '-1' }, '-1'],
+  [{ A: 'x' }, 'x'],
+  [{ B: '1.5' }, '1.5'],
+  [{ B: -1 }, '-1'],
+  [{ B: '-1', A: 'x' }, '-1'],
+  [{ A: 'x', B: '-1' }, 'x'],
+])('rejects an invalid context length %j', (flags, shown) => {
+  expect(() => parseFlags(new FlagView(flags, specOf('grep')))).toThrow(
+    new UsageError(`grep: ${shown}: invalid context length argument`),
+  )
+})
+
+it.each([{ B: '-0' }, { A: '0' }, { C: 2 }])('accepts context length %j', (flags) => {
+  expect(() => parseFlags(new FlagView(flags, specOf('grep')))).not.toThrow()
 })
 
 it.each(['', 'bogus'])('rejects invalid binary mode %j', (value) => {
