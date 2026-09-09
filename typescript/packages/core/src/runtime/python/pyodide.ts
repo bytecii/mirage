@@ -370,7 +370,7 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     pyodide.globals.set('_eval_inputs', inputsPy)
     const armed = this.interrupter !== null ? this.interrupter.arm(EVAL_INTERRUPT_SECONDS) : null
     try {
-      await pyodide.runPythonAsync(PYTHON_EVAL_WRAPPER)
+      pyodide.runPython(PYTHON_EVAL_WRAPPER)
       if (armed?.disarm() === 'deadline') {
         throw new EvalError(`pyodide eval timed out after ${String(EVAL_INTERRUPT_SECONDS)}s`)
       }
@@ -702,10 +702,9 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     // raises KeyboardInterrupt in the guest, whose wrapper-reported
     // exit code (1) stands, like the local runtime's killed child.
     // The wrapper arms right before the user code and disarms right
-    // after it: pyodide runs the whole wrapper as one webloop task step,
-    // so a trip landing in the wrapper's own preamble or epilogue would
-    // escape the task as a KeyboardInterrupt nothing catches, which the
-    // host sees as an unhandled rejection and a lost deadline.
+    // after it, so a trip can only land inside the wrapper's own
+    // handlers, never in its preamble or epilogue where it would escape
+    // as a KeyboardInterrupt nothing catches and the deadline is lost.
     const slot: { armed: ArmedInterrupt | null } = { armed: null }
     pyodide.globals.set('_arm_interrupt', () => {
       if (this.interrupter !== null && slot.armed === null) {
@@ -716,7 +715,15 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
       slot.armed?.disarm()
     })
     try {
-      await pyodide.runPythonAsync(PYTHON_WRAPPER)
+      // The wrapper runs through the synchronous entry point on purpose.
+      // Every wrapper is straight-line Python with no top-level await,
+      // and the interrupt buffer is only honored reliably on that path:
+      // under runPythonAsync the trip is consumed by the eval loop but the
+      // KeyboardInterrupt does not reach the running code often enough,
+      // so a busy loop past its deadline ran unbounded and wedged the
+      // host's event loop (observed on Node 24.20 in CI, reproducible on
+      // 24.15 with bare pyodide, with or without JSPI).
+      pyodide.runPython(PYTHON_WRAPPER)
       if (slot.armed?.disarm() === 'deadline' && args.timeoutSeconds !== undefined) {
         throw new CommandTimeoutError(this.name, args.timeoutSeconds)
       }
@@ -801,7 +808,7 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     pyodide.globals.set('_repl_inputs', pyodide.toPy(inputs))
 
     try {
-      await pyodide.runPythonAsync(PYTHON_REPL_WRAPPER)
+      pyodide.runPython(PYTHON_REPL_WRAPPER)
       const flushFailures = await this.drainMutations()
       const resultProxy = pyodide.globals.get('_repl_result') as
         | {
