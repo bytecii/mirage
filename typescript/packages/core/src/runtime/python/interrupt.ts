@@ -33,8 +33,12 @@
  * there, exactly the pre-interrupt behavior.
  */
 
-interface ArmedInterrupt {
-  /** Stop the countdown; report the trip, once (idempotent: null after). */
+export interface ArmedInterrupt {
+  /**
+   * Stop the countdown and report the trip. Idempotent: every later call
+   * repeats the first answer, so the wrapper can disarm as soon as the
+   * user code returns and the host can still read why it stopped.
+   */
   disarm(): 'deadline' | 'signal' | null
 }
 
@@ -154,9 +158,10 @@ export async function createPyodideInterrupter(): Promise<PyodideInterrupter | n
         }
       }
       let done = false
+      let reason: 'deadline' | 'signal' | null = null
       return {
         disarm: (): 'deadline' | 'signal' | null => {
-          if (done) return null
+          if (done) return reason
           done = true
           generation += 1
           Atomics.store(cells, 2, generation)
@@ -165,7 +170,8 @@ export async function createPyodideInterrupter(): Promise<PyodideInterrupter | n
           const why = Atomics.load(cells, 1)
           Atomics.store(cells, 0, 0)
           Atomics.store(cells, 1, 0)
-          return why === 1 ? 'deadline' : why === 2 ? 'signal' : null
+          reason = why === 1 ? 'deadline' : why === 2 ? 'signal' : null
+          return reason
         },
       }
     },
