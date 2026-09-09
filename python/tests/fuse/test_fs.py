@@ -554,6 +554,7 @@ class _SizelessOps:
     def __init__(self, ops):
         self._inner = ops
         self.read_calls = 0
+        self.read_error: Exception | None = None
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
@@ -564,6 +565,8 @@ class _SizelessOps:
 
     async def read(self, path, offset=0, size=None, raw=False):
         self.read_calls += 1
+        if self.read_error is not None:
+            raise self.read_error
         return await self._inner.read(path, offset, size, raw)
 
 
@@ -656,6 +659,21 @@ async def test_unknown_size_write_refreshes_the_writing_handle(sizeless_fs):
     assert fs.read("/u.json", 100, 0, fh) == b"J" + _PAYLOAD[1:]
     assert fs.getattr("/u.json", fh)["st_size"] == len(_PAYLOAD)
     fs.release("/u.json", fh)
+
+
+@pytest.mark.asyncio
+async def test_unknown_size_failed_refresh_does_not_fail_the_truncate(
+        sizeless_fs):
+    # The truncation has landed by the time the hydrated reader is
+    # refreshed; a backend hiccup there must not turn a committed
+    # truncate into a failure. The reader just fetches again next time.
+    fs, ops = sizeless_fs
+    reader = fs.open("/u.json", os.O_RDONLY)
+    ops.read_error = OSError(errno.EIO, "backend hiccup")
+    fs.truncate("/u.json", 0)
+    ops.read_error = None
+    assert fs.read("/u.json", 100, 0, reader) == b""
+    fs.release("/u.json", reader)
 
 
 @pytest.mark.asyncio

@@ -382,6 +382,34 @@ describe('MirageFS — size=null resources (API-backed)', () => {
     await callOp(mfs, 'release', '/data/api.json', fh)
   })
 
+  it('a failed refresh after a truncate does not fail the truncate', async () => {
+    // The truncation has landed by the time the hydrated reader is
+    // refreshed; a backend hiccup there must not turn a committed
+    // truncate into a failure. The reader just fetches again next time.
+    const ws = mkSizeNullWs()
+    await ws.fs.writeFile('/data/api.json', new TextEncoder().encode('hydrated bytes'))
+    vi.spyOn(ws.fs, 'stat').mockResolvedValue(
+      new FileStat({ name: 'api.json', type: FileType.FILE, content: ContentType.JSON }),
+    )
+    const original = ws.fs.readFile.bind(ws.fs)
+    let fail = false
+    vi.spyOn(ws.fs, 'readFile').mockImplementation(async (...args: Parameters<typeof original>) => {
+      if (fail) throw new Error('backend hiccup')
+      return original(...args)
+    })
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const mfs = new MirageFS(ws.fs)
+    const [, reader] = await callOp<[number, number]>(mfs, 'open', '/data/api.json', 0)
+    fail = true
+    const [code] = await callOp<[number]>(mfs, 'truncate', '/data/api.json', 0)
+    expect(code).toBe(0)
+    fail = false
+    const out = Buffer.alloc(100)
+    const [n] = await callOp<[number]>(mfs, 'read', '/data/api.json', reader, out, 100, 0)
+    expect(n).toBe(0)
+    await callOp(mfs, 'release', '/data/api.json', reader)
+  })
+
   it('a nonzero truncate rehydrates a reader with the settled writes', async () => {
     // A truncate lands after another handle's buffered write, and the
     // hydrated reader must see both: the settled write and the cut.

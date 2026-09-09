@@ -14,6 +14,7 @@
 
 import asyncio
 import errno
+import logging
 import os
 import posixpath
 import threading
@@ -35,6 +36,8 @@ from mirage.workspace.session.session import Session
 # release-then-stat burst (ls right after cat) neither refetches nor reports
 # an unknown size. Mirrors the TS PREFETCH_TTL_MS.
 PREFETCH_TTL = 30.0
+
+logger = logging.getLogger(__name__)
 
 WriteBuf = list[tuple[int, bytes]]
 
@@ -713,7 +716,9 @@ class MountCore:
 
         Args:
             path (str): mount path whose bytes changed.
-            rehydrate (bool): refresh hydrated handles from the backend.
+            rehydrate (bool): refresh hydrated handles from the backend; a
+                refresh that fails is logged and leaves the handles
+                unhydrated rather than failing the committed mutation.
         """
         key = self.identity(path)
         self._prefetch.pop(key, None)
@@ -723,10 +728,24 @@ class MountCore:
             ctx for ctx in self._handles.values()
             if ctx.key == key and ctx.data is not None
         ]
-        if hydrated:
+        if not hydrated:
+            return
+        try:
             data = self._run(self._ops.read(self.resolve(path)))
+        except Exception as err:
+            # The mutation has already landed, so a refresh that fails must
+            # not report it as failed: an O_TRUNC open would fail after the
+            # old bytes were erased, and settled writes would be retried
+            # over content that already holds them. Drop the hydrated bytes
+            # instead, so the next read through those handles fetches and
+            # surfaces any error itself.
+            logger.warning("fuse: refresh of %s after a change failed: %r",
+                           path, err)
             for ctx in hydrated:
-                ctx.data = data
+                ctx.data = None
+            return
+        for ctx in hydrated:
+            ctx.data = data
 
     def _forget(self, path: str) -> None:
         self._xattrs.pop(path, None)

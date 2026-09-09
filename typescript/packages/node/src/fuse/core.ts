@@ -471,7 +471,9 @@ export class MountCore {
    * the backend in one read, so fstat and read through any of them,
    * including the handle that wrote, see the new bytes. A removal or
    * rename passes `rehydrate = false`: POSIX keeps an open descriptor on
-   * the bytes it had. Mirrors Python's `_changed`.
+   * the bytes it had. A refresh that fails is logged and leaves the
+   * handles unhydrated rather than failing the committed mutation.
+   * Mirrors Python's `_changed`.
    */
   private async changed(path: string, rehydrate = true): Promise<void> {
     const key = this.identity(path)
@@ -483,10 +485,22 @@ export class MountCore {
     const hydrated = [...this.handles.values()].filter(
       (ctx) => ctx.key === key && ctx.data !== undefined,
     )
-    if (hydrated.length > 0) {
-      const data = await this.ops.readFile(this.resolve(path))
-      for (const ctx of hydrated) ctx.data = data
+    if (hydrated.length === 0) return
+    let data: Uint8Array
+    try {
+      data = await this.ops.readFile(this.resolve(path))
+    } catch (err) {
+      // The mutation has already landed, so a refresh that fails must not
+      // report it as failed: an O_TRUNC open would fail after the old
+      // bytes were erased, and settled writes would be retried over
+      // content that already holds them. Drop the hydrated bytes instead,
+      // so the next read through those handles fetches and surfaces any
+      // error itself.
+      console.warn(`fuse: refresh of ${path} after a change failed: ${String(err)}`)
+      for (const ctx of hydrated) delete ctx.data
+      return
     }
+    for (const ctx of hydrated) ctx.data = data
   }
 
   async rename(src: string, dst: string): Promise<void> {
