@@ -112,7 +112,7 @@ async function* listTree(conn: S3Conn, pfx: string): AsyncIterable<TreeEntry> {
   for await (const page of listPages(conn, { Bucket: conn.config.bucket, Prefix: pfx })) {
     for (const obj of page.Contents ?? []) {
       if (obj.Key === undefined) continue
-      yield { key: obj.Key, size: obj.Size ?? 0 }
+      yield { key: obj.Key, size: obj.Size ?? 0, modified: isoOf(obj.LastModified) }
     }
   }
 }
@@ -127,7 +127,7 @@ async function* listSubtree(conn: S3Conn, stem: string): AsyncIterable<TreeEntry
       const okey = obj.Key
       if (okey === undefined) continue
       if (!(okey === stem || okey.startsWith(base))) continue
-      yield { key: okey, size: obj.Size ?? 0 }
+      yield { key: okey, size: obj.Size ?? 0, modified: isoOf(obj.LastModified) }
     }
   }
 }

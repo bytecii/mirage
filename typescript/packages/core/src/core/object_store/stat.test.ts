@@ -12,15 +12,87 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { RedisIndexCacheStore } from '../../cache/index/redis.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { FileType } from '../../types.ts'
 import { codeOf, FakeAccessor, FakeStore, makeDriver, MODIFIED, spec } from './fakes.ts'
 import { makeReaddir } from './readdir.ts'
 import { makeStat } from './stat.ts'
+import { makeFind } from './find.ts'
+import { makeDuSize } from './du.ts'
 
 const accessor = new FakeAccessor()
+
+it.each(['find', 'readdir'])('%s refresh does not revive an expired folder', async (refresh) => {
+  const store = new FakeStore({ 'data/old.txt': 'old' })
+  const driver = makeDriver(store)
+  const index = new RAMIndexCacheStore({ ttl: 60 })
+  const path = spec('/data')
+  const find = makeFind(driver)
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(1000)
+  try {
+    await find(accessor, path, {}, index)
+    store.objects.clear()
+    store.objects.set('data', new TextEncoder().encode('file'))
+    store.objects.set('data/new.txt', new TextEncoder().encode('new'))
+    clock.mockReturnValue(62000)
+    if (refresh === 'find') await find(accessor, path, {}, index)
+    else await makeReaddir(driver)(accessor, path, index)
+    expect((await makeStat(driver)(accessor, path, index)).type).toBe(FileType.FILE)
+    expect(await makeDuSize(driver)(accessor, path, index)).toBe(7)
+  } finally {
+    clock.mockRestore()
+  }
+})
+
+describe.each(['find', 'du'])('%s caches expiring metadata', (warmup) => {
+  describe.each(['expired', 'missing'])('with a %s listing', (expiry) => {
+    it.each(['deleted', 'file', 'directory'])(
+      'revalidates a root replaced with %s',
+      async (replacement) => {
+        const store = new FakeStore({ 'data/old.txt': 'old' })
+        const driver = makeDriver(store)
+        const index = new RAMIndexCacheStore({ ttl: 60 })
+        const path = spec('/data')
+        const stat = makeStat(driver)
+        const find = makeFind(driver)
+        const size = makeDuSize(driver)
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(1000)
+        try {
+          if (warmup === 'find') await find(accessor, path, {}, index)
+          else await size(accessor, path, index)
+          store.connects = 0
+          expect((await stat(accessor, path, index)).type).toBe(FileType.DIRECTORY)
+          expect(store.connects).toBe(0)
+          store.objects.clear()
+          if (replacement === 'file')
+            store.objects.set('data', new TextEncoder().encode('new file'))
+          else if (replacement === 'directory')
+            store.objects.set('data/new.txt', new TextEncoder().encode('new contents'))
+          if (expiry === 'expired') clock.mockReturnValue(62000)
+          else await index.invalidateDir(path.virtual)
+          if (replacement === 'deleted') {
+            await expect(stat(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
+            expect(await find(accessor, path, {}, index)).toEqual([])
+          } else {
+            expect((await stat(accessor, path, index)).type).toBe(
+              replacement === 'file' ? FileType.FILE : FileType.DIRECTORY,
+            )
+          }
+          await expect(stat(accessor, spec('/data/old.txt'), index)).rejects.toMatchObject({
+            code: 'ENOENT',
+          })
+          expect(await size(accessor, path, index)).toBe(
+            [...store.objects.values()].reduce((total, bytes) => total + bytes.length, 0),
+          )
+        } finally {
+          clock.mockRestore()
+        }
+      },
+    )
+  })
+})
 
 describe('object_store stat', () => {
   it('maps the driver meta onto FileStat', async () => {
