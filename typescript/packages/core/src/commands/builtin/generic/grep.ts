@@ -14,7 +14,7 @@
 
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/types.ts'
-import { fsStrerror } from '../../../utils/errors.ts'
+import { fsStrerror, isWalkError } from '../../../utils/errors.ts'
 import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { respellOne } from '../../../utils/path.ts'
 import { cacheAwareStream } from '../../../cache/read_through.ts'
@@ -208,6 +208,7 @@ export async function grepGeneric(
         singleIO,
       ]
     } catch (error) {
+      if (!isWalkError(error)) throw error
       return [
         new Uint8Array(),
         new IOResult({
@@ -247,6 +248,7 @@ export async function grepGeneric(
             try {
               probe = await st(entry)
             } catch (error) {
+              if (!isWalkError(error)) throw error
               warn(`${name}: ${child.rawPath}: ${reason(error)}`)
               continue
             }
@@ -268,6 +270,7 @@ export async function grepGeneric(
       matched ||= fileIO.exitCode === 0
       if (fileIO.stderr instanceof Uint8Array) notices.push(fileIO.stderr)
     } catch (error) {
+      if (!isWalkError(error)) throw error
       warn(`${name}: ${p.rawPath}: ${reason(error)}`)
     }
   }

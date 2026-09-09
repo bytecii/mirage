@@ -76,6 +76,17 @@ class BinaryInput:
         return block.replace(b"\0", b"\n") if self.nul else block
 
 
+async def binary_notice(io: IOResult, path: str) -> None:
+    """Append GNU's binary-file notice to the input's stderr.
+
+    Args:
+        io (IOResult): the input's result.
+        path (str): the name the notice carries.
+    """
+    io.stderr = (await materialize(
+        io.stderr)) + f"grep: {path}: binary file matches\n".encode()
+
+
 def valid_utf8(data: bytes) -> bool:
     try:
         data.decode("utf-8")
@@ -182,13 +193,17 @@ async def grep_input(source: AsyncIterator[bytes],
                 chunks.append(
                     output_line(raw, number, False, path, show_filename, f))
                 last_printed = number
+            # A selected line with nothing to print (-o on a zero-width
+            # match) still earns the notice.
+            if hit and not chunks and binary.nul and (f.binary_mode == "binary"
+                                                      and not notified):
+                await binary_notice(io, path)
+                notified = True
             for chunk in chunks:
                 if f.binary_mode != "text" and (binary.nul
                                                 or not valid_utf8(chunk)):
                     if f.binary_mode == "binary" and not notified:
-                        io.stderr = (await materialize(
-                            io.stderr
-                        )) + f"grep: {path}: binary file matches\n".encode()
+                        await binary_notice(io, path)
                         notified = True
                     continue
                 yield chunk

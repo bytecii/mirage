@@ -288,3 +288,18 @@ async def test_nul_in_a_later_chunk_is_gnu_pipe_behavior(
                    False, io))
     assert (out, io.stderr or b"", io.exit_code) == (stdout, stderr, code)
     assert closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data, pattern, stderr", [
+    (b"a\0b\n", "^", b"grep: /data/z: binary file matches\n"),
+    (b"a\0b\nzz\n", "z*", b"grep: /data/z: binary file matches\n"),
+    (b"a\xffb\n", "^", b""),
+])
+async def test_zero_width_only_matching_still_notices_a_nul(
+        data, pattern, stderr):
+    f = parse_flags(FlagView({"o": True}, spec=SPECS["grep"]), False)
+    io = IOResult(exit_code=1)
+    out = await materialize(
+        grep_input(_lines(data), re.compile(pattern), f, "/data/z", False, io))
+    assert (out, io.stderr or b"", io.exit_code) == (b"", stderr, 0)

@@ -80,6 +80,16 @@ export class BinaryInput {
   }
 }
 
+/** Append GNU's binary-file notice to the input's stderr. */
+function binaryNotice(io: IOResult, path: string): void {
+  const old = io.stderr instanceof Uint8Array ? io.stderr : new Uint8Array()
+  const notice = ENC.encode(`grep: ${path}: binary file matches\n`)
+  const err = new Uint8Array(old.length + notice.length)
+  err.set(old)
+  err.set(notice, old.length)
+  io.stderr = err
+}
+
 export function validUtf8(data: Uint8Array): boolean {
   try {
     new TextDecoder('utf-8', { fatal: true }).decode(data)
@@ -184,15 +194,16 @@ export async function* grepInput(
         chunks.push(outputLine(raw, number, false, path, showFilename, f))
         lastPrinted = number
       }
+      // A selected line with nothing to print (-o on a zero-width match)
+      // still earns the notice.
+      if (hit && chunks.length === 0 && binary.nul && f.binaryMode === 'binary' && !notified) {
+        binaryNotice(io, path)
+        notified = true
+      }
       for (const chunk of chunks) {
         if (f.binaryMode !== 'text' && (binary.nul || !validUtf8(chunk))) {
           if (f.binaryMode === 'binary' && !notified) {
-            const old = io.stderr instanceof Uint8Array ? io.stderr : new Uint8Array()
-            const notice = ENC.encode(`grep: ${path}: binary file matches\n`)
-            const err = new Uint8Array(old.length + notice.length)
-            err.set(old)
-            err.set(notice, old.length)
-            io.stderr = err
+            binaryNotice(io, path)
             notified = true
           }
           continue

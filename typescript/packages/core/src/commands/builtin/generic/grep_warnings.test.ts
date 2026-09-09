@@ -58,7 +58,7 @@ async function* good(): AsyncIterable<Uint8Array> {
   yield ENC.encode('alice\n')
 }
 function stream(p: PathSpec): AsyncIterable<Uint8Array> {
-  if (p.virtual === '/data/bad.txt') throw new Error('boom')
+  if (p.virtual === '/data/bad.txt') throw Object.assign(new Error('boom'), { code: 'EACCES' })
   // A real backend cannot read a directory, so neither does the fake: a
   // stream that served bytes here would let a -l test pass on the harness
   // rather than on the code.
@@ -91,14 +91,14 @@ describe('grepGeneric recursive warnings', () => {
     const [out, io] = await runGrep({ r: true })
     expect(await decode(out)).toBe('/data/a.txt:alice\n')
     expect(io.stderr).not.toBeUndefined()
-    expect(DEC.decode(io.stderr as Uint8Array)).toBe('grep: /data/bad.txt: boom\n')
+    expect(DEC.decode(io.stderr as Uint8Array)).toBe('grep: /data/bad.txt: Permission denied\n')
     expect(io.exitCode).toBe(2)
   })
 
   it('grep -rl threads a stderr warning when a file read fails', async () => {
     const [out, io] = await runGrep({ r: true, args_l: true })
     expect(await decode(out)).toBe('/data/a.txt\n')
-    expect(DEC.decode(io.stderr as Uint8Array)).toBe('grep: /data/bad.txt: boom\n')
+    expect(DEC.decode(io.stderr as Uint8Array)).toBe('grep: /data/bad.txt: Permission denied\n')
   })
 
   it('grep on a single directory operand warns and exits 2', async () => {
@@ -126,7 +126,7 @@ describe('grepGeneric operand errors', () => {
 
   it('grep -rq lets a match outrank a failed operand', async () => {
     const [, io] = await runGrep({ r: true, q: true })
-    expect(DEC.decode(io.stderr as Uint8Array)).toBe('grep: /data/bad.txt: boom\n')
+    expect(DEC.decode(io.stderr as Uint8Array)).toBe('grep: /data/bad.txt: Permission denied\n')
     expect(io.exitCode).toBe(0)
   })
 })
@@ -134,7 +134,8 @@ describe('grepGeneric operand errors', () => {
 describe('grepGeneric excluded entries', () => {
   it('keeps walking when an excluded entry fails stat', async () => {
     const probe = (p: PathSpec): Promise<FileStat> => {
-      if (p.virtual === '/data/0ghost') return Promise.reject(new Error('gone'))
+      if (p.virtual === '/data/0ghost')
+        return Promise.reject(Object.assign(new Error('gone'), { code: 'ENOENT' }))
       return stat(p)
     }
     const listing = (p: PathSpec): Promise<string[]> =>
@@ -149,7 +150,9 @@ describe('grepGeneric excluded entries', () => {
       stream,
     )) as [GrepOut, IOResult]
     expect(await decode(out)).toBe('/data/a.txt:alice\n')
-    expect(DEC.decode(io.stderr as Uint8Array)).toBe('grep: /data/0ghost: gone\n')
+    expect(DEC.decode(io.stderr as Uint8Array)).toBe(
+      'grep: /data/0ghost: No such file or directory\n',
+    )
     expect(io.exitCode).toBe(2)
   })
 })
@@ -173,5 +176,34 @@ describe('labelled', () => {
     const out = labelled(opts(flags))
     expect(out.flags).toEqual(expected)
     expect(Object.keys(out.flags)).toEqual(Object.keys(expected))
+  })
+})
+
+describe('grepGeneric failures that are not filesystem errors', () => {
+  const broken = (): AsyncIterable<Uint8Array> => {
+    throw new Error('token expired')
+  }
+  async function scanned(
+    paths: PathSpec[],
+    flags: Record<string, string | boolean | number | string[]>,
+  ): Promise<string> {
+    const [out] = (await grepGeneric(
+      'grep',
+      paths,
+      ['alice'],
+      opts(flags),
+      stat,
+      readdir,
+      broken,
+    )) as [GrepOut, IOResult]
+    return decode(out)
+  }
+
+  it('propagate out of a recursive walk instead of becoming a warning', async () => {
+    await expect(scanned([spec('/data')], { r: true })).rejects.toThrow('token expired')
+  })
+
+  it('propagate out of a single-file read', async () => {
+    await expect(scanned([spec('/data/a.txt')], {})).rejects.toThrow('token expired')
   })
 })

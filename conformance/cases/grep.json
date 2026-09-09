@@ -2332,6 +2332,48 @@
         "stdout_text": "/data/g2:a\n/data/g2-y\n",
         "stderr_text": ""
       }
+    },
+    {
+      "id": "grep_binary_zero_width_only_matching_notices",
+      "cmd": "printf 'a\\000b\\n' > /data/z.bin; grep -o '^' /data/z.bin",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "",
+        "stderr_text": "grep: /data/z.bin: binary file matches\n"
+      }
+    },
+    {
+      "id": "grep_binary_zero_width_only_matching_invalid_utf8_is_silent",
+      "cmd": "printf 'a\\377b\\n' > /data/z.txt; grep -o '^' /data/z.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "",
+        "stderr_text": ""
+      }
     }
   ]
 }

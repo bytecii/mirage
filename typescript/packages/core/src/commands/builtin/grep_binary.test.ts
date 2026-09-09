@@ -235,3 +235,21 @@ it.each([
     expect(closed).toBe(true)
   },
 )
+
+it.each([
+  ['a\0b\n', /^/, 'grep: /data/z: binary file matches\n'],
+  ['a\0b\nzz\n', /z*/, 'grep: /data/z: binary file matches\n'],
+  ['a\xffb\n', /^/, ''],
+] as const)('a zero-width -o match on %j still notices a NUL', async (text, pattern, stderr) => {
+  const bytes = Uint8Array.from(text, (ch) => ch.charCodeAt(0))
+  async function* source(): AsyncIterable<Uint8Array> {
+    await Promise.resolve()
+    yield bytes
+  }
+  const f = parseFlags(new FlagView({ o: true }, specOf('grep')))
+  const io = new IOResult({ exitCode: 1 })
+  const out = await materialize(grepInput(source(), pattern, f, '/data/z', false, io))
+  expect(DEC.decode(out)).toBe('')
+  expect(DEC.decode((io.stderr as Uint8Array | null) ?? undefined)).toBe(stderr)
+  expect(io.exitCode).toBe(0)
+})
