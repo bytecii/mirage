@@ -123,7 +123,8 @@ async def test_for_iterates_values_binding_the_loop_variable():
                                     [node("body")], sess)
     assert seen == ["a", "b", "c"]
     assert await text_of(stdout) == "iter-a\niter-b\niter-c\n"
-    assert "X" not in sess.env
+    # bash leaves the loop variable holding its last value.
+    assert sess.env["X"] == "c"
 
 
 @pytest.mark.asyncio
@@ -154,15 +155,31 @@ async def test_for_skips_to_the_next_iteration_on_continue():
     assert seen == ["a", "b", "c"]
 
 
+# bash 5.2: `Z=before; for Z in a b; do :; done; echo $Z` prints b. The
+# loop variable is an ordinary variable and keeps its last value; the
+# shadowed value is not put back.
 @pytest.mark.asyncio
-async def test_for_restores_a_shadowed_loop_variable():
+async def test_for_keeps_the_loop_variables_last_value():
     sess = session(vars=vars_from_env({"X": "saved"}))
 
     async def execute(*_args):
         return result()
 
-    await handle_for(execute, "X", ["a"], [node("body")], sess)
-    assert sess.env["X"] == "saved"
+    await handle_for(execute, "X", ["a", "b"], [node("body")], sess)
+    assert sess.env["X"] == "b"
+
+
+# bash 5.2: `unset Y; for Y in ; do :; done` leaves Y unset, since no
+# iteration ever assigned it.
+@pytest.mark.asyncio
+async def test_for_over_no_words_leaves_the_variable_untouched():
+    sess = session()
+
+    async def execute(*_args):
+        return result()
+
+    await handle_for(execute, "Y", [], [node("body")], sess)
+    assert "Y" not in sess.env
 
 
 @pytest.mark.asyncio

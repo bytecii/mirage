@@ -17,6 +17,15 @@ export function utcDateFolder(ts?: number): string {
   return d.toISOString().slice(0, 10)
 }
 
+// A Date as UTC ISO-8601 with a Z suffix: no fraction when it is zero,
+// three digits (milliseconds) otherwise. The twin of Python's `to_iso_z`,
+// which renders the same two shapes, so a backend timestamp that is whole
+// seconds (S3 HeadObject, SFTP, an RFC-1123 header) prints identically in
+// both languages. Bare `toISOString()` always writes `.000Z`.
+export function toIsoZ(date: Date): string {
+  return date.toISOString().replace('.000Z', 'Z')
+}
+
 // Truncated to whole seconds so this matches the Python epoch_to_iso byte
 // for byte (second precision).
 export function epochToIso(seconds: number): string {

@@ -13,7 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { epochToIso, inMtimeWindow, isoToEpoch, parseDateExpr, utcDateFolder } from './dates.ts'
+import {
+  epochToIso,
+  inMtimeWindow,
+  isoToEpoch,
+  parseDateExpr,
+  toIsoZ,
+  utcDateFolder,
+} from './dates.ts'
 
 describe('inMtimeWindow', () => {
   it('keeps everything under an unbounded window', () => {
@@ -29,6 +36,15 @@ describe('inMtimeWindow', () => {
   it('fails an unknown timestamp against any bound', () => {
     expect(inMtimeWindow(null, 100, null)).toBe(false)
     expect(inMtimeWindow(undefined, null, 100)).toBe(false)
+  })
+})
+
+describe('toIsoZ', () => {
+  it('drops a zero fraction (parity with the Python to_iso_z)', () => {
+    expect(toIsoZ(new Date('2026-09-05T10:54:04.000Z'))).toBe('2026-09-05T10:54:04Z')
+  })
+  it('keeps a non-zero fraction as three digits', () => {
+    expect(toIsoZ(new Date('2026-09-05T10:54:04.123Z'))).toBe('2026-09-05T10:54:04.123Z')
   })
 })
 

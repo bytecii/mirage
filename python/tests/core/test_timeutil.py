@@ -61,3 +61,23 @@ def test_epoch_floors_negative_fractional_like_typescript():
     # not 0 as int() truncation would give.
     assert iso_to_epoch("1969-12-31T23:59:59.500Z") == -1
     assert epoch_to_iso(-0.5) == "1969-12-31T23:59:59Z"
+
+
+# One fraction-digit policy both languages can express: nothing when the
+# fraction is zero, three digits otherwise. `isoformat()` alone renders six
+# digits, which a JavaScript Date can never produce, so the same S3 or
+# GridFS instant used to print differently in the two implementations.
+def test_to_iso_z_renders_a_nonzero_fraction_as_milliseconds():
+    dt = datetime(2026, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc)
+    assert to_iso_z(dt) == "2026-01-02T03:04:05.123Z"
+
+
+def test_to_iso_z_omits_a_zero_fraction():
+    dt = datetime(2026, 1, 2, 3, 4, 5, 0, tzinfo=timezone.utc)
+    assert to_iso_z(dt) == "2026-01-02T03:04:05Z"
+
+
+# pymongo hands back naive UTC datetimes; reading one as local time would
+# shift a GridFS uploadDate by the host's offset.
+def test_to_iso_z_reads_a_naive_value_as_utc():
+    assert to_iso_z(datetime(2026, 1, 2, 3, 4, 5)) == "2026-01-02T03:04:05Z"

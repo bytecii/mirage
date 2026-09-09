@@ -17,6 +17,7 @@ import type { DatabricksVolumeAccessor } from '../../accessor/databricks_volume.
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, type PathSpec } from '../../types.ts'
 import { contentTypeForPath } from '../../utils/filetype.ts'
+import { toIsoZ } from '../../utils/dates.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { dbxFetch } from './client.ts'
 import { isNotFound, notFoundError } from './errors.ts'
@@ -31,7 +32,7 @@ function modifiedFromHeader(value: string | null): string | null {
   if (value === null || value === '') return null
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return value
-  return parsed.toISOString()
+  return toIsoZ(parsed)
 }
 
 async function directoryStatOrRaise(

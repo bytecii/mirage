@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { FileStat } from '../../../types.ts'
+import type { FileStat } from '../../../types.ts'
 import { epochToIso } from '../../../utils/dates.ts'
 import type { NodeMeta } from './namespace.ts'
 
@@ -50,17 +50,8 @@ export function mergeOverlayStat(meta: NodeMeta | null, stat: FileStat): FileSta
     update.modified = epochToIso(meta.observedMtime)
   }
   if (Object.keys(update).length === 0) return stat
-  return new FileStat({
-    name: stat.name,
-    size: stat.size,
-    modified: update.modified ?? stat.modified,
-    fingerprint: stat.fingerprint,
-    revision: stat.revision,
-    type: stat.type,
-    mode: update.mode ?? stat.mode,
-    uid: update.uid ?? stat.uid,
-    gid: update.gid ?? stat.gid,
-    atime: update.atime ?? stat.atime,
-    extra: stat.extra,
-  })
+  // `with` is the one place the field list is repeated; a hand-written
+  // copy here dropped `content`, so `stat` after a `touch` reported
+  // `type=file` where Python (model_copy) kept `type=text`.
+  return stat.with(update)
 }

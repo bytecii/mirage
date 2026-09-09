@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { type PathSpec, type WalkEntry } from '@struktoai/mirage-core/types'
+import { epochToIso } from '@struktoai/mirage-core/utils/dates'
 import { mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { stripSlash } from '@struktoai/mirage-core/utils/slash'
 import {
@@ -54,7 +55,7 @@ async function* descend(
       yield* descend(sftp, root, child)
       continue
     }
-    const modified = new Date(entry.attrs.mtime * 1000).toISOString()
+    const modified = epochToIso(entry.attrs.mtime)
     yield {
       virtual: child,
       isDir: false,

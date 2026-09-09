@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { FileStat, FileType } from '../../../types.ts'
+import { ContentType, FileStat, FileType } from '../../../types.ts'
 import { mergeOverlayStat } from './overlay.ts'
 
 const base = new FileStat({
@@ -39,6 +39,27 @@ describe('mergeOverlayStat', () => {
     expect(merged.gid).toBe(8)
     expect(merged.size).toBe(3)
     expect(merged.modified).toBe('2026-01-01T00:00:00Z')
+  })
+
+  // A `touch` writes an mtime into the overlay; the merged row must keep
+  // every backend field the update did not name, `content` included, or
+  // `stat` prints `type=file` for a text file Python reports as `type=text`.
+  it('keeps content and fingerprint through an mtime overlay', () => {
+    const typed = new FileStat({
+      name: 'f.txt',
+      type: FileType.FILE,
+      size: 3,
+      content: ContentType.TEXT,
+      fingerprint: 'abc',
+      revision: 'r1',
+      extra: { etag: 'abc' },
+    })
+    const merged = mergeOverlayStat({ mtime: 1767312000 }, typed)
+    expect(merged.modified).toBe('2026-01-02T00:00:00Z')
+    expect(merged.content).toBe(ContentType.TEXT)
+    expect(merged.fingerprint).toBe('abc')
+    expect(merged.revision).toBe('r1')
+    expect(merged.extra).toEqual({ etag: 'abc' })
   })
 
   it('overlays modified from mtime', () => {

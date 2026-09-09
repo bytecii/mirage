@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import os
 from functools import partial
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from pydantic import BaseModel, ConfigDict
 from mirage import (NULL_INDEX, Accessor, CommandIO, FileStat, GenericResource,
                     IndexCacheStore, MountMode, PathSpec, Workspace,
                     stream_from_bytes)
+from mirage.cache.file.config import RedisCacheConfig
 from mirage.resource import registry as resource_registry
 from mirage.resource.loader import SCRIPT_MODULE_NAME, load_backend_class
 from mirage.resource.ram import RAMResource
@@ -29,7 +31,7 @@ from mirage.secrets import registry
 from mirage.secrets.registry import register_secrets
 from mirage.secrets.types import ResolvedSecret
 from mirage.types import ContentType, FileType
-from mirage.workspace.snapshot.keys import MountKey, StateKey
+from mirage.workspace.snapshot.keys import CacheKey, MountKey, StateKey
 from mirage.workspace.snapshot.state import build_mount_args, to_state_dict
 
 
@@ -365,3 +367,21 @@ async def test_a_ref_this_process_cannot_resolve_is_not_guessed_from_the_type(
     with pytest.raises(ValueError, match="resources= must include") as exc:
         build_mount_args(state)
     assert "/s/" in str(exc.value)
+
+
+# The capture side used to read `cache._entries` unconditionally, which
+# only a RAM cache has, so `Workspace.snapshot()` raised AttributeError
+# under a Redis cache while the restore side already skipped it.
+@pytest.mark.skipif(not os.environ.get("REDIS_URL"),
+                    reason="REDIS_URL not set")
+@pytest.mark.asyncio
+async def test_to_state_dict_carries_no_entries_for_a_redis_cache():
+    ws = Workspace({"/r": RAMResource()},
+                   mode=MountMode.WRITE,
+                   cache=RedisCacheConfig(url=os.environ["REDIS_URL"],
+                                          key_prefix="test-snapshot:"))
+    try:
+        state = await to_state_dict(ws)
+        assert state[StateKey.CACHE][CacheKey.ENTRIES] == []
+    finally:
+        await ws.close()
