@@ -23,16 +23,12 @@ except ImportError as _err:
 
 from mirage.cache.index.config import (IndexDirectory, IndexEntry, ListResult,
                                        LookupResult, LookupStatus)
+from mirage.cache.index.constants import (CHILDREN_PREFIX, ENTRY_PREFIX,
+                                          GENERATION_KEY)
 from mirage.cache.index.store import IndexCacheStore
 from mirage.core.timeutil import to_iso_z
 from mirage.utils.ids import uuid7
 from mirage.utils.key_prefix import under_path
-
-# Entries and listings must go cold together when the cache format changes.
-ENTRY_PREFIX = "mirage:idx:entry:v2:"
-CHILDREN_PREFIX = "mirage:idx:directory:v2:"
-LEGACY_ENTRY_PREFIX = "mirage:idx:entry:"
-LEGACY_CHILDREN_PREFIX = "mirage:idx:children:"
 
 
 def _text(value: str | bytes) -> str:
@@ -102,11 +98,7 @@ class RedisIndexCacheStore(IndexCacheStore):
         p = key_prefix or ""
         self._entry_prefix = f"{p}{ENTRY_PREFIX}"
         self._children_prefix = f"{p}{CHILDREN_PREFIX}"
-        self._legacy_entry_prefix = f"{p}{LEGACY_ENTRY_PREFIX}"
-        self._legacy_children_prefix = f"{p}{LEGACY_CHILDREN_PREFIX}"
-        # Keep this signal independent of payload versions and under the
-        # legacy clear scan. Old workers delete it when invalidating globally.
-        self._generation_key = f"{self._legacy_children_prefix}!generation"
+        self._generation_key = f"{p}{GENERATION_KEY}"
         self._directory_generation_prefix = f"{self._generation_key}:"
 
     def _entry_key(self, resource_path: str) -> str:
@@ -305,18 +297,13 @@ class RedisIndexCacheStore(IndexCacheStore):
         pipe.delete(children_key)
         pipe.delete(f"{self._directory_generation_prefix}{resource_path}")
         await pipe.execute()
-        await self._invalidate_legacy_prefix(resource_path)
 
-    async def _scan_delete(self,
-                           prefix: str,
-                           resource_path: str,
-                           legacy: bool = False) -> None:
+    async def _scan_delete(self, prefix: str, resource_path: str) -> None:
         """Delete every key under ``prefix`` naming a path in the subtree.
 
         Args:
             prefix (str): Key namespace to scan (entries or children).
             resource_path (str): Mount-absolute root of the subtree.
-            legacy (bool): Delete only unversioned absolute-path rows.
         """
         pattern = f"{_glob_escape(prefix + resource_path.rstrip('/'))}*"
         cursor = 0
@@ -325,24 +312,13 @@ class RedisIndexCacheStore(IndexCacheStore):
                                                    match=pattern,
                                                    count=500)
             doomed = [
-                key for key in keys if
-                (not legacy or _text(key).removeprefix(prefix).startswith("/"))
-                and under_path(_text(key).removeprefix(prefix), resource_path)
+                key for key in keys
+                if under_path(_text(key).removeprefix(prefix), resource_path)
             ]
             if doomed:
                 await self._client.delete(*doomed)
             if cursor == 0:
                 return
-
-    async def _invalidate_legacy_prefix(self, resource_path: str) -> None:
-        # The legacy entry namespace also contains entry:v2:*; the path
-        # filter preserves versioned metadata and the shared generation key.
-        await self._scan_delete(self._legacy_entry_prefix,
-                                resource_path,
-                                legacy=True)
-        await self._scan_delete(self._legacy_children_prefix,
-                                resource_path,
-                                legacy=True)
 
     async def invalidate_prefix(self, resource_path: str) -> None:
         await self._flush_seed()
@@ -350,14 +326,12 @@ class RedisIndexCacheStore(IndexCacheStore):
         await self._scan_delete(self._children_prefix, resource_path)
         await self._scan_delete(self._directory_generation_prefix,
                                 resource_path)
-        await self._invalidate_legacy_prefix(resource_path)
 
     async def invalidate(self) -> None:
         await self._flush_seed()
         # One atomic generation change expires all listings without racing
         # another client's refill or resurrecting a concurrently removed path.
         await self._client.set(self._generation_key, uuid7())
-        await self._invalidate_legacy_prefix("/")
 
     async def clear(self) -> None:
         async with self._seed_lock:
@@ -365,7 +339,6 @@ class RedisIndexCacheStore(IndexCacheStore):
             await self._scan_delete(self._entry_prefix, "/")
             await self._scan_delete(self._children_prefix, "/")
             await self._scan_delete(self._directory_generation_prefix, "/")
-            await self._invalidate_legacy_prefix("/")
             await self._client.delete(self._generation_key)
 
     async def close(self) -> None:

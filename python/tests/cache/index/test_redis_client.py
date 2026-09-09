@@ -32,20 +32,6 @@ async def rolling_client(request):
         await client.aclose()
 
 
-async def legacy_clear(client: Redis, prefix: str) -> None:
-    # The unmodified v1 implementation scans these two namespaces verbatim.
-    for namespace in ("mirage:idx:entry:", "mirage:idx:children:"):
-        cursor = 0
-        while True:
-            cursor, keys = await client.scan(cursor,
-                                             match=f"{prefix}{namespace}*",
-                                             count=500)
-            if keys:
-                await client.delete(*keys)
-            if cursor == 0:
-                break
-
-
 @pytest.fixture
 def client():
     value = MagicMock()
@@ -180,7 +166,7 @@ async def test_evicted_generation_cannot_revive_invalidated_listing():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("empty", [False, True])
 @pytest.mark.parametrize("seed", [False, True])
-async def test_legacy_global_clear_expires_versioned_listings(
+async def test_global_invalidation_expires_year_long_listings(
         rolling_client, empty, seed):
     client, prefix = rolling_client
     store = RedisIndexCacheStore(client=client, key_prefix=prefix)
@@ -199,7 +185,8 @@ async def test_legacy_global_clear_expires_versioned_listings(
             f"/repo/{name}" for name, _ in rows
         ]
 
-        await legacy_clear(client, prefix)
+        await RedisIndexCacheStore(client=client,
+                                   key_prefix=prefix).invalidate()
         assert (await store.list_dir("/repo")).status == LookupStatus.EXPIRED
         await store.set_dir("/other", [])
         assert (await store.list_dir("/other")).entries == []
@@ -211,34 +198,7 @@ async def test_legacy_global_clear_expires_versioned_listings(
 
 
 @pytest.mark.asyncio
-async def test_new_global_invalidation_evicts_only_legacy_payloads(
-        rolling_client):
-    client, prefix = rolling_client
-    store = RedisIndexCacheStore(client=client, key_prefix=prefix)
-    row = IndexEntry(id="old", name="a.txt", resource_type="file")
-    legacy_entry = f"{prefix}mirage:idx:entry:/repo/a.txt"
-    legacy_children = f"{prefix}mirage:idx:children:/repo"
-    neighbor = f"{prefix}neighbor:mirage:idx:children:/repo"
-    try:
-        await client.set(legacy_entry, row.model_dump_json())
-        await client.rpush(legacy_children, "/repo/a.txt")
-        await client.rpush(neighbor, "/repo/a.txt")
-        await store.set_dir("/repo", [("a.txt", row)])
-        retained = (await store.get("/repo/a.txt")).entry
-        await store.invalidate()
-
-        assert await client.get(legacy_entry) is None
-        assert await client.lrange(legacy_children, 0, -1) == []
-        assert await client.lrange(neighbor, 0, -1) == ["/repo/a.txt"]
-        assert (await store.get("/repo/a.txt")).entry == retained
-        assert (await store.list_dir("/repo")).status == LookupStatus.EXPIRED
-        assert await client.get(f"{prefix}mirage:idx:children:!generation")
-    finally:
-        await store.close()
-
-
-@pytest.mark.asyncio
-async def test_legacy_clear_between_generation_and_seed_commit_stays_expired(
+async def test_invalidation_between_generation_and_seed_commit_stays_expired(
         rolling_client, monkeypatch):
     client, prefix = rolling_client
     store = RedisIndexCacheStore(client=client, key_prefix=prefix)
@@ -249,7 +209,8 @@ async def test_legacy_clear_between_generation_and_seed_commit_stays_expired(
         execute = pipe.execute
 
         async def execute_after_clear():
-            await legacy_clear(client, prefix)
+            await RedisIndexCacheStore(client=client,
+                                       key_prefix=prefix).invalidate()
             return await execute()
 
         pipe.execute = execute_after_clear
@@ -270,40 +231,35 @@ async def test_legacy_clear_between_generation_and_seed_commit_stays_expired(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation",
                          ["invalidate_dir", "invalidate_prefix", "clear"])
-async def test_new_scoped_invalidations_remove_legacy_rows(
+async def test_scoped_invalidations_respect_literal_namespaces(
         rolling_client, operation):
     client, prefix = rolling_client
-    scoped = prefix + "literal[1]:"
-    other = prefix + "literal1:"
-    store = RedisIndexCacheStore(client=client, key_prefix=scoped)
-    row = IndexEntry(id="old", name="a.txt", resource_type="file")
+    stores = [
+        RedisIndexCacheStore(client=client, key_prefix=prefix + suffix)
+        for suffix in ("literal[1]:", "literal1:")
+    ]
+    store, neighbor = stores
+    row = IndexEntry(id="a", name="a.txt", resource_type="file")
     try:
-        for namespace in (scoped, other):
+        for target in stores:
             for directory in ("/repo[1]", "/repo1"):
-                await client.set(
-                    f"{namespace}mirage:idx:entry:{directory}/a.txt",
-                    row.model_dump_json())
-                await client.rpush(
-                    f"{namespace}mirage:idx:children:{directory}",
-                    f"{directory}/a.txt")
-        await store.set_dir("/repo[1]", [("a.txt", row)])
-        await store.set_dir("/repo1", [("a.txt", row)])
+                await target.set_dir(directory, [("a.txt", row)])
         if operation == "clear":
             await store.clear()
         else:
             await getattr(store, operation)("/repo[1]")
-        assert await client.get(f"{scoped}mirage:idx:entry:/repo[1]/a.txt"
-                                ) is None
-        assert await client.lrange(f"{scoped}mirage:idx:children:/repo[1]", 0,
-                                   -1) == []
-        assert await client.lrange(f"{other}mirage:idx:children:/repo[1]", 0,
-                                   -1) == ["/repo[1]/a.txt"]
+        assert (await
+                store.get("/repo[1]/a.txt")).status == LookupStatus.NOT_FOUND
+        assert (await
+                store.list_dir("/repo[1]")).status == LookupStatus.NOT_FOUND
+        assert (await
+                neighbor.list_dir("/repo[1]")).entries == ["/repo[1]/a.txt"]
+        assert (await neighbor.list_dir("/repo1")).entries == ["/repo1/a.txt"]
         if operation != "clear":
-            assert await client.lrange(f"{scoped}mirage:idx:children:/repo1",
-                                       0, -1) == ["/repo1/a.txt"]
             assert (await store.list_dir("/repo1")).entries == ["/repo1/a.txt"]
     finally:
-        await store.close()
+        for target in stores:
+            await target.close()
 
 
 @pytest.mark.asyncio
@@ -598,7 +554,8 @@ async def test_seed_initialization_does_not_adopt_replacement_tokens(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("invalidate", [False, True])
 @pytest.mark.parametrize("change", ["updated", "renamed", "deleted"])
-async def test_legacy_entries_are_cold_before_warming(change, invalidate):
+async def test_previous_format_entries_and_listings_are_cold_before_warming(
+        change, invalidate):
     client = FakeRedis()
     store = RedisIndexCacheStore(client=client, key_prefix="upgrade:")
     key = "/folder/f.txt"

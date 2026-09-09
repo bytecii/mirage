@@ -27,13 +27,7 @@ import {
   type LookupResult,
 } from './config.ts'
 import { IndexCacheStore } from './store.ts'
-
-// Entries and listings must go cold together when the cache format changes.
-const ENTRY_PREFIX = 'mirage:idx:entry:v2:'
-const CHILDREN_PREFIX = 'mirage:idx:directory:v2:'
-const LEGACY_ENTRY_PREFIX = 'mirage:idx:entry:'
-const LEGACY_CHILDREN_PREFIX = 'mirage:idx:children:'
-const DEFAULT_KEY_PREFIX = 'mirage:index:'
+import { CHILDREN_PREFIX, DEFAULT_KEY_PREFIX, ENTRY_PREFIX, GENERATION_KEY } from './constants.ts'
 
 /**
  * Escape redis MATCH metacharacters in a literal path.
@@ -73,15 +67,13 @@ export interface RedisIndexCacheOptions {
 }
 
 // Directory records retain stale listings like RAM; Redis maxmemory eviction
-// can still turn any cached fact into a miss. v2 ignores legacy lists and their metadata.
+// can still turn any cached fact into a miss.
 export class RedisIndexCacheStore extends IndexCacheStore {
   private readonly ttl: number
   private readonly url: string
   private readonly providedClient: RedisClientLike | null
   private readonly entryPrefix: string
   private readonly childrenPrefix: string
-  private readonly legacyEntryPrefix: string
-  private readonly legacyChildrenPrefix: string
   private readonly generationKey: string
   private readonly initializingGenerations = new Map<string, Promise<string>>()
   private clientPromise: Promise<RedisClientLike> | null = null
@@ -102,11 +94,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     const prefix = options.keyPrefix ?? DEFAULT_KEY_PREFIX
     this.entryPrefix = `${prefix}${ENTRY_PREFIX}`
     this.childrenPrefix = `${prefix}${CHILDREN_PREFIX}`
-    this.legacyEntryPrefix = `${prefix}${LEGACY_ENTRY_PREFIX}`
-    this.legacyChildrenPrefix = `${prefix}${LEGACY_CHILDREN_PREFIX}`
-    // This signal is permanent across payload versions. Legacy global clears
-    // must find it, while its non-path suffix keeps it outside directory data.
-    this.generationKey = `${this.legacyChildrenPrefix}!generation`
+    this.generationKey = `${prefix}${GENERATION_KEY}`
   }
 
   private entryKey(path: string): string {
@@ -318,10 +306,9 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     pipe.del(this.childrenKey(resourcePath))
     pipe.del(`${this.generationKey}:${resourcePath}`)
     await pipe.exec()
-    await this.invalidateLegacyPrefix(resourcePath)
   }
 
-  private async scanDelete(prefix: string, resourcePath: string, legacy = false): Promise<void> {
+  private async scanDelete(prefix: string, resourcePath: string): Promise<void> {
     const c = await this.client()
     const pattern = `${globEscape(prefix + rstripSlash(resourcePath))}*`
     const keys: string[] = []
@@ -329,17 +316,10 @@ export class RedisIndexCacheStore extends IndexCacheStore {
       const batch = Array.isArray(k) ? k : [k]
       for (const key of batch) {
         const path = key.slice(prefix.length)
-        // Legacy entry scans overlap entry:v2; retain versioned payloads and
-        // the shared generation by deleting only absolute-path legacy rows.
-        if ((!legacy || path.startsWith('/')) && underPath(path, resourcePath)) keys.push(key)
+        if (underPath(path, resourcePath)) keys.push(key)
       }
     }
     if (keys.length > 0) await c.del(keys)
-  }
-
-  private async invalidateLegacyPrefix(resourcePath: string): Promise<void> {
-    await this.scanDelete(this.legacyEntryPrefix, resourcePath, true)
-    await this.scanDelete(this.legacyChildrenPrefix, resourcePath, true)
   }
 
   async invalidatePrefix(resourcePath: string): Promise<void> {
@@ -347,7 +327,6 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     await this.scanDelete(this.entryPrefix, resourcePath)
     await this.scanDelete(this.childrenPrefix, resourcePath)
     await this.scanDelete(`${this.generationKey}:`, resourcePath)
-    await this.invalidateLegacyPrefix(resourcePath)
   }
 
   async invalidate(): Promise<void> {
@@ -355,7 +334,6 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     const c = await this.client()
     // Atomically expire listings without overwriting concurrent refills/deletions.
     await c.set(this.generationKey, uuid7())
-    await this.invalidateLegacyPrefix('/')
   }
 
   clear(): Promise<void> {
@@ -364,7 +342,6 @@ export class RedisIndexCacheStore extends IndexCacheStore {
       await this.scanDelete(this.entryPrefix, '/')
       await this.scanDelete(this.childrenPrefix, '/')
       await this.scanDelete(`${this.generationKey}:`, '/')
-      await this.invalidateLegacyPrefix('/')
       const c = await this.client()
       await c.del(this.generationKey)
     })

@@ -62,19 +62,6 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
     ).client()
   }
 
-  async function legacyClear(): Promise<void> {
-    const client = await redis()
-    // These are the two scans performed by an unmodified v1 worker.
-    for (const namespace of ['entry', 'children']) {
-      for await (const batch of client.scanIterator({
-        MATCH: `${prefix}mirage:idx:${namespace}:*`,
-      })) {
-        const keys = Array.isArray(batch) ? batch : [batch]
-        if (keys.length > 0) await client.del(keys)
-      }
-    }
-  }
-
   it('batches cold snapshot directory tokens in a bounded number of requests', async () => {
     const client = await redis()
     const paths = Array.from({ length: 100 }, (_, i) => `/dir-${String(i)}`)
@@ -233,14 +220,14 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
     )
   }
 
-  it('expires year-long listings when an old worker globally invalidates', async () => {
+  it('expires year-long listings when another worker globally invalidates', async () => {
     const deadline = new Date(Date.now() + 365 * 24 * 3600000)
     await store.setDir('/snapshot', [['a', entry('a', 'a')]], deadline)
     await store.setDir('/empty', [], deadline)
     expect((await store.listDir('/snapshot')).entries).toEqual(['/snapshot/a'])
     expect((await store.listDir('/empty')).entries).toEqual([])
 
-    await legacyClear()
+    await new RedisIndexCacheStore({ client: await redis(), keyPrefix: prefix }).invalidate()
     expect((await store.listDir('/snapshot')).status).toBe(LookupStatus.EXPIRED)
     expect((await store.listDir('/empty')).status).toBe(LookupStatus.EXPIRED)
     expect((await store.listDir('/absent')).status).toBe(LookupStatus.NOT_FOUND)
@@ -253,7 +240,7 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
     expect((await store.listDir('/snapshot')).entries).toEqual(['/snapshot/b'])
   })
 
-  it('does not revive a refill committed after an old worker clears its generation', async () => {
+  it('does not revive a refill committed after another worker invalidates its generation', async () => {
     await store.setDir('/snapshot', [])
     const client = await redis()
     const multi = client.multi.bind(client)
@@ -261,7 +248,7 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
       const pipeline = multi()
       const exec = pipeline.exec.bind(pipeline)
       pipeline.exec = async () => {
-        await legacyClear()
+        await new RedisIndexCacheStore({ client: await redis(), keyPrefix: prefix }).invalidate()
         return exec()
       }
       return pipeline
@@ -410,18 +397,11 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
     )
   }
 
-  it('invalidates old workers while retaining current metadata', async () => {
-    const client = await redis()
-    const legacyEntry = `${prefix}mirage:idx:entry:/snapshot/a`
-    const legacyChildren = `${prefix}mirage:idx:children:/snapshot`
-    await client.set(legacyEntry, JSON.stringify(entry('old', 'a')))
-    await client.rPush(legacyChildren, '/snapshot/a')
+  it('globally invalidates listings while retaining current metadata', async () => {
     await store.setDir('/snapshot', [['a', entry('new', 'a')]])
     await store.setDir('/empty', [])
     await store.invalidate()
 
-    expect(await client.get(legacyEntry)).toBeNull()
-    expect(await client.get(legacyChildren)).toBeNull()
     expect((await store.get('/snapshot/a')).entry?.id).toBe('new')
     expect((await store.listDir('/snapshot')).status).toBe(LookupStatus.EXPIRED)
     expect((await store.listDir('/empty')).status).toBe(LookupStatus.EXPIRED)
@@ -431,51 +411,36 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
   })
 
   it.each(['invalidateDir', 'invalidatePrefix', 'clear'] as const)(
-    "%s also removes old workers' cache rows",
+    '%s respects literal custom namespaces and paths',
     async (method) => {
       const client = await redis()
-      const scopedKeys = [
-        `${prefix}mirage:idx:entry:/scope/a`,
-        `${prefix}mirage:idx:entry:/scope/nested/a`,
-      ]
-      const other = `${prefix}mirage:idx:entry:/scope-other/a`
-      for (const key of [...scopedKeys, other]) {
-        await client.set(key, JSON.stringify(entry('old', 'a')))
-      }
-      const listings = ['/scope', '/scope/nested'].map(
-        (path) => `${prefix}mirage:idx:children:${path}`,
+      const stores = ['custom:[1]:', 'custom:1:'].map(
+        (suffix) => new RedisIndexCacheStore({ client, keyPrefix: prefix + suffix }),
       )
-      for (const key of listings) await client.rPush(key, '/scope/a')
-      if (method === 'clear') await store.clear()
-      else await store[method]('/scope')
-
-      for (const key of [...scopedKeys, ...listings]) expect(await client.get(key)).toBeNull()
-      if (method === 'clear') expect(await client.get(other)).toBeNull()
-      else expect(await client.get(other)).not.toBeNull()
+      const [isolated, neighbor] = stores as [RedisIndexCacheStore, RedisIndexCacheStore]
+      try {
+        for (const target of stores) {
+          for (const directory of ['/repo[1]', '/repo1']) {
+            await target.setDir(directory, [['a', entry('a', 'a')]])
+          }
+        }
+        if (method === 'clear') await isolated.clear()
+        else await isolated[method]('/repo[1]')
+        expect((await isolated.get('/repo[1]/a')).status).toBe(LookupStatus.NOT_FOUND)
+        expect((await isolated.listDir('/repo[1]')).status).toBe(LookupStatus.NOT_FOUND)
+        expect((await neighbor.listDir('/repo[1]')).entries).toEqual(['/repo[1]/a'])
+        expect((await neighbor.listDir('/repo1')).entries).toEqual(['/repo1/a'])
+        if (method !== 'clear') {
+          expect((await isolated.listDir('/repo1')).entries).toEqual(['/repo1/a'])
+        }
+      } finally {
+        for (const target of stores) {
+          await target.clear()
+          await target.close()
+        }
+      }
     },
   )
-
-  it('keeps legacy invalidation within literal custom namespaces', async () => {
-    const client = await redis()
-    const literal = `${prefix}custom:[1]:`
-    const neighbor = `${prefix}custom:1:`
-    const isolated = new RedisIndexCacheStore({ client, keyPrefix: literal })
-    const neighborEntry = `${neighbor}mirage:idx:entry:/a`
-    try {
-      await client.set(neighborEntry, JSON.stringify(entry('neighbor', 'a')))
-      await client.set(`${literal}mirage:idx:entry:/a`, JSON.stringify(entry('old', 'a')))
-      await isolated.setDir('/', [['a', entry('new', 'a')]])
-      await isolated.invalidate()
-      expect(await client.get(`${literal}mirage:idx:entry:/a`)).toBeNull()
-      expect(await client.get(neighborEntry)).not.toBeNull()
-      expect((await isolated.get('/a')).entry?.id).toBe('new')
-      expect((await isolated.listDir('/')).status).toBe(LookupStatus.EXPIRED)
-    } finally {
-      await isolated.clear()
-      await isolated.close()
-      await client.del(neighborEntry)
-    }
-  })
 
   it('get returns NOT_FOUND when missing', async () => {
     const r = await store.get('/nope')
@@ -484,7 +449,7 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
 
   for (const invalidate of [false, true]) {
     it.each(['updated', 'renamed', 'deleted'])(
-      `warms legacy entries after %s (invalidate=${String(invalidate)})`,
+      `keeps previous-format entries and listings cold after %s (invalidate=${String(invalidate)})`,
       async (change) => {
         const client = await (
           store as unknown as {
