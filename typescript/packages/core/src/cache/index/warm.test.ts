@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { enoent, enotdir } from '../../utils/errors.ts'
-import { IndexEntry } from './config.ts'
+import { IndexEntry, LookupStatus } from './config.ts'
 import { RAMIndexCacheStore } from './ram.ts'
 import { RedisIndexCacheStore } from './redis.ts'
 import { entryOrWarm } from './warm.ts'
@@ -28,7 +28,7 @@ function entryFor(id: string): IndexEntry {
 describe('cache/index/warm: entryOrWarm', () => {
   it('returns a warm hit without listing the parent', async () => {
     const index = new RAMIndexCacheStore()
-    await index.put(KEY, entryFor('doc-1'))
+    await index.setDir('/owned', [['notes.json', entryFor('doc-1')]])
     let calls = 0
     const got = await entryOrWarm(index, KEY, () => {
       calls += 1
@@ -87,6 +87,89 @@ for (const backend of ['ram', 'redis']) {
   describe.skipIf(backend === 'redis' && process.env.REDIS_URL === undefined)(
     `retained entries with ${backend}`,
     () => {
+      describe.each([false, true])('orphan rows, globally invalidated: %s', (invalidated) => {
+        it.each(['updated', 'renamed', 'deleted', 'partial', 'absent', 'error'])(
+          'revalidates every direct lookup until the parent is complete: %s',
+          async (outcome) => {
+            const url = process.env.REDIS_URL
+            const index =
+              backend === 'ram'
+                ? new RAMIndexCacheStore()
+                : new RedisIndexCacheStore({
+                    ...(url === undefined ? {} : { url }),
+                    keyPrefix: `warm:${crypto.randomUUID()}:`,
+                  })
+            let calls = 0
+            const warm = async (): Promise<void> => {
+              calls += 1
+              if (outcome === 'absent') throw enoent('/owned')
+              if (outcome === 'error') throw new Error('unavailable')
+              if (outcome === 'partial') await index.put('/owned/other.json', entryFor('other'))
+              else
+                await index.setDir(
+                  '/owned',
+                  outcome === 'updated'
+                    ? [['notes.json', entryFor('new')]]
+                    : outcome === 'renamed'
+                      ? [['renamed.json', entryFor('old')]]
+                      : [],
+                )
+            }
+            try {
+              // Partial service listings and point writes can create rows
+              // without ever publishing a complete parent directory.
+              await index.put(KEY, entryFor('old'))
+              if (invalidated) await index.invalidate()
+              expect((await index.get(KEY)).entry?.id).toBe('old')
+              expect((await index.listDir('/owned')).status).toBe(LookupStatus.NOT_FOUND)
+              for (let attempt = 0; attempt < 2; attempt += 1) {
+                if (outcome === 'error')
+                  await expect(entryOrWarm(index, KEY, warm)).rejects.toThrow('unavailable')
+                else
+                  expect((await entryOrWarm(index, KEY, warm))?.id ?? null).toBe(
+                    outcome === 'updated' ? 'new' : null,
+                  )
+              }
+              const incomplete = ['partial', 'absent', 'error'].includes(outcome)
+              expect(calls).toBe(incomplete ? 2 : 1)
+              if (outcome !== 'updated') expect((await index.get(KEY)).entry ?? null).toBeNull()
+              if (outcome === 'renamed')
+                expect((await index.get('/owned/renamed.json')).entry?.id).toBe('old')
+            } finally {
+              await index.clear()
+              await index.close()
+            }
+          },
+        )
+      })
+
+      it('accepts a newly warmed put-only row, then revalidates it on the next lookup', async () => {
+        const url = process.env.REDIS_URL
+        const index =
+          backend === 'ram'
+            ? new RAMIndexCacheStore()
+            : new RedisIndexCacheStore({
+                ...(url === undefined ? {} : { url }),
+                keyPrefix: `warm:${crypto.randomUUID()}:`,
+              })
+        let calls = 0
+        const warm = async (): Promise<void> => {
+          calls += 1
+          if (calls === 1) await index.put(KEY, entryFor('new'))
+        }
+        try {
+          await index.put(KEY, entryFor('old'))
+          await index.invalidate()
+          expect((await entryOrWarm(index, KEY, warm))?.id).toBe('new')
+          expect(await entryOrWarm(index, KEY, warm)).toBeNull()
+          expect(await entryOrWarm(index, KEY, warm)).toBeNull()
+          expect(calls).toBe(3)
+        } finally {
+          await index.clear()
+          await index.close()
+        }
+      })
+
       it.each(['updated', 'deleted', 'partial', 'absent', 'error'])(
         'refreshes an invalidated parent: %s',
         async (outcome) => {

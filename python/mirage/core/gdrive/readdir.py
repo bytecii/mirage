@@ -162,8 +162,8 @@ async def readdir(
         # until the entry expires, so the mount would keep hiding Shared
         # Drives after the cause clears (a just-granted scope) with no way to
         # force a refresh. The entries are still real, so cache those and
-        # leave the directory uncached: child lookups stay warm and the next
-        # readdir retries enumeration.
+        # leave the directory uncached. Child lookups must refresh until a
+        # complete parent listing can prove the cached metadata is current.
         child_prefix = "/" if virtual_key == "/" else virtual_key + "/"
         for name, entry, _ in entries:
             await index.put(child_prefix + name, entry)

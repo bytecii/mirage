@@ -168,15 +168,14 @@ async def test_readdir_cached(accessor, index):
 
 @pytest.mark.asyncio
 async def test_readdir_subfolder(accessor, index):
-    await index.put(
-        "/docs",
-        IndexEntry(
-            id="folder1",
-            name="docs",
-            resource_type="gdrive/folder",
-            remote_time="2026-04-01T00:00:00.000Z",
-            vfs_name="docs",
-        ))
+    await index.set_dir('/', [('docs',
+                               IndexEntry(
+                                   id="folder1",
+                                   name="docs",
+                                   resource_type="gdrive/folder",
+                                   remote_time="2026-04-01T00:00:00.000Z",
+                                   vfs_name="docs",
+                               ))])
 
     files = [
         {

@@ -27,18 +27,22 @@ async def entry_or_warm(
     virtual_key: str,
     warm: Callable[[], Awaitable[Any]] | None,
 ) -> IndexEntry | None:
-    """Resolve an entry, listing its parent when cold or expired.
+    """Resolve an entry when its parent listing is absent or expired.
 
     Id-addressed backends (Drive, Box, Dropbox, Gmail) can only turn a path
     into an id through the index, so a cold lookup has to warm it from the
     parent's listing and retry. Every such backend had grown its own copy of
     that block; this is the one place that decides what a failed listing means.
 
-    A parent that is simply absent is not an error here -- the caller reports
-    ENOENT against the operand, which is the path GNU names (``rm nodir/f``
-    says "cannot remove 'nodir/f'", not "nodir"). Every other failure
-    propagates: an expired token or a dropped connection reported as "no such
-    file" both misdiagnoses the fault and hides that it is worth retrying.
+    A missing parent listing does not prove a retained entry is current: a
+    partial warm may have stored the child without publishing the listing.
+    Such a child is dropped before the refresh and can only be reused when the
+    refresh publishes it in a complete listing. A parent that is simply absent
+    is not an error here -- the caller reports ENOENT against the operand,
+    which is the path GNU names (``rm nodir/f`` says "cannot remove 'nodir/f'",
+    not "nodir"). Every other failure propagates: an expired token or a
+    dropped connection reported as "no such file" both misdiagnoses the fault
+    and hides that it is worth retrying.
 
     Args:
         index (IndexCacheStore): the index to read, and to warm through
@@ -52,7 +56,7 @@ async def entry_or_warm(
     if listing.entries is not None and virtual_key not in listing.entries:
         return None
     hit = await index.get(virtual_key)
-    if hit.entry is not None and listing.status != LookupStatus.EXPIRED:
+    if hit.entry is not None and listing.entries is not None:
         return hit.entry
     if warm is None:
         return None
@@ -60,6 +64,10 @@ async def entry_or_warm(
         # Retained metadata is not proof of existence. Drop the old children
         # before warming, including when a best-effort listing only puts rows.
         await index.invalidate_dir(parent)
+    if hit.entry is not None:
+        # Partial listings can leave untracked rows that invalidate_dir
+        # cannot remove. A refresh that omits this path must not reuse one.
+        await index.invalidate_prefix(virtual_key)
     try:
         await warm()
     except FileNotFoundError as exc:

@@ -179,9 +179,9 @@ export async function readdir(
       // Caching a listing we know is short would pin a My-Drive-only root
       // until the entry expires, so the mount would keep hiding Shared
       // Drives after the cause clears (a just-granted scope) with no way to
-      // force a refresh. The entries are still real, so cache those and
-      // leave the directory uncached: child lookups stay warm and the next
-      // readdir retries enumeration.
+      // force a refresh. Retain the returned metadata, but leave the
+      // directory uncached: subsequent child lookups and readdir both
+      // retry enumeration before trusting the entries.
       const childPrefix = virtualKey === '/' ? '/' : `${virtualKey}/`
       for (const e of entries) await index.put(childPrefix + e.name, e.entry)
     }

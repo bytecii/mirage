@@ -17,19 +17,23 @@ import { type IndexEntry, LookupStatus } from './config.ts'
 import type { IndexCacheStore } from './store.ts'
 
 /**
- * Resolve an index entry, listing the parent directory once when the lookup
- * is cold or its parent listing has expired.
+ * Resolve an index entry, listing the parent directory once when its listing
+ * is missing or expired.
  *
  * Id-addressed backends (Drive, Box, Dropbox, Gmail) can only turn a path into
  * an id through the index, so a cold lookup has to warm it from the parent's
  * listing and retry. Every such backend had grown its own copy of that block;
  * this is the one place that decides what a failed listing means.
  *
- * A parent that is simply absent is not an error here — the caller reports
- * ENOENT against the operand, which is the path GNU names (`rm nodir/f` says
- * "cannot remove 'nodir/f'", not "nodir"). Every other failure propagates: an
- * expired token or a dropped connection reported as "no such file" both
- * misdiagnoses the fault and hides that it is worth retrying.
+ * A missing parent listing does not prove a retained entry is current: a
+ * partial warm may have stored the child without publishing the listing. Such
+ * a child is dropped before the refresh and can only be reused when the refresh
+ * publishes it in a complete listing. A parent that is simply absent is not
+ * an error here — the caller reports ENOENT against the operand, which is the
+ * path GNU names (`rm nodir/f` says "cannot remove 'nodir/f'", not "nodir").
+ * Every other failure propagates: an expired token or a dropped connection
+ * reported as "no such file" both misdiagnoses the fault and hides that it is
+ * worth retrying.
  *
  * Mirrors Python's entry_or_warm.
  *
@@ -47,12 +51,17 @@ export async function entryOrWarm(
   let listing = await index.listDir(parent)
   if (listing.entries != null && !listing.entries.includes(virtualKey)) return null
   const hit = await index.get(virtualKey)
-  if (hit.entry != null && listing.status !== LookupStatus.EXPIRED) return hit.entry
+  if (hit.entry != null && listing.entries != null) return hit.entry
   if (warm === null) return null
   if (listing.status === LookupStatus.EXPIRED) {
     // Retained metadata is not proof of existence. Drop the old children
     // before warming, including when a best-effort listing only puts rows.
     await index.invalidateDir(parent)
+  }
+  if (hit.entry != null) {
+    // Put-only rows have no parent membership to remove. A missing or
+    // partial refresh must not leave the old target available to the retry.
+    await index.invalidatePrefix(virtualKey)
   }
   try {
     await warm()

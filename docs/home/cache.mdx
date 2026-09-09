@@ -115,6 +115,12 @@ without deleting their metadata; `invalidate_dir` / `invalidateDir` removes a
 listing and its direct children's entries, and prefix invalidation removes a
 whole subtree. `clear()` removes all index data.
 
+Direct backend lookups trust cached metadata only when a fresh parent listing
+includes the path. Partial or filtered listings may store individual entries
+without a complete parent; these entries require another parent refresh on
+each direct lookup. The old target is removed before refreshing so an omitted
+or renamed item cannot survive as an orphaned cache hit.
+
 `seed()` merges snapshots by path and copies their child lists. Redis queues
 these synchronous calls and flushes them before the next index operation or
 `close()`; `clear()` discards queued snapshots. Multiple seeds accumulate, and

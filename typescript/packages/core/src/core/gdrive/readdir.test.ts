@@ -302,6 +302,50 @@ describe('readdir shared drives', () => {
     expect((await index.listDir('/')).entries).toBeDefined()
   })
 
+  it.each(['updated', 'deleted'])('revalidates an orphaned root child: %s', async (change) => {
+    const accessor = makeAccessor()
+    const index = new RAMIndexCacheStore()
+    let phase: 'initial' | 'refresh' = 'initial'
+    vi.mocked(drive.listFiles).mockImplementation(() => {
+      if (phase === 'initial')
+        return Promise.resolve([
+          { id: 'old-file', name: 'readme.txt', mimeType: 'text/plain', size: '3' },
+        ])
+      if (change === 'deleted') return Promise.resolve([])
+      return Promise.resolve([
+        { id: 'new-file', name: 'readme.txt', mimeType: 'text/plain', size: '42' },
+      ])
+    })
+    vi.mocked(drive.listSharedDrives).mockImplementation(() => {
+      if (phase === 'initial') return Promise.reject(new Error('missing scope'))
+      return Promise.resolve([])
+    })
+    try {
+      const root = new PathSpec({ resourcePath: '', virtual: '/', directory: '/' })
+      await readdir(accessor, root, index)
+      expect((await index.listDir('/')).entries).toBeUndefined()
+      expect((await index.get('/readme.txt')).entry?.id).toBe('old-file')
+      await index.invalidate()
+      phase = 'refresh'
+      const path = new PathSpec({
+        resourcePath: 'readme.txt',
+        virtual: '/readme.txt',
+        directory: '/',
+      })
+      if (change === 'updated') {
+        const result = await stat(accessor, path, index)
+        expect(result.extra.file_id).toBe('new-file')
+        expect(result.size).toBe(42)
+      } else await expect(stat(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
+      const cached = (await index.get('/readme.txt')).entry
+      if (change === 'updated') expect(cached?.id).toBe('new-file')
+      else expect(cached ?? null).toBeNull()
+    } finally {
+      await index.clear()
+      await index.close()
+    }
+  })
+
   it('passes drive_id from the cached entry when listing inside a shared drive', async () => {
     vi.mocked(drive.listSharedDrives).mockResolvedValue([{ id: 'drive1', name: 'Team Drive' }])
     vi.mocked(drive.listFiles).mockImplementation((_tm, opts) => {
