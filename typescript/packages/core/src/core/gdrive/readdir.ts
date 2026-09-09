@@ -15,6 +15,7 @@
 import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { GDriveAccessor } from '../../accessor/gdrive.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
+import { entryOrWarm } from '../../cache/index/warm.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { PathSpec } from '../../types.ts'
 import { MIME_TO_EXT, listFiles, listSharedDrives } from '../google/drive.ts'
@@ -79,21 +80,15 @@ export async function readdir(
       e.code = 'ENOENT'
       throw e
     }
-    let result = await index.get(virtualKey)
-    if (result.entry === undefined || result.entry === null) {
-      const parentOriginal = rstripSlash(path.virtual).replace(/\/[^/]+$/, '') || '/'
-      if (parentOriginal !== path.virtual) {
-        const parentPath = PathSpec.fromStrPath(parentOriginal, mountKey(parentOriginal, prefix))
-        await readdir(accessor, parentPath, index)
-        result = await index.get(virtualKey)
-      }
-      if (result.entry === undefined || result.entry === null) {
-        const e = new Error(`ENOENT: ${path.virtual}`) as Error & { code: string }
-        e.code = 'ENOENT'
-        throw e
-      }
+    const parentOriginal = rstripSlash(virtualKey).replace(/\/[^/]+$/, '') || '/'
+    const parentPath = PathSpec.fromStrPath(parentOriginal, mountKey(parentOriginal, prefix))
+    const entry = await entryOrWarm(index, virtualKey, () => readdir(accessor, parentPath, index))
+    if (entry === null) {
+      const e = new Error(`ENOENT: ${path.virtual}`) as Error & { code: string }
+      e.code = 'ENOENT'
+      throw e
     }
-    if (!DIRECTORY_RESOURCE_TYPES.has(result.entry.resourceType)) {
+    if (!DIRECTORY_RESOURCE_TYPES.has(entry.resourceType)) {
       // Listing a file's id answers with an empty child set rather than an
       // error, so without this the recursion above reported
       // `ls /data/a.txt/x` as ENOENT where opendir(2) says ENOTDIR. The
@@ -102,8 +97,8 @@ export async function readdir(
       // of it with no extra request.
       throw enotdir(path.virtual)
     }
-    folderId = result.entry.id
-    const entryDriveId = result.entry.extra.drive_id
+    folderId = entry.id
+    const entryDriveId = entry.extra.drive_id
     driveId = typeof entryDriveId === 'string' ? entryDriveId : null
   }
 

@@ -13,12 +13,12 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { isEnoent } from '../../utils/errors.ts'
-import type { IndexEntry } from './config.ts'
+import { type IndexEntry, LookupStatus } from './config.ts'
 import type { IndexCacheStore } from './store.ts'
 
 /**
  * Resolve an index entry, listing the parent directory once when the lookup
- * is cold.
+ * is cold or its parent listing has expired.
  *
  * Id-addressed backends (Drive, Box, Dropbox, Gmail) can only turn a path into
  * an id through the index, so a cold lookup has to warm it from the parent's
@@ -43,14 +43,25 @@ export async function entryOrWarm(
   virtualKey: string,
   warm: (() => Promise<unknown>) | null,
 ): Promise<IndexEntry | null> {
+  const parent = virtualKey.replace(/\/+$/, '').replace(/\/[^/]+$/, '') || '/'
+  let listing = await index.listDir(parent)
+  if (listing.entries != null && !listing.entries.includes(virtualKey)) return null
   const hit = await index.get(virtualKey)
-  if (hit.entry !== undefined && hit.entry !== null) return hit.entry
+  if (hit.entry != null && listing.status !== LookupStatus.EXPIRED) return hit.entry
   if (warm === null) return null
+  if (listing.status === LookupStatus.EXPIRED) {
+    // Retained metadata is not proof of existence. Drop the old children
+    // before warming, including when a best-effort listing only puts rows.
+    await index.invalidateDir(parent)
+  }
   try {
     await warm()
   } catch (err) {
     if (!isEnoent(err)) throw err
+    return null
   }
+  listing = await index.listDir(parent)
+  if (listing.entries != null && !listing.entries.includes(virtualKey)) return null
   const warmed = await index.get(virtualKey)
   return warmed.entry ?? null
 }

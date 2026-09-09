@@ -17,9 +17,11 @@ import { GitHubAccessor } from '../../accessor/github.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { RedisIndexCacheStore } from '../../cache/index/redis.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
-import { PathSpec } from '../../types.ts'
+import { FileType, PathSpec } from '../../types.ts'
 import { populateIndex } from './tree.ts'
 import { readdir } from './readdir.ts'
+import { read } from './read.ts'
+import { stat } from './stat.ts'
 import type { GitHubTransport } from './client.ts'
 
 const TREE = [
@@ -95,6 +97,9 @@ for (const backend of ['ram', 'redis']) {
                 keyPrefix: `github-contract:${crypto.randomUUID()}:`,
               })
         const get = vi.fn((path: string) => {
+          if (path.endsWith('/git/blobs/new-nested')) {
+            return Promise.resolve({ content: 'cmVwbGFjZW1lbnQ=', encoding: 'base64' })
+          }
           if (path.endsWith('/git/trees/main')) {
             return Promise.resolve({ tree: [{ path: 'src', type: 'tree', sha: 'new-src' }] })
           }
@@ -148,7 +153,20 @@ for (const backend of ['ram', 'redis']) {
             ])
           } else {
             await expect(readdir(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
-            expect(get.mock.calls.map(([p]) => p.split('/').at(-1))).toEqual(['main', 'new-src'])
+            if (replacement === 'blob') {
+              expect((await stat(accessor, path, index)).type).toBe(FileType.FILE)
+              expect(new TextDecoder().decode(await read(accessor, path, index))).toBe(
+                'replacement',
+              )
+            } else {
+              await expect(stat(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
+              await expect(read(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
+            }
+            expect(
+              get.mock.calls
+                .filter(([p]) => p.includes('/git/trees/'))
+                .map(([p]) => p.split('/').at(-1)),
+            ).toEqual(['main', 'new-src'])
           }
         } finally {
           await index.clear()
@@ -157,6 +175,63 @@ for (const backend of ['ram', 'redis']) {
       },
     )
   }
+}
+
+for (const backend of ['ram', 'redis']) {
+  describe.skipIf(backend === 'redis' && process.env.REDIS_URL === undefined)(
+    `complete refill with ${backend}`,
+    () => {
+      it.each(['missing', 'blob'])('removes obsolete directories: %s', async (replacement) => {
+        const url = process.env.REDIS_URL
+        const index =
+          backend === 'ram'
+            ? new RAMIndexCacheStore()
+            : new RedisIndexCacheStore({
+                ...(url === undefined ? {} : { url }),
+                keyPrefix: `github-obsolete:${crypto.randomUUID()}:`,
+              })
+        const get = vi.fn(() =>
+          Promise.resolve({
+            tree:
+              replacement === 'missing' ? [] : [{ path: 'src', type: 'blob', sha: 'new', size: 3 }],
+            truncated: false,
+          }),
+        )
+        const accessor = new GitHubAccessor({
+          transport: { get, request: vi.fn() },
+          owner: 'acme',
+          repo: 'proj',
+          ref: 'main',
+          defaultBranch: 'main',
+        })
+        const path = new PathSpec({
+          resourcePath: 'src',
+          virtual: '/repo/src',
+          directory: '/repo/src',
+        })
+        try {
+          await index.setDir('/other', [
+            ['keep', new IndexEntry({ id: 'keep', name: 'keep', resourceType: 'file' })],
+          ])
+          await index.setDir('/repo', [
+            ['src', new IndexEntry({ id: 'old', name: 'src', resourceType: 'folder' })],
+          ])
+          await index.setDir('/repo/src', [
+            ['old.py', new IndexEntry({ id: 'old-file', name: 'old.py', resourceType: 'file' })],
+          ])
+          await index.invalidate()
+          for (let i = 0; i < 2; i++)
+            await expect(readdir(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
+          expect(get).toHaveBeenCalledTimes(1)
+          expect((await index.get('/repo/src/old.py')).entry).toBeUndefined()
+          expect((await index.get('/other/keep')).entry?.id).toBe('keep')
+        } finally {
+          await index.clear()
+          await index.close()
+        }
+      })
+    },
+  )
 }
 
 for (const backend of ['ram', 'redis']) {

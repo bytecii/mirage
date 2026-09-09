@@ -1,7 +1,9 @@
 import pytest
+from fakeredis.aioredis import FakeRedis
 
 from mirage.cache.index.config import IndexEntry
 from mirage.cache.index.ram import RAMIndexCacheStore
+from mirage.cache.index.redis import RedisIndexCacheStore
 from mirage.cache.index.warm import entry_or_warm
 from mirage.utils.errors import enoent, enotdir
 
@@ -89,3 +91,48 @@ async def test_propagates_a_non_enoent_fs_error_too():
 
     with pytest.raises(NotADirectoryError):
         await entry_or_warm(index, KEY, warm)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["ram", "redis"])
+@pytest.mark.parametrize("outcome",
+                         ["updated", "deleted", "partial", "absent", "error"])
+async def test_retained_entries_require_a_fresh_parent(backend, outcome):
+    client = FakeRedis()
+    index = RAMIndexCacheStore() if backend == "ram" else RedisIndexCacheStore(
+        client=client)
+    calls = []
+
+    async def warm():
+        calls.append(1)
+        if outcome == "absent":
+            raise enoent("/owned")
+        if outcome == "error":
+            raise RuntimeError("unavailable")
+        if outcome == "partial":
+            await index.put("/owned/other.json", entry_for("other"))
+        else:
+            rows = [("notes.json",
+                     entry_for("new"))] if outcome == "updated" else []
+            await index.set_dir("/owned", rows)
+
+    try:
+        await index.set_dir("/owned", [("notes.json", entry_for("old"))])
+        await index.invalidate()
+        assert (await index.get(KEY)).entry.id == "old"
+        if outcome == "error":
+            with pytest.raises(RuntimeError, match="unavailable"):
+                await entry_or_warm(index, KEY, warm)
+        else:
+            got = await entry_or_warm(index, KEY, warm)
+            assert (got.id if got else None) == ("new" if outcome == "updated"
+                                                 else None)
+        assert calls == [1]
+        # A live listing also excludes metadata retained by an earlier refill.
+        await index.put(KEY, entry_for("obsolete"))
+        await index.set_dir("/owned", [])
+        assert await entry_or_warm(index, KEY, warm) is None
+        assert calls == [1]
+    finally:
+        await index.close()
+        await client.aclose()

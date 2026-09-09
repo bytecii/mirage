@@ -23,9 +23,11 @@ import mirage.core.github.tree
 from mirage.cache.index import IndexEntry
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.cache.index.redis import RedisIndexCacheStore
+from mirage.core.github.read import read
 from mirage.core.github.readdir import readdir
+from mirage.core.github.stat import stat
 from mirage.core.github.tree_entry import TreeEntry
-from mirage.types import PathSpec
+from mirage.types import FileType, PathSpec
 
 
 def _index_from_tree(tree: dict[str, TreeEntry]) -> RAMIndexCacheStore:
@@ -193,6 +195,8 @@ async def test_truncated_tree_refills_expired_directory(
         [TreeEntry(path="new.py", type="blob", sha="new", size=2)],
     ])
     monkeypatch.setitem(readdir.__globals__, "fetch_dir_tree", fetch)
+    blob_fetch = AsyncMock(return_value=b"replacement")
+    monkeypatch.setitem(read.__globals__, "read_bytes", blob_fetch)
     accessor = MagicMock()
     accessor.ref = "main"
     accessor.truncated = True
@@ -209,8 +213,58 @@ async def test_truncated_tree_refills_expired_directory(
         else:
             with pytest.raises(FileNotFoundError):
                 await readdir(accessor, path, index)
+            if replacement == "blob":
+                assert (await stat(accessor, path,
+                                   index)).type == FileType.FILE
+                assert await read(accessor, path, index) == b"replacement"
+                assert blob_fetch.await_args.args[3] == "new-nested"
+            else:
+                for reader in (stat, read):
+                    with pytest.raises(FileNotFoundError):
+                        await reader(accessor, path, index)
             assert [call.args[3]
                     for call in fetch.await_args_list] == ["main", "new-src"]
+    finally:
+        await index.close()
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["ram", "redis"])
+@pytest.mark.parametrize("replacement", ["missing", "blob"])
+async def test_complete_refill_removes_obsolete_directories(
+        backend, replacement, monkeypatch):
+    client = FakeRedis()
+    index = RAMIndexCacheStore() if backend == "ram" else RedisIndexCacheStore(
+        client=client)
+    accessor = MagicMock()
+    accessor.truncated = False
+    tree = {} if replacement == "missing" else {
+        "src": TreeEntry(path="src", type="blob", sha="new", size=3)
+    }
+    fetch = AsyncMock(return_value=(tree, False))
+    monkeypatch.setattr(mirage.core.github.tree, "fetch_tree", fetch)
+    path = PathSpec(resource_path="src",
+                    virtual="/repo/src",
+                    directory="/repo/src")
+    try:
+        await index.set_dir("/other", [
+            ("keep", IndexEntry(id="keep", name="keep", resource_type="file"))
+        ])
+        await index.set_dir("/repo", [
+            ("src", IndexEntry(id="old", name="src", resource_type="folder"))
+        ])
+        await index.set_dir(
+            "/repo/src",
+            [("old.py",
+              IndexEntry(id="old-file", name="old.py", resource_type="file"))])
+        await index.invalidate()
+        for _ in range(2):
+            with pytest.raises(FileNotFoundError):
+                await readdir(accessor, path, index)
+        fetch.assert_awaited_once()
+        assert (await index.get("/repo/src/old.py")).entry is None
+        assert (await index.get("/other/keep")).entry.id == "keep"
     finally:
         await index.close()
         await client.aclose()

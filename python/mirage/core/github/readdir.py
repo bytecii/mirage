@@ -20,6 +20,7 @@ from mirage.cache.index import (NULL_INDEX, IndexCacheStore, IndexEntry,
 from mirage.core.github.repo import ensure_ref
 from mirage.core.github.tree import (ensure_live_index, fetch_dir_tree,
                                      refill_index)
+from mirage.core.github.tree_entry import TreeEntry
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 from mirage.utils.key_prefix import mount_prefix_of
@@ -79,6 +80,12 @@ async def _fallback_readdir(
         raise enoent(virtual)
     entries = await fetch_dir_tree(accessor.config, accessor.owner,
                                    accessor.repo, parent_sha, accessor.pool)
+    return await _cache_dir(index, virtual_key, entries)
+
+
+async def _cache_dir(index: IndexCacheStore, virtual_key: str,
+                     entries: list[TreeEntry]) -> list[str]:
+    """Cache one complete tree listing, including each traversed parent."""
     norm = virtual_key.rstrip("/") or "/"
     child_keys: list[str] = []
     dir_entries: list[tuple[str, IndexEntry]] = []
@@ -121,25 +128,19 @@ async def _resolve_dir_sha(
     rest = norm[len(stem):] if stem and norm.startswith(stem) else norm
     parts = [p for p in rest.strip("/").split("/") if p]
     current_sha = await ensure_ref(accessor)
-    current_path = stem
+    current_path = stem or "/"
     for part in parts:
         entries = await fetch_dir_tree(accessor.config, accessor.owner,
                                        accessor.repo, current_sha,
                                        accessor.pool)
-        found = False
-        for entry in entries:
-            if entry.path == part and entry.type == "tree":
-                current_sha = entry.sha
-                current_path += "/" + part
-                idx_entry = IndexEntry(
-                    id=entry.sha,
-                    name=entry.path,
-                    resource_type="folder" if entry.type == "tree" else "file",
-                    size=entry.size,
-                )
-                await index.put(current_path, idx_entry)
-                found = True
-                break
-        if not found:
+        child_path = current_path.rstrip("/") + "/" + part
+        found = next((entry for entry in entries if entry.path == part), None)
+        if found is None or found.type != "tree":
+            # Remove the former directory before caching a replacement blob.
+            await index.invalidate_prefix(child_path)
+        await _cache_dir(index, current_path, entries)
+        if found is None or found.type != "tree":
             return None
+        current_sha = found.sha
+        current_path = child_path
     return current_sha

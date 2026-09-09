@@ -22,10 +22,12 @@ vi.mock('../google/drive.ts', async () => {
 
 import { GDriveAccessor } from '../../accessor/gdrive.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
+import { RedisIndexCacheStore } from '../../cache/index/redis.ts'
 import { PathSpec } from '../../types.ts'
 import type { TokenManager } from '../google/client.ts'
 import * as drive from '../google/drive.ts'
 import { readdir } from './readdir.ts'
+import { stat } from './stat.ts'
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder'
 
@@ -40,6 +42,77 @@ function makeAccessor(): GDriveAccessor {
 beforeEach(() => {
   vi.mocked(drive.listSharedDrives).mockResolvedValue([])
 })
+
+for (const backend of ['ram', 'redis']) {
+  describe.skipIf(backend === 'redis' && process.env.REDIS_URL === undefined)(
+    `direct Drive stat with ${backend}`,
+    () => {
+      it.each(['updated', 'deleted', 'renamed-folder'])(
+        'refreshes invalidated ids: %s',
+        async (change) => {
+          const url = process.env.REDIS_URL
+          const index =
+            backend === 'ram'
+              ? new RAMIndexCacheStore()
+              : new RedisIndexCacheStore({
+                  ...(url === undefined ? {} : { url }),
+                  keyPrefix: `drive-refresh:${crypto.randomUUID()}:`,
+                })
+          let refreshed = false
+          const calls: string[] = []
+          vi.mocked(drive.listFiles).mockImplementation((_tm, opts) => {
+            const folderId = opts?.folderId ?? 'root'
+            calls.push(folderId)
+            if (
+              refreshed &&
+              change === 'renamed-folder' &&
+              folderId === 'root' &&
+              opts?.name === 'docs'
+            )
+              return Promise.resolve([])
+            if (folderId === 'root')
+              return Promise.resolve([
+                {
+                  id: refreshed ? 'new-folder' : 'old-folder',
+                  name: refreshed && change === 'renamed-folder' ? 'renamed' : 'docs',
+                  mimeType: FOLDER_MIME,
+                },
+              ])
+            expect(folderId).toBe(refreshed ? 'new-folder' : 'old-folder')
+            if (refreshed && change === 'deleted') return Promise.resolve([])
+            return Promise.resolve([
+              {
+                id: refreshed ? 'new-file' : 'old-file',
+                name: 'report.pdf',
+                mimeType: 'application/pdf',
+                size: refreshed ? '42' : '3',
+              },
+            ])
+          })
+          try {
+            const accessor = makeAccessor()
+            await readdir(accessor, PathSpec.fromStrPath('/drive/docs', 'docs'), index)
+            await index.invalidate()
+            refreshed = true
+            calls.length = 0
+            const path = PathSpec.fromStrPath('/drive/docs/report.pdf', 'docs/report.pdf')
+            if (change === 'updated') {
+              const result = await stat(accessor, path, index)
+              expect(result.extra.file_id).toBe('new-file')
+              expect(result.size).toBe(42)
+            } else
+              await expect(stat(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
+            expect(calls[0]).toBe('root')
+            expect(calls).not.toContain('old-folder')
+          } finally {
+            await index.clear()
+            await index.close()
+          }
+        },
+      )
+    },
+  )
+}
 
 describe('readdir parent recursion', () => {
   it('repopulates evicted subfolder entry by refetching parent', async () => {

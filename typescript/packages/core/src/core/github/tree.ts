@@ -107,6 +107,8 @@ export async function refillIndex(
   )
   accessor.truncated = truncated
   accessor.tree = buildTreeMap(tree)
+  // A refill replaces this mount's snapshot, including paths now absent.
+  await index.invalidatePrefix(rstripSlash(prefix) || '/')
   await seedIndex(accessor, index, prefix)
   return true
 }

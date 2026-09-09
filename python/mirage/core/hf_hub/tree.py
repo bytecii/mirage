@@ -383,6 +383,8 @@ async def refill_index(
     accessor.tree = tree
     accessor.tree_loaded = True
     accessor.rows_cache = None
+    # Refilling replaces the snapshot; merging would retain deleted paths.
+    await index.invalidate_prefix(prefix.rstrip("/") or "/")
     seed_index(accessor, index, prefix)
     return True
 
@@ -392,7 +394,7 @@ async def ensure_live_index(
     index: IndexCacheStore,
     prefix: str,
 ) -> bool:
-    """Refetch when the index holds no listing at all.
+    """Refetch when the root listing is missing or expired.
 
     Every reader treats a missing listing as a real absence, which is
     right against a *live* index and wrong against one that was never
@@ -411,7 +413,8 @@ async def ensure_live_index(
     if index is NULL_INDEX:
         return False
     if (await index.list_dir(prefix.rstrip("/")
-                             or "/")).status != LookupStatus.NOT_FOUND:
+                             or "/")).status not in (LookupStatus.NOT_FOUND,
+                                                     LookupStatus.EXPIRED):
         return False
     return await refill_index(accessor, index, prefix)
 

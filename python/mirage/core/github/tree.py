@@ -218,6 +218,8 @@ async def refill_index(
     accessor.truncated = truncated
     accessor.tree = tree
     accessor.tree_loaded = True
+    # A refill replaces this mount's snapshot, including paths now absent.
+    await index.invalidate_prefix(prefix.rstrip("/") or "/")
     seed_index(accessor, index, prefix)
     return True
 

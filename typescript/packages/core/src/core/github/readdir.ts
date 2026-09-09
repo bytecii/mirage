@@ -17,7 +17,7 @@ import type { GitHubAccessor } from '../../accessor/github.ts'
 import { LookupStatus } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { PathSpec } from '../../types.ts'
-import { fetchDirTree } from './client.ts'
+import { fetchDirTree, type GitHubTreeItem } from './client.ts'
 import { ensureLiveIndex, refillIndex } from './tree.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
@@ -78,6 +78,15 @@ async function fallbackReaddir(
   const parentSha = await resolveDirSha(accessor, key, index, prefix)
   if (parentSha === null) throw enoent(key)
   const entries = await fetchDirTree(accessor.transport, accessor.owner, accessor.repo, parentSha)
+  return cacheDir(index, key, entries)
+}
+
+// Cache one complete tree listing, including each traversed parent.
+async function cacheDir(
+  index: IndexCacheStore,
+  key: string,
+  entries: GitHubTreeItem[],
+): Promise<string[]> {
   const childKeys: string[] = []
   const childEntries: [string, IndexEntry][] = []
   for (const e of entries) {
@@ -115,7 +124,7 @@ async function resolveDirSha(
     .split('/')
     .filter((p) => p !== '')
   let currentSha = accessor.ref
-  let currentPath = stem
+  let currentPath = stem || '/'
   for (const part of parts) {
     const entries = await fetchDirTree(
       accessor.transport,
@@ -123,20 +132,16 @@ async function resolveDirSha(
       accessor.repo,
       currentSha,
     )
-    const found = entries.find((e) => e.path === part && e.type === 'tree')
-    if (found === undefined) return null
+    const childPath = `${currentPath === '/' ? '' : currentPath}/${part}`
+    const found = entries.find((e) => e.path === part)
+    if (found?.type !== 'tree') {
+      // Remove the former directory before caching a replacement blob.
+      await index.invalidatePrefix(childPath)
+    }
+    await cacheDir(index, currentPath, entries)
+    if (found?.type !== 'tree') return null
     currentSha = found.sha
-    currentPath += `/${part}`
-    await index.put(
-      currentPath,
-      new IndexEntry({
-        id: found.sha,
-        name: part,
-        vfsName: part,
-        resourceType: found.type === 'tree' ? 'folder' : 'file',
-        size: found.size ?? null,
-      }),
-    )
+    currentPath = childPath
   }
   return currentSha
 }

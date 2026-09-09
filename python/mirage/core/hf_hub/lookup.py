@@ -77,11 +77,14 @@ async def lookup(
     await ensure_live_index(accessor, index, prefix)
     result = await index.get(key)
     listing = await index.list_dir(key)
+    parent = listing if key == (prefix.rstrip("/")
+                                or "/") else await index.list_dir(
+                                    key.rstrip("/").rsplit("/", 1)[0] or "/")
     # The index is the whole listing rather than a cache in front of one,
     # so an *expired* answer means the tree aged out, not that the path
     # is gone. Refetch once and ask again; a miss against a live index is
     # a real absence and must not cost a tree fetch.
-    if LookupStatus.EXPIRED in (result.status, listing.status):
+    if LookupStatus.EXPIRED in (parent.status, listing.status):
         if await refill_index(accessor, index, prefix):
             result = await index.get(key)
             listing = await index.list_dir(key)

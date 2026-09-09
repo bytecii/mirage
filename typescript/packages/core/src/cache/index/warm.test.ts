@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest'
 import { enoent, enotdir } from '../../utils/errors.ts'
 import { IndexEntry } from './config.ts'
 import { RAMIndexCacheStore } from './ram.ts'
+import { RedisIndexCacheStore } from './redis.ts'
 import { entryOrWarm } from './warm.ts'
 
 const KEY = '/owned/notes.json'
@@ -81,3 +82,55 @@ describe('cache/index/warm: entryOrWarm', () => {
     ).rejects.toMatchObject({ code: 'ENOTDIR' })
   })
 })
+
+for (const backend of ['ram', 'redis']) {
+  describe.skipIf(backend === 'redis' && process.env.REDIS_URL === undefined)(
+    `retained entries with ${backend}`,
+    () => {
+      it.each(['updated', 'deleted', 'partial', 'absent', 'error'])(
+        'refreshes an invalidated parent: %s',
+        async (outcome) => {
+          const url = process.env.REDIS_URL
+          const index =
+            backend === 'ram'
+              ? new RAMIndexCacheStore()
+              : new RedisIndexCacheStore({
+                  ...(url === undefined ? {} : { url }),
+                  keyPrefix: `warm:${crypto.randomUUID()}:`,
+                })
+          let calls = 0
+          const warm = async (): Promise<void> => {
+            calls += 1
+            if (outcome === 'absent') throw enoent('/owned')
+            if (outcome === 'error') throw new Error('unavailable')
+            if (outcome === 'partial') await index.put('/owned/other.json', entryFor('other'))
+            else
+              await index.setDir(
+                '/owned',
+                outcome === 'updated' ? [['notes.json', entryFor('new')]] : [],
+              )
+          }
+          try {
+            await index.setDir('/owned', [['notes.json', entryFor('old')]])
+            await index.invalidate()
+            expect((await index.get(KEY)).entry?.id).toBe('old')
+            if (outcome === 'error')
+              await expect(entryOrWarm(index, KEY, warm)).rejects.toThrow('unavailable')
+            else
+              expect((await entryOrWarm(index, KEY, warm))?.id ?? null).toBe(
+                outcome === 'updated' ? 'new' : null,
+              )
+            expect(calls).toBe(1)
+            await index.put(KEY, entryFor('obsolete'))
+            await index.setDir('/owned', [])
+            expect(await entryOrWarm(index, KEY, warm)).toBeNull()
+            expect(calls).toBe(1)
+          } finally {
+            await index.clear()
+            await index.close()
+          }
+        },
+      )
+    },
+  )
+}
