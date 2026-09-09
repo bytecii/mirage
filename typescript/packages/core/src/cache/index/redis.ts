@@ -28,7 +28,8 @@ import {
 } from './config.ts'
 import { IndexCacheStore } from './store.ts'
 
-const ENTRY_PREFIX = 'mirage:idx:entry:'
+// Entries and listings must go cold together when the cache format changes.
+const ENTRY_PREFIX = 'mirage:idx:entry:v2:'
 const CHILDREN_PREFIX = 'mirage:idx:directory:v2:'
 const DEFAULT_KEY_PREFIX = 'mirage:index:'
 
@@ -70,7 +71,7 @@ export interface RedisIndexCacheOptions {
 }
 
 // Directory records retain stale listings like RAM; Redis maxmemory eviction
-// can still turn any cached fact into a miss. v2 avoids reading legacy lists as JSON.
+// can still turn any cached fact into a miss. v2 ignores legacy lists and their metadata.
 export class RedisIndexCacheStore extends IndexCacheStore {
   private readonly ttl: number
   private readonly url: string

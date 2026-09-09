@@ -15,12 +15,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IndexEntry, LookupStatus } from './config.ts'
 import { RedisIndexCacheStore, type RedisClientLike } from './redis.ts'
+import { entryOrWarm } from './warm.ts'
 
 describe('RedisIndexCacheStore default keyPrefix', () => {
   it('namespaces keys under mirage:index: by default', () => {
     const store = new RedisIndexCacheStore()
     const prefix = (store as unknown as { entryPrefix: string }).entryPrefix
-    expect(prefix).toBe('mirage:index:mirage:idx:entry:')
+    expect(prefix).toBe('mirage:index:mirage:idx:entry:v2:')
   })
 })
 
@@ -53,6 +54,48 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
     const r = await store.get('/nope')
     expect(r.status).toBe(LookupStatus.NOT_FOUND)
   })
+
+  for (const invalidate of [false, true]) {
+    it.each(['updated', 'renamed', 'deleted'])(
+      `warms legacy entries after %s (invalidate=${String(invalidate)})`,
+      async (change) => {
+        const client = await (
+          store as unknown as {
+            client: () => Promise<
+              RedisClientLike & { rPush: (key: string, value: string) => Promise<number> }
+            >
+          }
+        ).client()
+        const key = '/folder/f.txt'
+        const entryKey = `${prefix}mirage:idx:entry:${key}`
+        const childrenKey = `${prefix}mirage:idx:children:/folder`
+        const name = change === 'renamed' ? 'g.txt' : 'f.txt'
+        const rows: [string, IndexEntry][] =
+          change === 'deleted' ? [] : [[name, entry('new', name)]]
+        const warm = vi.fn(() => store.setDir('/folder', rows))
+        try {
+          await client.set(entryKey, JSON.stringify(entry('old', 'f.txt')))
+          await client.rPush(childrenKey, key)
+          if (invalidate) await store.invalidate()
+          expect((await store.listDir('/folder')).status).toBe(LookupStatus.NOT_FOUND)
+          expect((await store.get(key)).status).toBe(LookupStatus.NOT_FOUND)
+          expect(await store.entries()).toEqual(new Map())
+
+          const result = await entryOrWarm(store, key, warm)
+          if (change === 'updated') expect(result?.id).toBe('new')
+          else expect(result).toBeNull()
+          expect(warm).toHaveBeenCalledTimes(1)
+          expect(await entryOrWarm(store, key, warm)).toEqual(result)
+          expect(warm).toHaveBeenCalledTimes(1)
+          expect([...(await store.entries()).keys()]).toEqual(
+            rows.map(([name]) => `/folder/${name}`),
+          )
+        } finally {
+          await client.del([entryKey, childrenKey])
+        }
+      },
+    )
+  }
 
   it('put + get round-trips entry metadata', async () => {
     const extra = { drive_id: 'drive-a', nested: { slug: 'alpha', tags: ['x', 'y'] } }

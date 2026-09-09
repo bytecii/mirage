@@ -7,6 +7,7 @@ from fakeredis.aioredis import FakeRedis
 
 from mirage.cache.index.config import IndexEntry, LookupStatus
 from mirage.cache.index.redis import RedisIndexCacheStore
+from mirage.cache.index.warm import entry_or_warm
 
 
 @pytest.fixture
@@ -14,7 +15,7 @@ def client():
     value = MagicMock()
     value.scan = AsyncMock(return_value=(
         0,
-        [b"test:mirage:idx:entry:/folder/a.txt"],
+        [b"test:mirage:idx:entry:v2:/folder/a.txt"],
     ))
     value.mget = AsyncMock(return_value=[
         b'{"entries":["/folder/a.txt"],"expires_at":4102444800,"generation":"g"}',
@@ -47,7 +48,7 @@ async def test_invalidate_dir_decodes_child_paths(client):
     await store.invalidate_dir("/folder")
     pipe = client.pipeline.return_value
     assert pipe.delete.call_args_list == [
-        call("mirage:idx:entry:/folder/a.txt"),
+        call("mirage:idx:entry:v2:/folder/a.txt"),
         call("mirage:idx:directory:v2:/folder"),
     ]
 
@@ -129,6 +130,49 @@ async def test_evicted_generation_cannot_revive_invalidated_listing():
         await store.set_dir("/new", [])
         assert (await store.list_dir("/new")).entries == []
         assert (await store.list_dir("/old")).status == LookupStatus.EXPIRED
+    finally:
+        await store.close()
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalidate", [False, True])
+@pytest.mark.parametrize("change", ["updated", "renamed", "deleted"])
+async def test_legacy_entries_are_cold_before_warming(change, invalidate):
+    client = FakeRedis()
+    store = RedisIndexCacheStore(client=client, key_prefix="upgrade:")
+    key = "/folder/f.txt"
+    old = IndexEntry(id="old", name="f.txt", resource_type="file")
+    name = "g.txt" if change == "renamed" else "f.txt"
+    fresh = IndexEntry(id="new", name=name, resource_type="file")
+    rows = [] if change == "deleted" else [(name, fresh)]
+
+    async def refresh():
+        await store.set_dir("/folder", rows)
+
+    warm = AsyncMock(side_effect=refresh)
+    try:
+        await client.set(f"upgrade:mirage:idx:entry:{key}",
+                         old.model_dump_json())
+        await client.rpush("upgrade:mirage:idx:children:/folder", key)
+        if invalidate:
+            await store.invalidate()
+        assert (await
+                store.list_dir("/folder")).status == LookupStatus.NOT_FOUND
+        assert (await store.get(key)).status == LookupStatus.NOT_FOUND
+        assert await store.entries() == {}
+
+        result = await entry_or_warm(store, key, warm)
+        if change == "updated":
+            assert result is not None and result.id == "new"
+        else:
+            assert result is None
+        warm.assert_awaited_once()
+        assert await entry_or_warm(store, key, warm) == result
+        warm.assert_awaited_once()
+        assert set(await
+                   store.entries()) == {f"/folder/{name}"
+                                        for name, _ in rows}
     finally:
         await store.close()
         await client.aclose()

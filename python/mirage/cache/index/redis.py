@@ -28,7 +28,8 @@ from mirage.core.timeutil import to_iso_z
 from mirage.utils.ids import uuid7
 from mirage.utils.key_prefix import under_path
 
-ENTRY_PREFIX = "mirage:idx:entry:"
+# Entries and listings must go cold together when the cache format changes.
+ENTRY_PREFIX = "mirage:idx:entry:v2:"
 CHILDREN_PREFIX = "mirage:idx:directory:v2:"
 
 
@@ -68,7 +69,7 @@ class RedisIndexCacheStore(IndexCacheStore):
     Multiple stores can share one Redis server by using distinct key_prefix
     values (e.g. "gdrive:", "s3:"). The full key layout is::
 
-        {key_prefix}mirage:idx:entry:{resource_path}     -> JSON string
+        {key_prefix}mirage:idx:entry:v2:{resource_path} -> JSON string
         {key_prefix}mirage:idx:directory:v2:{resource_path} -> JSON listing
 
     Args:
