@@ -100,7 +100,8 @@ async function* listTree(op: Operator, pfx: string): AsyncIterable<TreeEntry> {
       yield { key: `${rstripSlash(rel)}/` }
       continue
     }
-    yield { key: rel, size: sizeOf(md) ?? 0 }
+    const size = sizeOf(md)
+    yield size === null ? { key: rel } : { key: rel, size }
   }
 }
 
@@ -130,7 +131,8 @@ async function* listSubtree(op: Operator, stem: string): AsyncIterable<TreeEntry
   for (const entry of entries) {
     const rel = entry.path()
     if (rel === '' || rel.endsWith('/')) continue
-    yield { key: rel, size: sizeOf(entry.metadata()) ?? 0 }
+    const size = sizeOf(entry.metadata())
+    yield size === null ? { key: rel } : { key: rel, size }
   }
 }
 

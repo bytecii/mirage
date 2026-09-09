@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { RAMIndexCacheStore } from '@struktoai/mirage-core/cache/index/ram'
 import { resolveGlobOf } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
 import { PathSpec } from '@struktoai/mirage-core/types'
 import { describe, expect, it } from 'vitest'
@@ -21,6 +22,7 @@ import { size, entries } from './du/index.ts'
 import { exists } from './exists.ts'
 import { find } from './find.ts'
 import { fakeHfOperator, installFakeOperator } from './mock.ts'
+import { stat } from './stat.ts'
 
 const resolveGlob = resolveGlobOf(HF_IO)
 
@@ -38,6 +40,26 @@ const FILES = {
 }
 
 describe('hf find', () => {
+  it.each(['find', 'du'])('%s does not cache an omitted listing size as zero', async (command) => {
+    const accessor = new HfModelsAccessor({ repoId: 'ns/model' })
+    const fake = fakeHfOperator({ 'config.json': '{"a":1}' })
+    const realList = fake.list.bind(fake)
+    fake.list = async (path, options) => {
+      const rows = await realList(path, options)
+      return rows.map((entry) => ({
+        ...entry,
+        metadata: () => ({ ...entry.metadata(), contentLength: null }),
+      }))
+    }
+    installFakeOperator(accessor, fake)
+    const index = new RAMIndexCacheStore()
+    const root = PathSpec.fromStrPath('/')
+    if (command === 'find') await find(accessor, root, {}, index)
+    else await size(accessor, root, index)
+    expect((await index.get('/config.json')).entry).toBeUndefined()
+    expect((await stat(accessor, PathSpec.fromStrPath('/config.json'), index)).size).toBe(7)
+  })
+
   it('finds everything under root, including synthesized dirs', async () => {
     const accessor = accessorWith(FILES)
     const results = await find(accessor, PathSpec.fromStrPath('/'))
