@@ -314,15 +314,21 @@ class MountCore:
 
         Returns:
             bytes | None: file content, or None when the backend read fails
-            (open() stays permissive; the subsequent read() surfaces the
-            error to the caller).
+            for any reason (open() stays permissive, as the TypeScript core
+            does; the subsequent read() surfaces the error to the caller).
+            This matters most after an O_TRUNC, whose truncation has
+            already committed by the time this runs: failing the open then
+            would erase the old body and refuse the replacement.
         """
         data = self.cached_data(path)
         if data is not None:
             return data
         try:
             data = self._run(self._ops.read(self.resolve(path)))
-        except (FileNotFoundError, ValueError):
+        except Exception as err:
+            logger.debug(
+                "fuse: hydration read of %s failed, deferring to read(): %r",
+                path, err)
             return None
         # No inflight dedup: FUSE mounts run nothreads=True, so callbacks are
         # serialized and two opens cannot race (TS needs the dedup map).

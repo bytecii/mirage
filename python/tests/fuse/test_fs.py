@@ -679,6 +679,34 @@ async def test_unknown_size_failed_refresh_does_not_fail_the_truncate(
 
 
 @pytest.mark.asyncio
+async def test_unknown_size_o_trunc_open_survives_a_failed_hydration(
+        sizeless_fs):
+    # The truncation has committed by the time the handle is hydrated; a
+    # backend error there must not fail the open, or the old body is gone
+    # and the replacement is never written. The next read fetches again.
+    fs, ops = sizeless_fs
+    ops.read_error = OSError(errno.EIO, "backend hiccup")
+    fh = fs.open("/u.json", os.O_WRONLY | os.O_TRUNC)
+    ops.read_error = None
+    assert fs.getattr("/u.json", fh)["st_size"] == 0
+    assert fs.read("/u.json", 100, 0, fh) == b""
+    fs.release("/u.json", fh)
+
+
+@pytest.mark.asyncio
+async def test_unknown_size_open_defers_a_failed_hydration_to_read(
+        sizeless_fs):
+    # A plain open stays permissive on any read failure; the error reaches
+    # the caller from the read that follows, as open(2) would have it.
+    fs, ops = sizeless_fs
+    ops.read_error = OSError(errno.EIO, "backend hiccup")
+    fh = fs.open("/u.json", os.O_RDONLY)
+    with pytest.raises(OSError):
+        fs.read("/u.json", 100, 0, fh)
+    fs.release("/u.json", fh)
+
+
+@pytest.mark.asyncio
 async def test_unknown_size_fh_stat_returns_real_size(sizeless_fs):
     fs, _ = sizeless_fs
     fh = fs.open("/u.json", os.O_RDONLY)
