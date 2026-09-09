@@ -19,12 +19,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 
 import { registerCliSpec, unregisterCliSpec } from '../commands/cli/specs.ts'
 import { CLISpec, type CLIInvocation } from '../commands/cli/types.ts'
 import { IOResult } from '../io/types.ts'
+import { PolicyDenied } from '../policy/errors.ts'
+import type { Policy } from '../policy/index.ts'
+import type { Action, SessionContext } from '../policy/types.ts'
 import { secretStr } from '../resource/secrets.ts'
 import { OpsRegistry } from '../ops/registry.ts'
 import { RAMResource } from '../resource/ram/ram.ts'
@@ -580,5 +583,78 @@ describe('savedResourceBuild', () => {
     expect(() => buildMountArgs(state)).toThrow(/resources= must include overrides for: \/data/)
     // The same mount handed back live loads.
     expect(() => buildMountArgs(state, { [mount.prefix]: new RAMResource() })).not.toThrow()
+  })
+})
+
+/** Refuse env writes to GATE_* names, the deployment's rule. */
+class DenyGate implements Policy {
+  preSession(ctx: SessionContext): Action | null {
+    if (ctx.plane === 'env' && ctx.key.startsWith('GATE_')) {
+      return { kind: 'deny', reason: 'GATE_* refused by policy' }
+    }
+    return null
+  }
+}
+
+function gatedWorkspace(prefix = '/data'): Workspace {
+  const ram = new RAMResource()
+  const ops = new OpsRegistry()
+  ops.registerResource(ram)
+  return new Workspace(
+    { [prefix]: ram },
+    { mode: MountMode.WRITE, ops, shellParser: parser, policies: [new DenyGate()] },
+  )
+}
+
+describe('applyStateDict and the deployment', () => {
+  // The restore used to seed `session.vars` directly, past the gate a live
+  // `export GATE_X=1` clears (#1017); a snapshot is the one env input the
+  // deployment did not author, so this is the door where the rule matters.
+  it('a restored variable clears the session gate', async () => {
+    const source = buildWorkspace()
+    await source.execute('export GATE_X=1')
+    const state = await toStateDict(source)
+    await source.close()
+    const target = gatedWorkspace()
+    await expect(applyStateDict(target, state)).rejects.toBeInstanceOf(PolicyDenied)
+    expect(Object.hasOwn(target.env, 'GATE_X')).toBe(false)
+    await target.close()
+  })
+
+  it('a restore the gate allows lands every variable', async () => {
+    const source = buildWorkspace()
+    await source.execute('export PUBLIC_X=1')
+    const state = await toStateDict(source)
+    await source.close()
+    const target = gatedWorkspace()
+    await applyStateDict(target, state)
+    expect(target.env.PUBLIC_X).toBe('1')
+    await target.close()
+  })
+
+  // A snapshot prefix the workspace does not mount was skipped in silence
+  // (#1019); the state is still not restored (never into an ancestor
+  // mount), but the load now says so.
+  it('a snapshot mount with no matching prefix is reported', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const source = buildWorkspace()
+      const state = await toStateDict(source)
+      await source.close()
+      const other = new RAMResource()
+      const ops = new OpsRegistry()
+      ops.registerResource(other)
+      const target = new Workspace(
+        { '/elsewhere': other },
+        { mode: MountMode.WRITE, ops, shellParser: parser },
+      )
+      await applyStateDict(target, state)
+      await target.close()
+      const messages = warn.mock.calls.map((c) => String(c[0]))
+      expect(messages.some((m) => m.includes('/data') && m.includes('not restored'))).toBe(true)
+      expect(messages.some((m) => m.includes('/elsewhere'))).toBe(false)
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

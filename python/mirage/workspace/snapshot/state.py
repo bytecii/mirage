@@ -37,6 +37,7 @@ from mirage.workspace.mount.namespace import NodeMeta
 from mirage.workspace.session.session import (Session, vars_from_fields,
                                               vars_to_fields)
 from mirage.workspace.session.shell_dirs import set_cwd
+from mirage.workspace.session.state import gate_restored_vars
 from mirage.workspace.snapshot.config import MountArgs
 from mirage.workspace.snapshot.drift import (capture_fingerprints,
                                              live_only_mount_prefixes)
@@ -305,6 +306,11 @@ async def apply_state_dict(ws, state: dict[str, Any]) -> None:
     Workspace must already have its mounts constructed via the args
     from build_mount_args. This function is purely additive — it does
     not construct anything.
+
+    Restored session variables and the env template clear the target's
+    ``pre_session`` gate first (``gate_restored_vars``), name by name;
+    a refusal aborts the load. A snapshot mount with no mount at that
+    exact prefix here is not restored and is reported at warning level.
     """
     # load_state runs for ALL mounts (overridden too), so disk content
     # is written into the new root, redis content into the new URL, etc.
@@ -312,6 +318,14 @@ async def apply_state_dict(ws, state: dict[str, Any]) -> None:
     for m in state[StateKey.MOUNTS]:
         mount = ws._registry.try_mount_for_prefix(m[MountKey.PREFIX])
         if mount is None:
+            # Exact-prefix lookup: a snapshot prefix this workspace does
+            # not mount is never resolved to an ancestor (that would load
+            # state into the wrong resource), and it is said out loud,
+            # since a renamed or missing mount otherwise left no trace.
+            logger.warning(
+                "Workspace.load: snapshot mount %s has no mount at that "
+                "prefix in this workspace; its state was not restored",
+                m[MountKey.PREFIX])
             continue
         mount.resource.load_state(m[MountKey.RESOURCE_STATE])
 
@@ -321,7 +335,10 @@ async def apply_state_dict(ws, state: dict[str, Any]) -> None:
     # bare while restored ones carry every workspace env entry.
     seed = state.get(StateKey.ENV)
     if seed:
-        ws._session_mgr.restore_seed(vars_from_fields(seed))
+        seed_vars = vars_from_fields(seed)
+        await gate_restored_vars(ws.policies, ws._session_mgr.default_id,
+                                 seed_vars)
+        ws._session_mgr.restore_seed(seed_vars)
     # current_agent_id is not restored: the agent of a line is carried
     # per execution (the call's agent_id, else the default), never held
     # on the workspace, so the key only mirrors default_agent_id.
@@ -365,6 +382,7 @@ async def _restore_sessions(ws, state: dict[str, Any]) -> None:
                 # the replace_from_snapshot contract below.
                 session = ws._session_mgr.get(sid)
         fields = Session.from_dict(s_data)
+        await gate_restored_vars(ws.policies, sid, fields.vars)
         set_cwd(session, fields.cwd)
         session.vars = fields.vars
         session.mount_modes = fields.mount_modes
@@ -532,7 +550,11 @@ def requires_resource_override(mount_state: dict[str, Any]) -> bool:
     secret was redacted, or the class is one this process cannot import
     (a script file loaded under the loader's module name with no
     reference recorded, or a class from a package that is not
-    installed).
+    installed). The redaction check scans every saved value rather than
+    the secret fields of the class the mount resolves to: an alias
+    resource (MinIO) saves its own config under its parent's ``type``,
+    so that class named the wrong fields and a redacted key rebuilt as
+    the literal marker.
 
     Args:
         mount_state (dict[str, Any]): one captured ``mounts`` entry.
@@ -540,11 +562,10 @@ def requires_resource_override(mount_state: dict[str, Any]) -> bool:
     resource_state = mount_state[MountKey.RESOURCE_STATE]
     if resource_state.get(ResourceStateKey.NEEDS_OVERRIDE) is True:
         return True
-    cls, entry = _saved_class(mount_state)
+    cls, _entry = _saved_class(mount_state)
     if cls is None:
         return True
-    config = resource_state.get(ResourceStateKey.CONFIG)
-    return has_redacted_secret(config, _saved_config_class(cls, entry))
+    return has_redacted_secret(resource_state.get(ResourceStateKey.CONFIG))
 
 
 def reusable_clis(ws) -> CLIOverrides:

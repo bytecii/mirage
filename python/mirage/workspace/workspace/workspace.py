@@ -801,8 +801,9 @@ class Workspace:
         2. If the entry carries only a ``fingerprint`` (no stable
            revision), the load queues a drift check. STRICT raises
            ``ContentDriftError`` on the first mismatch; OFF skips the
-           check entirely and evicts the snapshot cache so reads serve
-           current state.
+           check and drops the restored RAM cache entries so reads
+           serve current state (a Redis cache is never restored from
+           a snapshot, so there is nothing to drop).
 
         Drift check is eager (fires once on the first dispatch or
         execute), so downstream code can rely on consistent state.
@@ -821,8 +822,10 @@ class Workspace:
                 declared instance needs the block supplied here, the
                 way a redacted mount needs `resources`.
             drift_policy: STRICT (default) raises on mismatch. OFF
-                disables drift checking and evicts snapshot cache for
-                fingerprinted paths.
+                disables drift checking and drops the restored RAM
+                cache entries for fingerprinted paths; a Redis cache is
+                never restored from a snapshot, so it has nothing to
+                drop.
         """
         return await cls.from_state(read_tar(source),
                                     resources=resources,
@@ -859,8 +862,10 @@ class Workspace:
             secrets: {instance: declaration} for the restored env
                 pointers; a snapshot never carries the `secrets:` block.
             drift_policy: STRICT (default) raises on mismatch. OFF
-                disables drift checking and evicts snapshot cache for
-                fingerprinted paths.
+                disables drift checking and drops the restored RAM
+                cache entries for fingerprinted paths; a Redis cache is
+                never restored from a snapshot, so it has nothing to
+                drop.
         """
         ws = await cls._from_state(state,
                                    resources=resources,

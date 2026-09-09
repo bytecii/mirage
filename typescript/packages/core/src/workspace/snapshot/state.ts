@@ -22,6 +22,7 @@ import { type ResourceStateBase, resourceRefOf } from '../../resource/base.ts'
 import { z } from 'zod'
 
 import { setCwd } from '../session/shell_dirs.ts'
+import { gateRestoredVars } from '../session/state.ts'
 import type { CLIInstall } from '../cli/types.ts'
 import { CLISpec } from '../../commands/cli/types.ts'
 import { ScriptSource } from '../../runtime/routing/types.ts'
@@ -403,7 +404,14 @@ export async function applyStateDict(ws: Workspace, state: WorkspaceStateDict): 
     // workspace does not mount is skipped, never resolved to an
     // ancestor mount (which would load state into the wrong resource).
     const mount = ws.registry.tryMountForPrefix(m.prefix)
-    if (mount === null) continue
+    if (mount === null) {
+      // Said out loud: a renamed or missing mount otherwise left no trace.
+      console.warn(
+        `Workspace.load: snapshot mount ${m.prefix} has no mount at that prefix in this ` +
+          `workspace; its state was not restored`,
+      )
+      continue
+    }
     // No cast, for the same reason as toStateDict above.
     await Promise.resolve(mount.resource.loadState(m.resource_state as RAMResourceState))
   }
@@ -412,7 +420,9 @@ export async function applyStateDict(ws: Workspace, state: WorkspaceStateDict): 
   // never given: without it a session created after the load starts
   // bare while restored ones carry every workspace env entry.
   if (state.env !== undefined && Object.keys(state.env).length > 0) {
-    ws.sessionManager.restoreSeed(varsFromFields(state.env))
+    const seed = varsFromFields(state.env)
+    await gateRestoredVars(ws.registry.policies, ws.defaultSessionId, seed)
+    ws.sessionManager.restoreSeed(seed)
   }
   // current_agent_id is not restored separately: TS models a single
   // readonly agentId, set to default_agent_id at construction (== current).
@@ -452,6 +462,7 @@ async function restoreSessions(ws: Workspace, state: WorkspaceStateDict): Promis
       ? ws.sessionManager.get(s.session_id)
       : ws.sessionManager.create(s.session_id)
     const fields = Session.fromJSON(s)
+    await gateRestoredVars(ws.registry.policies, s.session_id, fields.vars)
     setCwd(session, fields.cwd)
     session.vars = fields.vars
     session.mountModes = fields.mountModes

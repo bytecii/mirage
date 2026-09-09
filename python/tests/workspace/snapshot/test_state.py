@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import logging
 from functools import partial
 from pathlib import Path
 
@@ -29,8 +30,15 @@ from mirage.secrets import registry
 from mirage.secrets.registry import register_secrets
 from mirage.secrets.types import ResolvedSecret
 from mirage.types import ContentType, FileType
-from mirage.workspace.snapshot.keys import MountKey, StateKey
-from mirage.workspace.snapshot.state import build_mount_args, to_state_dict
+from mirage.policy import Action, Deny, Policy, PolicyDenied
+from mirage.policy.types import SessionContext
+from mirage.resource.minio import MinIOConfig, MinIOResource
+from mirage.workspace.snapshot.keys import (MountKey, ResourceStateKey,
+                                            StateKey)
+from mirage.workspace.snapshot.state import (apply_state_dict,
+                                             build_mount_args,
+                                             requires_resource_override,
+                                             to_state_dict)
 
 
 class FakeConfig(BaseModel):
@@ -365,3 +373,99 @@ async def test_a_ref_this_process_cannot_resolve_is_not_guessed_from_the_type(
     with pytest.raises(ValueError, match="resources= must include") as exc:
         build_mount_args(state)
     assert "/s/" in str(exc.value)
+
+
+class DenyGate(Policy):
+    """Refuse env writes to GATE_* names, the deployment's rule."""
+
+    async def pre_session(self, ctx: SessionContext) -> Action | None:
+        if ctx.plane == "env" and ctx.key.startswith("GATE_"):
+            return Deny("GATE_* refused by policy\n")
+        return None
+
+
+# The restore used to seed `session.vars` directly, past the gate a live
+# `export GATE_X=1` clears (#1017); a snapshot is the one env input the
+# deployment did not author, so this is the door where the rule matters.
+@pytest.mark.asyncio
+async def test_a_restored_variable_clears_the_session_gate():
+    source = Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+    try:
+        assert (await source.execute("export GATE_X=1")).exit_code == 0
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    target = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       policies=[DenyGate()])
+    try:
+        with pytest.raises(PolicyDenied):
+            await apply_state_dict(target, state)
+        assert "GATE_X" not in target.env
+    finally:
+        await target.close()
+
+
+@pytest.mark.asyncio
+async def test_a_restore_the_gate_allows_lands_every_variable():
+    source = Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+    try:
+        assert (await source.execute("export PUBLIC_X=1")).exit_code == 0
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    target = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       policies=[DenyGate()])
+    try:
+        await apply_state_dict(target, state)
+        assert target.env.get("PUBLIC_X") == "1"
+    finally:
+        await target.close()
+
+
+# A snapshot prefix the workspace does not mount was skipped in silence
+# (#1019); the state is still not restored (never into an ancestor
+# mount), but the load now says so.
+@pytest.mark.asyncio
+async def test_a_snapshot_mount_with_no_matching_prefix_is_reported(caplog):
+    source = Workspace({"/a": RAMResource()}, mode=MountMode.WRITE)
+    try:
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    target = Workspace({"/b": RAMResource()}, mode=MountMode.WRITE)
+    try:
+        with caplog.at_level(logging.WARNING,
+                             logger="mirage.workspace.snapshot.state"):
+            await apply_state_dict(target, state)
+    finally:
+        await target.close()
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("/a" in m and "not restored" in m for m in messages)
+    assert not any("/b" in m for m in messages)
+
+
+# An alias resource saves its own config under its parent's `type`
+# (MinIO reports `s3`), so the class the type names has the wrong secret
+# field names; the redaction check scans every value instead (#1019).
+@pytest.mark.asyncio
+async def test_an_alias_saved_with_redacted_creds_requires_an_override():
+    minio = MinIOResource(
+        MinIOConfig(bucket="b",
+                    endpoint_url="http://localhost:9000",
+                    access_key_id="k",
+                    secret_access_key="s"))
+    ws = Workspace({"/s3": minio}, mode=MountMode.READ)
+    try:
+        state = await to_state_dict(ws)
+    finally:
+        await ws.close()
+    (mount, ) = [
+        m for m in state[StateKey.MOUNTS]
+        if m[MountKey.PREFIX].rstrip("/") == "/s3"
+    ]
+    assert mount[MountKey.RESOURCE_STATE][ResourceStateKey.TYPE] == "s3"
+    assert requires_resource_override(mount)
+    with pytest.raises(ValueError, match="/s3"):
+        build_mount_args(state, None, None)
