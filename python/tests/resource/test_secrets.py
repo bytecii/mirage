@@ -100,5 +100,8 @@ def test_an_absent_secret_stays_none():
 # `type`, so a class resolved from the type names the wrong fields; the scan
 # reads every value instead, as the TypeScript `hasRedactedSecret` does.
 def test_a_redacted_value_is_found_whatever_the_field_is_called():
-    assert has_redacted_secret({"access_key_id": REDACTED_SECRET, "bucket": "b"})
+    assert has_redacted_secret({
+        "access_key_id": REDACTED_SECRET,
+        "bucket": "b"
+    })
     assert not has_redacted_secret({"access_key_id": "k", "bucket": "b"})

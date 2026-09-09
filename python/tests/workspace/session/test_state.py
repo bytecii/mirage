@@ -19,21 +19,18 @@ import pytest
 from mirage.ops.types import SessionView
 from mirage.policy import Action, Deny, Policies, Policy, PolicyDenied
 from mirage.policy.types import SessionContext
+from mirage.shell.array import make_array
 from mirage.shell.errors import ArithError
 from mirage.shell.variable import ManagedRef, ShellVar, VarAttr
 from mirage.types import HiddenVars
 from mirage.workspace.session import Session
 from mirage.workspace.session.errors import ReadonlyVariableError
 from mirage.workspace.session.session import vars_from_env
-from mirage.shell.array import make_array
-from mirage.workspace.session.state import (element_index, env_snapshot,
-                                            gate_rendering,
-                                            gate_restored_vars,
-                                            next_random, seed_var,
-                                            session_elements, session_view,
-                                            set_attr, set_var,
-                                            strip_key_quotes, subscript_index,
-                                            visible_env)
+
+from mirage.workspace.session.state import (  # isort: skip
+    element_index, env_snapshot, gate_rendering, gate_restored_vars,
+    next_random, seed_var, session_elements, session_view, set_attr, set_var,
+    strip_key_quotes, subscript_index, visible_env)
 
 
 class DenySecrets(Policy):

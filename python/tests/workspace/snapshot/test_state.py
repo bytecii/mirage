@@ -22,19 +22,18 @@ from pydantic import BaseModel, ConfigDict
 from mirage import (NULL_INDEX, Accessor, CommandIO, FileStat, GenericResource,
                     IndexCacheStore, MountMode, PathSpec, Workspace,
                     stream_from_bytes)
+from mirage.policy import Action, Deny, Policy, PolicyDenied
+from mirage.policy.types import SessionContext
 from mirage.resource import registry as resource_registry
 from mirage.resource.loader import SCRIPT_MODULE_NAME, load_backend_class
+from mirage.resource.minio import MinIOConfig, MinIOResource
 from mirage.resource.ram import RAMResource
 from mirage.resource.registry import build_resource, register_resource
 from mirage.secrets import registry
 from mirage.secrets.registry import register_secrets
 from mirage.secrets.types import ResolvedSecret
 from mirage.types import ContentType, FileType
-from mirage.policy import Action, Deny, Policy, PolicyDenied
-from mirage.policy.types import SessionContext
-from mirage.resource.minio import MinIOConfig, MinIOResource
-from mirage.workspace.snapshot.keys import (MountKey, ResourceStateKey,
-                                            StateKey)
+from mirage.workspace.snapshot.keys import MountKey, ResourceStateKey, StateKey
 from mirage.workspace.snapshot.state import (apply_state_dict,
                                              build_mount_args,
                                              requires_resource_override,
@@ -461,10 +460,8 @@ async def test_an_alias_saved_with_redacted_creds_requires_an_override():
         state = await to_state_dict(ws)
     finally:
         await ws.close()
-    (mount, ) = [
-        m for m in state[StateKey.MOUNTS]
-        if m[MountKey.PREFIX].rstrip("/") == "/s3"
-    ]
+    (mount, ) = (m for m in state[StateKey.MOUNTS]
+                 if m[MountKey.PREFIX].rstrip("/") == "/s3")
     assert mount[MountKey.RESOURCE_STATE][ResourceStateKey.TYPE] == "s3"
     assert requires_resource_override(mount)
     with pytest.raises(ValueError, match="/s3"):
