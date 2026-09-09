@@ -217,3 +217,105 @@ async def test_orphaned_metadata_requires_a_current_refresh(
                 "updated", "partial_updated") else None)
     assert len(calls) == (1 if outcome in ("updated", "renamed",
                                            "deleted") else 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent_state", ["expired", "missing"])
+async def test_parallel_parent_refreshes_are_one_transaction(
+        orphan_index, parent_state):
+    import asyncio
+
+    index = orphan_index
+    rows = [("notes.json", entry_for("old")), ("other.json", entry_for("old"))]
+    if parent_state == "expired":
+        await index.set_dir("/owned", rows)
+        await index.invalidate()
+    else:
+        for name, entry in rows:
+            await index.put(f"/owned/{name}", entry)
+    calls = 0
+
+    async def warm():
+        nonlocal calls
+        calls += 1
+        # Let sibling lookups reach the same stale parent while the refresh
+        # is in flight, then yield again between publication and the retry.
+        await asyncio.sleep(0)
+        await index.set_dir("/owned",
+                            [(name, entry_for(name)) for name, _ in rows])
+        await asyncio.sleep(0)
+
+    keys = ["notes.json", "other.json"] * 4
+    found = await asyncio.gather(*(entry_or_warm(index, f"/owned/{key}", warm)
+                                   for key in keys))
+    assert [row.id if row else None for row in found] == keys
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_parent_waiter_does_not_release_other_waiters():
+    import asyncio
+
+    index = RAMIndexCacheStore()
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def warm():
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+        await index.set_dir("/owned", [("notes.json", entry_for("new"))])
+
+    first = asyncio.create_task(entry_or_warm(index, KEY, warm))
+    await entered.wait()
+    cancelled = asyncio.create_task(entry_or_warm(index, KEY, warm))
+    follower = asyncio.create_task(entry_or_warm(index, KEY, warm))
+    await asyncio.sleep(0)
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+    release.set()
+    found = await asyncio.gather(first, follower)
+    assert [row.id for row in found] == ["new", "new"]
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_parent_refresh_lock_releases_after_failure():
+    index = RAMIndexCacheStore()
+
+    async def failed():
+        raise RuntimeError("unavailable")
+
+    async def retry():
+        await index.set_dir("/owned", [("notes.json", entry_for("new"))])
+
+    with pytest.raises(RuntimeError, match="unavailable"):
+        await entry_or_warm(index, KEY, failed)
+    assert (await entry_or_warm(index, KEY, retry)).id == "new"
+
+
+@pytest.mark.asyncio
+async def test_partial_refresh_survives_through_its_own_retry():
+    import asyncio
+
+    index = RAMIndexCacheStore()
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def warm():
+        nonlocal calls
+        calls += 1
+        await index.put(KEY, entry_for(str(calls)))
+        if calls == 1:
+            entered.set()
+            await release.wait()
+
+    first = asyncio.create_task(entry_or_warm(index, KEY, warm))
+    await entered.wait()
+    second = asyncio.create_task(entry_or_warm(index, KEY, warm))
+    await asyncio.sleep(0)
+    release.set()
+    found = await asyncio.gather(first, second)
+    assert [row.id for row in found] == ["1", "2"]

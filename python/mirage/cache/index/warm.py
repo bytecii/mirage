@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from mirage.cache.index.config import IndexEntry, LookupStatus
+from mirage.cache.index.lock import index_lock
 from mirage.cache.index.store import IndexCacheStore
 
 logger = logging.getLogger(__name__)
@@ -53,29 +54,30 @@ async def entry_or_warm(
             index; ``None`` when the key has no distinct parent to list.
     """
     parent = virtual_key.rstrip("/").rsplit("/", 1)[0] or "/"
-    listing = await index.list_dir(parent)
-    if listing.entries is not None and virtual_key not in listing.entries:
-        return None
-    hit = await index.get(virtual_key)
-    if hit.entry is not None and listing.entries is not None:
-        return hit.entry
-    if warm is None:
-        return None
-    if listing.status == LookupStatus.EXPIRED:
-        # Retained metadata is not proof of existence. Drop the old children
-        # before warming, including when a best-effort listing only puts rows.
-        await index.invalidate_dir(parent)
-    if hit.entry is not None:
-        # Partial listings can leave untracked rows that invalidate_dir
-        # cannot remove. A refresh that omits this path must not reuse one.
-        await index.invalidate_prefix(virtual_key)
-    try:
-        await warm()
-    except FileNotFoundError as exc:
-        logger.debug("index warm failed for %s: %s", virtual_key, exc)
-        return None
-    listing = await index.list_dir(parent)
-    if listing.entries is not None and virtual_key not in listing.entries:
-        return None
-    warmed = await index.get(virtual_key)
-    return warmed.entry
+    async with index_lock(index, parent):
+        listing = await index.list_dir(parent)
+        if listing.entries is not None and virtual_key not in listing.entries:
+            return None
+        hit = await index.get(virtual_key)
+        if hit.entry is not None and listing.entries is not None:
+            return hit.entry
+        if warm is None:
+            return None
+        if listing.status == LookupStatus.EXPIRED:
+            # Retained metadata is not proof of existence. Drop old children
+            # before warming, even when a partial listing only puts rows.
+            await index.invalidate_dir(parent)
+        if hit.entry is not None:
+            # Partial listings can leave untracked rows that invalidate_dir
+            # cannot remove. A refresh that omits this path must not reuse one.
+            await index.invalidate_prefix(virtual_key)
+        try:
+            await warm()
+        except FileNotFoundError as exc:
+            logger.debug("index warm failed for %s: %s", virtual_key, exc)
+            return None
+        listing = await index.list_dir(parent)
+        if listing.entries is not None and virtual_key not in listing.entries:
+            return None
+        warmed = await index.get(virtual_key)
+        return warmed.entry

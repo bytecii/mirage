@@ -21,6 +21,7 @@ from typing import Any
 from mirage.accessor.hf_hub import HfHubAccessor
 from mirage.cache.index import (NULL_INDEX, IndexCacheStore, IndexEntry,
                                 LookupStatus)
+from mirage.cache.index.lock import index_lock
 from mirage.core.hf_hub.client import (HfHubError, api_url, hub_get_response,
                                        rev_segment)
 from mirage.core.hf_hub.constants import (MAX_TREE_PAGES, TREE_PAGE_SIZE,
@@ -377,6 +378,7 @@ async def refill_index(
         bool: whether a refill happened; False when there is no index to
         seed, so a caller does not retry a lookup that cannot change.
     """
+    # The caller holds index_lock through replacement and its final lookup.
     if index is NULL_INDEX:
         return False
     tree = await fetch_tree(accessor)
@@ -447,8 +449,10 @@ async def ensure_tree(
         if accessor.tree_loaded:
             return
         if index is not NULL_INDEX:
-            await refill_index(accessor, index, prefix)
-            return
+            async with index_lock(index, prefix.rstrip("/") or "/"):
+                if not accessor.tree_loaded:
+                    await refill_index(accessor, index, prefix)
+                return
         accessor.tree = await fetch_tree(accessor)
         accessor.tree_loaded = True
         accessor.rows_cache = None

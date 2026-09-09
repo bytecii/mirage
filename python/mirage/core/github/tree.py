@@ -20,6 +20,7 @@ from typing import Any
 from mirage.accessor.github import GitHubAccessor
 from mirage.cache.index import (NULL_INDEX, IndexCacheStore, IndexEntry,
                                 LookupStatus)
+from mirage.cache.index.lock import index_lock
 from mirage.core.api.client import SessionArg
 from mirage.core.github.client import github_get
 from mirage.core.github.config import GitHubConfig
@@ -210,6 +211,7 @@ async def refill_index(
         bool: whether a refill happened; False when there is no index to
         seed, so a caller does not retry a lookup that cannot change.
     """
+    # The caller holds index_lock through replacement and its final lookup.
     if index is NULL_INDEX:
         return False
     ref = await ensure_ref(accessor)
@@ -312,9 +314,10 @@ async def ensure_tree(
         if accessor.tree_loaded:
             return
         if index is not NULL_INDEX:
-            await ensure_live_index(accessor, index, prefix)
-            if accessor.tree_loaded:
-                return
+            async with index_lock(index, prefix.rstrip("/") or "/"):
+                await ensure_live_index(accessor, index, prefix)
+                if accessor.tree_loaded:
+                    return
         ref = await ensure_ref(accessor)
         tree, truncated = await fetch_tree(accessor.config, accessor.owner,
                                            accessor.repo, ref, accessor.pool)

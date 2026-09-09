@@ -217,3 +217,94 @@ for (const backend of ['ram', 'redis']) {
     },
   )
 }
+
+for (const backend of ['ram', 'redis']) {
+  describe.skipIf(backend === 'redis' && process.env.REDIS_URL === undefined)(
+    `parallel parent refreshes with ${backend}`,
+    () => {
+      it.each(['expired', 'missing'])('rechecks a %s parent under the lock', async (state) => {
+        const url = process.env.REDIS_URL
+        const index =
+          backend === 'ram'
+            ? new RAMIndexCacheStore()
+            : new RedisIndexCacheStore({
+                ...(url === undefined ? {} : { url }),
+                keyPrefix: `parallel-warm:${crypto.randomUUID()}:`,
+              })
+        let calls = 0
+        const names = ['notes.json', 'other.json']
+        try {
+          if (state === 'expired') {
+            await index.setDir(
+              '/owned',
+              names.map((name) => [name, entryFor('old')]),
+            )
+            await index.invalidate()
+          } else {
+            for (const name of names) await index.put(`/owned/${name}`, entryFor('old'))
+          }
+          const warm = async () => {
+            calls += 1
+            await Promise.resolve()
+            await index.setDir(
+              '/owned',
+              names.map((name) => [name, entryFor(name)]),
+            )
+            await Promise.resolve()
+          }
+          const keys = Array.from({ length: 8 }, (_, i) => names[i % names.length] ?? '')
+          const found = await Promise.all(
+            keys.map((key) => entryOrWarm(index, `/owned/${key}`, warm)),
+          )
+          expect(found.map((row) => row?.id)).toEqual(keys)
+          expect(calls).toBe(1)
+        } finally {
+          await index.clear()
+          await index.close()
+        }
+      })
+    },
+  )
+}
+
+it('keeps a partial refresh available through its own retry', async () => {
+  const index = new RAMIndexCacheStore()
+  let published!: () => void
+  let release!: () => void
+  const entered = new Promise<void>((resolve) => {
+    published = resolve
+  })
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let calls = 0
+  const warm = async () => {
+    calls += 1
+    await index.put(KEY, entryFor(String(calls)))
+    if (calls === 1) {
+      published()
+      await gate
+    }
+  }
+  const first = entryOrWarm(index, KEY, warm)
+  await entered
+  const second = entryOrWarm(index, KEY, warm)
+  // The unguarded second lookup can discard the first call's published row.
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 0)
+  })
+  release()
+  const found = await Promise.all([first, second])
+  expect(found.map((row) => row?.id)).toEqual(['1', '2'])
+})
+
+it('releases a parent after the refresh rejects', async () => {
+  const index = new RAMIndexCacheStore()
+  await expect(
+    entryOrWarm(index, KEY, () => Promise.reject(new Error('unavailable'))),
+  ).rejects.toThrow('unavailable')
+  const found = await entryOrWarm(index, KEY, () =>
+    index.setDir('/owned', [['notes.json', entryFor('new')]]),
+  )
+  expect(found?.id).toBe('new')
+})

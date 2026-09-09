@@ -210,3 +210,47 @@ async def test_direct_lookup_after_invalidation(backend, truncated, deleted,
     finally:
         await index.close()
         await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["ram", "redis"])
+async def test_parallel_snapshot_readers_share_one_replacement(
+        backend, monkeypatch):
+    import asyncio
+
+    from mirage.accessor.github import GitHubAccessor
+    from mirage.core.github.config import GitHubConfig
+
+    client = FakeRedis()
+    index = RAMIndexCacheStore() if backend == "ram" else RedisIndexCacheStore(
+        client=client)
+    accessor = GitHubAccessor(GitHubConfig(token="test"),
+                              "acme",
+                              "repo",
+                              ref="main")
+    fresh = {"a.txt": TreeEntry(path="a.txt", type="blob", sha="new", size=9)}
+
+    async def fetch(*args):
+        await asyncio.sleep(0)
+        return fresh, False
+
+    fetch_mock = AsyncMock(side_effect=fetch)
+    monkeypatch.setattr("mirage.core.github.tree.fetch_tree", fetch_mock)
+    path = PathSpec(virtual="/repo/a.txt",
+                    directory="/repo",
+                    resource_path="a.txt")
+    root = PathSpec(virtual="/repo", directory="/repo", resource_path="")
+    try:
+        await index.set_dir("/repo", [
+            ("a.txt", IndexEntry(id="old", name="a.txt", resource_type="file"))
+        ])
+        await index.invalidate()
+        results = await asyncio.gather(
+            *(stat(accessor, path, index) for _ in range(8)),
+            readdir(accessor, root, index))
+        assert [row.fingerprint for row in results[:-1]] == ["new"] * 8
+        assert results[-1] == ["/repo/a.txt"]
+        fetch_mock.assert_awaited_once()
+    finally:
+        await index.close()
+        await client.aclose()

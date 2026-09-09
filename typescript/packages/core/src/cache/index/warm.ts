@@ -15,6 +15,7 @@
 import { isEnoent } from '../../utils/errors.ts'
 import { type IndexEntry, LookupStatus } from './config.ts'
 import type { IndexCacheStore } from './store.ts'
+import { withIndexLock } from './lock.ts'
 
 /**
  * Resolve an index entry, listing the parent directory once when its listing
@@ -49,29 +50,31 @@ export async function entryOrWarm(
   warm: (() => Promise<unknown>) | null,
 ): Promise<IndexEntry | null> {
   const parent = virtualKey.replace(/\/+$/, '').replace(/\/[^/]+$/, '') || '/'
-  let listing = await index.listDir(parent)
-  if (listing.entries != null && !listing.entries.includes(virtualKey)) return null
-  const hit = await index.get(virtualKey)
-  if (hit.entry != null && listing.entries != null) return hit.entry
-  if (warm === null) return null
-  if (listing.status === LookupStatus.EXPIRED) {
-    // Retained metadata is not proof of existence. Drop the old children
-    // before warming, including when a best-effort listing only puts rows.
-    await index.invalidateDir(parent)
-  }
-  if (hit.entry != null) {
-    // Put-only rows have no parent membership to remove. A missing or
-    // partial refresh must not leave the old target available to the retry.
-    await index.invalidatePrefix(virtualKey)
-  }
-  try {
-    await warm()
-  } catch (err) {
-    if (!isEnoent(err)) throw err
-    return null
-  }
-  listing = await index.listDir(parent)
-  if (listing.entries != null && !listing.entries.includes(virtualKey)) return null
-  const warmed = await index.get(virtualKey)
-  return warmed.entry ?? null
+  return withIndexLock(index, parent, async () => {
+    let listing = await index.listDir(parent)
+    if (listing.entries != null && !listing.entries.includes(virtualKey)) return null
+    const hit = await index.get(virtualKey)
+    if (hit.entry != null && listing.entries != null) return hit.entry
+    if (warm === null) return null
+    if (listing.status === LookupStatus.EXPIRED) {
+      // Retained metadata is not proof of existence. Drop the old children
+      // before warming, including when a best-effort listing only puts rows.
+      await index.invalidateDir(parent)
+    }
+    if (hit.entry != null) {
+      // Put-only rows have no parent membership to remove. A missing or
+      // partial refresh must not leave the old target available to the retry.
+      await index.invalidatePrefix(virtualKey)
+    }
+    try {
+      await warm()
+    } catch (err) {
+      if (!isEnoent(err)) throw err
+      return null
+    }
+    listing = await index.listDir(parent)
+    if (listing.entries != null && !listing.entries.includes(virtualKey)) return null
+    const warmed = await index.get(virtualKey)
+    return warmed.entry ?? null
+  })
 }

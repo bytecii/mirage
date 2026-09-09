@@ -347,3 +347,48 @@ for (const backend of ['ram', 'redis']) {
     },
   )
 }
+
+for (const backend of ['ram', 'redis']) {
+  it.skipIf(backend === 'redis' && process.env.REDIS_URL === undefined)(
+    `parallel snapshot readers share one replacement with ${backend}`,
+    async () => {
+      const url = process.env.REDIS_URL
+      const index =
+        backend === 'ram'
+          ? new RAMIndexCacheStore()
+          : new RedisIndexCacheStore({
+              ...(url === undefined ? {} : { url }),
+              keyPrefix: `parallel-hf:${crypto.randomUUID()}:`,
+            })
+      const accessor = loaded()
+      const fetch = vi.spyOn(client, 'hubGetResponse').mockImplementation(async () => {
+        await Promise.resolve()
+        return {
+          data: [{ path: 'a.txt', type: 'file', oid: 'new', size: 42 }],
+          status: 200,
+          headers: {},
+        }
+      })
+      try {
+        await seedIndex(accessor, index, '/m')
+        await index.invalidate()
+        const keys = Array.from({ length: 8 }, (_, i) => (i % 2 === 0 ? '/m/a.txt' : '/m'))
+        const results = await Promise.all(keys.map((key) => lookup(accessor, index, '/m', key)))
+        expect(results.filter((_, i) => i % 2 === 0).map((row) => row.entry?.id)).toEqual([
+          'new',
+          'new',
+          'new',
+          'new',
+        ])
+        expect(results.filter((_, i) => i % 2 === 1).map((row) => row.children)).toEqual(
+          Array.from({ length: 4 }, () => ['/m/a.txt']),
+        )
+        expect(fetch).toHaveBeenCalledTimes(1)
+      } finally {
+        fetch.mockRestore()
+        await index.clear()
+        await index.close()
+      }
+    },
+  )
+}

@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { withIndexLock } from '@struktoai/mirage-core/cache/index/lock'
 import { IndexEntry } from '@struktoai/mirage-core/cache/index/config'
 import type { IndexCacheStore } from '@struktoai/mirage-core/cache/index/store'
 import { LookupStatus } from '@struktoai/mirage-core/cache/index/config'
@@ -329,7 +330,9 @@ export async function ensureTree(
   }
   const run = (async () => {
     if (index !== undefined) {
-      await refillIndex(accessor, index, prefix)
+      await withIndexLock(index, prefix.replace(/\/+$/, '') || '/', async () => {
+        if (!accessor.treeLoaded) await refillIndex(accessor, index, prefix)
+      })
       return
     }
     accessor.tree = await fetchTree(accessor)

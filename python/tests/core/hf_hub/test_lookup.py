@@ -129,3 +129,35 @@ async def test_direct_lookup_refreshes_invalidated_snapshot(
     finally:
         await index.close()
         await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["ram", "redis"])
+async def test_parallel_snapshot_readers_share_one_replacement(
+        loaded, backend, monkeypatch):
+    import asyncio
+
+    client = FakeRedis()
+    index = RAMIndexCacheStore() if backend == "ram" else RedisIndexCacheStore(
+        client=client)
+    fresh = {"a.txt": parse_entry(file_row("a.txt", 42, oid="new"))}
+
+    async def fetch(*args):
+        await asyncio.sleep(0)
+        return fresh
+
+    fetch_mock = AsyncMock(side_effect=fetch)
+    monkeypatch.setattr("mirage.core.hf_hub.tree.fetch_tree", fetch_mock)
+    try:
+        seed_index(loaded, index, "/m")
+        await index.invalidate()
+        keys = ["/m/a.txt", "/m"] * 4
+        results = await asyncio.gather(*(lookup(loaded, index, "/m", key)
+                                         for key in keys))
+        assert all(row.exists for row in results)
+        assert [row.entry.id for row in results[::2]] == ["new"] * 4
+        assert [row.children for row in results[1::2]] == [["/m/a.txt"]] * 4
+        fetch_mock.assert_awaited_once()
+    finally:
+        await index.close()
+        await client.aclose()

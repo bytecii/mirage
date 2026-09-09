@@ -17,6 +17,7 @@ import logging
 from mirage.accessor.github import GitHubAccessor
 from mirage.cache.index import (NULL_INDEX, IndexCacheStore, IndexEntry,
                                 LookupStatus)
+from mirage.cache.index.lock import index_lock
 from mirage.core.github.repo import ensure_ref
 from mirage.core.github.tree import (ensure_live_index, fetch_dir_tree,
                                      refill_index)
@@ -33,6 +34,17 @@ async def readdir(
     path_spec: PathSpec,
     index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
+    prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
+    async with index_lock(index, prefix.rstrip("/") or "/"):
+        return await _readdir(accessor, path_spec, index)
+
+
+async def _readdir(
+    accessor: GitHubAccessor,
+    path_spec: PathSpec,
+    index: IndexCacheStore = NULL_INDEX,
+) -> list[str]:
+    """Read while the caller holds the mount's index lock through lookup."""
     virtual = path_spec.virtual
     prefix = mount_prefix_of(path_spec.virtual, path_spec.resource_path)
     path = (path_spec.dir if path_spec.pattern else path_spec).mount_path

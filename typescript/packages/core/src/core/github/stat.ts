@@ -17,7 +17,8 @@ import type { GitHubAccessor } from '../../accessor/github.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { contentTypeForPath } from '../../utils/filetype.ts'
 import { FileStat, FileType, PathSpec } from '../../types.ts'
-import { readdir as coreReaddir } from './readdir.ts'
+import { readdirUnlocked as coreReaddir } from './readdir.ts'
+import { withIndexLock } from '../../cache/index/lock.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { enoent, isEnoent } from '../../utils/errors.ts'
 
@@ -43,37 +44,39 @@ export async function stat(
   }
   if (index === undefined) throw enoent(path)
   const ikey = `${rstripSlash(prefix)}/${trimmed}`
-  // Entries survive invalidation and replacement listings. Only the
-  // parent's current listing establishes freshness and membership.
-  const parentPath = ikey.slice(0, ikey.lastIndexOf('/')) || '/'
-  let children: string[]
-  try {
-    children = await coreReaddir(
-      accessor,
-      new PathSpec({
-        virtual: parentPath,
-        directory: parentPath,
-        resolved: false,
-        resourcePath: mountKey(parentPath, prefix),
-      }),
-      index,
-    )
-  } catch (error) {
-    if (isEnoent(error)) throw enoent(path)
-    throw error
-  }
-  if (!children.includes(ikey)) throw enoent(path)
-  const result = await index.get(ikey)
-  if (result.entry === undefined || result.entry === null) throw enoent(path)
-  if (result.entry.resourceType === 'folder') {
-    return new FileStat({ name: result.entry.name, type: FileType.DIRECTORY })
-  }
-  return new FileStat({
-    name: result.entry.name,
-    size: result.entry.size,
-    type: FileType.FILE,
-    content: contentTypeForPath(result.entry.name),
-    fingerprint: result.entry.id,
-    extra: { sha: result.entry.id },
+  return withIndexLock(index, rstripSlash(prefix) || '/', async () => {
+    // Entries survive invalidation and replacement listings. Only the
+    // parent's current listing establishes freshness and membership.
+    const parentPath = ikey.slice(0, ikey.lastIndexOf('/')) || '/'
+    let children: string[]
+    try {
+      children = await coreReaddir(
+        accessor,
+        new PathSpec({
+          virtual: parentPath,
+          directory: parentPath,
+          resolved: false,
+          resourcePath: mountKey(parentPath, prefix),
+        }),
+        index,
+      )
+    } catch (error) {
+      if (isEnoent(error)) throw enoent(path)
+      throw error
+    }
+    if (!children.includes(ikey)) throw enoent(path)
+    const result = await index.get(ikey)
+    if (result.entry === undefined || result.entry === null) throw enoent(path)
+    if (result.entry.resourceType === 'folder') {
+      return new FileStat({ name: result.entry.name, type: FileType.DIRECTORY })
+    }
+    return new FileStat({
+      name: result.entry.name,
+      size: result.entry.size,
+      type: FileType.FILE,
+      content: contentTypeForPath(result.entry.name),
+      fingerprint: result.entry.id,
+      extra: { sha: result.entry.id },
+    })
   })
 }

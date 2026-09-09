@@ -19,6 +19,7 @@ import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { PathSpec } from '../../types.ts'
 import { fetchDirTree, type GitHubTreeItem } from './client.ts'
 import { ensureLiveIndex, refillIndex } from './tree.ts'
+import { withIndexLock } from '../../cache/index/lock.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { enoent } from '../../utils/errors.ts'
@@ -34,6 +35,19 @@ function stripPrefix(path: PathSpec): string {
 }
 
 export async function readdir(
+  accessor: GitHubAccessor,
+  path: PathSpec,
+  index?: IndexCacheStore,
+): Promise<string[]> {
+  if (index === undefined) return readdirUnlocked(accessor, path, index)
+  const prefix = mountPrefixOf(path.virtual, path.resourcePath)
+  return withIndexLock(index, rstripSlash(prefix) || '/', () =>
+    readdirUnlocked(accessor, path, index),
+  )
+}
+
+/** Caller holds the mount's index lock through its final lookup. */
+export async function readdirUnlocked(
   accessor: GitHubAccessor,
   path: PathSpec,
   index?: IndexCacheStore,

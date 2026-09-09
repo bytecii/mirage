@@ -129,3 +129,54 @@ it('propagates a parent refresh failure', async () => {
     stat(accessor, PathSpec.fromStrPath('/missing.py'), new RAMIndexCacheStore()),
   ).rejects.toThrow('github unavailable')
 })
+
+for (const backend of ['ram', 'redis']) {
+  it.skipIf(backend === 'redis' && process.env.REDIS_URL === undefined)(
+    `parallel snapshot readers share one replacement with ${backend}`,
+    async () => {
+      const url = process.env.REDIS_URL
+      const index =
+        backend === 'ram'
+          ? new RAMIndexCacheStore()
+          : new RedisIndexCacheStore({
+              ...(url === undefined ? {} : { url }),
+              keyPrefix: `parallel-github:${crypto.randomUUID()}:`,
+            })
+      const tree = [{ path: 'a.txt', type: 'blob', sha: 'new', size: 9 }]
+      const get = vi.fn(async () => {
+        await Promise.resolve()
+        return { tree, truncated: false }
+      })
+      const accessor = new GitHubAccessor({
+        transport: { get, request: vi.fn() },
+        owner: 'acme',
+        repo: 'repo',
+        ref: 'main',
+        defaultBranch: 'main',
+      })
+      const path = new PathSpec({
+        virtual: '/repo/a.txt',
+        directory: '/repo',
+        resourcePath: 'a.txt',
+      })
+      try {
+        await populateIndex(
+          index,
+          { 'a.txt': { path: 'a.txt', type: 'blob', sha: 'old', size: 3 } },
+          '/repo',
+        )
+        await index.invalidate()
+        const results = await Promise.all(
+          Array.from({ length: 8 }, () => stat(accessor, path, index)),
+        )
+        expect(results.map((row) => row.fingerprint)).toEqual(
+          Array.from({ length: 8 }, () => 'new'),
+        )
+        expect(get).toHaveBeenCalledTimes(1)
+      } finally {
+        await index.clear()
+        await index.close()
+      }
+    },
+  )
+}
