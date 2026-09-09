@@ -63,6 +63,7 @@ def make_readdir(driver: ObjectStoreDriver[A, C]) -> ReaddirFn[A]:
         listing = await index.list_dir(virtual_key)
         if listing.entries is not None:
             return listing.entries
+        await cached_entry(index, virtual_key)
         pfx = kp.apply_dir(kpfx, path)
         names: list[str] = []
         dir_keys: set[str] = set()
@@ -127,6 +128,29 @@ def make_readdir(driver: ObjectStoreDriver[A, C]) -> ReaddirFn[A]:
         return virtual_entries
 
     return readdir
+
+
+async def cached_entry(index: IndexCacheStore,
+                       virtual: str) -> IndexEntry | None:
+    """Trust metadata only while a listing still proves the path exists.
+
+    Args:
+        index (IndexCacheStore): metadata and expiring directory listings.
+        virtual (str): virtual path to validate.
+    """
+    entry = (await index.get(virtual)).entry
+    if entry is None:
+        return None
+    parent = virtual.rsplit("/", 1)[0] or "/"
+    siblings = (await index.list_dir(parent)).entries
+    if siblings is not None and virtual in siblings:
+        return entry
+    if (entry.resource_type == ResourceType.FOLDER
+            and (await index.list_dir(virtual)).entries is not None):
+        return entry
+    # A later listing must not revive metadata from an expired generation.
+    await index.invalidate_prefix(virtual)
+    return None
 
 
 async def cached_tree(index: IndexCacheStore, virtual: str,
@@ -232,12 +256,11 @@ async def read_tree(
     stem = kp.apply(kpfx, path.mount_path).rstrip("/")
     prefix = stem + "/" if stem else ""
     virtual = path.virtual.rstrip("/") or "/"
-    root = await index.get(virtual)
-    collision = root.entry is not None and root.entry.extra.get(
-        "object_store_collision")
-    known_directory = (not path.mount_path.strip("/") or
-                       (root.entry is not None
-                        and root.entry.resource_type == ResourceType.FOLDER))
+    root = await cached_entry(index, virtual)
+    collision = root is not None and root.extra.get("object_store_collision")
+    known_directory = (not path.mount_path.strip("/")
+                       or (root is not None
+                           and root.resource_type == ResourceType.FOLDER))
     cached = (await cached_tree(index, virtual, prefix) if not collision and
               (hints is not None or known_directory) else None)
     if cached is not None:
@@ -246,10 +269,9 @@ async def read_tree(
         hit = root
         parent = await index.list_dir(virtual.rsplit("/", 1)[0] or "/")
         if (parent.entries is not None and virtual in parent.entries
-                and hit.entry is not None
-                and hit.entry.resource_type == ResourceType.FILE
-                and hit.entry.size is not None):
-            return [TreeEntry(key=stem, size=hit.entry.size)], False
+                and hit is not None and hit.resource_type == ResourceType.FILE
+                and hit.size is not None):
+            return [TreeEntry(key=stem, size=hit.size)], False
     async with driver.connect(accessor) as conn:
         narrowed = False
         if hints is None:

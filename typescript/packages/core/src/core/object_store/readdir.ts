@@ -60,6 +60,7 @@ export function makeReaddir<A extends Accessor, C>(driver: ObjectStoreDriver<A, 
       if (listing.entries !== undefined && listing.entries !== null) {
         return listing.entries
       }
+      await cachedEntry(index, fullVirtualKey)
     }
     const kpfx = driver.keyPrefixOf(accessor)
     const pfx = kp.applyDir(kpfx, rawPath)
@@ -142,6 +143,23 @@ export function makeReaddir<A extends Accessor, C>(driver: ObjectStoreDriver<A, 
     }
     return virtualEntries
   }
+}
+
+/** Trust metadata only while a listing still proves the path exists. */
+export async function cachedEntry(
+  index: IndexCacheStore | undefined,
+  virtual: string,
+): Promise<IndexEntry | null> {
+  const entry = (await index?.get(virtual))?.entry
+  if (entry == null || index === undefined) return null
+  const parent = virtual.slice(0, virtual.lastIndexOf('/')) || '/'
+  const siblings = (await index.listDir(parent)).entries
+  if (siblings?.includes(virtual) === true) return entry
+  if (entry.resourceType === ResourceType.FOLDER && (await index.listDir(virtual)).entries != null)
+    return entry
+  // A later listing must not revive metadata from an expired generation.
+  await index.invalidatePrefix(virtual)
+  return null
 }
 
 /** Read a subtree only while every directory listing is complete and fresh. */
@@ -229,16 +247,16 @@ export async function readTree<A extends Accessor, C>(
   const stem = rstripSlash(kp.apply(kpfx, path.mountPath))
   const prefix = stem === '' ? '' : stem + '/'
   const virtual = rstripSlash(path.virtual) || '/'
-  const root = await index?.get(virtual)
+  const root = await cachedEntry(index, virtual)
   const knownDirectory =
-    path.mountPath.replaceAll('/', '') === '' || root?.entry?.resourceType === ResourceType.FOLDER
+    path.mountPath.replaceAll('/', '') === '' || root?.resourceType === ResourceType.FOLDER
   const cached =
-    !root?.entry?.extra.object_store_collision && (hints !== undefined || knownDirectory)
+    !root?.extra.object_store_collision && (hints !== undefined || knownDirectory)
       ? await cachedTree(index, virtual, prefix)
       : null
   if (cached !== null) return [cached, false]
   if (hints === undefined && index !== undefined) {
-    const entry = root?.entry
+    const entry = root
     const parent = await index.listDir(virtual.slice(0, virtual.lastIndexOf('/')) || '/')
     if (
       parent.entries?.includes(virtual) === true &&
@@ -270,7 +288,7 @@ export async function readTree<A extends Accessor, C>(
       // before publishing a folder that later commands trust.
       if (
         hints === undefined ||
-        (knownDirectory && !root?.entry?.extra.object_store_collision) ||
+        (knownDirectory && !root?.extra.object_store_collision) ||
         (index !== undefined && (await driver.head(conn, stem)) === null)
       )
         await index?.put(

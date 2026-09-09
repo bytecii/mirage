@@ -1,4 +1,5 @@
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -110,3 +111,28 @@ async def test_find_warms_du_on_a_non_root_directory(counted_s3):
     second = await ws.execute('du -a /s3/d')
     assert await second.stdout_str() == first_text
     assert counts == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('warmup', ['find', 'du -a'])
+async def test_deleted_recursive_root_is_not_reported_after_expiry(warmup):
+    objects = {'d/a.txt': b'old'}
+    session = MultiBucketSession({'bucket': objects})
+    resource = S3Resource(
+        S3Config(bucket='bucket',
+                 region='us-east-1',
+                 aws_access_key_id='fake',
+                 aws_secret_access_key='fake'))
+    ws = Workspace({'/s3': (resource, MountMode.WRITE)})
+    with (patch_s3_session(session), patch('mirage.cache.index.ram.datetime')
+          as clock):
+        clock.now.return_value = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        first = await ws.execute(warmup + ' /s3/d')
+        await first.stdout_str()
+        assert first.exit_code == 0
+        objects.clear()
+        clock.now.return_value += timedelta(seconds=601)
+        for command in ['stat', 'find']:
+            result = await ws.execute(command + ' /s3/d')
+            assert await result.stdout_str() == ''
+            assert result.exit_code == 1
