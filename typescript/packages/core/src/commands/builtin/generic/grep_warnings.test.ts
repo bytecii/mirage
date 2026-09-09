@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest'
 import { materialize, type IOResult } from '../../../io/types.ts'
 import { FileStat, FileType, PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
-import { grepGeneric } from './grep.ts'
+import { grepGeneric, labelled } from './grep.ts'
 
 type GrepOut = Uint8Array | AsyncIterable<Uint8Array> | null
 
@@ -128,5 +128,50 @@ describe('grepGeneric operand errors', () => {
     const [, io] = await runGrep({ r: true, q: true })
     expect(DEC.decode(io.stderr as Uint8Array)).toBe('grep: /data/bad.txt: boom\n')
     expect(io.exitCode).toBe(0)
+  })
+})
+
+describe('grepGeneric excluded entries', () => {
+  it('keeps walking when an excluded entry fails stat', async () => {
+    const probe = (p: PathSpec): Promise<FileStat> => {
+      if (p.virtual === '/data/0ghost') return Promise.reject(new Error('gone'))
+      return stat(p)
+    }
+    const listing = (p: PathSpec): Promise<string[]> =>
+      Promise.resolve(p.virtual === '/data' ? ['/data/0ghost', '/data/a.txt'] : [])
+    const [out, io] = (await grepGeneric(
+      'grep',
+      [spec('/data')],
+      ['alice'],
+      opts({ r: true, exclude_dir: ['0ghost'] }),
+      probe,
+      listing,
+      stream,
+    )) as [GrepOut, IOResult]
+    expect(await decode(out)).toBe('/data/a.txt:alice\n')
+    expect(DEC.decode(io.stderr as Uint8Array)).toBe('grep: /data/0ghost: gone\n')
+    expect(io.exitCode).toBe(2)
+  })
+})
+
+describe('labelled', () => {
+  it.each([
+    [{ r: true }, { r: true, H: true }],
+    [
+      { r: true, h: true },
+      { r: true, h: true },
+    ],
+    [
+      { H: true, h: true },
+      { H: true, h: true },
+    ],
+    [
+      { h: true, H: true },
+      { h: true, H: true },
+    ],
+  ])('asks for filenames only when the line did not decide: %j', (flags, expected) => {
+    const out = labelled(opts(flags))
+    expect(out.flags).toEqual(expected)
+    expect(Object.keys(out.flags)).toEqual(Object.keys(expected))
   })
 })

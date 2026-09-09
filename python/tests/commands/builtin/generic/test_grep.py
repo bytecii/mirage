@@ -1,6 +1,6 @@
 import pytest
 
-from mirage.commands.builtin.generic.grep import grep
+from mirage.commands.builtin.generic.grep import grep, labelled
 from mirage.commands.config import CommandOpts
 from mirage.ops.types import MountView, NamespaceView
 from mirage.types import ContentType, FileStat, FileType, PathSpec
@@ -739,3 +739,67 @@ async def test_grep_still_reports_a_path_with_no_mount_below_it():
     )
     assert io.exit_code == 2
     assert b"/nope" in (io.stderr or b"")
+
+
+@pytest.mark.parametrize("flags, expected", [
+    ({
+        "r": True
+    }, {
+        "r": True,
+        "H": True
+    }),
+    ({
+        "r": True,
+        "h": True
+    }, {
+        "r": True,
+        "h": True
+    }),
+    ({
+        "H": True,
+        "h": True
+    }, {
+        "H": True,
+        "h": True
+    }),
+    ({
+        "h": True,
+        "H": True
+    }, {
+        "h": True,
+        "H": True
+    }),
+])
+def test_labelled_asks_for_filenames_only_when_the_line_did_not_decide(
+        flags, expected):
+    out = labelled(CommandOpts(flags=flags))
+    assert out.flags == expected
+    assert list(out.flags) == list(expected)
+
+
+@pytest.mark.asyncio
+async def test_excluded_entry_that_fails_stat_does_not_stop_the_walk():
+    readdir, stat, rb, rs = _make_backend({
+        "/data/a.txt": b"apple\n",
+        "/data/b.txt": b"apple\n",
+    })
+
+    async def listing(path):
+        return ["/data/0ghost", *await readdir(path)]
+
+    output, io = await grep(
+        [_spec("/data")],
+        ["apple"],
+        CommandOpts(flags={
+            "r": True,
+            "exclude_dir": ["0ghost"]
+        }),
+        readdir=listing,
+        stat=stat,
+        read_bytes=rb,
+        read_stream=rs,
+    )
+    assert (await
+            _drain_async(output)) == b"/data/a.txt:apple\n/data/b.txt:apple\n"
+    assert io.stderr == b"grep: /data/0ghost: No such file or directory\n"
+    assert io.exit_code == 2

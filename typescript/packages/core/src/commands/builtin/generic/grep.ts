@@ -48,12 +48,33 @@ function binaryMode(fl: FlagView): string {
   return mode
 }
 
+/** The winning filename flag: true for -H, false for -h, null for neither. */
+export function filenameMode(fl: FlagView): boolean | null {
+  let mode: boolean | null = null
+  for (const name of fl.typedOrder('H', 'h')) {
+    if (fl.asBool(name)) mode = name === 'H'
+  }
+  return mode
+}
+
+/**
+ * Ask for the filename a walk would have printed on its own. A content
+ * search hands the generic explicit files where the user named a directory,
+ * so the label is requested here; an explicit -h still wins, and an explicit
+ * -H is already on the line.
+ */
+export function labelled(opts: CommandOpts): CommandOpts {
+  if (filenameMode(new FlagView(opts.flags, specOf('grep'))) !== null) return opts
+  return { ...opts, flags: { ...opts.flags, H: true } }
+}
+
+function reason(error: unknown): string {
+  return fsStrerror(error) ?? (error instanceof Error ? error.message : String(error))
+}
+
 export function parseFlags(fl: FlagView): FlagSet {
   const mode = binaryMode(fl)
-  let filename: boolean | null = null
-  for (const name of fl.typedOrder('H', 'h')) {
-    if (fl.asBool(name)) filename = name === 'H'
-  }
+  const filename = filenameMode(fl)
   const aCtx = fl.asInt('A')
   const bCtx = fl.asInt('B')
   const cCtx = fl.asInt('C')
@@ -167,10 +188,12 @@ export async function grepGeneric(
         singleIO,
       ]
     } catch (error) {
-      const reason = fsStrerror(error) ?? (error instanceof Error ? error.message : String(error))
       return [
         new Uint8Array(),
-        new IOResult({ exitCode: 2, stderr: ENC.encode(`${name}: ${first.rawPath}: ${reason}\n`) }),
+        new IOResult({
+          exitCode: 2,
+          stderr: ENC.encode(`${name}: ${first.rawPath}: ${reason(error)}\n`),
+        }),
       ]
     }
   }
@@ -198,8 +221,17 @@ export async function grepGeneric(
             resourcePath: mountKey(entry, prefix),
             rawPath: respellOne(entry, p.virtual, p.rawPath),
           })
-          if (dirAdmitted(entry, f.filters) || (await st(entry)).type !== FileType.DIRECTORY)
-            yield* scan(child, true)
+          if (!dirAdmitted(entry, f.filters)) {
+            let probe: FileStat
+            try {
+              probe = await st(entry)
+            } catch (error) {
+              warn(`${name}: ${child.rawPath}: ${reason(error)}`)
+              continue
+            }
+            if (probe.type === FileType.DIRECTORY) continue
+          }
+          yield* scan(child, true)
         }
         return
       }
@@ -212,10 +244,7 @@ export async function grepGeneric(
       matched ||= fileIO.exitCode === 0
       if (fileIO.stderr instanceof Uint8Array) notices.push(fileIO.stderr)
     } catch (error) {
-      const reason = fsStrerror(error)
-      warn(
-        `${name}: ${p.rawPath}: ${reason ?? (error instanceof Error ? error.message : String(error))}`,
-      )
+      warn(`${name}: ${p.rawPath}: ${reason(error)}`)
     }
   }
   async function* run(): AsyncIterable<Uint8Array> {

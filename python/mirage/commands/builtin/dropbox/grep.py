@@ -12,11 +12,10 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from dataclasses import replace
-
 from mirage.accessor.dropbox import DropboxAccessor
 from mirage.commands.builtin.dropbox.pushdown import narrow_scope
 from mirage.commands.builtin.generic.grep import grep as generic_grep
+from mirage.commands.builtin.generic.grep import labelled
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_pattern import pattern_arg
 from mirage.commands.config import CommandOpts
@@ -59,7 +58,7 @@ async def grep(accessor: DropboxAccessor, paths: list[PathSpec],
             return b"", IOResult(exit_code=1)
 
     if used_search:
-        opts = replace(opts, flags={**(opts.flags or {}), "H": True})
+        opts = labelled(opts)
 
     return await generic_grep(
         resolved,

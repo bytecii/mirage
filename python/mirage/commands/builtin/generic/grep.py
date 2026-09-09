@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from dataclasses import replace
 from functools import partial
 
 from mirage.cache.read_through import (cache_aware_bound_bytes,
@@ -43,6 +44,35 @@ def binary_mode(fl: FlagView) -> str:
     return mode
 
 
+def filename_mode(fl: FlagView) -> bool | None:
+    """The winning filename flag: True for -H, False for -h, None for neither.
+
+    Args:
+        fl (FlagView): spec-validated view over the raw flag kwargs.
+    """
+    mode: bool | None = None
+    for name in fl.typed_order("H", "h"):
+        if fl.as_bool(name):
+            mode = name == "H"
+    return mode
+
+
+def labelled(opts: CommandOpts) -> CommandOpts:
+    """Ask for the filename a walk would have printed on its own.
+
+    A content search hands the generic explicit files where the user
+    named a directory, so the label is requested here; an explicit -h
+    still wins, and an explicit -H is already on the line.
+
+    Args:
+        opts (CommandOpts): the narrowing wrapper's options.
+    """
+    flags = opts.flags or {}
+    if filename_mode(FlagView(flags, spec=SPECS["grep"])) is not None:
+        return opts
+    return replace(opts, flags={**flags, "H": True})
+
+
 def parse_flags(fl: FlagView, never_match: bool) -> GrepFlags:
     """Convert the raw flag bag into GrepFlags, the only string-keyed reads.
 
@@ -52,10 +82,7 @@ def parse_flags(fl: FlagView, never_match: bool) -> GrepFlags:
             a regex, so it suppresses -F.
     """
     mode = binary_mode(fl)
-    filename: bool | None = None
-    for name in fl.typed_order("H", "h"):
-        if fl.as_bool(name):
-            filename = name == "H"
+    filename = filename_mode(fl)
     a_ctx = fl.as_int("A")
     b_ctx = fl.as_int("B")
     c_ctx = fl.as_int("C")
@@ -162,12 +189,16 @@ async def grep(
                                      resource_path=mount_key(entry, prefix),
                                      raw_path=respell_one(
                                          entry, p.virtual, p.raw_path))
-                    if dir_admitted(entry, f.filters):
-                        async for chunk in scan(child, True):
-                            yield chunk
-                    elif (await st(entry)).type != FileType.DIRECTORY:
-                        async for chunk in scan(child, True):
-                            yield chunk
+                    if not dir_admitted(entry, f.filters):
+                        try:
+                            if (await st(entry)).type == FileType.DIRECTORY:
+                                continue
+                        except WALK_ERRORS as exc:
+                            warn(f"grep: {child.raw_path}: "
+                                 f"{fs_strerror(exc) or exc}")
+                            continue
+                    async for chunk in scan(child, True):
+                        yield chunk
                 return
             if walked and info.type != FileType.FILE:
                 return

@@ -21,7 +21,7 @@ import { type FileStat, ResourceName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { patternArg } from '../grep_pattern.ts'
-import { grepGeneric } from '../generic/grep.ts'
+import { grepGeneric, labelled } from '../generic/grep.ts'
 import { narrowScope } from './pushdown.ts'
 import { FlagView } from '../../spec/types.ts'
 
@@ -49,7 +49,7 @@ async function grepCommand(
       ...(opts.index !== null ? { index: opts.index } : {}),
     })
     resolved = narrowed.resolved
-    if (narrowed.usedSearch) opts = { ...opts, flags: { ...opts.flags, H: true } }
+    if (narrowed.usedSearch) opts = labelled(opts)
     if (narrowed.usedSearch && resolved.length === 0) {
       return [new Uint8Array(), new IOResult({ exitCode: 1 })]
     }
