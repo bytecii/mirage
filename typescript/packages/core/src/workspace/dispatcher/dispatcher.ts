@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { NOOPAccessor } from '../../accessor/base.ts'
 import { applyIo } from '../../cache/file/io.ts'
 import type { FileCache } from '../../cache/file/mixin.ts'
@@ -207,8 +208,11 @@ export class Dispatcher {
     // clears pending before it stats, so its own probes cannot recurse
     // into it.
     if (this.drift?.pending === true) {
+      // Resolve backend IDs afresh without consulting the restored index.
       await this.drift.drain(this.namespace, async (p) => {
-        const [stat] = await this.dispatch('stat', PathSpec.fromStrPath(p))
+        const [stat] = await this.dispatch('stat', PathSpec.fromStrPath(p), [], {
+          index: new RAMIndexCacheStore(),
+        })
         return stat
       })
     }

@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { checkCliVerbs } from '../session/validate.ts'
 import type { FileCache } from '../../cache/file/mixin.ts'
 import type { IndexConfig } from '../../cache/index/config.ts'
@@ -1132,7 +1133,7 @@ export class Workspace {
       parser: () => this.getShellParser(),
       meta: this.meta,
       drift: this.drift,
-      statFn: (p) => this.dispatchInternal('stat', p),
+      statFn: (p) => this.dispatchInternal('stat', p, [], { index: new RAMIndexCacheStore() }),
       namespace: this.namespace,
       sessions: this.sessionManager,
       registry: this.registry,
