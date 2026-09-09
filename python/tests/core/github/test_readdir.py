@@ -214,3 +214,54 @@ async def test_truncated_tree_refills_expired_directory(
     finally:
         await index.close()
         await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["ram", "redis"])
+@pytest.mark.parametrize("prefix", ["", "/repo"])
+@pytest.mark.parametrize("partial_children", [False, True])
+@pytest.mark.parametrize("refresh", [False, True])
+async def test_truncated_refill_does_not_cache_partial_listings(
+        backend, prefix, partial_children, refresh, monkeypatch):
+    client = FakeRedis()
+    index = RAMIndexCacheStore() if backend == "ram" else RedisIndexCacheStore(
+        client=client)
+    root = prefix or "/"
+    folder = TreeEntry(path="docs", type="tree", sha="docs-sha", size=None)
+    partial_tree = {"docs": folder}
+    if partial_children:
+        partial_tree["docs/first.md"] = TreeEntry(path="docs/first.md",
+                                                  type="blob",
+                                                  sha="first",
+                                                  size=1)
+    tree_fetch = AsyncMock(return_value=(partial_tree, True))
+    dir_fetch = AsyncMock(side_effect=[
+        [folder], [folder],
+        [
+            TreeEntry(path="first.md", type="blob", sha="first", size=1),
+            TreeEntry(path="second.md", type="blob", sha="second", size=2),
+        ]
+    ])
+    monkeypatch.setattr(mirage.core.github.tree, "fetch_tree", tree_fetch)
+    monkeypatch.setitem(readdir.__globals__, "fetch_dir_tree", dir_fetch)
+    accessor = MagicMock()
+    accessor.ref = "main"
+    accessor.truncated = False
+    root_path = PathSpec(resource_path="", virtual=root, directory=root)
+    docs = prefix + "/docs"
+    docs_path = PathSpec(resource_path="docs", virtual=docs, directory=docs)
+    try:
+        if refresh:
+            await index.set_dir(root, [])
+            await index.invalidate()
+        for _ in range(2):
+            assert await readdir(accessor, root_path, index) == [docs]
+            assert await readdir(accessor, docs_path, index) == [
+                docs + "/first.md", docs + "/second.md"
+            ]
+        tree_fetch.assert_awaited_once()
+        assert [call.args[3] for call in dir_fetch.await_args_list
+                ] == ["main", "main", "docs-sha"]
+    finally:
+        await index.close()
+        await client.aclose()

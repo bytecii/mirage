@@ -178,8 +178,11 @@ def seed_index(
         prefix (str): the mount prefix the keys are built against.
     """
     entries, children = index_rows(accessor.tree, prefix)
-    index.seed(entries, children,
-               datetime.now(timezone.utc) + timedelta(days=365))
+    # A truncated response cannot establish that any listing is complete,
+    # including an apparently empty directory. Readdir must fill it first.
+    expires_at = (datetime.fromtimestamp(0, timezone.utc) if accessor.truncated
+                  else datetime.now(timezone.utc) + timedelta(days=365))
+    index.seed(entries, children, expires_at)
 
 
 async def refill_index(

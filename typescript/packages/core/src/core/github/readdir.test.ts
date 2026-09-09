@@ -158,3 +158,83 @@ for (const backend of ['ram', 'redis']) {
     )
   }
 }
+
+for (const backend of ['ram', 'redis']) {
+  describe.skipIf(backend === 'redis' && process.env.REDIS_URL === undefined)(
+    `truncated refill with ${backend}`,
+    () => {
+      for (const prefix of ['', '/repo']) {
+        for (const partialChildren of [false, true]) {
+          for (const refresh of [false, true]) {
+            it(`fetches complete listings (prefix=${prefix}, partial=${String(partialChildren)}, refresh=${String(refresh)})`, async () => {
+              const url = process.env.REDIS_URL
+              const index =
+                backend === 'ram'
+                  ? new RAMIndexCacheStore()
+                  : new RedisIndexCacheStore({
+                      ...(url === undefined ? {} : { url }),
+                      keyPrefix: `github-refill:${crypto.randomUUID()}:`,
+                    })
+              const folder = { path: 'docs', type: 'tree', sha: 'docs-sha' }
+              const partialTree = partialChildren
+                ? [folder, { path: 'docs/first.md', type: 'blob', sha: 'first', size: 1 }]
+                : [folder]
+              const get = vi.fn((path: string, params?: Record<string, string>) => {
+                if (params?.recursive === '1')
+                  return Promise.resolve({ tree: partialTree, truncated: true })
+                if (path.endsWith('/git/trees/main')) return Promise.resolve({ tree: [folder] })
+                if (path.endsWith('/git/trees/docs-sha'))
+                  return Promise.resolve({
+                    tree: [
+                      { path: 'first.md', type: 'blob', sha: 'first', size: 1 },
+                      { path: 'second.md', type: 'blob', sha: 'second', size: 2 },
+                    ],
+                  })
+                throw new Error(`Unexpected request: ${path}`)
+              })
+              const accessor = new GitHubAccessor({
+                transport: { get, request: vi.fn() },
+                owner: 'acme',
+                repo: 'proj',
+                ref: 'main',
+                defaultBranch: 'main',
+              })
+              const root = prefix || '/'
+              const rootPath = new PathSpec({ resourcePath: '', virtual: root, directory: root })
+              const docs = `${prefix}/docs`
+              const docsPath = new PathSpec({
+                resourcePath: 'docs',
+                virtual: docs,
+                directory: docs,
+              })
+              try {
+                if (refresh) {
+                  await index.setDir(root, [])
+                  await index.invalidate()
+                }
+                for (let i = 0; i < 2; i++) {
+                  expect(await readdir(accessor, rootPath, index)).toEqual([docs])
+                  expect(await readdir(accessor, docsPath, index)).toEqual([
+                    `${docs}/first.md`,
+                    `${docs}/second.md`,
+                  ])
+                }
+                expect(
+                  get.mock.calls.filter(([, params]) => params?.recursive === '1'),
+                ).toHaveLength(1)
+                expect(
+                  get.mock.calls
+                    .filter(([, params]) => params?.recursive !== '1')
+                    .map(([path]) => path.split('/').at(-1)),
+                ).toEqual(['main', 'main', 'docs-sha'])
+              } finally {
+                await index.clear()
+                await index.close()
+              }
+            })
+          }
+        }
+      }
+    },
+  )
+}

@@ -31,6 +31,7 @@ export async function populateIndex(
   index: IndexCacheStore,
   tree: Record<string, TreeEntry>,
   prefix: string,
+  expiresAt?: Date,
 ): Promise<void> {
   // Keyed by mount-absolute path, the way every other backend keys its
   // index, so the shared cache machinery can spell an eviction without
@@ -54,7 +55,7 @@ export async function populateIndex(
     arr.push([name, indexEntryFromTree(item)])
     dirs.set(parent, arr)
   }
-  await Promise.all([...dirs].map(([parent, entries]) => index.setDir(parent, entries)))
+  await Promise.all([...dirs].map(([parent, entries]) => index.setDir(parent, entries, expiresAt)))
 }
 
 /**
@@ -67,7 +68,9 @@ async function seedIndex(
   index: IndexCacheStore,
   prefix: string,
 ): Promise<void> {
-  await populateIndex(index, accessor.tree, prefix)
+  // A truncated response cannot establish that any listing is complete,
+  // including an apparently empty directory. Readdir must fill it first.
+  await populateIndex(index, accessor.tree, prefix, accessor.truncated ? new Date(0) : undefined)
 }
 
 /**

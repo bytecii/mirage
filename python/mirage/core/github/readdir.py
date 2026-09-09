@@ -79,11 +79,11 @@ async def _fallback_readdir(
         raise enoent(virtual)
     entries = await fetch_dir_tree(accessor.config, accessor.owner,
                                    accessor.repo, parent_sha, accessor.pool)
-    norm = virtual_key.rstrip("/")
+    norm = virtual_key.rstrip("/") or "/"
     child_keys: list[str] = []
     dir_entries: list[tuple[str, IndexEntry]] = []
     for entry in entries:
-        child_path = norm + "/" + entry.path
+        child_path = norm.rstrip("/") + "/" + entry.path
         resource_type = "folder" if entry.type == "tree" else "file"
         idx_entry = IndexEntry(
             id=entry.sha,
