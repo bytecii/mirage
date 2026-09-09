@@ -590,14 +590,16 @@ async def test_unknown_size_preopen_stats_zero(sizeless_fs):
 
 
 @pytest.mark.asyncio
-async def test_unknown_size_o_trunc_open_fetches_nothing(sizeless_fs):
+async def test_unknown_size_o_trunc_open_hydrates_the_truncated_file(
+        sizeless_fs):
     # A size-unknown file is hydrated at open so fstat can answer; under
-    # O_TRUNC there is nothing left to fetch, and fstat must say 0 at once.
+    # O_TRUNC that hydration reads the file after the truncation, through
+    # the same rendered path as any other open, so fstat says 0 at once.
     fs, ops = sizeless_fs
     fh = fs.open("/u.json", os.O_WRONLY | os.O_TRUNC)
     assert fs.getattr("/u.json", fh)["st_size"] == 0
     assert fs.read("/u.json", 100, 0, fh) == b""
-    assert ops.read_calls == 0
+    assert ops.read_calls == 1
     fs.release("/u.json", fh)
 
 

@@ -646,12 +646,13 @@ class MountCore:
             # setattr first, which is why dropping it here only showed on a
             # fuse3-only host, where a shorter overwrite kept the old tail.
             self.truncate(path, 0)
-            if s.size is None:
-                ctx.data = b""
-        elif s.size is None:
+        if s.size is None:
             # API resources cannot size a file without fetching it, so hydrate
             # now: getattr(fh) and read() then serve real bytes, and the TTL
-            # cache keeps release-then-stat bursts from refetching.
+            # cache keeps release-then-stat bursts from refetching. This
+            # holds after an O_TRUNC too: the read follows the rendered path,
+            # so an extension whose renderer gives an empty file a body is
+            # honored rather than shadowed by literal raw emptiness.
             ctx.data = self.prefetch_read(path)
         return self._handles.add(ctx)
 

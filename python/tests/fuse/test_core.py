@@ -304,6 +304,36 @@ async def _read_tally(accessor, path: PathSpec, **kwargs) -> bytes:
     return b"RENDERED-AND-MUCH-LONGER"
 
 
+class _Sizeless:
+
+    def __init__(self, ops):
+        self._inner = ops
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    async def stat(self, path):
+        s = await self._inner.stat(path)
+        return s.model_copy(update={"size": None})
+
+
+@pytest.mark.asyncio
+async def test_o_trunc_open_hydrates_through_the_renderer():
+    # An O_TRUNC open of a size-unknown file whose extension renders must
+    # serve the rendered body of the now-empty file, not raw emptiness.
+    resource = RAMResource()
+    resource.register_op(_read_tally)
+    ws = Workspace({"/data/": resource}, mode=MountMode.WRITE)
+    await ws.execute("tee /data/books.tally", stdin=b"0123456789")
+    core = MountCore(_Sizeless(ws.fs))
+    fh = core.open("/data/books.tally", os.O_WRONLY | os.O_TRUNC)
+    assert core._run(core._ops.read("/data/books.tally", raw=True)) == b""
+    rendered = b"RENDERED-AND-MUCH-LONGER"
+    assert core.getattr("/data/books.tally", fh)["st_size"] == len(rendered)
+    assert core.read("/data/books.tally", 100, 0, fh) == rendered
+    core.release(fh)
+
+
 def _tally_core() -> MountCore:
     resource = RAMResource()
     resource.register_op(_read_tally)

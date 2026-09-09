@@ -222,10 +222,27 @@ describe('MountCore', () => {
       if (calls === 1) await gate
       return original(...args)
     })
+    // The O_TRUNC open hydrates through the same in-flight read, so the
+    // gate opens once its truncation has landed rather than after it
+    // returns.
+    const realTruncate = ws.fs.truncate.bind(ws.fs)
+    let truncated: () => void = () => undefined
+    const truncateDone = new Promise<void>((resolve) => {
+      truncated = resolve
+    })
+    vi.spyOn(ws.fs, 'truncate').mockImplementation(
+      async (...args: Parameters<typeof realTruncate>) => {
+        const result = await realTruncate(...args)
+        truncated()
+        return result
+      },
+    )
     const core = new MountCore(ws.fs)
     const pending = core.open('/data/api.json')
-    const writer = await core.open('/data/api.json', fsConstants.O_WRONLY | fsConstants.O_TRUNC)
+    const opening = core.open('/data/api.json', fsConstants.O_WRONLY | fsConstants.O_TRUNC)
+    await truncateDone
     release()
+    const writer = await opening
     const reader = await pending
     expect((await core.fgetattr('/data/api.json', reader)).size).toBe(0)
     await core.release(writer)

@@ -642,8 +642,11 @@ export class MountCore {
       // holding the old tail once the kernel stops doing that for us
       // (#1032). Mirrors Python's MountCore.open.
       await this.truncate(path, 0)
-      if (s.size === null) ctx.data = new Uint8Array(0)
-    } else if (s.size === null) {
+    }
+    if (s.size === null) {
+      // Hydrate through the rendered read path, after an O_TRUNC too: an
+      // extension whose renderer gives an empty file a body is honored
+      // rather than shadowed by literal raw emptiness.
       const data = await this.prefetch(path)
       if (data !== null) ctx.data = data
     }
