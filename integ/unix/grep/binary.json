@@ -388,6 +388,142 @@
         "stdout": "/mail/INBOX/2026-01-07/Server_alert_worker-3__3.email.json\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "grep_binary_integ_late_nul_partial_count",
+      "seq": 990120,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'needle\\n%32761s\\000tail\\n' x > /data/late.txt; grep -Ic needle /data/late.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_late_nul_partial_named_count",
+      "seq": 990121,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'needle\\n%32761s\\000tail\\n' x > /data/late.txt; grep --binary-files=without-match -cH needle /data/late.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "/data/late.txt:0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_late_nul_newline_count",
+      "seq": 990122,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'needle\\n%32760s\\n\\000tail\\n' x > /data/late.txt; grep -Ic needle /data/late.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "grep_binary_integ_late_nul_newline_named_count",
+      "seq": 990123,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'needle\\n%32760s\\n\\000tail\\n' x > /data/late.txt; grep --binary-files=without-match -cH needle /data/late.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "/data/late.txt:0\n",
+        "stderr": ""
+      }
     }
   ]
 }

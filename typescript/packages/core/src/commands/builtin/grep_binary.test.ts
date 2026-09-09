@@ -91,3 +91,64 @@ it.each(['', 'bogus'])('rejects invalid binary mode %j', (value) => {
     'unknown binary-files type',
   )
 })
+
+describe.each([1024, 32768, 65536])('late NUL with %i-byte backend chunks', (size) => {
+  describe.each(['', '\n'])('preceding block ends with %j', (lineEnd) => {
+    describe.each([false, true])('count-only %j', (countOnly) => {
+      it.each([{ args_I: true }, { binary_files: 'without-match' }])(
+        'discards earlier matches with %j',
+        async (binaryFlag) => {
+          const data = ENC.encode(
+            'needle\n' + 'x'.repeat(32761 - lineEnd.length) + lineEnd + '\0tail\n',
+          )
+          let closed = false
+          async function* source(): AsyncIterable<Uint8Array> {
+            await Promise.resolve()
+            try {
+              for (let at = 0; at < data.length; at += size) yield data.subarray(at, at + size)
+              throw new Error('read past the binary block')
+            } finally {
+              closed = true
+            }
+          }
+          const f = parseFlags(new FlagView({ ...binaryFlag, c: countOnly }, specOf('grep')))
+          const io = new IOResult()
+          const out = await materialize(
+            grepInput(source(), /needle/, f, '/remote/late.txt', true, io),
+          )
+          // Streaming output already emitted before the NUL cannot be retracted.
+          expect(DEC.decode(out)).toBe(
+            countOnly ? '/remote/late.txt:0\n' : '/remote/late.txt:needle\n',
+          )
+          expect(io.stderr).toBeNull()
+          expect(io.exitCode).toBe(1)
+          expect(closed).toBe(true)
+        },
+      )
+    })
+  })
+})
+
+it.each([
+  [{ m: 1, c: true }, '1\n'],
+  [{ q: true }, ''],
+  [{ args_l: true }, '/remote/rows.jsonl\n'],
+] as const)('does not read ahead after without-match early stop %j', async (flags, expected) => {
+  let closed = false
+  async function* source(): AsyncIterable<Uint8Array> {
+    await Promise.resolve()
+    try {
+      yield ENC.encode('needle\n')
+      throw new Error('read past the requested match')
+    } finally {
+      closed = true
+    }
+  }
+  const f = parseFlags(new FlagView({ args_I: true, ...flags }, specOf('grep')))
+  const io = new IOResult()
+  const out = await materialize(grepInput(source(), /needle/, f, '/remote/rows.jsonl', false, io))
+  expect(DEC.decode(out)).toBe(expected)
+  expect(io.stderr).toBeNull()
+  expect(io.exitCode).toBe(0)
+  expect(closed).toBe(true)
+})

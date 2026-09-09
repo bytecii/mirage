@@ -1576,6 +1576,216 @@
         "stdout_text": "needle\u0000tail\n",
         "stderr_text": ""
       }
+    },
+    {
+      "id": "grep_binary_late_nul_partial_count",
+      "cmd": "printf 'needle\\n%32761s\\000tail\\n' x > /data/late.txt; grep -Ic needle /data/late.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 1,
+        "stdout_text": "0\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_binary_late_nul_partial_named_count",
+      "cmd": "printf 'needle\\n%32761s\\000tail\\n' x > /data/late.txt; grep --binary-files=without-match -cH needle /data/late.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 1,
+        "stdout_text": "/data/late.txt:0\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_binary_late_nul_newline_count",
+      "cmd": "printf 'needle\\n%32760s\\n\\000tail\\n' x > /data/late.txt; grep -Ic needle /data/late.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 1,
+        "stdout_text": "0\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_binary_late_nul_newline_named_count",
+      "cmd": "printf 'needle\\n%32760s\\n\\000tail\\n' x > /data/late.txt; grep --binary-files=without-match -cH needle /data/late.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 1,
+        "stdout_text": "/data/late.txt:0\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_binary_late_nul_lines",
+      "cmd": "printf 'needle\\n%262137s\\000tail\\n' x > /data/late.txt; grep -I needle /data/late.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 1,
+        "stdout_text": "needle\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_binary_late_nul_max_count",
+      "cmd": "printf 'needle\\n%262137s\\000tail\\n' x > /data/late.txt; grep -Ic -m1 needle /data/late.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "1\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_binary_late_nul_quiet",
+      "cmd": "printf 'needle\\n%262137s\\000tail\\n' x > /data/late.txt; grep -Iq needle /data/late.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_binary_late_nul_files",
+      "cmd": "printf 'needle\\n%262137s\\000tail\\n' x > /data/late.txt; grep -Il needle /data/late.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "/data/late.txt\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_binary_late_nul_multi_late",
+      "cmd": "printf 'needle\\n%262137s\\000tail\\n' x > /data/late.txt; printf 'needle\\n' > /data/plain.txt; grep -Ic needle /data/late.txt /data/plain.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "/data/late.txt:0\n/data/plain.txt:1\n",
+        "stderr_text": ""
+      }
+    },
+    {
+      "id": "grep_binary_late_nul_multi_plain",
+      "cmd": "printf 'needle\\n%262137s\\000tail\\n' x > /data/late.txt; printf 'needle\\n' > /data/plain.txt; grep -Ic needle /data/plain.txt /data/late.txt",
+      "matrix": {
+        "python": [
+          "ram",
+          "disk",
+          "redis"
+        ],
+        "typescript": [
+          "ram",
+          "disk",
+          "redis"
+        ]
+      },
+      "expect": {
+        "exit": 0,
+        "stdout_text": "/data/plain.txt:1\n/data/late.txt:0\n",
+        "stderr_text": ""
+      }
     }
   ]
 }

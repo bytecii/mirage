@@ -105,3 +105,78 @@ def test_invalid_binary_mode(value):
     with pytest.raises(UsageError, match="unknown binary-files type"):
         parse_flags(FlagView({"binary_files": value}, spec=SPECS["grep"]),
                     False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunk_size", [1024, 32768, 65536])
+@pytest.mark.parametrize("line_end", [b"", b"\n"])
+@pytest.mark.parametrize("count_only", [False, True])
+@pytest.mark.parametrize("binary_flag", [{
+    "args_I": True
+}, {
+    "binary_files": "without-match"
+}])
+async def test_late_nul_discards_earlier_matches(chunk_size, line_end,
+                                                 count_only, binary_flag):
+    data = (b"needle\n" + b"x" * (32761 - len(line_end)) + line_end +
+            b"\0tail\n")
+    closed = False
+
+    async def source() -> AsyncIterator[bytes]:
+        nonlocal closed
+        try:
+            for offset in range(0, len(data), chunk_size):
+                yield data[offset:offset + chunk_size]
+            raise AssertionError("read past the binary block")
+        finally:
+            closed = True
+
+    f = parse_flags(
+        FlagView({
+            **binary_flag, "c": count_only
+        }, spec=SPECS["grep"]), False)
+    io = IOResult()
+    out = await materialize(
+        grep_input(source(), re.compile("needle"), f, "/remote/late.txt", True,
+                   io))
+    # Streaming output already emitted before the NUL cannot be retracted.
+    expected = (b"/remote/late.txt:0\n"
+                if count_only else b"/remote/late.txt:needle\n")
+    assert (out, io.stderr or b"", io.exit_code) == (expected, b"", 1)
+    assert closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags,expected", [
+    ({
+        "m": 1,
+        "c": True
+    }, b"1\n"),
+    ({
+        "q": True
+    }, b""),
+    ({
+        "args_l": True
+    }, b"/remote/rows.jsonl\n"),
+])
+async def test_without_match_early_stop_does_not_read_ahead(flags, expected):
+    closed = False
+
+    async def source() -> AsyncIterator[bytes]:
+        nonlocal closed
+        try:
+            yield b"needle\n"
+            raise AssertionError("read past the requested match")
+        finally:
+            closed = True
+
+    f = parse_flags(FlagView({
+        "args_I": True,
+        **flags
+    }, spec=SPECS["grep"]), False)
+    io = IOResult()
+    out = await materialize(
+        grep_input(source(), re.compile("needle"), f, "/remote/rows.jsonl",
+                   False, io))
+    assert (out, io.stderr or b"", io.exit_code) == (expected, b"", 0)
+    assert closed

@@ -155,6 +155,11 @@ async def grep_input(source: AsyncIterator[bytes], pat: re.Pattern[str],
         await close_quietly(input_stream)
         await close_quietly(source)
 
+    # Detection can end input without yielding another line.
+    if binary.nul and f.binary_mode == "without-match":
+        count = 0
+        io.exit_code = 1
+
     if f.count_only and not (f.quiet or f.files_only):
         yield (f"{path}:"
                if show_filename else "").encode() + f"{count}\n".encode()

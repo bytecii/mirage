@@ -181,6 +181,12 @@ export async function* grepInput(
     await closeQuietly(source)
   }
 
+  // Detection can end input without yielding another line.
+  if (binary.nul && f.binaryMode === 'without-match') {
+    count = 0
+    io.exitCode = 1
+  }
+
   if (f.countOnly && !(f.quiet || f.filesOnly))
     yield ENC.encode((showFilename ? path + ':' : '') + String(count) + '\n')
 }
