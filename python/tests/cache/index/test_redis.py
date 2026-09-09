@@ -12,15 +12,18 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 
 from mirage.cache.index import IndexEntry, LookupStatus
-from mirage.cache.index.redis import RedisIndexCacheStore
+from mirage.cache.index.redis import (LISTING_CHILDREN, LISTING_EXPIRES_AT,
+                                      LISTING_WRITTEN_AT, RedisIndexCacheStore)
 
 REDIS_URL = os.environ.get("REDIS_URL", "")
 pytestmark = pytest.mark.skipif(not REDIS_URL, reason="REDIS_URL not set")
@@ -146,7 +149,9 @@ async def test_list_dir_expired(store):
     await store.set_dir("/dir", entries, expired_at=past)
     time.sleep(1.5)
     result = await store.list_dir("/dir")
-    assert result.status in (LookupStatus.NOT_FOUND, LookupStatus.EXPIRED)
+    # Freshness is decided from the listing's own stamp, and the key is
+    # kept past it, so this is EXPIRED as on RAM, never NOT_FOUND.
+    assert result.status == LookupStatus.EXPIRED
 
 
 @pytest.mark.asyncio
@@ -241,3 +246,51 @@ async def test_invalidate_prefix_handles_glob_metacharacters(store, entry):
     await store.invalidate_prefix("/chan/a[1]")
     assert (await store.list_dir("/chan/a[1]")).entries is None
     assert (await store.list_dir("/chan/ab")).entries is not None
+
+
+# The one wire format: what pydantic writes for IndexEntry, snake_case and
+# every field. `redis.test.ts` pins the same literal, so an entry either
+# language writes is one the other reads (#1020).
+ENTRY_WIRE = ('{"id":"/a.txt","name":"a.txt","resource_type":"file",'
+              '"remote_time":"2026-01-01T00:00:00Z",'
+              '"index_time":"2026-01-01T00:00:00Z","vfs_name":"","size":6,'
+              '"extra":{}}')
+
+
+@pytest.mark.asyncio
+async def test_entry_wire_format_is_the_shared_json(store):
+    await store.put(
+        "/a.txt",
+        IndexEntry(id="/a.txt",
+                   name="a.txt",
+                   resource_type="file",
+                   remote_time="2026-01-01T00:00:00Z",
+                   index_time="2026-01-01T00:00:00Z",
+                   size=6))
+    assert await store._client.get(store._entry_key("/a.txt")) == ENTRY_WIRE
+
+
+@pytest.mark.asyncio
+async def test_listing_is_one_json_document_with_its_stamps(store, entry):
+    await store.set_dir("/d", [("f.txt", entry)])
+    raw = await store._client.get(store._children_key("/d"))
+    listing = json.loads(raw)
+    assert listing[LISTING_CHILDREN] == ["/d/f.txt"]
+    assert listing[LISTING_EXPIRES_AT] - listing[LISTING_WRITTEN_AT] == 60
+    assert await store._client.ttl(store._children_key("/d")) > 60
+
+
+@pytest.mark.asyncio
+async def test_seed_then_close_writes_the_seed(entry):
+    prefix = f"test:seedclose:{uuid4()}:"
+    first = RedisIndexCacheStore(ttl=60, url=REDIS_URL, key_prefix=prefix)
+    first.seed({"/d/f.txt": entry}, {"/d": ["/d/f.txt"]},
+               datetime.now(timezone.utc) + timedelta(hours=1))
+    await first.close()
+    second = RedisIndexCacheStore(ttl=60, url=REDIS_URL, key_prefix=prefix)
+    try:
+        assert (await second.list_dir("/d")).entries == ["/d/f.txt"]
+        assert (await second.get("/d/f.txt")).entry is not None
+    finally:
+        await second.clear()
+        await second.close()

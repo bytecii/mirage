@@ -14,7 +14,11 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { IndexEntry, LookupStatus } from './config.ts'
-import { RedisIndexCacheStore } from './redis.ts'
+import { type ListingDocument, type RedisClientLike, RedisIndexCacheStore } from './redis.ts'
+
+function rawClient(store: RedisIndexCacheStore): Promise<RedisClientLike> {
+  return (store as unknown as { client: () => Promise<RedisClientLike> }).client()
+}
 
 describe('RedisIndexCacheStore default keyPrefix', () => {
   it('namespaces keys under mirage:index: by default', () => {
@@ -109,8 +113,9 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
       await s.setDir('/tmp', [['x', entry('id-x', 'x')]])
       expect((await s.listDir('/tmp')).entries).toEqual(['/tmp/x'])
       await new Promise((r) => setTimeout(r, 1100))
-      const r = await s.listDir('/tmp')
-      expect(r.status === LookupStatus.NOT_FOUND || r.status === LookupStatus.EXPIRED).toBe(true)
+      // Freshness is decided from the listing's own stamp, and the key is
+      // kept past it, so this is EXPIRED as on RAM, never NOT_FOUND.
+      expect((await s.listDir('/tmp')).status).toBe(LookupStatus.EXPIRED)
     } finally {
       await s.clear()
       await s.close()
@@ -140,6 +145,49 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
     await store.invalidatePrefix('/chan/a[1]')
     expect((await store.listDir('/chan/a[1]')).status).toBe(LookupStatus.NOT_FOUND)
     expect((await store.listDir('/chan/ab')).entries).toEqual(['/chan/ab/y'])
+  })
+
+  // The one wire format: what pydantic writes for the Python IndexEntry,
+  // snake_case and every field. `test_redis.py` pins the same literal, so an
+  // entry either language writes is one the other reads (#1020).
+  it('writes the entry JSON Python writes', async () => {
+    await store.put(
+      '/a.txt',
+      new IndexEntry({
+        id: '/a.txt',
+        name: 'a.txt',
+        resourceType: 'file',
+        remoteTime: '2026-01-01T00:00:00Z',
+        indexTime: '2026-01-01T00:00:00Z',
+        size: 6,
+      }),
+    )
+    const c = await rawClient(store)
+    expect(await c.get(`${prefix}mirage:idx:entry:/a.txt`)).toBe(
+      '{"id":"/a.txt","name":"a.txt","resource_type":"file","remote_time":"2026-01-01T00:00:00Z","index_time":"2026-01-01T00:00:00Z","vfs_name":"","size":6,"extra":{}}',
+    )
+  })
+
+  it('reads the entry JSON Python writes', async () => {
+    const c = await rawClient(store)
+    await c.set(
+      `${prefix}mirage:idx:entry:/b.txt`,
+      '{"id":"/b.txt","name":"b.txt","resource_type":"file","remote_time":"","index_time":"2026-01-01T00:00:00Z","vfs_name":"","size":null,"extra":{"size_bytes":9}}',
+    )
+    const r = await store.get('/b.txt')
+    expect(r.entry?.resourceType).toBe('file')
+    expect(r.entry?.indexTime).toBe('2026-01-01T00:00:00Z')
+    expect(r.entry?.size).toBeNull()
+    expect(r.entry?.extra).toEqual({ size_bytes: 9 })
+  })
+
+  it('stores a listing as one document with its stamps', async () => {
+    await store.setDir('/d', [['f', entry('id-f', 'f')]])
+    const c = await rawClient(store)
+    const raw = await c.get(`${prefix}mirage:idx:children:/d`)
+    const listing = JSON.parse(raw ?? '{}') as ListingDocument
+    expect(listing.children).toEqual(['/d/f'])
+    expect(listing.expires_at - listing.written_at).toBeCloseTo(600, 3)
   })
 
   it('clear wipes everything under prefix', async () => {

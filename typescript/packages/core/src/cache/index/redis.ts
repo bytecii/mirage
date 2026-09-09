@@ -20,7 +20,10 @@ import { IndexCacheStore } from './store.ts'
 
 const ENTRY_PREFIX = 'mirage:idx:entry:'
 const CHILDREN_PREFIX = 'mirage:idx:children:'
+const INVALIDATED_KEY = 'mirage:idx:invalidated_at'
 const DEFAULT_KEY_PREFIX = 'mirage:index:'
+// The least time a listing outlives its own expiry in Redis, in seconds.
+export const MIN_EXPIRED_RETENTION = 60
 
 /**
  * Escape redis MATCH metacharacters in a literal path.
@@ -34,21 +37,99 @@ function globEscape(value: string): string {
   return value.replace(/[*?[\]\\]/g, (char) => `\\${char}`)
 }
 
+/**
+ * The JSON a directory listing is stored as.
+ *
+ * A JSON document rather than a Redis list, because Redis has no empty list:
+ * `RPUSH` with no values creates no key, so a directory with no children
+ * could never be recorded as listed, every `ls` of it was a cold backend
+ * call, and no negative lookup under it was ever absorbed. The two stamps are
+ * epoch seconds rather than ISO strings so both languages compare them as
+ * numbers; the Python store writes the same three keys (`listing_document`
+ * in `cache/index/redis.py`).
+ */
+export interface ListingDocument {
+  children: string[]
+  written_at: number
+  expires_at: number
+}
+
+export function listingDocument(children: string[], writtenAt: number, expiresAt: number): string {
+  const doc: ListingDocument = { children, written_at: writtenAt, expires_at: expiresAt }
+  return JSON.stringify(doc)
+}
+
+/**
+ * How long Redis keeps a listing: its freshness plus a retention.
+ *
+ * Freshness is decided by the caller from the document's own stamps, never
+ * by Redis dropping the key, so the key has to outlive its expiry: while it
+ * does, a lookup answers EXPIRED exactly as the RAM store does for a stale
+ * row it still holds, and only once Redis has forgotten it does the answer
+ * become NOT_FOUND. The retention is one more TTL and at least a minute. RAM
+ * keeps a stale row until something drops it, but Redis is a shared server
+ * and its keyspace needs a bound. Mirrors Python `physical_ttl_seconds`.
+ */
+export function physicalTtlSeconds(writtenAt: number, expiresAt: number): number {
+  const freshFor = Math.max(0, expiresAt - writtenAt)
+  return Math.ceil(freshFor + Math.max(freshFor, MIN_EXPIRED_RETENTION))
+}
+
+/**
+ * The entry JSON on the wire: the shape pydantic writes for the Python
+ * `IndexEntry` (snake_case, every field), so one Redis serves both languages.
+ * `extra` rides along because it is load-bearing (`size_bytes`,
+ * `folder.childCount` that `find -empty` reads on Graph backends).
+ */
+interface EntryWire {
+  id: string
+  name: string
+  resource_type: string
+  remote_time?: string
+  index_time?: string
+  vfs_name?: string
+  size?: number | null
+  extra?: Record<string, unknown>
+}
+
+function toWire(e: IndexEntry): EntryWire {
+  return {
+    id: e.id,
+    name: e.name,
+    resource_type: e.resourceType,
+    remote_time: e.remoteTime,
+    index_time: e.indexTime,
+    vfs_name: e.vfsName,
+    size: e.size,
+    extra: e.extra,
+  }
+}
+
+function fromWire(raw: string): IndexEntry {
+  const w = JSON.parse(raw) as EntryWire
+  return new IndexEntry({
+    id: w.id,
+    name: w.name,
+    resourceType: w.resource_type,
+    remoteTime: w.remote_time ?? '',
+    indexTime: w.index_time ?? '',
+    vfsName: w.vfs_name ?? '',
+    size: w.size ?? null,
+    extra: w.extra ?? {},
+  })
+}
+
 interface RedisPipeline {
-  set: (key: string, value: string) => RedisPipeline
+  set: (key: string, value: string, options?: { EX: number }) => RedisPipeline
   del: (key: string) => RedisPipeline
-  rPush: (key: string, values: string[]) => RedisPipeline
-  expire: (key: string, seconds: number) => RedisPipeline
   exec: () => Promise<unknown>
 }
 
 export interface RedisClientLike {
   connect: () => Promise<unknown>
   get: (key: string) => Promise<string | null>
-  set: (key: string, value: string) => Promise<unknown>
-  exists: (key: string) => Promise<number>
-  ttl: (key: string) => Promise<number>
-  lRange: (key: string, start: number, stop: number) => Promise<string[]>
+  set: (key: string, value: string, options?: { EX: number }) => Promise<unknown>
+  mGet: (keys: string[]) => Promise<(string | null)[]>
   del: (key: string | string[]) => Promise<unknown>
   multi: () => RedisPipeline
   scanIterator: (options: { MATCH: string }) => AsyncIterable<string | string[]>
@@ -63,12 +144,34 @@ export interface RedisIndexCacheOptions {
   keyPrefix?: string
 }
 
+/**
+ * Redis-backed index cache for remote resource metadata.
+ *
+ * Entries are the JSON pydantic writes for the Python `IndexEntry`, and a
+ * directory listing is one JSON document (`listingDocument`) carrying the
+ * child keys and two epoch-second stamps, `written_at` and `expires_at`.
+ * Freshness is decided here, from those stamps, not by Redis dropping the
+ * key: the key outlives its expiry (`physicalTtlSeconds`), so a lookup in
+ * that window answers EXPIRED as the RAM store does, and `invalidate` writes
+ * one `invalidated_at` marker that every listing written before it compares
+ * stale against, entries kept. `listDir` is therefore one `MGET` of the
+ * listing and the marker.
+ *
+ * Key layout:
+ *
+ *     {keyPrefix}mirage:idx:entry:{resourcePath}     -> IndexEntry JSON
+ *     {keyPrefix}mirage:idx:children:{resourcePath}  -> listing JSON
+ *     {keyPrefix}mirage:idx:invalidated_at           -> epoch seconds
+ *
+ * Mirrors Python `RedisIndexCacheStore` (`cache/index/redis.py`).
+ */
 export class RedisIndexCacheStore extends IndexCacheStore {
   private readonly ttl: number
   private readonly url: string
   private readonly providedClient: RedisClientLike | null
   private readonly entryPrefix: string
   private readonly childrenPrefix: string
+  private readonly invalidatedKey: string
   private clientPromise: Promise<RedisClientLike> | null = null
 
   constructor(options: RedisIndexCacheOptions = {}) {
@@ -79,6 +182,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     const prefix = options.keyPrefix ?? DEFAULT_KEY_PREFIX
     this.entryPrefix = `${prefix}${ENTRY_PREFIX}`
     this.childrenPrefix = `${prefix}${CHILDREN_PREFIX}`
+    this.invalidatedKey = `${prefix}${INVALIDATED_KEY}`
   }
 
   private entryKey(path: string): string {
@@ -109,39 +213,47 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     return this.clientPromise
   }
 
+  private writeListing(
+    pipe: RedisPipeline,
+    resourcePath: string,
+    childKeys: string[],
+    writtenAt: number,
+    expiresAt: number,
+  ): void {
+    pipe.set(this.childrenKey(resourcePath), listingDocument(childKeys, writtenAt, expiresAt), {
+      EX: physicalTtlSeconds(writtenAt, expiresAt),
+    })
+  }
+
   async get(resourcePath: string): Promise<LookupResult> {
     const c = await this.client()
     const raw = await c.get(this.entryKey(resourcePath))
     if (raw === null) return { status: LookupStatus.NOT_FOUND }
-    const parsed = JSON.parse(raw) as {
-      id: string
-      name: string
-      resourceType: string
-      remoteTime?: string
-      indexTime?: string
-      vfsName?: string
-      size?: number | null
-      extra?: Record<string, unknown>
-    }
-    return { entry: new IndexEntry(parsed) }
+    return { entry: fromWire(raw) }
   }
 
   async put(resourcePath: string, entry: IndexEntry): Promise<void> {
     const c = await this.client()
     const stored =
       entry.indexTime === '' ? entry.copyWith({ indexTime: new Date().toISOString() }) : entry
-    await c.set(this.entryKey(resourcePath), JSON.stringify(this.serialize(stored)))
+    await c.set(this.entryKey(resourcePath), JSON.stringify(toWire(stored)))
   }
 
   async listDir(resourcePath: string): Promise<ListResult> {
     const c = await this.client()
-    const key = this.childrenKey(resourcePath)
-    const exists = await c.exists(key)
-    if (!exists) return { status: LookupStatus.NOT_FOUND }
-    const ttlRemaining = await c.ttl(key)
-    if (ttlRemaining === -2) return { status: LookupStatus.EXPIRED }
-    const raw = await c.lRange(key, 0, -1)
-    return { entries: [...raw] }
+    const [rawListing, rawMarker] = await c.mGet([
+      this.childrenKey(resourcePath),
+      this.invalidatedKey,
+    ])
+    if (rawListing === null || rawListing === undefined) return { status: LookupStatus.NOT_FOUND }
+    const listing = JSON.parse(rawListing) as ListingDocument
+    // Stale when its own expiry has passed, or when `invalidate` ran after
+    // it was written; both mirror the RAM store's expiry map.
+    if (Date.now() / 1000 > listing.expires_at) return { status: LookupStatus.EXPIRED }
+    if (rawMarker !== null && rawMarker !== undefined && Number(rawMarker) >= listing.written_at) {
+      return { status: LookupStatus.EXPIRED }
+    }
+    return { entries: [...listing.children] }
   }
 
   async setDir(
@@ -158,30 +270,29 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     for (const [name, entry] of entries) {
       const fullPath = prefix + name
       const stored = entry.indexTime === '' ? entry.copyWith({ indexTime: nowIso }) : entry
-      pipe.set(this.entryKey(fullPath), JSON.stringify(this.serialize(stored)))
+      pipe.set(this.entryKey(fullPath), JSON.stringify(toWire(stored)))
       childKeys.push(fullPath)
     }
-    const childrenKey = this.childrenKey(resourcePath)
-    pipe.del(childrenKey)
-    if (childKeys.length > 0) {
-      pipe.rPush(childrenKey, childKeys)
-    }
-    const ttlSeconds =
+    const writtenAt = now.getTime() / 1000
+    const expiresAt =
       expiredAt !== null && expiredAt !== undefined
-        ? Math.max(1, Math.floor((expiredAt.getTime() - now.getTime()) / 1000))
-        : Math.max(1, Math.floor(this.ttl))
-    pipe.expire(childrenKey, ttlSeconds)
+        ? expiredAt.getTime() / 1000
+        : writtenAt + this.ttl
+    this.writeListing(pipe, resourcePath, childKeys, writtenAt, expiresAt)
     await pipe.exec()
   }
 
   async invalidateDir(resourcePath: string): Promise<void> {
     const c = await this.client()
-    const childPaths = await c.lRange(this.childrenKey(resourcePath), 0, -1)
+    const childrenKey = this.childrenKey(resourcePath)
+    const raw = await c.get(childrenKey)
     const pipe = c.multi()
-    for (const child of childPaths) {
-      pipe.del(this.entryKey(child))
+    if (raw !== null) {
+      for (const child of (JSON.parse(raw) as ListingDocument).children) {
+        pipe.del(this.entryKey(child))
+      }
     }
-    pipe.del(this.childrenKey(resourcePath))
+    pipe.del(childrenKey)
     await pipe.exec()
   }
 
@@ -203,19 +314,19 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     await this.scanDelete(this.childrenPrefix, resourcePath)
   }
 
-  // Clear rather than expire, because redis cannot say "stale" here. The RAM
-  // store marks entries expired in place, so a later lookup answers EXPIRED
-  // and a backend whose index *is* its listing knows to refetch. A redis key
-  // carries a real TTL and an expired one is simply gone, so absent and stale
-  // read the same. The consequence, deliberately chosen: a github mount on a
-  // redis index answers ENOENT after a CLI write instead of refetching. That
-  // is a loud failure, not a wrong answer -- a no-op here would instead serve
-  // the pre-write tree as if it were current, and quietly wrong is the worse
-  // of the two. Closing this properly means an `invalidatedAt` marker key
-  // compared against each entry's indexTime, which needs no schema change and
-  // can ride the same round trip.
+  /**
+   * Mark every listing stale without discarding it.
+   *
+   * One marker key, `invalidated_at`, rather than a rewrite of every listing:
+   * `listDir` reads it beside the listing in the same `MGET` and calls a
+   * listing written at or before it EXPIRED. A listing written afterwards is
+   * fresh again, and entries are left alone, so `get` keeps answering, which
+   * is what the RAM store's in-place expiry gives a backend whose index *is*
+   * its listing (github, hf_hub): a refetch instead of an ENOENT.
+   */
   async invalidate(): Promise<void> {
-    await this.clear()
+    const c = await this.client()
+    await c.set(this.invalidatedKey, String(Date.now() / 1000))
   }
 
   async clear(): Promise<void> {
@@ -228,6 +339,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
       }
       if (keys.length > 0) await c.del(keys)
     }
+    await c.del(this.invalidatedKey)
   }
 
   override async close(): Promise<void> {
@@ -238,18 +350,5 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     if (typeof typed.destroy === 'function') typed.destroy()
     else if (c.isOpen) await c.quit()
     this.clientPromise = null
-  }
-
-  private serialize(e: IndexEntry): Record<string, unknown> {
-    return {
-      id: e.id,
-      name: e.name,
-      resourceType: e.resourceType,
-      remoteTime: e.remoteTime,
-      indexTime: e.indexTime,
-      vfsName: e.vfsName,
-      size: e.size,
-      extra: e.extra,
-    }
   }
 }

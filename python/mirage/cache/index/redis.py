@@ -12,9 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import json
+import math
 from collections.abc import Awaitable
 from datetime import datetime, timezone
-from typing import cast
+from typing import Any, cast
 
 try:
     from redis.asyncio import Redis
@@ -30,6 +32,12 @@ from mirage.utils.key_prefix import under_path
 
 ENTRY_PREFIX = "mirage:idx:entry:"
 CHILDREN_PREFIX = "mirage:idx:children:"
+INVALIDATED_KEY = "mirage:idx:invalidated_at"
+LISTING_CHILDREN = "children"
+LISTING_WRITTEN_AT = "written_at"
+LISTING_EXPIRES_AT = "expires_at"
+# The least time a listing outlives its own expiry in Redis, in seconds.
+MIN_EXPIRED_RETENTION = 60.0
 
 
 def _text(value: str | bytes) -> str:
@@ -55,18 +63,80 @@ def _glob_escape(value: str) -> str:
     return "".join(out)
 
 
+def listing_document(children: list[str], written_at: float,
+                     expires_at: float) -> str:
+    """The JSON a directory listing is stored as.
+
+    A JSON document rather than a Redis list, because Redis has no empty
+    list: ``RPUSH`` with no values creates no key, so a directory with no
+    children could never be recorded as listed, every ``ls`` of it was a
+    cold backend call, and no negative lookup under it was ever absorbed.
+    The two stamps are epoch seconds rather than ISO strings so both
+    languages compare them as numbers; the TypeScript store writes the
+    same three keys (``listingDocument`` in ``cache/index/redis.ts``).
+
+    Args:
+        children (list[str]): the mount-absolute child keys, in readdir
+            order.
+        written_at (float): when the listing was written, epoch seconds.
+        expires_at (float): when it stops being fresh, epoch seconds.
+    """
+    return json.dumps(
+        {
+            LISTING_CHILDREN: children,
+            LISTING_WRITTEN_AT: written_at,
+            LISTING_EXPIRES_AT: expires_at,
+        },
+        separators=(",", ":"))
+
+
+def physical_ttl_seconds(written_at: float, expires_at: float) -> int:
+    """How long Redis keeps a listing: its freshness plus a retention.
+
+    Freshness is decided by the caller from the document's own stamps,
+    never by Redis dropping the key, so the key has to outlive its
+    expiry: while it does, a lookup answers EXPIRED exactly as the RAM
+    store does for a stale row it still holds, and only once Redis has
+    forgotten it does the answer become NOT_FOUND. The retention is one
+    more TTL and at least a minute. RAM keeps a stale row until something
+    drops it, but Redis is a shared server and its keyspace needs a bound.
+
+    Args:
+        written_at (float): when the listing was written, epoch seconds.
+        expires_at (float): when it stops being fresh, epoch seconds.
+    """
+    fresh_for = max(0.0, expires_at - written_at)
+    return math.ceil(fresh_for + max(fresh_for, MIN_EXPIRED_RETENTION))
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class RedisIndexCacheStore(IndexCacheStore):
     """Redis-backed index cache for remote resource metadata.
 
-    Stores IndexEntry objects as JSON strings and directory children as
-    Redis lists. Directory TTL is managed via native Redis key expiration.
-    All writes within set_dir are batched in a single pipeline for efficiency.
+    Entries are the JSON pydantic writes for ``IndexEntry`` (snake_case,
+    every field), and that is the wire format the TypeScript store reads
+    and writes too, so one Redis can serve both. A directory listing is
+    one JSON document (``listing_document``) carrying the child keys and
+    two epoch-second stamps, ``written_at`` and ``expires_at``.
 
-    Multiple stores can share one Redis server by using distinct key_prefix
-    values (e.g. "gdrive:", "s3:"). The full key layout is::
+    Freshness is decided here, from those stamps, not by Redis dropping
+    the key: the key outlives its expiry (``physical_ttl_seconds``), so
+    a lookup in that window answers EXPIRED as the RAM store does, and
+    ``invalidate`` writes one ``invalidated_at`` marker that every
+    listing written before it compares stale against, entries kept.
+    ``list_dir`` is therefore one ``MGET`` of the listing and the marker.
 
-        {key_prefix}mirage:idx:entry:{resource_path}     -> JSON string
-        {key_prefix}mirage:idx:children:{resource_path}  -> Redis list
+    The key layout is::
+
+        {key_prefix}mirage:idx:entry:{resource_path}     -> IndexEntry JSON
+        {key_prefix}mirage:idx:children:{resource_path}  -> listing JSON
+        {key_prefix}mirage:idx:invalidated_at            -> epoch seconds
+
+    Multiple stores can share one Redis server by using distinct
+    ``key_prefix`` values (e.g. ``"gdrive:"``, ``"s3:"``).
 
     Args:
         ttl (float): Default time-to-live in seconds for directory listings.
@@ -94,6 +164,7 @@ class RedisIndexCacheStore(IndexCacheStore):
         p = key_prefix or ""
         self._entry_prefix = f"{p}{ENTRY_PREFIX}"
         self._children_prefix = f"{p}{CHILDREN_PREFIX}"
+        self._invalidated_key = f"{p}{INVALIDATED_KEY}"
 
     def _entry_key(self, resource_path: str) -> str:
         return f"{self._entry_prefix}{resource_path}"
@@ -113,23 +184,35 @@ class RedisIndexCacheStore(IndexCacheStore):
         if pending is None:
             return
         entries, children, expires_at = pending
-        now = datetime.now(timezone.utc)
+        now = _now()
         now_iso = to_iso_z(now)
-        ttl_seconds = max(1, int((expires_at - now).total_seconds()))
         pipe = self._client.pipeline()
         for resource_path, entry in entries.items():
             if not entry.index_time:
                 entry = entry.model_copy(update={"index_time": now_iso})
             pipe.set(self._entry_key(resource_path), entry.model_dump_json())
         for resource_path, child_keys in children.items():
-            key = self._children_key(resource_path)
-            pipe.delete(key)
-            if child_keys:
-                pipe.rpush(key, *child_keys)
-                pipe.expire(key, ttl_seconds)
+            self._write_listing(pipe, resource_path, child_keys,
+                                now.timestamp(), expires_at.timestamp())
         await pipe.execute()
         if self._pending_seed is pending:
             self._pending_seed = None
+
+    def _write_listing(self, pipe: Any, resource_path: str,
+                       child_keys: list[str], written_at: float,
+                       expires_at: float) -> None:
+        """Queue one listing document on a pipeline.
+
+        Args:
+            pipe (Any): the redis pipeline the write rides on.
+            resource_path (str): the directory being listed.
+            child_keys (list[str]): its children, mount-absolute.
+            written_at (float): now, epoch seconds.
+            expires_at (float): when the listing stops being fresh.
+        """
+        pipe.set(self._children_key(resource_path),
+                 listing_document(list(child_keys), written_at, expires_at),
+                 ex=physical_ttl_seconds(written_at, expires_at))
 
     async def get(self, resource_path: str) -> LookupResult:
         await self._flush_seed()
@@ -142,23 +225,28 @@ class RedisIndexCacheStore(IndexCacheStore):
     async def put(self, resource_path: str, entry: IndexEntry) -> None:
         await self._flush_seed()
         if not entry.index_time:
-            entry = entry.model_copy(
-                update={"index_time": to_iso_z(datetime.now(timezone.utc))})
+            entry = entry.model_copy(update={"index_time": to_iso_z(_now())})
         await self._client.set(self._entry_key(resource_path),
                                entry.model_dump_json())
 
     async def list_dir(self, resource_path: str) -> ListResult:
         await self._flush_seed()
-        key = self._children_key(resource_path)
-        exists = await self._client.exists(key)
-        if not exists:
+        raw_listing, raw_marker = await cast(
+            "Awaitable[list[str | bytes | None]]",
+            self._client.mget(
+                [self._children_key(resource_path), self._invalidated_key]))
+        if raw_listing is None:
             return ListResult(status=LookupStatus.NOT_FOUND)
-        ttl_remaining = await self._client.ttl(key)
-        if ttl_remaining == -2:
+        listing: dict[str, Any] = json.loads(_text(raw_listing))
+        # Stale when its own expiry has passed, or when `invalidate` ran
+        # after it was written; both mirror the RAM store's expiry map.
+        if _now().timestamp() > listing[LISTING_EXPIRES_AT]:
             return ListResult(status=LookupStatus.EXPIRED)
-        raw = await cast("Awaitable[list[str | bytes]]",
-                         self._client.lrange(key, 0, -1))
-        return ListResult(entries=[_text(entry) for entry in raw])
+        if raw_marker is not None and float(
+                _text(raw_marker)) >= listing[LISTING_WRITTEN_AT]:
+            return ListResult(status=LookupStatus.EXPIRED)
+        return ListResult(
+            entries=[str(child) for child in listing[LISTING_CHILDREN]])
 
     async def set_dir(
         self,
@@ -167,7 +255,7 @@ class RedisIndexCacheStore(IndexCacheStore):
         expired_at: datetime | None = None,
     ) -> None:
         await self._flush_seed()
-        now = datetime.now(timezone.utc)
+        now = _now()
         now_iso = to_iso_z(now)
         prefix = "/" if resource_path == "/" else resource_path + "/"
 
@@ -180,17 +268,10 @@ class RedisIndexCacheStore(IndexCacheStore):
             pipe.set(self._entry_key(full_path), entry.model_dump_json())
             child_keys.append(full_path)
 
-        children_key = self._children_key(resource_path)
-        pipe.delete(children_key)
-        if child_keys:
-            pipe.rpush(children_key, *child_keys)
-
-        if expired_at:
-            ttl_seconds = max(1, int((expired_at - now).total_seconds()))
-        else:
-            ttl_seconds = max(1, int(self._ttl))
-        pipe.expire(children_key, ttl_seconds)
-
+        expires_at = (expired_at.timestamp()
+                      if expired_at else now.timestamp() + self._ttl)
+        self._write_listing(pipe, resource_path, child_keys, now.timestamp(),
+                            expires_at)
         await pipe.execute()
 
     async def entries(self) -> dict[str, IndexEntry]:
@@ -212,12 +293,12 @@ class RedisIndexCacheStore(IndexCacheStore):
 
     async def invalidate_dir(self, resource_path: str) -> None:
         await self._flush_seed()
-        children_key = f"{self._children_prefix}{resource_path}"
-        child_paths = await cast("Awaitable[list[str | bytes]]",
-                                 self._client.lrange(children_key, 0, -1))
+        children_key = self._children_key(resource_path)
+        raw = await self._client.get(children_key)
         pipe = self._client.pipeline()
-        for child in child_paths:
-            pipe.delete(self._entry_key(_text(child)))
+        if raw is not None:
+            for child in json.loads(_text(raw))[LISTING_CHILDREN]:
+                pipe.delete(self._entry_key(str(child)))
         pipe.delete(children_key)
         await pipe.execute()
 
@@ -249,46 +330,40 @@ class RedisIndexCacheStore(IndexCacheStore):
         await self._scan_delete(self._children_prefix, resource_path)
 
     async def invalidate(self) -> None:
-        """Clear rather than expire, because redis cannot say "stale" here.
+        """Mark every listing stale without discarding it.
 
-        The RAM store marks entries expired in place, so a later lookup
-        answers EXPIRED and a backend whose index *is* its listing knows to
-        refetch. A redis key carries a real TTL and an expired one is
-        simply gone, so absent and stale read the same and this can only
-        clear. The consequence, deliberately chosen: a github mount on a
-        redis index answers ENOENT after a CLI write instead of refetching
-        (``ls`` reports the mount root missing). That is a loud failure,
-        not a wrong answer -- a no-op here would instead serve the
-        pre-write tree as if it were current, and quietly wrong is the
-        worse of the two. Closing this properly means an ``invalidated_at``
-        marker key compared against each entry's ``index_time``, which
-        needs no schema change and can ride the same round trip.
+        One marker key, ``invalidated_at``, rather than a rewrite of every
+        listing: ``list_dir`` reads it beside the listing in the same
+        ``MGET`` and calls a listing written at or before it EXPIRED. A
+        listing written afterwards is fresh again, and entries are left
+        alone, so ``get`` keeps answering, which is what the RAM store's
+        in-place expiry gives a backend whose index *is* its listing
+        (github, hf_hub): a refetch instead of an ENOENT.
         """
-        await self.clear()
+        await self._flush_seed()
+        await self._client.set(self._invalidated_key, str(_now().timestamp()))
 
     async def clear(self) -> None:
         self._pending_seed = None
-        cursor = 0
-        while True:
-            cursor, keys = await self._client.scan(
-                cursor, match=f"{self._entry_prefix}*", count=500)
-            if keys:
-                await self._client.delete(*keys)
-            if cursor == 0:
-                break
-        cursor = 0
-        while True:
-            cursor, keys = await self._client.scan(
-                cursor, match=f"{self._children_prefix}*", count=500)
-            if keys:
-                await self._client.delete(*keys)
-            if cursor == 0:
-                break
+        for prefix in (self._entry_prefix, self._children_prefix):
+            cursor = 0
+            while True:
+                cursor, keys = await self._client.scan(cursor,
+                                                       match=f"{prefix}*",
+                                                       count=500)
+                if keys:
+                    await self._client.delete(*keys)
+                if cursor == 0:
+                    break
+        await self._client.delete(self._invalidated_key)
 
     async def close(self) -> None:
         if self._closed:
             return
+        # A seed the caller queued is a write it asked for: the RAM store
+        # lands it synchronously, so a store closed before its first
+        # lookup must not lose it.
+        await self._flush_seed()
         if self._owns_client:
             await self._client.aclose()
-        self._pending_seed = None
         await super().close()
