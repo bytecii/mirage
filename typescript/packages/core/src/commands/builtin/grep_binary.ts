@@ -15,7 +15,6 @@
 import { byteChar, encodeText } from '../../shell/bytes.ts'
 import { closeQuietly } from '../../io/stream.ts'
 import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
-import { concat } from '../../io/cachable_iterator.ts'
 import type { IOResult } from '../../io/types.ts'
 import type { WalkFilters } from './grep_select.ts'
 
@@ -51,36 +50,22 @@ export class BinaryInput {
   constructor(readonly mode: string) {}
 
   /**
-   * Regroup the transport's chunks into GNU-sized probe blocks. GNU reads a
-   * whole buffer before printing from it, so a NUL anywhere in the window
-   * suppresses the lines ahead of it however the transport chunked them. A
-   * NUL is acted on the moment it arrives, and nothing past the block the
-   * scanner asked for is read.
+   * Probe the input for NUL a block at a time, then pass it on. GNU examines
+   * what one read() returned before printing from it: a whole buffer for a
+   * regular file, whatever had arrived for a pipe. A transport chunk is the
+   * pipe case, and it is not merged with later chunks because a -m1 over a
+   * row stream must not pull the rest of the collection to fill a window; a
+   * chunk a backend serves whole is cut into GNU-sized blocks so it behaves
+   * as the file case.
    */
   async *read(source: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
-    let pending: Uint8Array[] = []
-    let size = 0
     for await (const chunk of source) {
-      pending.push(chunk)
-      size += chunk.length
-      if (size < PROBE_BLOCK_BYTES) {
-        // Still inside one block, so a NUL here is that block's.
-        if (this.stops(chunk)) return
-        continue
-      }
-      const data = concat(pending)
-      const whole = data.length - (data.length % PROBE_BLOCK_BYTES)
-      for (let offset = 0; offset < whole; offset += PROBE_BLOCK_BYTES) {
-        const block = data.subarray(offset, offset + PROBE_BLOCK_BYTES)
+      for (let offset = 0; offset < chunk.length; offset += PROBE_BLOCK_BYTES) {
+        const block = chunk.subarray(offset, offset + PROBE_BLOCK_BYTES)
         if (this.stops(block)) return
         yield this.deliver(block)
       }
-      const rest = data.subarray(whole)
-      pending = rest.length > 0 ? [rest] : []
-      size = rest.length
-      if (rest.length > 0 && this.stops(rest)) return
     }
-    if (size > 0) yield this.deliver(concat(pending))
   }
 
   // Note a NUL in data, which all belongs to the block being probed; true

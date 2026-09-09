@@ -43,40 +43,24 @@ class BinaryInput:
         self.nul = False
 
     async def read(self, source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
-        """Regroup the transport's chunks into GNU-sized probe blocks.
+        """Probe the input for NUL a block at a time, then pass it on.
 
-        GNU reads a whole buffer before printing from it, so a NUL anywhere
-        in the window suppresses the lines ahead of it however the
-        transport chunked them. A NUL is acted on the moment it arrives,
-        and nothing past the block the scanner asked for is read.
+        GNU examines what one read() returned before printing from it: a
+        whole buffer for a regular file, whatever had arrived for a pipe.
+        A transport chunk is the pipe case, and it is not merged with later
+        chunks because a -m1 over a row stream must not pull the rest of
+        the collection to fill a window; a chunk a backend serves whole is
+        cut into GNU-sized blocks so it behaves as the file case.
 
         Args:
             source (AsyncIterator[bytes]): the input as the backend serves it.
         """
-        pending: list[bytes] = []
-        size = 0
         async for chunk in source:
-            pending.append(chunk)
-            size += len(chunk)
-            if size < PROBE_BLOCK_BYTES:
-                # Still inside one block, so a NUL here is that block's.
-                if self.stops(chunk):
-                    return
-                continue
-            data = b"".join(pending)
-            whole = len(data) - len(data) % PROBE_BLOCK_BYTES
-            for offset in range(0, whole, PROBE_BLOCK_BYTES):
-                block = data[offset:offset + PROBE_BLOCK_BYTES]
+            for offset in range(0, len(chunk), PROBE_BLOCK_BYTES):
+                block = chunk[offset:offset + PROBE_BLOCK_BYTES]
                 if self.stops(block):
                     return
                 yield self.deliver(block)
-            rest = data[whole:]
-            pending = [rest] if rest else []
-            size = len(rest)
-            if rest and self.stops(rest):
-                return
-        if size:
-            yield self.deliver(b"".join(pending))
 
     def stops(self, data: bytes) -> bool:
         """Note a NUL in data; True when without-match must stop reading.

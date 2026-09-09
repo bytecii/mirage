@@ -261,12 +261,15 @@ async def test_context_group_after_an_earlier_input_opens_with_separator(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode,stdout,stderr,code", [
-    ("binary", b"", b"grep: /remote/data.pdf: binary file matches\n", 0),
-    ("without-match", b"", b"", 1),
+    ("binary", b"needle\n", b"", 0),
+    ("without-match", b"needle\n", b"", 1),
     ("text", b"needle\n", b"", 0),
 ])
-async def test_nul_in_a_later_chunk_still_governs_the_earlier_line(
+async def test_nul_in_a_later_chunk_is_gnu_pipe_behavior(
         mode, stdout, stderr, code):
+    # (printf 'needle\n'; sleep 1; printf '\0tail\n') | grep needle prints
+    # the match under GNU 3.11 too; only a later match is suppressed, and
+    # -I still reports 1. Merging chunks to avoid this would read ahead.
     closed = False
 
     async def source() -> AsyncIterator[bytes]:

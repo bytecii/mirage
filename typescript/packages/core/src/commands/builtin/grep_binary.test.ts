@@ -207,11 +207,14 @@ it.each([
 )
 
 it.each([
-  ['binary', '', 'grep: /remote/data.pdf: binary file matches\n', 0],
-  ['without-match', '', '', 1],
+  ['binary', 'needle\n', '', 0],
+  ['without-match', 'needle\n', '', 1],
   ['text', 'needle\n', '', 0],
 ] as const)(
-  'a NUL in a later chunk still governs the earlier line in %s mode',
+  // (printf 'needle\n'; sleep 1; printf '\0tail\n') | grep needle prints the
+  // match under GNU 3.11 too; only a later match is suppressed, and -I still
+  // reports 1. Merging chunks to avoid this would read ahead.
+  'a NUL in a later chunk is GNU pipe behavior in %s mode',
   async (mode, stdout, stderr, code) => {
     let closed = false
     async function* source(): AsyncIterable<Uint8Array> {
