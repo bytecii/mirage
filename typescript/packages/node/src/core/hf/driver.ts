@@ -101,7 +101,8 @@ async function* listTree(op: Operator, pfx: string): AsyncIterable<TreeEntry> {
       continue
     }
     const size = sizeOf(md)
-    yield size === null ? { key: rel } : { key: rel, size }
+    const modified = md.lastModified ?? ''
+    yield size === null ? { key: rel, modified } : { key: rel, size, modified }
   }
 }
 
@@ -116,7 +117,9 @@ async function* listSubtree(op: Operator, stem: string): AsyncIterable<TreeEntry
     if (md !== null && !md.isDirectory()) {
       // A repo cannot hold a file and a directory of the same name, so
       // a stem that is a file has nothing under it.
-      yield { key: stem, size: sizeOf(md) ?? 0 }
+      const size = sizeOf(md)
+      const modified = md.lastModified ?? ''
+      yield size === null ? { key: stem, modified } : { key: stem, size, modified }
       return
     }
   }
@@ -131,8 +134,10 @@ async function* listSubtree(op: Operator, stem: string): AsyncIterable<TreeEntry
   for (const entry of entries) {
     const rel = entry.path()
     if (rel === '' || rel.endsWith('/')) continue
-    const size = sizeOf(entry.metadata())
-    yield size === null ? { key: rel } : { key: rel, size }
+    const md = entry.metadata()
+    const size = sizeOf(md)
+    const modified = md.lastModified ?? ''
+    yield size === null ? { key: rel, modified } : { key: rel, size, modified }
   }
 }
 

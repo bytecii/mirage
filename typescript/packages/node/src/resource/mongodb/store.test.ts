@@ -12,13 +12,16 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { MongoDBStore } from './store.ts'
 
+// vitest 4 types a bare `vi.fn()` as neither callable nor constructable.
+type AnyMock = Mock<(...args: never[]) => unknown>
+
 interface MockClient {
-  connect: ReturnType<typeof vi.fn>
-  db: ReturnType<typeof vi.fn>
-  close: ReturnType<typeof vi.fn<() => Promise<void>>>
+  connect: AnyMock
+  db: AnyMock
+  close: AnyMock
 }
 
 const clients: MockClient[] = []
@@ -68,7 +71,12 @@ describe('MongoDBStore', () => {
   })
 
   afterEach(async () => {
-    await Promise.all(clients.map((c) => c.close()))
+    await Promise.all(
+      clients.map((c) => {
+        const ret = c.close()
+        return ret instanceof Promise ? ret : Promise.resolve(ret)
+      }),
+    )
   })
 
   it('does not connect until first method', () => {

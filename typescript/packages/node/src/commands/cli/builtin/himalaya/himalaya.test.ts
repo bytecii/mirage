@@ -111,6 +111,10 @@ beforeEach(() => {
   vi.spyOn(EmailAccessor.prototype, 'close').mockResolvedValue()
 })
 
+// vitest 4 hands a second spyOn on an already-spied method the same spy
+// with its call history intact, so a per-test count would otherwise see
+// every earlier test's close() calls. Restoring after each test gives
+// the next beforeEach a fresh spy.
 afterEach(() => {
   vi.restoreAllMocks()
 })

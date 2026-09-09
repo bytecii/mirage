@@ -1,5 +1,7 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "types": [] },
+  "compilerOptions": {
+    "types": []
+  },
   "exclude": ["src/**/*.test.ts", "src/**/_test_util.ts", "src/**/fixtures/**"]
 }
