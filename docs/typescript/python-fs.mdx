@@ -179,6 +179,14 @@ new Workspace({}, { python: { autoLoadFromImports: false } })
 
 Lazy filesystem access runs Pyodide in a worker and requires `SharedArrayBuffer`. It works in Node without experimental flags. Browser pages must be cross-origin isolated, typically by serving `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`; their bundler must include the module worker.
 
+Vite consumers must select ES module output for workers, including when importing the browser workspace package:
+
+```ts
+export default defineConfig({
+  worker: { format: 'es' },
+})
+```
+
 Without workers or `SharedArrayBuffer`, Mirage retains the eager fallback: it collects each mount before execution and replays writes afterward. This fallback preserves filesystem support but still enumerates and reads whole mounts. Neither path requires JSPI.
 
 To run the example:
