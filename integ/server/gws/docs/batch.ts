@@ -15,10 +15,26 @@
 import type { JsonValue, Reply } from '../../kit/typescript/index.ts'
 import { touchNative } from '../drive/item.ts'
 import type { GwsState } from '../store/state.ts'
-import { asBool, asNum, asObj, asStr } from '../wire/json.ts'
+import { asBool, asNum, asObj, asStr, asStrArr } from '../wire/json.ts'
 import type { JsonObj } from '../wire/json.ts'
 import { NOT_FOUND, googleError, ok } from '../wire/reply.ts'
-import { replaceAllText } from './body.ts'
+import type { DocBody, DocTab } from '../store/types.ts'
+import { allDocTabs, findDocTab, firstTabOf, replaceAllText } from './body.ts'
+
+// The tab a location-bearing request applies to. A request that names no
+// tab lands on the FIRST one, which is the API's documented default for
+// every request but the three that instead default to all tabs.
+//
+// An unknown tabId is refused rather than silently redirected to the
+// first: a caller that mistyped one would otherwise see a successful
+// write land somewhere it never named.
+function tabFor(doc: DocBody, location: JsonObj): DocTab | null {
+  const tabId = asStr(location.tabId)
+  if (tabId === undefined || tabId === '') return firstTabOf(doc)
+  return findDocTab(doc, tabId) ?? null
+}
+
+const UNKNOWN_TAB = 'Invalid requests: tabId not found in the document'
 
 export function docsBatchUpdate(st: GwsState, id: string, requests: JsonObj[]): Reply {
   const doc = st.docs.get(id)
@@ -28,30 +44,57 @@ export function docsBatchUpdate(st: GwsState, id: string, requests: JsonObj[]): 
     if ('insertText' in request) {
       const r = asObj(request.insertText)
       const text = asStr(r.text) ?? ''
-      const index = asNum(asObj(r.location).index)
+      const location = asObj(r.location)
+      const endOfSegment = asObj(r.endOfSegmentLocation)
+      const index = asNum(location.index)
+      // Whichever of the two location shapes the request used carries the
+      // tabId, so both are consulted rather than only the indexed one.
+      const tab = tabFor(doc, index === undefined ? endOfSegment : location)
+      if (tab === null) return googleError(400, UNKNOWN_TAB, 'INVALID_ARGUMENT')
       if (index !== undefined) {
-        const offset = Math.max(0, Math.min(doc.text.length, index - 1))
-        doc.text = doc.text.slice(0, offset) + text + doc.text.slice(offset)
+        const offset = Math.max(0, Math.min(tab.text.length, index - 1))
+        tab.text = tab.text.slice(0, offset) + text + tab.text.slice(offset)
       } else {
-        doc.text += text
+        tab.text += text
       }
       replies.push({})
     } else if ('deleteContentRange' in request) {
       const range = asObj(asObj(request.deleteContentRange).range)
+      const tab = tabFor(doc, range)
+      if (tab === null) return googleError(400, UNKNOWN_TAB, 'INVALID_ARGUMENT')
       const start = Math.max(0, (asNum(range.startIndex) ?? 1) - 1)
       const end = Math.max(start, (asNum(range.endIndex) ?? 1) - 1)
-      doc.text = doc.text.slice(0, start) + doc.text.slice(end)
+      tab.text = tab.text.slice(0, start) + tab.text.slice(end)
       replies.push({})
     } else if ('replaceAllText' in request) {
       const r = asObj(request.replaceAllText)
       const contains = asObj(r.containsText)
-      const [text, occurrences] = replaceAllText(
-        doc.text,
-        asStr(contains.text) ?? '',
-        asStr(r.replaceText) ?? '',
-        asBool(contains.matchCase) ?? false,
-      )
-      doc.text = text
+      // One of the three requests that default to ALL tabs rather than to
+      // the first, so an absent tabsCriteria means every tab and the
+      // reply counts the occurrences across all of them.
+      const named = asStrArr(asObj(r.tabsCriteria).tabIds)
+      let targets: DocTab[]
+      if (named === undefined || named.length === 0) {
+        targets = allDocTabs(doc)
+      } else {
+        targets = []
+        for (const tabId of named) {
+          const tab = findDocTab(doc, tabId)
+          if (tab === undefined) return googleError(400, UNKNOWN_TAB, 'INVALID_ARGUMENT')
+          targets.push(tab)
+        }
+      }
+      let occurrences = 0
+      for (const tab of targets) {
+        const [text, changed] = replaceAllText(
+          tab.text,
+          asStr(contains.text) ?? '',
+          asStr(r.replaceText) ?? '',
+          asBool(contains.matchCase) ?? false,
+        )
+        tab.text = text
+        occurrences += changed
+      }
       replies.push({ replaceAllText: { occurrencesChanged: occurrences } })
     } else {
       return googleError(
