@@ -16,7 +16,8 @@ from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagValue, FlagView
 from mirage.commands.spec.usage import usage_hint
 from mirage.io.types import ByteSource, IOResult
-from mirage.types import FileType, PathSpec, PolymorphicReadFn, StatFn
+from mirage.types import (FileStat, FileType, PathSpec, PolymorphicReadFn,
+                          StatFn)
 from mirage.utils.errors import FS_ERRORS, fs_strerror
 from mirage.utils.stream import ensure_stream
 
@@ -352,7 +353,12 @@ async def _follow(
     up, reading it from the start as GNU does after a rotation. The
     loop ends only when nothing is left to follow (``no files
     remaining``, exit 1) or the caller stops draining, which is how
-    ``timeout`` and a killed job end it.
+    ``timeout`` and a killed job end it. A followed file that a
+    directory replaces is ``has been replaced with an untailable
+    file``: name-following gives the name up, or under ``--retry``
+    keeps polling it and announces ``has become accessible`` when a
+    file stands there again; a descriptor follow prints nothing, as
+    GNU's does while it holds the old descriptor.
 
     Divergence: a file replaced in place between two polls (an atomic
     rotation that never leaves the name absent) is read as the same
@@ -414,8 +420,11 @@ async def _follow(
             active.append((slot, p))
             positions[slot] = 0
         for slot, p in list(active):
+            current: FileStat | None
             try:
                 current = await stat(p)
+            except IsADirectoryError:
+                current = None
             except FS_ERRORS as exc:
                 # Only name-following notices a path that went away; under
                 # a descriptor --retry covers the initial open alone, as
@@ -427,6 +436,18 @@ async def _follow(
                     active.remove((slot, p))
                     if flags.retry:
                         waiting.append((slot, p, APPEARED))
+                continue
+            if current is None or current.type is FileType.DIRECTORY:
+                if not flags.follow_name:
+                    continue
+                line = (f"tail: '{p.raw_path}' has been replaced with an "
+                        "untailable file")
+                _note(
+                    io, line +
+                    ("\n" if flags.retry else "; giving up on this name\n"))
+                active.remove((slot, p))
+                if flags.retry:
+                    waiting.append((slot, p, ACCESSIBLE))
                 continue
             size = current.size
             whole: bytes | None = None

@@ -250,6 +250,86 @@ describe('tail -f', () => {
     ).toBe(true)
   })
 
+  it.each([true, false])(
+    '-F waits out a directory that replaces the file (sized %s)',
+    async (sized) => {
+      // Pinned on coreutils 9.7: a directory standing where the followed
+      // file was is `has been replaced with an untailable file`; -F
+      // keeps the name and reads the file that replaces it from the
+      // start, as `has become accessible`. A size-unknown backend must
+      // not read the directory whole to find that out.
+      const fs = new Growing(new Map([['/d/f', ENC.encode('a\n')]]), sized)
+      const abort = new AbortController()
+      const [stream, io] = (await tailGeneric(
+        [spec('/d/f')],
+        [],
+        followOpts(abort, { F: true }),
+        fs.stream,
+        fs.stat,
+        fs.readRange,
+      )) as [AsyncIterable<Uint8Array>, IOResult]
+      const grower = (async () => {
+        await sleep(60)
+        fs.data.set('/d/f', null)
+        await sleep(60)
+        fs.set('/d/f', 'b\n')
+      })()
+      const text = await drainFor(stream, 250, abort)
+      await grower
+      expect(text).toBe('a\nb\n')
+      expect(DEC.decode(io.stderr as Uint8Array)).toBe(
+        "tail: '/d/f' has been replaced with an untailable file\ntail: '/d/f' has become accessible\n",
+      )
+    },
+  )
+
+  it('--follow=name gives up on a directory that replaces the file', async () => {
+    const fs = new Growing(new Map([['/d/f', ENC.encode('a\n')]]))
+    const [stream, io] = (await tailGeneric(
+      [spec('/d/f')],
+      [],
+      opts({ follow: 'name', sleep_interval: '0.02' }),
+      fs.stream,
+      fs.stat,
+      fs.readRange,
+    )) as [AsyncIterable<Uint8Array>, IOResult]
+    const grower = (async () => {
+      await sleep(60)
+      fs.data.set('/d/f', null)
+    })()
+    const chunks: string[] = []
+    for await (const chunk of stream) chunks.push(DEC.decode(chunk))
+    await grower
+    expect(chunks.join('')).toBe('a\n')
+    expect(DEC.decode(io.stderr as Uint8Array)).toBe(
+      "tail: '/d/f' has been replaced with an untailable file; giving up on this name\ntail: no files remaining\n",
+    )
+    expect(io.exitCode).toBe(1)
+  })
+
+  it('a descriptor follow prints nothing while a directory stands there', async () => {
+    // GNU keeps reading the descriptor it opened, which gains nothing.
+    const fs = new Growing(new Map([['/d/f', ENC.encode('a\n')]]))
+    const abort = new AbortController()
+    const [stream, io] = (await tailGeneric(
+      [spec('/d/f')],
+      [],
+      followOpts(abort),
+      fs.stream,
+      fs.stat,
+      fs.readRange,
+    )) as [AsyncIterable<Uint8Array>, IOResult]
+    const grower = (async () => {
+      await sleep(60)
+      fs.data.set('/d/f', null)
+    })()
+    const text = await drainFor(stream, 200, abort)
+    await grower
+    expect(text).toBe('a\n')
+    expect(io.stderr).toBeNull()
+    expect(io.exitCode).toBe(0)
+  })
+
   const givingUp: [Record<string, string | boolean>, string][] = [
     [{ follow: true }, '; giving up on this name'],
     [{ follow: 'descriptor', retry: true }, ''],

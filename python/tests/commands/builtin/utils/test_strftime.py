@@ -12,13 +12,15 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from mirage.commands.builtin.utils.strftime import gnu_strftime
 
 MOMENT = datetime(2026, 1, 1, 0, 0, 1, 123456)
+ZONED = datetime(1970, 1, 1, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+BEFORE_EPOCH = datetime.fromtimestamp(-1, timezone.utc)
 
 
 @pytest.mark.parametrize("fmt,expected", [
@@ -63,3 +65,58 @@ def test_gnu_directives_follow_date(fmt: str, expected: str):
     # change nothing; a width on %q pads on the left, with zeros unless
     # `_` says spaces or `-` says none, the last of the three winning.
     assert gnu_strftime(MOMENT, fmt) == expected
+
+
+@pytest.mark.parametrize("fmt,expected", [
+    ("%:z", "+05:30"),
+    ("%::z", "+05:30:00"),
+    ("%:::z", "+05:30"),
+    ("%z", "+0530"),
+    ("%_:z", " +5:30"),
+    ("%-:z", "+5:30"),
+    ("%0:z", "+05:30"),
+    ("%5:z", "+5:30"),
+    ("%8:z", "+0005:30"),
+    ("%_8:z", "   +5:30"),
+    ("%-8:z", "+5:30"),
+    ("%^:z", "+05:30"),
+    ("%_z", " +530"),
+    ("%-z", "+530"),
+    ("%6z", "+00530"),
+    ("%_6z", "  +530"),
+    ("%8::z", "+5:30:00"),
+    ("%_:::z", " +5:30"),
+    ("%:q", "%:q"),
+    ("%:%z", "%:+0530"),
+    ("%::", "%::"),
+])
+def test_zone_offsets_follow_date(fmt: str, expected: str):
+    # Pinned against date 9.7: the colon forms of %z, whose flags and
+    # width pad the hours with the width covering the whole field; a
+    # colon before any other directive stays literal.
+    assert gnu_strftime(ZONED, fmt) == expected
+
+
+@pytest.mark.parametrize("fmt,expected", [
+    ("%:::z", "+00"),
+    ("%_:::z", " +0"),
+    ("%5:::z", "+0000"),
+    ("%3s", "-01"),
+    ("%s", "-1"),
+    ("%_3s", " -1"),
+    ("%-3s", "-1"),
+    ("%03s", "-01"),
+    ("%+3s", "-01"),
+    ("%5s", "-0001"),
+    ("%_5s", "   -1"),
+])
+def test_negative_numbers_pad_after_the_sign(fmt: str, expected: str):
+    # Pinned against date 9.7: zeros go after the sign, spaces before it.
+    assert gnu_strftime(BEFORE_EPOCH, fmt) == expected
+    assert gnu_strftime(datetime.fromtimestamp(-100, timezone.utc),
+                        "%5s|%_5s|%2s") == "-0100| -100|-100"
+
+
+def test_naive_moment_takes_the_local_zone():
+    off = MOMENT.astimezone().strftime("%z")
+    assert gnu_strftime(MOMENT, "%:z") == off[:3] + ":" + off[3:]

@@ -455,3 +455,75 @@ def test_follow_flags_parse_gnu_spellings():
         tail_parse_flags({"follow": True, "sleep_interval": "bogus"})
     assert str(
         bad_seconds.value) == "tail: invalid number of seconds: 'bogus'\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sized", [True, False])
+async def test_follow_name_with_retry_waits_out_a_directory_replacing_the_file(
+        sized):
+    # Pinned on coreutils 9.7: a directory standing where the followed
+    # file was is `has been replaced with an untailable file`; -F keeps
+    # the name and reads the file that replaces it from the start, as
+    # `has become accessible`. A size-unknown backend must not read the
+    # directory whole to find that out.
+    fs = _Growing({"/d/f": b"a\n"}, sized=sized)
+    stream, io = await tail_generic(_paths("/d/f"), [], _follow_opts(F=True),
+                                    fs.stat, fs.read, fs.read_range)
+    assert stream is not None
+
+    async def replace() -> None:
+        await asyncio.sleep(0.06)
+        fs.data["/d/f"] = None
+        await asyncio.sleep(0.06)
+        fs.data["/d/f"] = b"b\n"
+
+    grower = asyncio.create_task(replace())
+    chunks = await _drain_for(stream, 0.25)
+    await grower
+    assert b"".join(chunks) == b"a\nb\n"
+    assert io.stderr == (
+        b"tail: '/d/f' has been replaced with an untailable file\n"
+        b"tail: '/d/f' has become accessible\n")
+
+
+@pytest.mark.asyncio
+async def test_follow_name_without_retry_gives_up_on_a_replacing_directory():
+    fs = _Growing({"/d/f": b"a\n"})
+    stream, io = await tail_generic(_paths("/d/f"), [],
+                                    _follow_opts(follow="name"), fs.stat,
+                                    fs.read, fs.read_range)
+    assert stream is not None
+
+    async def replace() -> None:
+        await asyncio.sleep(0.06)
+        fs.data["/d/f"] = None
+
+    grower = asyncio.create_task(replace())
+    out = await _collect(stream)
+    await grower
+    assert out == b"a\n"
+    assert io.stderr == (
+        b"tail: '/d/f' has been replaced with an untailable file; giving up "
+        b"on this name\ntail: no files remaining\n")
+    assert io.exit_code == 1
+
+
+@pytest.mark.asyncio
+async def test_follow_descriptor_prints_nothing_while_a_directory_stands_there(
+):
+    # GNU keeps reading the descriptor it opened, which gains nothing.
+    fs = _Growing({"/d/f": b"a\n"})
+    stream, io = await tail_generic(_paths("/d/f"), [], _follow_opts(),
+                                    fs.stat, fs.read, fs.read_range)
+    assert stream is not None
+
+    async def replace() -> None:
+        await asyncio.sleep(0.06)
+        fs.data["/d/f"] = None
+
+    grower = asyncio.create_task(replace())
+    chunks = await _drain_for(stream, 0.2)
+    await grower
+    assert b"".join(chunks) == b"a\n"
+    assert not io.stderr
+    assert io.exit_code == 0

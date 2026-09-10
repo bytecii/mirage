@@ -186,21 +186,35 @@ async function* follow(
     }
     for (const entry of [...active]) {
       const [slot, p] = entry
-      let current: FileStat
+      let current: FileStat | null = null
       try {
         current = await stat(p)
       } catch (err) {
         if (!isFsError(err)) throw err
-        // Only name-following notices a path that went away; under a
-        // descriptor --retry covers the initial open alone, as in GNU.
-        if (flags.byName) {
-          note(
-            io,
-            `tail: '${p.rawPath}' has become inaccessible: ${fsStrerror(err) ?? 'No such file or directory'}\n`,
-          )
-          active.splice(active.indexOf(entry), 1)
-          if (flags.retry) waiting.push([slot, p, APPEARED])
+        if (!isEisdir(err)) {
+          // Only name-following notices a path that went away; under a
+          // descriptor --retry covers the initial open alone, as in GNU.
+          if (flags.byName) {
+            note(
+              io,
+              `tail: '${p.rawPath}' has become inaccessible: ${fsStrerror(err) ?? 'No such file or directory'}\n`,
+            )
+            active.splice(active.indexOf(entry), 1)
+            if (flags.retry) waiting.push([slot, p, APPEARED])
+          }
+          continue
         }
+      }
+      if (current === null || current.type === FileType.DIRECTORY) {
+        // A directory replaced the file: name-following gives the name
+        // up, or under --retry waits for a file to stand there again; a
+        // descriptor follow prints nothing, as GNU's does while it holds
+        // the old descriptor.
+        if (!flags.byName) continue
+        const line = `tail: '${p.rawPath}' has been replaced with an untailable file`
+        note(io, line + (flags.retry ? '\n' : '; giving up on this name\n'))
+        active.splice(active.indexOf(entry), 1)
+        if (flags.retry) waiting.push([slot, p, ACCESSIBLE])
         continue
       }
       let size = current.size

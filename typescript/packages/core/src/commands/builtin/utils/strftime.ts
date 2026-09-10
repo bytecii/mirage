@@ -188,9 +188,14 @@ export function strftime(dt: Date, fmt: string, utc: boolean): string {
     }
   }
   return fmt.replace(
-    /%([-_0^#+]*)(\d*)([aAbBcCdDeFgGhHIjklMmnNpPqrRsStTuUVwWxXYyzZ%])/g,
-    (_m, flags: string, digits: string, code: string) =>
-      modified(render(code), code, flags, digits),
+    /%([-_0^#+]*)(\d*)((?::{1,3}(?=z))?)([aAbBcCdDeFgGhHIjklMmnNpPqrRsStTuUVwWxXYyzZ%])/g,
+    (_m, flags: string, digits: string, colons: string, code: string) => {
+      if (code === 'z') {
+        const width = digits === '' ? null : Number(digits)
+        return zoneOffset(utc ? 0 : -dt.getTimezoneOffset(), colons.length, flags, width)
+      }
+      return modified(render(code), code, flags, digits)
+    },
   )
 }
 
@@ -208,7 +213,11 @@ export function strftime(dt: Date, fmt: string, utc: boolean): string {
 // pads like `0`, and on %Y, %G and %C also leads with a sign when the
 // value outgrows the digits the directive normally shows or the width
 // leaves room for one (%+5Y is "+2026", %+4Y is "2026", %+6Y is
-// "+02026", %+3C is "+20").
+// "+02026", %+3C is "+20"). A negative number pads after its sign
+// (%3s of -1 is "-01", %_3s is " -1"), and %z with its colon forms
+// %:z, %::z and %:::z pads the hours field with the width covering the
+// whole (%_:z is " +5:30", %8:z is "+0005:30"); a colon before any other
+// directive stays literal.
 // The directives GNU's `+` flag signs, with the digits each shows
 // before the sign becomes necessary.
 const YEARISH_DIGITS: Record<string, number> = { Y: 4, G: 4, C: 2 }
@@ -239,13 +248,45 @@ function paddedComposite(
   return out.padStart(width, ' ')
 }
 
+function winningPad(flags: string): string | null {
+  const padFlags = flags.replace(/[^-_0+]/g, '')
+  return padFlags === '' ? null : (padFlags[padFlags.length - 1] ?? null)
+}
+
+// GNU's padding of a signed number: zeros go after the sign, spaces
+// before it, and `-` pads nothing; `width` is what the digits fill.
+function padSigned(sign: string, digits: string, pad: string | null, width: number | null): string {
+  if (pad === '-' || width === null || width <= digits.length) return sign + digits
+  if (pad === '_') return ' '.repeat(width - digits.length) + sign + digits
+  return sign + digits.padStart(width, '0')
+}
+
+// %z and its colon forms: %:z is +05:30, %::z adds seconds, %:::z keeps
+// only the parts that are not zero.
+function zoneOffset(
+  offsetMin: number,
+  colons: number,
+  flags: string,
+  width: number | null,
+): string {
+  const sign = offsetMin < 0 ? '-' : '+'
+  const hours = Math.floor(Math.abs(offsetMin) / 60)
+  const minutes = Math.abs(offsetMin) % 60
+  let tail: string
+  if (colons === 0) tail = pad2(minutes)
+  else if (colons === 1 || (colons === 3 && minutes !== 0)) tail = `:${pad2(minutes)}`
+  else if (colons === 2) tail = `:${pad2(minutes)}:00`
+  else tail = ''
+  const digits = width === null ? 2 : width - tail.length - 1
+  return padSigned(sign, String(hours), winningPad(flags), digits) + tail
+}
+
 function modified(base: string, code: string, flags: string, digits: string): string {
   const width = digits === '' ? null : Number(digits)
   if (code === '%') return base
   if (code === 'N') return width === null ? base : base.slice(0, width).padEnd(width, '0')
   if (flags === '' && width === null) return base
-  const padFlags = flags.replace(/[^-_0+]/g, '')
-  let pad: string | null = padFlags === '' ? null : (padFlags[padFlags.length - 1] ?? null)
+  let pad = winningPad(flags)
   if (COMPOSITES.has(code)) return paddedComposite(base, code, pad, flags.includes('^'), width)
   if (pad === '+') {
     const shown = YEARISH_DIGITS[code]
@@ -267,8 +308,10 @@ function modified(base: string, code: string, flags: string, digits: string): st
     out = out.toUpperCase()
   }
   if (width !== null && pad !== '-') {
-    const fill = pad === '_' ? ' ' : pad === '0' || /^\d/.test(out) ? '0' : ' '
-    out = out.padStart(width, fill)
+    const signed = /^(-?)(\d[\s\S]*)$/.exec(out)
+    const sign = signed?.[1] ?? ''
+    if (signed === null || pad === '_') out = out.padStart(width, pad === '0' ? '0' : ' ')
+    else out = padSigned(sign, signed[2] ?? '', '0', width - sign.length)
   }
   return out
 }

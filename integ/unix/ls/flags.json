@@ -1338,6 +1338,65 @@
         "gdrive-folder",
         "box"
       ]
+    },
+    {
+      "id": "ls_time_style_colon_zone",
+      "seq": 960143,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/lsz && printf x > /data/lsz/a.txt && ls -go --time-style='+%:z|%::z|%:::z|%8:z|%-:z|%:q' /data/lsz/a.txt | awk '{print $4}'",
+      "expect": {
+        "exit": 0,
+        "stdout": "+00:00|+00:00:00|+00|+0000:00|+0:00|%:q\n",
+        "stderr": ""
+      },
+      "flags": [
+        "g",
+        "o",
+        "time-style"
+      ]
+    },
+    {
+      "id": "ls_time_style_pads_a_negative_epoch_after_the_sign",
+      "seq": 960144,
+      "targets": [
+        "ram",
+        "disk",
+        "redis"
+      ],
+      "command": "mkdir -p /data/lsn && printf x > /data/lsn/a.txt && touch -d '1969-01-01T00:00:00' /data/lsn/a.txt && ls -go --time-style=+%12s /data/lsn/a.txt | awk '{print $4}' | cut -c1-4",
+      "expect": {
+        "exit": 0,
+        "stdout": "-000\n",
+        "stderr": ""
+      },
+      "flags": [
+        "g",
+        "o",
+        "time-style"
+      ]
     }
   ]
 }

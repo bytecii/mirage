@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import math
 from datetime import datetime
 
 GNU_FLAG_CHARS = "-_0^#+"
@@ -35,6 +36,76 @@ def winning_pad(flags: str) -> str | None:
         if ch in GNU_PAD_FLAGS:
             pad = ch
     return pad
+
+
+def pad_signed(sign: str, digits: str, pad: str | None,
+               width: int | None) -> str:
+    """Pad a signed number the way GNU date pads one: zeros go after the
+    sign (``%3s`` of -1 is ``-01``, ``%8:z`` is ``+0005:30``), spaces
+    before it (``%_3s`` is ``" -1"``), and ``-`` pads nothing.
+
+    Args:
+        sign (str): ``-``, ``+`` or empty.
+        digits (str): the magnitude.
+        pad (str | None): the winning padding flag, None for a bare width.
+        width (int | None): the width the digits fill, None for none.
+    """
+    if pad == "-" or width is None or width <= len(digits):
+        return sign + digits
+    if pad == "_":
+        return " " * (width - len(digits)) + sign + digits
+    return sign + digits.rjust(width, "0")
+
+
+def zone_offset(dt: datetime, colons: int, flags: str,
+                width: int | None) -> str:
+    """Render ``%z`` and its colon forms as GNU date does: ``%:z`` is
+    ``+05:30``, ``%::z`` adds seconds, ``%:::z`` keeps only the parts
+    that are not zero (``+05``, ``+05:30``). The flags and width pad the
+    hours field with the width covering the whole (``%_:z`` is
+    ``" +5:30"``, ``%8:z`` is ``+0005:30``, ``%-z`` is ``+530``). A naive
+    moment is taken as local time, as ``%s`` takes it.
+
+    Args:
+        dt (datetime): the moment being rendered.
+        colons (int): how many colons were typed before ``z``.
+        flags (str): the flag characters typed between ``%`` and the
+            width.
+        width (int | None): the minimum field width, if typed.
+    """
+    offset = dt.utcoffset()
+    if offset is None:
+        offset = dt.astimezone().utcoffset()
+    total = round(offset.total_seconds()) if offset is not None else 0
+    sign = "-" if total < 0 else "+"
+    hours, rest = divmod(abs(total), 3600)
+    minutes, seconds = divmod(rest, 60)
+    if colons == 0:
+        tail = f"{minutes:02d}"
+    elif colons == 1 or (colons == 3 and minutes and not seconds):
+        tail = f":{minutes:02d}"
+    elif colons == 2 or seconds:
+        tail = f":{minutes:02d}:{seconds:02d}"
+    else:
+        tail = ""
+    digits = 2 if width is None else width - len(tail) - 1
+    return pad_signed(sign, str(hours), winning_pad(flags), digits) + tail
+
+
+def epoch_seconds(dt: datetime, flags: str, width: int | None) -> str:
+    """Render ``%s`` as GNU date does, padding a negative value after
+    its sign (``%3s`` of -1 is ``-01``, ``%_5s`` is ``"   -1"``).
+
+    Args:
+        dt (datetime): the moment being rendered.
+        flags (str): the flag characters typed between ``%`` and the
+            width.
+        width (int | None): the minimum field width, if typed.
+    """
+    value = math.floor(dt.timestamp())
+    sign = "-" if value < 0 else ""
+    digits = None if width is None else width - len(sign)
+    return pad_signed(sign, str(abs(value)), winning_pad(flags), digits)
 
 
 def pad_quarter(quarter: str, flags: str, width: int | None) -> str:
@@ -96,9 +167,13 @@ def gnu_strftime(dt: datetime, fmt: str) -> str:
     (``plus_year``), on ``F`` it signs the year the width reaches
     (``%+12F`` is ``+02026-09-03``), and anywhere else it is ``0``, so
     ``%+5d`` reaches strftime as ``%05d``; a ``+`` that a later padding
-    flag outranks is dropped. Every other directive passes to strftime
-    with its prefix intact; ``%%`` pairs are stepped over, keeping
-    ``%%q`` literal.
+    flag outranks is dropped. ``%z`` and its colon forms ``%:z``,
+    ``%::z`` and ``%:::z`` are rendered here too (``zone_offset``), as
+    is ``%s`` (``epoch_seconds``), since neither C library pads a
+    negative number or an offset the way GNU does. A colon before any
+    other directive stays literal, as in GNU. Every other directive
+    passes to strftime with its prefix intact; ``%%`` pairs are stepped
+    over, keeping ``%%q`` literal.
 
     Args:
         dt (datetime): the moment being rendered.
@@ -117,12 +192,21 @@ def gnu_strftime(dt: datetime, fmt: str) -> str:
         k = j
         while k < len(fmt) and fmt[k].isdigit():
             k += 1
-        if k >= len(fmt):
-            out.append(fmt[i:])
+        c = k
+        while c < len(fmt) and fmt[c] == ":":
+            c += 1
+        if c >= len(fmt):
+            out.append("%%" + fmt[i + 1:])
             break
         width = int(fmt[j:k]) if k > j else None
-        directive = fmt[k]
-        if directive == "q":
+        directive = fmt[c]
+        if directive == "z":
+            out.append(zone_offset(dt, c - k, fmt[i + 1:j], width))
+        elif c > k:
+            out.append("%%" + fmt[i + 1:c + 1])
+        elif directive == "s":
+            out.append(epoch_seconds(dt, fmt[i + 1:j], width))
+        elif directive == "q":
             quarter = str((dt.month - 1) // 3 + 1)
             out.append(pad_quarter(quarter, fmt[i + 1:j], width))
         elif directive == "N":
@@ -141,5 +225,5 @@ def gnu_strftime(dt: datetime, fmt: str) -> str:
                 out.append("%" + flags.replace("+", zero) + fmt[j:k + 1])
         else:
             out.append(fmt[i:k + 1])
-        i = k + 1
+        i = c + 1
     return dt.strftime("".join(out))

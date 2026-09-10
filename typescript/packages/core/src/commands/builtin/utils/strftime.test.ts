@@ -71,7 +71,33 @@ describe('strftime GNU directives', () => {
     ['%^#p|%#^p|%#p|%^p|%^#Z|%#Z|%#^Z|%^Z|%#d', 'am|am|am|AM|utc|utc|utc|UTC|01'],
     ['%^#B|%#^B|%#B|%^B|%#a|%^#a|%#^b', 'JANUARY|JANUARY|JANUARY|JANUARY|THU|THU|JAN'],
     ['%^#p|%#^p|%#p|%^p|%^#Z|%#Z|%#^Z|%^Z|%#d', 'am|am|am|AM|utc|utc|utc|UTC|01'],
+    [
+      '%:z|%::z|%:::z|%z|%_:z|%-:z|%5:z|%8:z|%_8:z|%_z|%-z|%6z|%_6z|%8::z|%5:::z',
+      '+00:00|+00:00:00|+00|+0000| +0:00|+0:00|+0:00|+0000:00|   +0:00| +000|+000|+00000|  +000|+0:00:00|+0000',
+    ],
+    ['%:q|%:%z|%::', '%:q|%:+0000|%::'],
   ])('%s renders %s', (fmt, expected) => {
     expect(strftime(MOMENT, fmt, true)).toBe(expected)
+  })
+
+  it('pads a negative number after its sign', () => {
+    // Pinned against date 9.7: zeros go after the sign, spaces before it.
+    expect(strftime(new Date(-1000), '%3s|%s|%_3s|%-3s|%03s|%+3s|%5s|%_5s', true)).toBe(
+      '-01|-1| -1|-1|-01|-01|-0001|   -1',
+    )
+    expect(strftime(new Date(-100000), '%5s|%_5s|%2s', true)).toBe('-0100| -100|-100')
+  })
+
+  it('renders the local zone with its colon forms', () => {
+    const prior = process.env.TZ
+    process.env.TZ = 'Asia/Kolkata'
+    try {
+      expect(strftime(new Date(0), '%:z|%::z|%:::z|%_:z|%8:z|%-z', false)).toBe(
+        '+05:30|+05:30:00|+05:30| +5:30|+0005:30|+530',
+      )
+    } finally {
+      if (prior === undefined) delete process.env.TZ
+      else process.env.TZ = prior
+    }
   })
 })
