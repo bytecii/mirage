@@ -314,6 +314,47 @@ describe('jobs are scoped to the session that launched them', () => {
     }
   })
 
+  it('closing a session purges its jobs', async () => {
+    const ws = buildWs()
+    ws.createSession('a')
+    try {
+      await ws.execute('sleep 30 &', { sessionId: 'a' })
+      await ws.execute('sleep 30 &', { sessionId: 'a' })
+      const old = ws.jobTable.get(2, 'a')
+      expect(old).not.toBeNull()
+      await ws.closeSession('a')
+      expect(old?.status).toBe(JobStatus.KILLED)
+      expect(ws.jobTable.listJobs('a')).toEqual([])
+      // A session reusing the id starts from one and inherits nothing.
+      ws.createSession('a')
+      expect(stdoutStr(await ws.execute('jobs', { sessionId: 'a' }))).toBe('')
+      expect(stdoutStr(await ws.execute('sleep 30 & echo $!', { sessionId: 'a' }))).toBe('1\n')
+      const io = await ws.execute('wait %2', { sessionId: 'a' })
+      expect(io.exitCode).toBe(127)
+      expect(stderrStr(io)).toContain('no such job')
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it("closing every session keeps the default one's jobs", async () => {
+    const ws = buildWs()
+    ws.createSession('a')
+    ws.createSession('b')
+    try {
+      await ws.execute('sleep 30 &')
+      await ws.execute('sleep 30 &', { sessionId: 'a' })
+      await ws.execute('sleep 30 &', { sessionId: 'b' })
+      await ws.closeAllSessions()
+      expect(ws.jobTable.listJobs('a')).toEqual([])
+      expect(ws.jobTable.listJobs('b')).toEqual([])
+      const kept = ws.jobTable.get(1, ws.sessionManager.defaultId)
+      expect(kept?.status).toBe(JobStatus.RUNNING)
+    } finally {
+      await ws.close()
+    }
+  })
+
   it('each session numbers its jobs from one', async () => {
     const ws = buildWs()
     ws.createSession('a')

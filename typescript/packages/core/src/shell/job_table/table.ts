@@ -236,6 +236,24 @@ export class JobTable {
     return true
   }
 
+  /**
+   * Drop a session's job list when the session closes, stopping what is
+   * still running, and return what was stopped.
+   *
+   * What happens to a bash's jobs when that bash exits: they are hung
+   * up, and a later shell that reuses the same id starts from an empty
+   * list numbered from 1 rather than inheriting jobs it never launched,
+   * under a profile it may not share. A disowned job is off the list
+   * already and keeps running, as in bash, until `killAll` at teardown.
+   */
+  async closeSession(sessionId: string): Promise<Job[]> {
+    const running = this.runningJobs(sessionId)
+    for (const job of running) await this.kill(job.id, sessionId)
+    this.jobs.delete(sessionId)
+    this.nextIds.delete(sessionId)
+    return running
+  }
+
   /** Stop every running job in every session, returning the ones that
    * were running. Disowned jobs are stopped too: the shell forgot them,
    * the workspace did not, and a teardown that left them running would

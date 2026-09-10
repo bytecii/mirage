@@ -447,6 +447,25 @@ describe('JobTable per-session scoping', () => {
     await jt.killAll()
   })
 
+  it("closeSession stops and forgets the session's jobs", async () => {
+    const jt = new JobTable()
+    const a1 = live(jt, 'a')
+    const a2 = live(jt, 'a')
+    const b1 = live(jt, 'b')
+    expect(jt.disown(a2.id, 'a')).toBe(true)
+    expect(await jt.closeSession('a')).toEqual([a1])
+    expect(a1.status).toBe(JobStatus.KILLED)
+    // Disowned: off the list, still running, bash's own rule.
+    expect(a2.status).toBe(JobStatus.RUNNING)
+    expect(jt.listJobs('a')).toEqual([])
+    expect(jt.get(1, 'a')).toBeNull()
+    expect(jt.listJobs('b')).toEqual([b1])
+    // A session reusing the id starts from one and inherits nothing.
+    expect(live(jt, 'a').id).toBe(1)
+    await jt.killAll()
+    expect(a2.status).toBe(JobStatus.KILLED)
+  })
+
   it('loadJob restores a job into its session', async () => {
     const jt = new JobTable()
     const restored = new Job({

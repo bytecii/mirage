@@ -240,6 +240,26 @@ async def test_numbering_resets_per_session_when_its_list_empties():
 
 
 @pytest.mark.asyncio
+async def test_close_session_stops_and_forgets_its_jobs():
+    table = JobTable()
+    a1 = _submit(table, "a")
+    a2 = _submit(table, "a")
+    b1 = _submit(table, "b")
+    assert table.disown(a2.id, "a")
+    assert await table.close_session("a") == [a1]
+    assert a1.status is JobStatus.KILLED
+    # Disowned: off the list, still running, bash's own rule.
+    assert a2.status is JobStatus.RUNNING
+    assert table.list_jobs("a") == []
+    assert table.get(1, "a") is None
+    assert table.list_jobs("b") == [b1]
+    # A session reusing the id starts from one and inherits nothing.
+    assert _submit(table, "a").id == 1
+    await table.kill_all()
+    assert a2.status is JobStatus.KILLED
+
+
+@pytest.mark.asyncio
 async def test_load_restores_a_job_into_its_session():
     table = JobTable()
     restored = Job(id=3,

@@ -31,12 +31,23 @@ MOMENT = datetime(2026, 1, 1, 0, 0, 1, 123456)
     ("%12N", "123456000000"),
     ("%q", "1"),
     ("%2q", "01"),
+    ("%02q", "01"),
+    ("%_2q", " 1"),
+    ("%-2q", "1"),
+    ("%_3q", "  1"),
+    ("%_q", "1"),
+    ("%_-2q", "1"),
+    ("%-_2q", " 1"),
+    ("%0_2q", " 1"),
+    ("%_02q", "01"),
+    ("%^_2q", " 1"),
     ("%%N", "%N"),
     ("%%q", "%q"),
     ("%Y/%q/%3N", "2026/1/123"),
 ])
 def test_gnu_directives_follow_date(fmt: str, expected: str):
     # Pinned against date 9.7: a width on %N keeps that many leading
-    # digits and pads a wider one with zeros on the right, a width on
-    # %q zero-pads on the left, and the flags change nothing on either.
+    # digits and pads a wider one with zeros on the right and its flags
+    # change nothing; a width on %q pads on the left, with zeros unless
+    # `_` says spaces or `-` says none, the last of the three winning.
     assert gnu_strftime(MOMENT, fmt) == expected

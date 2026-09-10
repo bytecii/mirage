@@ -291,6 +291,27 @@ class JobTable:
             self._disowned.append(job)
         return True
 
+    async def close_session(self, session_id: str) -> list[Job]:
+        """Drop a session's job list when the session closes, stopping
+        what is still running, and return what was stopped.
+
+        What happens to a bash's jobs when that bash exits: they are
+        hung up, and a later shell that reuses the same id starts from
+        an empty list numbered from 1 rather than inheriting jobs it
+        never launched, under a profile it may not share. A disowned
+        job is off the list already and keeps running, as in bash,
+        until ``kill_all`` at teardown.
+
+        Args:
+            session_id (str): the session being closed.
+        """
+        running = self.running_jobs(session_id)
+        for job in running:
+            await self.kill(job.id, session_id)
+        self._jobs.pop(session_id, None)
+        self._next_ids.pop(session_id, None)
+        return running
+
     async def kill_all(self) -> list[Job]:
         """Stop every running job in every session, returning the ones
         that were running.

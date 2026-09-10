@@ -15,6 +15,29 @@
 from datetime import datetime
 
 GNU_FLAG_CHARS = "-_0^#"
+GNU_PAD_FLAGS = "-_0"
+
+
+def pad_quarter(quarter: str, flags: str, width: int | None) -> str:
+    """Pad ``%q``'s digit the way GNU date pads a number.
+
+    ``-`` drops the padding, ``_`` pads with spaces, ``0`` with zeros,
+    and the last of the three typed wins (``%_-2q`` is ``3``, ``%-_2q``
+    is ``" 3"``); a bare width zero-pads.
+
+    Args:
+        quarter (str): the quarter digit.
+        flags (str): the flag characters typed between ``%`` and the
+            width.
+        width (int | None): the minimum field width, if typed.
+    """
+    pad = "0"
+    for ch in flags:
+        if ch in GNU_PAD_FLAGS:
+            pad = ch
+    if pad == "-" or width is None:
+        return quarter
+    return quarter.rjust(width, " " if pad == "_" else "0")
 
 
 def gnu_strftime(dt: datetime, fmt: str) -> str:
@@ -27,8 +50,9 @@ def gnu_strftime(dt: datetime, fmt: str) -> str:
     (``%3N``, ``%_3N``, ``%2q``), pinned against date 9.7: a width on
     ``N`` keeps that many leading digits and pads wider widths with
     zeros on the right (``%3N`` is milliseconds, ``%12N`` appends three
-    zeros), a width on ``q`` zero-pads on the left, and the flags
-    change nothing on either. Every other directive passes to strftime
+    zeros) and its flags change nothing, while a width on ``q`` pads on
+    the left under the padding flags (``%_2q`` is ``" 3"``, ``%-2q`` is
+    ``3``). Every other directive passes to strftime
     with its prefix intact; ``%%`` pairs are stepped over, keeping
     ``%%q`` literal.
 
@@ -56,7 +80,7 @@ def gnu_strftime(dt: datetime, fmt: str) -> str:
         directive = fmt[k]
         if directive == "q":
             quarter = str((dt.month - 1) // 3 + 1)
-            out.append(quarter.zfill(width) if width else quarter)
+            out.append(pad_quarter(quarter, fmt[i + 1:j], width))
         elif directive == "N":
             nanos = f"{dt.microsecond * 1000:09d}"
             out.append(nanos[:width].ljust(width, "0") if width else nanos)

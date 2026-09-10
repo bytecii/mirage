@@ -1096,10 +1096,20 @@ class Workspace:
         await self._session_mgr.flush()
 
     async def close_session(self, session_id: str) -> None:
+        # The manager refuses the default and an unknown id first; a
+        # session that did close takes its jobs with it, so a later
+        # session reusing the id inherits nothing.
         await self._session_mgr.close(session_id)
+        await self.job_table.close_session(session_id)
 
     async def close_all_sessions(self) -> None:
+        closed = [
+            s.session_id for s in self.list_sessions()
+            if s.session_id != self.default_session_id
+        ]
         await self._session_mgr.close_all()
+        for session_id in closed:
+            await self.job_table.close_session(session_id)
 
     # ── mount management ────────────────────────────────────────────────────
 

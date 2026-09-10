@@ -196,15 +196,21 @@ export function strftime(dt: Date, fmt: string, utc: boolean): string {
 
 // GNU's flag and width prefix, pinned against date 9.7: a width on %N
 // keeps that many leading digits and pads a wider one with zeros on the
-// right (%3N is milliseconds), a width on %q zero-pads on the left, and
-// the flags change nothing on either. On any other directive `-` strips
+// right (%3N is milliseconds) and its flags change nothing, while a width
+// on %q pads on the left under the padding flags (%_2q is " 3", %-2q is
+// 3, and the last of `-`, `_`, `0` wins). On any other directive `-` strips
 // the padding, `_` pads with spaces, `0` pads with zeros, `^` upcases,
 // `#` swaps case, and a width pads on the left.
 function modified(base: string, code: string, flags: string, digits: string): string {
   const width = digits === '' ? null : Number(digits)
   if (code === '%') return base
   if (code === 'N') return width === null ? base : base.slice(0, width).padEnd(width, '0')
-  if (code === 'q') return width === null ? base : base.padStart(width, '0')
+  if (code === 'q') {
+    const padFlags = flags.replace(/[^-_0]/g, '')
+    const pad = padFlags === '' ? '0' : padFlags[padFlags.length - 1]
+    if (pad === '-' || width === null) return base
+    return base.padStart(width, pad === '_' ? ' ' : '0')
+  }
   if (flags === '' && width === null) return base
   let out = base
   if (flags.includes('-')) out = out.replace(/^[0 ]+(?=.)/, '')

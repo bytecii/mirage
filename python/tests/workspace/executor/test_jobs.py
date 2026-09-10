@@ -574,6 +574,48 @@ async def test_each_session_numbers_its_jobs_from_one():
 
 
 @pytest.mark.asyncio
+async def test_closing_a_session_purges_its_jobs():
+    ws = _workspace()
+    ws.create_session("a")
+    try:
+        await ws.execute("sleep 30 &", session_id="a")
+        await ws.execute("sleep 30 &", session_id="a")
+        old = ws.job_table.get(2, "a")
+        assert old is not None
+        await ws.close_session("a")
+        assert old.status is JobStatus.KILLED
+        assert ws.job_table.list_jobs("a") == []
+        # A session reusing the id starts from one and inherits nothing.
+        ws.create_session("a")
+        assert (await ws.execute("jobs", session_id="a")).stdout == b""
+        io = await ws.execute("sleep 30 & echo $!", session_id="a")
+        assert io.stdout == b"1\n"
+        io = await ws.execute("wait %2", session_id="a")
+        assert io.exit_code == 127
+        assert b"no such job" in (io.stderr or b"")
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_closing_every_session_keeps_the_default_ones_jobs():
+    ws = _workspace()
+    ws.create_session("a")
+    ws.create_session("b")
+    try:
+        await ws.execute("sleep 30 &")
+        await ws.execute("sleep 30 &", session_id="a")
+        await ws.execute("sleep 30 &", session_id="b")
+        await ws.close_all_sessions()
+        assert ws.job_table.list_jobs("a") == []
+        assert ws.job_table.list_jobs("b") == []
+        kept = ws.job_table.get(1, ws.default_session_id)
+        assert kept is not None and kept.status is JobStatus.RUNNING
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
 async def test_a_followed_tail_streams_to_its_job_console_until_killed():
     # `timeout N tail -f` cannot show partial output: the line barrier
     # materializes stdout before `timeout` drains it. A job is the shape
