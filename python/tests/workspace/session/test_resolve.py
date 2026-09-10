@@ -729,3 +729,201 @@ def test_narrow_restored_holds_a_nested_show_under_the_broader_mode():
                       path="/vault/public/docs", mode=MountMode.WRITE), ))))
     assert session.shown_paths == ShownPaths(
         entries=(ShowEntry(path="/vault/public/docs", mode=MountMode.READ), ))
+
+
+def _ruled(doc: dict, name: str) -> Session:
+    """A session narrowed under one profile document."""
+    session = Session(session_id=name)
+    narrow(session, compile_profile(SessionProfile.model_validate(doc), name))
+    return session
+
+
+# `rule_at` reads competing rules by anchor depth, deny before ask only
+# at equal depth, so concatenating the two lists let a deeper ask from
+# the table outrank a shallower deny on the session: a target refusing
+# `cat /vault/*` answered a table asking `cat /vault/public/*` with a
+# prompt. A deny from either side has to stay a deny.
+def test_narrow_restored_keeps_a_deny_a_deeper_ask_would_outrank():
+    session = _ruled(
+        {
+            "commands": {
+                "allow": ["cat", "echo"],
+                "deny": [{
+                    "reason": "vault is sealed",
+                    "commands": {
+                        "cat": ["/vault/*"]
+                    }
+                }],
+            }
+        }, "target")
+    table = _ruled(
+        {
+            "commands": {
+                "allow": ["cat", "echo"],
+                "ask": [{
+                    "reason": "public needs a nod",
+                    "commands": {
+                        "cat": ["/vault/public/*"]
+                    }
+                }],
+            }
+        }, "source")
+    narrow_restored(session, table)
+    assert session.commands is not None
+    # The table's entry moved to the deny list at its own depth, where
+    # the verb tie-break lets the refusal win, and carries the reason
+    # of the deny that curbed it.
+    assert [(r.reason, r.paths) for r in session.commands.deny] == [
+        ("vault is sealed", ("/vault/*", )),
+        ("vault is sealed", ("/vault/public/*", )),
+    ]
+    assert session.commands.ask == ()
+
+
+# Only the covered part moves: a carve-out the other side never spoke
+# about is still a question, not a refusal and not a grant.
+def test_narrow_restored_curbs_only_what_the_other_side_denies():
+    session = _ruled(
+        {
+            "commands": {
+                "allow": ["cat", "echo"],
+                "deny": [{
+                    "reason": "vault is sealed",
+                    "commands": {
+                        "cat": ["/vault/*"]
+                    }
+                }],
+            }
+        }, "target")
+    table = _ruled(
+        {
+            "commands": {
+                "allow": ["cat", "echo"],
+                "ask": [{
+                    "reason": "a nod, please",
+                    "commands": {
+                        "cat": ["/vault/public/*", "/notes/*"]
+                    }
+                }],
+            }
+        }, "source")
+    narrow_restored(session, table)
+    assert session.commands is not None
+    assert [(r.reason, r.paths) for r in session.commands.ask
+            ] == [("a nod, please", ("/notes/*", ))]
+    assert ("vault is sealed", ("/vault/public/*", )) in [
+        (r.reason, r.paths) for r in session.commands.deny
+    ]
+
+
+# A deny deeper than the ask already wins on its own subtree and must
+# not swallow the shallower question above it.
+def test_narrow_restored_leaves_an_ask_a_deeper_deny_already_outranks():
+    session = _ruled(
+        {
+            "commands": {
+                "allow": ["cat", "echo"],
+                "deny": [{
+                    "reason": "the key is sealed",
+                    "commands": {
+                        "cat": ["/vault/public/key/*"]
+                    }
+                }],
+            }
+        }, "target")
+    table = _ruled(
+        {
+            "commands": {
+                "allow": ["cat", "echo"],
+                "ask": [{
+                    "reason": "a nod, please",
+                    "commands": {
+                        "cat": ["/vault/*"]
+                    }
+                }],
+            }
+        }, "source")
+    narrow_restored(session, table)
+    assert session.commands is not None
+    assert [(r.reason, r.paths) for r in session.commands.ask
+            ] == [("a nod, please", ("/vault/*", ))]
+
+
+# A deny about another command reaches nothing the ask names, and
+# refusing there would refuse a line neither side refuses.
+def test_narrow_restored_does_not_curb_across_commands():
+    session = _ruled(
+        {
+            "commands": {
+                "allow": ["cat", "rm", "echo"],
+                "deny": [{
+                    "reason": "vault is sealed",
+                    "commands": {
+                        "rm": ["/vault/*"]
+                    }
+                }],
+            }
+        }, "target")
+    table = _ruled(
+        {
+            "commands": {
+                "allow": ["cat", "rm", "echo"],
+                "ask": [{
+                    "reason": "a nod, please",
+                    "commands": {
+                        "cat": ["/vault/public/*"]
+                    }
+                }],
+            }
+        }, "source")
+    narrow_restored(session, table)
+    assert session.commands is not None
+    assert [(r.reason, r.paths) for r in session.commands.ask
+            ] == [("a nod, please", ("/vault/public/*", ))]
+
+
+# A table whose show list spells one path twice keeps what was in
+# force, not what was written last: `shown_mode` takes the weaker of
+# two entries at a depth, so matching against the raw list paired the
+# session against the wrong spelling and restored an executable
+# subtree the source only ever read.
+def test_narrow_restored_folds_a_duplicate_table_show_to_its_weakest():
+    session = Session(
+        session_id="s",
+        hidden_paths=HiddenPaths(paths=("/repo", )),
+        shown_paths=ShownPaths(
+            entries=(ShowEntry(path="/repo/build", mode=MountMode.EXEC), )))
+    narrow_restored(
+        session,
+        _restored(hidden_paths=HiddenPaths(paths=("/repo", )),
+                  shown_paths=ShownPaths(entries=(
+                      ShowEntry(path="/repo/build", mode=MountMode.READ),
+                      ShowEntry(path="/repo/build", mode=MountMode.EXEC),
+                  ))))
+    assert session.shown_paths == ShownPaths(
+        entries=(ShowEntry(path="/repo/build", mode=MountMode.READ), ))
+
+
+# An anchored pattern is asked the same question as a path, so a
+# broader pattern grants a narrower one and the narrower survives as
+# the intersection, exactly as two nested exact carve-outs do. Two
+# patterns that only overlap have no single entry naming their common
+# ground and are both dropped -- the narrowing direction, stated in
+# `_grants`.
+def test_narrow_restored_keeps_the_narrower_of_two_nested_show_patterns():
+    session = Session(
+        session_id="s",
+        hidden_paths=HiddenPaths(paths=("/vault", )),
+        shown_paths=ShownPaths(
+            entries=(ShowEntry(path="/vault/a/b/*", mode=None), )))
+    narrow_restored(
+        session,
+        _restored(hidden_paths=HiddenPaths(paths=("/vault", )),
+                  shown_paths=ShownPaths(
+                      entries=(ShowEntry(path="/vault/a/*", mode=None), ))))
+    assert session.shown_paths == ShownPaths(
+        entries=(ShowEntry(path="/vault/a/b/*", mode=None), ))
+    assert path_visible(session.hidden_paths, session.shown_paths,
+                        "/vault/a/b/f.txt")
+    assert not path_visible(session.hidden_paths, session.shown_paths,
+                            "/vault/a/other.txt")

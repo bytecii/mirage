@@ -13,10 +13,10 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from mirage.policy.errors import PolicyError
-from mirage.policy.match.pattern import intersect_patterns
+from mirage.policy.match.pattern import intersect_patterns, pattern_matches
 from mirage.policy.types import (AdmissionRules, CommandRule, HideReason,
                                  ProfileScript)
 from mirage.types import (HiddenPaths, HiddenVars, MountMode, ShowEntry,
@@ -723,10 +723,115 @@ def _merge_allow(base: tuple[str, ...] | None,
     return intersect_patterns(base, table)
 
 
+def _covers_entry(entry: str, rule: CommandRule, other: CommandRule) -> bool:
+    """Whether a deny would answer an ask's path entry more shallowly.
+
+    The one way concatenating two rule sets can *lift* a restriction.
+    ``rule_at`` reads competing rules by anchor depth, deny before ask
+    only at equal depth, so a deeper ask outranks a shallower deny: a
+    target denying ``cat /vault/*`` and a table asking
+    ``cat /vault/public/*`` would answer the deeper ask and turn a
+    refusal into a prompt. Every other pairing composes correctly on
+    its own, since a deny that wins is the stricter answer and an ask
+    that wins over nothing is stricter than allowing.
+
+    Three questions, and the deny has to answer all of them, because
+    what is done with a covered entry is refuse it: a deny that does
+    not really reach there would refuse a line neither side refuses.
+    It must apply wherever the ask does (its mount is the whole
+    session or the ask's own), its command patterns must cover the
+    ask's (none means every command; otherwise each of the ask's
+    spellings must match one of the deny's, so a ``git *`` deny covers
+    a ``git push`` ask), and it must reach the entry from higher up --
+    the hide law's own covering test, since a rule's path entries are
+    the same grammar, with a pathless deny reaching every entry from
+    depth 0.
+
+    Args:
+        entry (str): one path entry of the ask rule.
+        rule (CommandRule): the ask rule the entry belongs to.
+        other (CommandRule): the candidate deny.
+    """
+    if other.mount and other.mount != rule.mount:
+        return False
+    if other.commands and not all(
+            any(
+                pattern_matches(pat, spelling.split())
+                for pat in other.commands)
+            for spelling in (rule.commands or ("*", ))):
+        return False
+    depth = anchor_depth(entry)
+    if not other.paths:
+        return depth > 0
+    return any(
+        anchor_depth(path) < depth and hide_depth(classify_paths((
+            path, )), entry) is not None for path in other.paths)
+
+
+def _curb_asks(
+    asks: tuple[CommandRule, ...], denies: tuple[CommandRule, ...]
+) -> tuple[tuple[CommandRule, ...], tuple[CommandRule, ...]]:
+    """One side's ask rules, with what the other side denies moved over.
+
+    The composition the join owes: where one side asks and the other
+    denies, the answer is the deny, since a deny is the stricter of the
+    two. Dropping the entry instead would answer *allow* there, and
+    keeping it answers *ask*; both lift the other side's refusal, so
+    the entry moves into the deny list, at its own depth, where the
+    verb tie-break lets the refusal win. An entry no deny covers stays
+    an ask, so a carve-out the other side never spoke about survives.
+
+    Args:
+        asks (tuple[CommandRule, ...]): one side's ask rules.
+        denies (tuple[CommandRule, ...]): the other side's deny rules.
+
+    Returns:
+        The ask rules that still ask, and the deny rules the curbed
+        entries became.
+    """
+    kept: list[CommandRule] = []
+    refused: list[CommandRule] = []
+    # The list itself is returned when nothing moved, so a table that
+    # adds no refusal leaves the session on the very objects it had.
+    if not denies:
+        return asks, ()
+    for rule in asks:
+        if not rule.paths or not denies:
+            kept.append(rule)
+            continue
+        stays: list[str] = []
+        moved: dict[str, list[str]] = {}
+        for entry in rule.paths:
+            blocker = next(
+                (d for d in denies if _covers_entry(entry, rule, d)), None)
+            if blocker is None:
+                stays.append(entry)
+            else:
+                moved.setdefault(blocker.reason, []).append(entry)
+        if not moved:
+            kept.append(rule)
+            continue
+        if stays:
+            kept.append(replace(rule, paths=tuple(stays)))
+        for reason, entries in moved.items():
+            refused.append(
+                CommandRule(reason=reason,
+                            commands=rule.commands,
+                            paths=tuple(entries),
+                            mount=rule.mount))
+    return (asks if not refused else tuple(kept)), tuple(refused)
+
+
 def _merge_commands(base: AdmissionRules | None,
                     table: AdmissionRules | None) -> AdmissionRules | None:
     """Both rule sets as one: ask and deny rules union, the allow list
     intersects; the session's own object when the table adds nothing.
+
+    The union is not a concatenation. Two rule sets read together are
+    read by anchor depth, so an ask from one side can outrank a deny
+    from the other and answer a refusal with a prompt; :func:`_curb_asks`
+    composes those pairings the other way first, in both directions,
+    so a deny from either side stays a deny.
 
     Args:
         base (AdmissionRules | None): the session's rules.
@@ -736,9 +841,13 @@ def _merge_commands(base: AdmissionRules | None,
         return base
     if base is None:
         return table
+    base_ask, base_refused = _curb_asks(base.ask, table.deny)
+    table_ask, table_refused = _curb_asks(table.ask, base.deny)
+    deny = _append_rules(_append_rules(base.deny, base_refused),
+                         _append_rules(table.deny, table_refused))
     merged = AdmissionRules(allow=_merge_allow(base.allow, table.allow),
-                            ask=_append_rules(base.ask, table.ask),
-                            deny=_append_rules(base.deny, table.deny))
+                            ask=_append_rules(base_ask, table_ask),
+                            deny=deny)
     return base if merged == base else merged
 
 
@@ -805,6 +914,19 @@ def _grants(side: _Side, path: str) -> bool:
     A pattern that anchors nothing (``*.key``, no separator) re-opens
     by name anywhere and no depth comparison bounds it, so it is
     granted only where the other side hides nothing at all.
+
+    One stated limit, and it is the grammar's rather than this
+    function's. An anchored pattern is asked the same question as a
+    path, so the other side *covering* it grants it (``/vault/*``
+    grants ``/vault/a/*``, since the coverage test walks the entry's
+    own prefixes). Two patterns that merely *overlap* -- ``/vault/*``
+    ``/public`` beside ``/vault/a/*`` -- have no single entry that
+    names their common ground: ``*`` crosses separators here, as GNU
+    ``find -path`` has it, so the overlap is a family of paths and not
+    a subtree. Neither grants the other and both are dropped, which
+    can hide a path both sides allow. That is the narrowing direction,
+    which is the one to fail in; naming a wrong intersection would be
+    the other.
 
     Args:
         side (_Side): the other side.
@@ -901,8 +1023,8 @@ def _merge_shown(base: _Side, table: _Side) -> ShownPaths | None:
     """
     if base.shown is None and table.shown is None:
         return None
-    base_entries = base.shown.entries if base.shown is not None else ()
-    table_entries = table.shown.entries if table.shown is not None else ()
+    base_entries = _folded(base.shown)
+    table_entries = _folded(table.shown)
     by_table = {entry.path: entry for entry in table_entries}
     by_base = {entry.path: entry for entry in base_entries}
     out: list[ShowEntry] = []
@@ -919,6 +1041,34 @@ def _merge_shown(base: _Side, table: _Side) -> ShownPaths | None:
     if base.shown is not None and tuple(out) == base.shown.entries:
         return base.shown
     return classify_shows(out)
+
+
+def _folded(shown: ShownPaths | None) -> tuple[ShowEntry, ...]:
+    """One side's show entries, one per path, at its weakest mode.
+
+    A session table keeps every entry it was given, and two entries for
+    one path do not mean the deeper mode: :func:`shown_mode` takes the
+    weaker of two at a depth, failing toward refusal. Matching by path
+    against the raw list would pair the other side against whichever
+    spelling came last and restore an ``rwx`` the source never had, so
+    each side is folded to what is actually in force before the two are
+    compared. A list-form entry (no mode) states visibility only and
+    answers no mode question, so a stated mode beside it stands.
+
+    Args:
+        shown (ShownPaths | None): one side's entries.
+    """
+    out: dict[str, ShowEntry] = {}
+    for entry in (shown.entries if shown is not None else ()):
+        held = out.get(entry.path)
+        if held is None:
+            out[entry.path] = entry
+        elif entry.mode is not None:
+            out[entry.path] = ShowEntry(
+                path=entry.path,
+                mode=entry.mode if held.mode is None else weaker_mode(
+                    held.mode, entry.mode))
+    return tuple(out.values())
 
 
 def narrow_restored(session: Session, table: Session) -> None:

@@ -14,7 +14,7 @@
 
 import { checkRules } from './validate.ts'
 import { PolicyError } from '../../policy/errors.ts'
-import { intersectPatterns } from '../../policy/match/pattern.ts'
+import { intersectPatterns, patternMatches } from '../../policy/match/pattern.ts'
 import type { CommandRule, AdmissionRules, HideReason, ProfileScript } from '../../policy/types.ts'
 import type { HiddenPaths, HiddenVars, MountMode, ShowEntry, ShownPaths } from '../../types.ts'
 import { weakerMode } from '../../types.ts'
@@ -658,6 +658,115 @@ function mergeAllow(
  * Both rule sets as one: ask and deny rules union, the allow list
  * intersects; the session's own object when the table adds nothing.
  */
+/**
+ * Whether a deny would answer an ask's path entry more shallowly.
+ *
+ * The one way concatenating two rule sets can *lift* a restriction.
+ * `ruleAt` reads competing rules by anchor depth, deny before ask only
+ * at equal depth, so a deeper ask outranks a shallower deny: a target
+ * denying `cat /vault/*` and a table asking `cat /vault/public/*` would
+ * answer the deeper ask and turn a refusal into a prompt. Every other
+ * pairing composes correctly on its own, since a deny that wins is the
+ * stricter answer and an ask that wins over nothing is stricter than
+ * allowing.
+ *
+ * Three questions, and the deny has to answer all of them, because what
+ * is done with a covered entry is refuse it: a deny that does not
+ * really reach there would refuse a line neither side refuses. It must
+ * apply wherever the ask does (its mount is the whole session or the
+ * ask's own), its command patterns must cover the ask's (none means
+ * every command; otherwise each of the ask's spellings must match one
+ * of the deny's, so a `git *` deny covers a `git push` ask), and it
+ * must reach the entry from higher up -- the hide law's own covering
+ * test, since a rule's path entries are the same grammar, with a
+ * pathless deny reaching every entry from depth 0.
+ */
+function coversEntry(entry: string, rule: CommandRule, other: CommandRule): boolean {
+  if (other.mount !== undefined && other.mount !== '' && other.mount !== (rule.mount ?? '')) {
+    return false
+  }
+  const denied = other.commands ?? []
+  if (
+    denied.length > 0 &&
+    !(rule.commands ?? ['*']).every((spelling) =>
+      denied.some((pat) => patternMatches(pat, spelling.split(' '))),
+    )
+  ) {
+    return false
+  }
+  const depth = anchorDepth(entry)
+  const paths = other.paths ?? []
+  if (paths.length === 0) return depth > 0
+  return paths.some(
+    (path) => anchorDepth(path) < depth && hideDepth(classifyPaths([path]), entry) !== null,
+  )
+}
+
+/**
+ * One side's ask rules, with what the other side denies moved over.
+ *
+ * The composition the join owes: where one side asks and the other
+ * denies, the answer is the deny, since a deny is the stricter of the
+ * two. Dropping the entry instead would answer *allow* there, and
+ * keeping it answers *ask*; both lift the other side's refusal, so the
+ * entry moves into the deny list, at its own depth, where the verb
+ * tie-break lets the refusal win. An entry no deny covers stays an ask,
+ * so a carve-out the other side never spoke about survives.
+ */
+function curbAsks(
+  asks: readonly CommandRule[],
+  denies: readonly CommandRule[],
+): [readonly CommandRule[], readonly CommandRule[]] {
+  const kept: CommandRule[] = []
+  const refused: CommandRule[] = []
+  // The list itself is returned when nothing moved, so a table that
+  // adds no refusal leaves the session on the very objects it had.
+  if (denies.length === 0) return [asks, refused]
+  for (const rule of asks) {
+    const entries = rule.paths ?? []
+    if (entries.length === 0 || denies.length === 0) {
+      kept.push(rule)
+      continue
+    }
+    const stays: string[] = []
+    const moved = new Map<string, string[]>()
+    for (const entry of entries) {
+      const blocker = denies.find((d) => coversEntry(entry, rule, d))
+      if (blocker === undefined) {
+        stays.push(entry)
+      } else {
+        const held = moved.get(blocker.reason)
+        if (held === undefined) moved.set(blocker.reason, [entry])
+        else held.push(entry)
+      }
+    }
+    if (moved.size === 0) {
+      kept.push(rule)
+      continue
+    }
+    if (stays.length > 0) kept.push({ ...rule, paths: stays })
+    for (const [reason, paths] of moved) {
+      refused.push({
+        reason,
+        ...(rule.commands !== undefined ? { commands: rule.commands } : {}),
+        paths,
+        ...(rule.mount !== undefined ? { mount: rule.mount } : {}),
+      })
+    }
+  }
+  return [refused.length === 0 ? asks : kept, refused]
+}
+
+/**
+ * Both rule sets as one: ask and deny rules union, the allow list
+ * intersects; the session's own object when the table adds nothing.
+ *
+ * The union is not a concatenation. Two rule sets read together are
+ * read by anchor depth, so an ask from one side can outrank a deny from
+ * the other and answer a refusal with a prompt; `curbAsks` composes
+ * those pairings the other way first, in both directions, so a deny
+ * from either side stays a deny.
+ */
 function mergeCommands(
   base: AdmissionRules | null,
   table: AdmissionRules | null,
@@ -665,8 +774,13 @@ function mergeCommands(
   if (table === null) return base
   if (base === null) return table
   const allow = mergeAllow(base.allow, table.allow)
-  const ask = appendRules(base.ask, table.ask)
-  const deny = appendRules(base.deny, table.deny)
+  const [baseAsk, baseRefused] = curbAsks(base.ask, table.deny)
+  const [tableAsk, tableRefused] = curbAsks(table.ask, base.deny)
+  const ask = appendRules(baseAsk, tableAsk)
+  const deny = appendRules(
+    appendRules(base.deny, baseRefused),
+    appendRules(table.deny, tableRefused),
+  )
   if (allow === base.allow && ask === base.ask && deny === base.deny) return base
   return { allow, ask, deny }
 }
@@ -721,6 +835,18 @@ function hidesAnything(hidden: HiddenPaths | null): boolean {
  * A pattern that anchors nothing (`*.key`, no separator) re-opens by
  * name anywhere and no depth comparison bounds it, so it is granted
  * only where the other side hides nothing at all.
+ *
+ * One stated limit, and it is the grammar's rather than this
+ * function's. An anchored pattern is asked the same question as a path,
+ * so the other side *covering* it grants it (`/vault/*` grants
+ * `/vault/a/*`, since the coverage test walks the entry's own
+ * prefixes). Two patterns that merely *overlap* -- `/vault/*``/public`
+ * beside `/vault/a/*` -- have no single entry that names their common
+ * ground: `*` crosses separators here, as GNU `find -path` has it, so
+ * the overlap is a family of paths and not a subtree. Neither grants
+ * the other and both are dropped, which can hide a path both sides
+ * allow. That is the narrowing direction, which is the one to fail in;
+ * naming a wrong intersection would be the other.
  */
 function grants(side: Side, path: string): boolean {
   if (isGlob(path) && !path.includes('/')) return !hidesAnything(side.hidden)
@@ -788,10 +914,38 @@ function mergeShow(
  * Both sides' show entries as both allow them (`mergeShow`), the
  * session's first; the session's own object when nothing changed.
  */
+/**
+ * One side's show entries, one per path, at its weakest mode.
+ *
+ * A session table keeps every entry it was given, and two entries for
+ * one path do not mean the deeper mode: `shownMode` takes the weaker of
+ * two at a depth, failing toward refusal. Matching by path against the
+ * raw list would pair the other side against whichever spelling came
+ * last and restore an `rwx` the source never had, so each side is
+ * folded to what is actually in force before the two are compared. A
+ * list-form entry (no mode) states visibility only and answers no mode
+ * question, so a stated mode beside it stands.
+ */
+function folded(shown: ShownPaths | null): readonly ShowEntry[] {
+  const out = new Map<string, ShowEntry>()
+  for (const entry of shown?.entries ?? []) {
+    const held = out.get(entry.path)
+    if (held === undefined) {
+      out.set(entry.path, entry)
+    } else if (entry.mode !== null) {
+      out.set(entry.path, {
+        path: entry.path,
+        mode: held.mode === null ? entry.mode : weakerMode(held.mode, entry.mode),
+      })
+    }
+  }
+  return [...out.values()]
+}
+
 function mergeShown(base: Side, table: Side): ShownPaths | null {
   if (base.shown === null && table.shown === null) return null
-  const baseEntries = base.shown?.entries ?? []
-  const tableEntries = table.shown?.entries ?? []
+  const baseEntries = folded(base.shown)
+  const tableEntries = folded(table.shown)
   const byTable = new Map(tableEntries.map((entry) => [entry.path, entry]))
   const byBase = new Set(baseEntries.map((entry) => entry.path))
   const out: ShowEntry[] = []
