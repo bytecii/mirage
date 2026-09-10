@@ -89,6 +89,12 @@ export interface ListResult {
   status?: LookupStatus | null
 }
 
+export interface IndexDirectory {
+  entries: string[]
+  expires_at: number
+  generation: string
+}
+
 export interface IndexConfig {
   type?: IndexType
   ttl?: number
