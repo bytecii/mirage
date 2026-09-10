@@ -280,7 +280,10 @@ async function runLine(
       record: false,
       sessionId: opts.sessionId,
     }
-    if (options.signal !== undefined) innerOpts.signal = options.signal
+    // A builtin that bounds its inner line (`timeout`) hands a signal
+    // of its own, merged with the line's so either can end the run.
+    const innerSignal = mergeSignals(options.signal, opts.signal)
+    if (innerSignal !== undefined) innerOpts.signal = innerSignal
     // The agent rides with the execution: an approval a nested line
     // raises is the typed line's agent's, not the workspace default's.
     if (options.agentId !== undefined) innerOpts.agentId = options.agentId

@@ -1,17 +1,12 @@
 import functools
 import posixpath
+import string
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, fields
 from typing import Any
 
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.commands.builtin.utils.formatting import (DEFAULT_COLUMNS,
-                                                      LS_TIME_STYLES,
-                                                      LsColumns,
-                                                      format_ls_long, ls_name,
-                                                      ls_prefix,
-                                                      parse_block_size,
-                                                      time_of)
+from mirage.commands.builtin.utils import formatting
 from mirage.commands.builtin.utils.identity import Identity, identity_of
 from mirage.commands.builtin.utils.output import (format_optional_records,
                                                   format_records)
@@ -49,7 +44,7 @@ class LsFlags:
     deref: bool = False
     time_kind: LsTimeKind = LsTimeKind.MTIME
     group_dirs_first: bool = False
-    columns: LsColumns = DEFAULT_COLUMNS
+    columns: formatting.LsColumns = formatting.DEFAULT_COLUMNS
     hyperlink: bool = False
 
 
@@ -154,9 +149,10 @@ def _time_style_flag(fl: FlagView) -> str:
     style = fl.as_str("time_style")
     if style is None:
         return "locale"
-    bare = style[6:] if style.startswith("posix-") else style
-    if bare in LS_TIME_STYLES or bare.startswith("+"):
-        return bare
+    posix = style.startswith("posix-")
+    bare = style[6:] if posix else style
+    if bare in formatting.LS_TIME_STYLES or bare.startswith("+"):
+        return "locale" if posix else bare
     raise UsageError(
         f"ls: invalid argument '{style}' for 'time style'\n"
         "Valid arguments are:\n"
@@ -216,17 +212,17 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> LsFlags:
     block = None
     block_text = fl.as_str("block_size")
     if block_text is not None:
-        block = parse_block_size(block_text)
+        block = formatting.parse_block_size(block_text)
         if block is None:
             raise UsageError(
                 f"ls: invalid --block-size argument '{block_text}'", 2)
-    columns = LsColumns(owner=not no_owner,
-                        group=not no_group,
-                        inode=fl.as_bool("inode"),
-                        context=fl.as_bool("context"),
-                        time_kind=time_kind,
-                        time_style=_time_style_flag(fl),
-                        block_size=block)
+    columns = formatting.LsColumns(owner=not no_owner,
+                                   group=not no_group,
+                                   inode=fl.as_bool("inode"),
+                                   context=fl.as_bool("context"),
+                                   time_kind=time_kind,
+                                   time_style=_time_style_flag(fl),
+                                   block_size=block)
     return LsFlags(
         long=long,
         one_per_line=fl.as_bool("args_1"),
@@ -332,18 +328,18 @@ _CLASSIFY_SUFFIX = {FileType.DIRECTORY: "/", FileType.SYMLINK: "@"}
 def format_simple(entries: list[FileStat],
                   *,
                   classify: bool = False,
-                  columns: LsColumns = DEFAULT_COLUMNS,
+                  columns: formatting.LsColumns = formatting.DEFAULT_COLUMNS,
                   names: list[str] | None = None) -> list[str]:
     """Short rows: the name, ``-F``'s mark, and ``-i``/``-Z``'s lead.
 
     Args:
         entries (list[FileStat]): the rows.
         classify (bool): ``-F``.
-        columns (LsColumns): the requested columns.
+        columns (formatting.LsColumns): the requested columns.
         names (list[str] | None): the name per row when the caller
             decorated it (``--hyperlink``), else the row's own.
     """
-    lead = ls_prefix(columns)
+    lead = formatting.ls_prefix(columns)
     out: list[str] = []
     for i, e in enumerate(entries):
         suffix = ""
@@ -473,7 +469,7 @@ def _extension(name: str) -> str:
 def _primary_value(entry: FileStat, sort_by: LsSortBy,
                    time_kind: LsTimeKind) -> str | int:
     if sort_by is LsSortBy.TIME:
-        return time_of(entry, time_kind) or ""
+        return formatting.time_of(entry, time_kind) or ""
     if sort_by is LsSortBy.SIZE:
         return entry.size or 0
     return entry.name
@@ -507,10 +503,11 @@ def _order_rows(rows: list[FileStat],
     if sort_by is LsSortBy.NONE:
         order = list(range(len(rows)))
     elif sort_by is LsSortBy.VERSION:
-        order = sorted(
-            range(len(rows)),
-            key=functools.cmp_to_key(
-                lambda i, j: filevercmp(rows[i].name, rows[j].name)))
+
+        def by_version(i: int, j: int) -> int:
+            return filevercmp(rows[i].name, rows[j].name)
+
+        order = sorted(range(len(rows)), key=functools.cmp_to_key(by_version))
     else:
         order = sorted(range(len(rows)), key=lambda i: rows[i].name)
         if sort_by is LsSortBy.EXTENSION:
@@ -1017,7 +1014,23 @@ def _hyperlinked(name: str, virtual: str) -> str:
         name (str): the name as rendered.
         virtual (str): the entry's absolute virtual path.
     """
-    return f"\x1b]8;;file://{virtual}\x07{name}\x1b]8;;\x07"
+    return f"\x1b]8;;file://{uri_escape(virtual)}\x07{name}\x1b]8;;\x07"
+
+
+URI_SAFE = frozenset(string.ascii_letters + string.digits + "~_-./")
+
+
+def uri_escape(path: str) -> str:
+    """Percent-encode a path for a ``file:`` URI the way GNU ls does:
+    every byte outside the unreserved set and ``/`` is ``%xx`` in
+    lowercase hex, so a space, ``?`` or ``#`` cannot end the path.
+
+    Args:
+        path (str): the absolute virtual path.
+    """
+    return "".join(c if c in URI_SAFE else "".join(f"%{b:02x}"
+                                                   for b in c.encode())
+                   for c in path)
 
 
 def _decorated_names(entries: list[FileStat], hrefs: list[str] | None,
@@ -1035,7 +1048,8 @@ def _decorated_names(entries: list[FileStat], hrefs: list[str] | None,
     for e, href in zip(entries, hrefs):
         linked = _hyperlinked(e.name, href)
         out.append(
-            ls_name(e.model_copy(update={"name": linked})) if long else linked)
+            formatting.ls_name(e.model_copy(
+                update={"name": linked})) if long else linked)
     return out
 
 
@@ -1048,18 +1062,18 @@ def _render_group(
     human: bool,
     classify: bool,
     identity: Identity | None,
-    columns: LsColumns = DEFAULT_COLUMNS,
+    columns: formatting.LsColumns = formatting.DEFAULT_COLUMNS,
     hrefs: list[str] | None = None,
 ) -> None:
     wide = long and not one_per_line
     names = _decorated_names(entries, hrefs, wide)
     if wide:
         results.extend(
-            format_ls_long(entries,
-                           human=human,
-                           identity=identity,
-                           columns=columns,
-                           names=names))
+            formatting.format_ls_long(entries,
+                                      human=human,
+                                      identity=identity,
+                                      columns=columns,
+                                      names=names))
     else:
         results.extend(
             format_simple(entries,
@@ -1098,7 +1112,7 @@ async def ls(
     identity: Identity | None = None,
     time_kind: LsTimeKind = LsTimeKind.MTIME,
     group_dirs_first: bool = False,
-    columns: LsColumns = DEFAULT_COLUMNS,
+    columns: formatting.LsColumns = formatting.DEFAULT_COLUMNS,
     hyperlink: bool = False,
 ) -> tuple[bytes, IOResult]:
     results: list[str] = []

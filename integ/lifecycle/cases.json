@@ -372,6 +372,103 @@
       ]
     },
     {
+      "id": "hidden_link_is_not_a_door_for_ln",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/a": {
+            "resource": "ram",
+            "config": {}
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "mkdir -p /a/d && printf public > /a/x.txt && ln -s /a/d /a/hl && ln -s /a/x.txt /a/hl2",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "session",
+          "id": "agent"
+        },
+        {
+          "op": "set_profile",
+          "profile": {
+            "paths": {
+              "hide": ["/a/hl", "/a/hl2"]
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "ln -s /a/x.txt /a/hl",
+          "expect": {
+            "value": {
+              "exit_code": 1,
+              "stdout": "",
+              "stderr": "ln: failed to create symbolic link '/a/hl': Permission denied\n"
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "ln /a/hl2 /a/copy",
+          "expect": {
+            "value": {
+              "exit_code": 1,
+              "stdout": "",
+              "stderr": "ln: failed to access '/a/hl2': No such file or directory\n"
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "ln -L /a/hl2 /a/copy2",
+          "expect": {
+            "value": {
+              "exit_code": 1,
+              "stdout": "",
+              "stderr": "ln: failed to access '/a/hl2': No such file or directory\n"
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "ln -sr /a/hl2 /a/rel && readlink /a/rel",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "hl2\n",
+              "stderr": ""
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "ls -1 /a /a/d",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "/a:\nd\nhl\nhl2\nrel\nx.txt\n\n/a/d:\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
+    },
+    {
       "id": "explicit_root_keeps_its_files",
       "settings": {
         "mode": "write",

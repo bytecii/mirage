@@ -61,8 +61,9 @@ async function executeDrained(
   inner: string,
   sessionId: string,
   drained: Uint8Array[],
+  signal: AbortSignal,
 ): Promise<[Uint8Array, IOResult]> {
-  const io = await executeFn(inner, { sessionId })
+  const io = await executeFn(inner, { sessionId, signal })
   const source = io.stdout
   if (source instanceof Uint8Array) {
     drained.push(source)
@@ -139,9 +140,15 @@ export async function handleTimeout(
 
   const inner = shellJoin(rest)
   const drained: Uint8Array[] = []
-  const run = executeDrained(executeFn, inner, session.sessionId, drained)
+  // The deadline aborts the inner run, not just the wait for it: a
+  // promise cannot be cancelled, so the signal is what stops a
+  // `tail -f` from polling on after 124 was already returned (python's
+  // wait_for cancels the drain the same way).
+  const abort = new AbortController()
+  const run = executeDrained(executeFn, inner, session.sessionId, drained, abort.signal)
   const result = seconds > 0 ? await raceDeadline(run, seconds) : await run
   if (result === TIMED_OUT) {
+    abort.abort()
     // The abandoned run may still reject later; without a handler that
     // becomes an unhandled rejection and can crash the process.
     run.catch(() => undefined)

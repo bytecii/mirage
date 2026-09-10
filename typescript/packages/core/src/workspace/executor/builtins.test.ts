@@ -1595,6 +1595,29 @@ describe('handleTimeout', () => {
     expect(io.exitCode).toBe(124)
   })
 
+  it('aborts the inner run at the deadline', async () => {
+    // A followed tail polls until told to stop; the deadline has to tell
+    // it, or 124 comes back while the run keeps reading in the background.
+    let seen: AbortSignal | undefined
+    const follow = (
+      _cmd: string,
+      opts: { sessionId: string; signal?: AbortSignal },
+    ): Promise<IOResult> =>
+      new Promise((resolve) => {
+        seen = opts.signal
+        opts.signal?.addEventListener(
+          'abort',
+          () => {
+            resolve(new IOResult())
+          },
+          { once: true },
+        )
+      })
+    const [, io] = await handleTimeout(follow, ['0.05', 'tail', '-f', 'x'], session)
+    expect(io.exitCode).toBe(124)
+    expect(seen?.aborted).toBe(true)
+  })
+
   it('invalid duration exits 125', async () => {
     const shell = fakeShell()
     const [, io] = await handleTimeout(shell.fn, ['xx', 'sleep', '1'], session)

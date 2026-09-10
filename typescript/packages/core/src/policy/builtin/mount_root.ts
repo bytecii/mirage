@@ -23,20 +23,46 @@ import type { PathSpec } from '../../types.ts'
  * the refusal by link kind ("failed to create symbolic link" vs
  * "failed to create link").
  */
-function hasNoTargetFlag(argv: readonly string[]): boolean {
+const LN_VALUED_SHORTS = 'tS'
+const LN_VALUED_LONGS: ReadonlySet<string> = new Set(['--target-directory', '--suffix'])
+
+// Whether ln's raw argv carries one short flag or its long spelling. The
+// scan is option-aware so an operand cannot pose as a flag: it stops at
+// `--`, skips the value of a valued option (`-t DIR`, `-S SUF`, their
+// long forms), and inside a cluster stops at the first valued letter,
+// whose remainder is its attached value (`-SfooT` carries no -T).
+export function lnFlagPresent(argv: readonly string[], letter: string, long: string): boolean {
+  let skip = false
   for (const tok of argv) {
-    if (tok === '--no-target-directory') return true
-    if (tok.startsWith('-') && !tok.startsWith('--') && tok.includes('T')) return true
+    if (skip) {
+      skip = false
+      continue
+    }
+    if (tok === '--') return false
+    if (tok === long) return true
+    if (tok.startsWith('--')) {
+      skip = LN_VALUED_LONGS.has(tok)
+      continue
+    }
+    if (!tok.startsWith('-') || tok.length < 2) continue
+    for (let pos = 1; pos < tok.length; pos++) {
+      const ch = tok[pos]
+      if (ch === letter) return true
+      if (ch !== undefined && LN_VALUED_SHORTS.includes(ch)) {
+        skip = pos === tok.length - 1
+        break
+      }
+    }
   }
   return false
 }
 
+function hasNoTargetFlag(argv: readonly string[]): boolean {
+  return lnFlagPresent(argv, 'T', '--no-target-directory')
+}
+
 function hasSymlinkFlag(argv: readonly string[]): boolean {
-  for (const tok of argv) {
-    if (tok === '--symbolic') return true
-    if (tok.startsWith('-') && !tok.startsWith('--') && tok.includes('s')) return true
-  }
-  return false
+  return lnFlagPresent(argv, 's', '--symbolic')
 }
 
 /**

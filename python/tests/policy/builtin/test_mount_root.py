@@ -16,7 +16,9 @@ import pytest
 
 from mirage.policy import (CommandContext, DenyScope, MountRootPolicy,
                            render_deny)
-from mirage.policy.builtin.mount_root import has_parents_flag
+from mirage.policy.builtin.mount_root import (has_no_target_flag,
+                                              has_parents_flag,
+                                              has_symlink_flag)
 from mirage.resource.ram import RAMResource
 from mirage.types import MountMode, PathSpec
 from mirage.workspace.mount import MountRegistry
@@ -118,6 +120,19 @@ async def test_ln_wording_follows_the_link_kind():
         _ctx("ln", [_path("/data/k.txt"), _path("/data")], ["-T"]))
     assert deny is not None
     assert deny.reason == "failed to create link '/data': File exists"
+
+
+def test_ln_flag_scan_honors_option_boundaries():
+    assert has_no_target_flag(("-sT", "a", "b"))
+    assert has_no_target_flag(("-s", "--no-target-directory", "a", "b"))
+    assert not has_no_target_flag(("-s", "--", "-T", "/mnt"))
+    assert not has_no_target_flag(("-SfooT", "a", "b"))
+    assert not has_no_target_flag(("-S", "T", "a", "b"))
+    assert not has_no_target_flag(("--suffix", "T", "a", "b"))
+    assert not has_no_target_flag(("-t", "T", "a"))
+    assert has_symlink_flag(("-bs", "a", "b"))
+    assert not has_symlink_flag(("-S", "s", "a", "b"))
+    assert not has_symlink_flag(("--", "-s", "b"))
 
 
 def test_has_parents_flag_spots_the_shorthand_cluster():

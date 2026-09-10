@@ -137,7 +137,24 @@ function formatShort(s: FileStat, classify: boolean, columns: LsColumns, name?: 
 // A name wrapped in the OSC 8 hyperlink GNU emits under --hyperlink,
 // pointing at the entry's virtual path.
 function hyperlinked(name: string, virtual: string): string {
-  return `\x1b]8;;file://${virtual}\x07${name}\x1b]8;;\x07`
+  return `\x1b]8;;file://${uriEscape(virtual)}\x07${name}\x1b]8;;\x07`
+}
+
+const URI_SAFE = /[A-Za-z0-9~_\-./]/
+
+// Percent-encode a path for a file: URI the way GNU ls does: every byte
+// outside the unreserved set and `/` is %xx in lowercase hex, so a
+// space, `?` or `#` cannot end the path.
+export function uriEscape(path: string): string {
+  let out = ''
+  for (const ch of path) {
+    if (URI_SAFE.test(ch)) {
+      out += ch
+      continue
+    }
+    for (const byte of new TextEncoder().encode(ch)) out += `%${byte.toString(16).padStart(2, '0')}`
+  }
+  return out
 }
 
 interface RenderOpts {
@@ -671,13 +688,16 @@ function timeFlag(fl: FlagView): LsTimeKind {
   throw groupedArgumentError('--time', word, TIME_GROUPS)
 }
 
-// --time-style, its posix- prefix stripped (the C locale makes the two
-// spellings one), validated the way GNU words it (exit 2).
+// --time-style, validated the way GNU words it (exit 2). A posix- style
+// takes effect only outside the POSIX locale, and mirage has no other
+// locale, so the prefix validates its suffix and renders the locale
+// style, as `LC_ALL=C ls --time-style=posix-full-iso` does.
 function timeStyleFlag(fl: FlagView): string {
   const style = fl.asStr('time_style')
   if (style === undefined) return 'locale'
-  const bare = style.startsWith('posix-') ? style.slice(6) : style
-  if (LS_TIME_STYLES.includes(bare) || bare.startsWith('+')) return bare
+  const posix = style.startsWith('posix-')
+  const bare = posix ? style.slice(6) : style
+  if (LS_TIME_STYLES.includes(bare) || bare.startsWith('+')) return posix ? 'locale' : bare
   throw new UsageError(
     `ls: invalid argument '${style}' for 'time style'\n` +
       'Valid arguments are:\n' +

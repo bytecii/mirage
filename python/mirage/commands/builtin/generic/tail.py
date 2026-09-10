@@ -335,6 +335,13 @@ async def _follow(
     remaining``, exit 1) or the caller stops draining, which is how
     ``timeout`` and a killed job end it.
 
+    Divergence: a file replaced in place between two polls (an atomic
+    rotation that never leaves the name absent) is read as the same
+    file. GNU tells the two apart by inode, which no backend here
+    reports, so a same-sized replacement prints nothing and a larger
+    one prints only its tail; only a smaller size (``file truncated``)
+    resets the position to zero.
+
     Args:
         paths (list[PathSpec]): the operands that opened.
         pending (list[PathSpec]): the ones ``--retry`` waits for.

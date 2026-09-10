@@ -27,7 +27,7 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "mkdir -p /data/lsf/dir1 /data/lsf/dir2 && printf hello > /data/lsf/a.txt && printf x > /data/lsf/b.md && printf '' > /data/lsf/c && printf 1234567890 > /data/lsf/file10.txt && printf zz > /data/lsf/file2.txt && printf q > /data/lsf/Z.txt && touch -t 202501151030 /data/lsf/a.txt",
+      "command": "mkdir -p /data/lsf/dir1 /data/lsf/dir2 && printf d > /data/lsf/dir1/k && printf d > /data/lsf/dir2/k && printf hello > /data/lsf/a.txt && printf x > /data/lsf/b.md && printf '' > /data/lsf/c && printf 1234567890 > /data/lsf/file10.txt && printf zz > /data/lsf/file2.txt && printf q > /data/lsf/Z.txt && touch -t 202501151030 /data/lsf/a.txt",
       "expect": {
         "exit": 0,
         "stdout": "",
@@ -834,6 +834,117 @@
         "exit": 1,
         "stdout": "",
         "stderr": "ls: invalid argument 'bogus' for '--hyperlink'\nValid arguments are:\n  - 'always', 'yes', 'force'\n  - 'never', 'no', 'none'\n  - 'auto', 'tty', 'if-tty'\nTry 'ls --help' for more information.\n"
+      },
+      "flags": [
+        "hyperlink"
+      ]
+    },
+    {
+      "id": "ls_posix_time_style_is_the_locale_style",
+      "seq": 960130,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "ls -go --time-style=posix-long-iso /data/lsf/a.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "-rw-r--r-- 1 5 Jan 15  2025 /data/lsf/a.txt\n",
+        "stderr": ""
+      },
+      "flags": [
+        "hyperlink"
+      ]
+    },
+    {
+      "id": "ls_time_style_format_width_on_nanoseconds",
+      "seq": 960131,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "ls -go --time-style=+%3N.%q /data/lsf/a.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "-rw-r--r-- 1 5 000.1 /data/lsf/a.txt\n",
+        "stderr": ""
+      },
+      "flags": [
+        "hyperlink"
+      ]
+    },
+    {
+      "id": "ls_hyperlink_escapes_the_href",
+      "seq": 960132,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf x > '/data/lsf/s p.txt' && ls --hyperlink=always '/data/lsf/s p.txt'",
+      "expect": {
+        "exit": 0,
+        "stdout": "\u001b]8;;file:///data/lsf/s%20p.txt\u0007/data/lsf/s p.txt\u001b]8;;\u0007\n",
+        "stderr": ""
       },
       "flags": [
         "hyperlink"

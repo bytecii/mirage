@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest'
 import { RAMResource } from '../../resource/ram/ram.ts'
 import { MountMode, PathSpec } from '../../types.ts'
 import { MountRegistry } from '../../workspace/mount/registry.ts'
-import { MountRootPolicy, hasParentsFlag } from './mount_root.ts'
+import { MountRootPolicy, hasParentsFlag, lnFlagPresent } from './mount_root.ts'
 import { renderDeny } from '../policies.ts'
 import type { CommandContext, Deny } from '../types.ts'
 
@@ -107,6 +107,21 @@ describe('MountRootPolicy', () => {
     expect(hard && 'reason' in hard ? hard.reason : '').toBe(
       "failed to create link '/data': File exists",
     )
+  })
+
+  it('the ln flag scan honors option boundaries', () => {
+    const noTarget = (argv: string[]) => lnFlagPresent(argv, 'T', '--no-target-directory')
+    const symbolic = (argv: string[]) => lnFlagPresent(argv, 's', '--symbolic')
+    expect(noTarget(['-sT', 'a', 'b'])).toBe(true)
+    expect(noTarget(['-s', '--no-target-directory', 'a', 'b'])).toBe(true)
+    expect(noTarget(['-s', '--', '-T', '/mnt'])).toBe(false)
+    expect(noTarget(['-SfooT', 'a', 'b'])).toBe(false)
+    expect(noTarget(['-S', 'T', 'a', 'b'])).toBe(false)
+    expect(noTarget(['--suffix', 'T', 'a', 'b'])).toBe(false)
+    expect(noTarget(['-t', 'T', 'a'])).toBe(false)
+    expect(symbolic(['-bs', 'a', 'b'])).toBe(true)
+    expect(symbolic(['-S', 's', 'a', 'b'])).toBe(false)
+    expect(symbolic(['--', '-s', 'b'])).toBe(false)
   })
 
   it('hasParentsFlag spots the shorthand cluster', () => {

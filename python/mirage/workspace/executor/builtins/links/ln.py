@@ -25,6 +25,7 @@ from mirage.commands.spec.types import FlagValue, FlagView, ParsedArgs
 from mirage.commands.spec.usage import (ambiguous_option_error,
                                         missing_value_error,
                                         unknown_option_error, usage_hint)
+from mirage.context import path_allowed
 from mirage.io.stream import materialize
 from mirage.runtime.types import DispatchFn
 from mirage.types import FileStat, FileType, PathSpec, word_text
@@ -192,6 +193,34 @@ def operand_words(
     return operands, target_typed
 
 
+def _visible_link(namespace: Namespace, virtual: str) -> bool:
+    """Whether the session may know that a path is a link.
+
+    A hidden path is nonexistent for the session, so a link there is
+    not one ln may follow, copy or resolve. The door checks the typed
+    path before it follows a link, and every namespace read in this
+    module has to answer the same way, or a link inside hidden space
+    leads ln out of it: into the directory it points at, or to the
+    target string a hard link would copy.
+
+    Args:
+        namespace (Namespace): the link table.
+        virtual (str): absolute virtual path.
+    """
+    return path_allowed(virtual) and namespace.is_link(virtual)
+
+
+def _follow_visible(namespace: Namespace, virtual: str) -> str:
+    """Resolve the links along a path the session may see; a hidden
+    path stays as typed. Raises ``CycleError`` as ``follow`` does.
+
+    Args:
+        namespace (Namespace): the link table.
+        virtual (str): absolute virtual path.
+    """
+    return namespace.follow(virtual) if path_allowed(virtual) else virtual
+
+
 async def _listed_by_parent(dispatch: DispatchFn, virtual: str) -> bool:
     """Whether a path's own name is in its parent's listing.
 
@@ -231,7 +260,7 @@ async def _dir_at(namespace: Namespace, dispatch: DispatchFn, virtual: str,
         virtual (str): absolute virtual path of the operand.
         no_dereference (bool): ``-n``.
     """
-    if namespace.is_link(virtual):
+    if _visible_link(namespace, virtual):
         if no_dereference:
             return virtual, None
         try:
@@ -350,7 +379,7 @@ async def _source_bytes(
         link_typed (str): the link name as typed, for ``-d``'s refusal.
         flags (LnFlags): the parsed flags.
     """
-    if namespace.is_link(src_abs):
+    if _visible_link(namespace, src_abs):
         try:
             src_abs = namespace.follow(src_abs)
         except CycleError:
@@ -413,14 +442,14 @@ async def make_link(
             link_dir = posixpath.dirname(plan.link_abs) or "/"
             target_abs = abs_path(plan.source, cwd)
             try:
-                target_abs = namespace.follow(target_abs)
-                link_dir = namespace.follow(link_dir)
+                target_abs = _follow_visible(namespace, target_abs)
+                link_dir = _follow_visible(namespace, link_dir)
             except CycleError:
                 pass
             link_target = posixpath.relpath(target_abs, link_dir)
     else:
         src_abs = abs_path(plan.source, cwd)
-        if namespace.is_link(src_abs) and not flags.logical:
+        if _visible_link(namespace, src_abs) and not flags.logical:
             link_target = namespace.readlink(src_abs)
         else:
             data, refusal = await _source_bytes(namespace, dispatch, src_abs,
@@ -428,14 +457,14 @@ async def make_link(
             if refusal is not None:
                 errors.append(refusal)
                 return
-    if namespace.is_mount_root(plan.link_abs):
+    if path_allowed(plan.link_abs) and namespace.is_mount_root(plan.link_abs):
         errors.append(f"ln: failed to create {kind} '{typed}': File exists\n")
         return
     link_spec = PathSpec.from_str_path(plan.link_abs)
     backup_note = ""
     # The door refuses an occupied name for a symlink; a byte copy would
     # overwrite one, and a backup has to see it first, so those two probe.
-    occupied = (namespace.is_link(plan.link_abs) or await path_stat(
+    occupied = (_visible_link(namespace, plan.link_abs) or await path_stat(
         dispatch, plan.link_abs) is not None if data is not None
                 or flags.backup not in (None, "none") else False)
     if occupied and flags.backup not in (None, "none"):

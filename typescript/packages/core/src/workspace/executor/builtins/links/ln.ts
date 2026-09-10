@@ -37,6 +37,7 @@ import {
 import { CycleError, gnuBasename, gnuDirname } from '../../../../utils/path.ts'
 import { rstripSlash } from '../../../../utils/slash.ts'
 import { PolicyDenied } from '../../../../policy/index.ts'
+import { pathAllowed } from '../../../../context/session_context.ts'
 import type { DispatchFn } from '../../../../runtime/types.ts'
 import type { Namespace } from '../../../mount/namespace/namespace.ts'
 import type { Session } from '../../../session/session.ts'
@@ -197,6 +198,22 @@ async function listedByParent(dispatch: DispatchFn, virtual: string): Promise<bo
   })
 }
 
+// Whether the session may know that a path is a link. A hidden path is
+// nonexistent for the session, so a link there is not one ln may follow,
+// copy or resolve. The door checks the typed path before it follows a
+// link, and every namespace read in this module has to answer the same
+// way, or a link inside hidden space leads ln out of it: into the
+// directory it points at, or to the target string a hard link would copy.
+function visibleLink(namespace: Namespace, virtual: string): boolean {
+  return pathAllowed(virtual) && namespace.isLink(virtual)
+}
+
+// Resolve the links along a path the session may see; a hidden path
+// stays as typed. Throws CycleError as `follow` does.
+function followVisible(namespace: Namespace, virtual: string): string {
+  return pathAllowed(virtual) ? namespace.follow(virtual) : virtual
+}
+
 async function dirAt(
   namespace: Namespace,
   dispatch: DispatchFn,
@@ -204,7 +221,7 @@ async function dirAt(
   noDereference: boolean,
 ): Promise<[string, FileStat | null]> {
   let resolved = virtual
-  if (namespace.isLink(virtual)) {
+  if (visibleLink(namespace, virtual)) {
     if (noDereference) return [virtual, null]
     try {
       resolved = namespace.follow(virtual)
@@ -299,7 +316,7 @@ async function sourceBytes(
   flags: LnFlags,
 ): Promise<[Uint8Array | null, string | null]> {
   let resolved = srcAbs
-  if (namespace.isLink(srcAbs)) {
+  if (visibleLink(namespace, srcAbs)) {
     try {
       resolved = namespace.follow(srcAbs)
     } catch (err) {
@@ -355,8 +372,8 @@ export async function makeLink(
       let linkDir = gnuDirname(plan.linkAbs)
       let targetAbs = absPath(plan.source, cwd)
       try {
-        targetAbs = namespace.follow(targetAbs)
-        linkDir = namespace.follow(linkDir)
+        targetAbs = followVisible(namespace, targetAbs)
+        linkDir = followVisible(namespace, linkDir)
       } catch (err) {
         if (!(err instanceof CycleError)) throw err
       }
@@ -364,7 +381,7 @@ export async function makeLink(
     }
   } else {
     const srcAbs = absPath(plan.source, cwd)
-    if (namespace.isLink(srcAbs) && !flags.logical) {
+    if (visibleLink(namespace, srcAbs) && !flags.logical) {
       linkTarget = namespace.readlink(srcAbs)
     } else {
       const [bytes, refusal] = await sourceBytes(
@@ -382,7 +399,7 @@ export async function makeLink(
       data = bytes
     }
   }
-  if (namespace.isMountRoot(plan.linkAbs)) {
+  if (pathAllowed(plan.linkAbs) && namespace.isMountRoot(plan.linkAbs)) {
     errors.push(`ln: failed to create ${kind} '${typed}': File exists\n`)
     return
   }
@@ -394,7 +411,7 @@ export async function makeLink(
   // overwrite one, and a backup has to see it first, so those two probe.
   let occupied =
     data !== null || backs
-      ? namespace.isLink(plan.linkAbs) || (await pathStat(dispatch, plan.linkAbs)) !== null
+      ? visibleLink(namespace, plan.linkAbs) || (await pathStat(dispatch, plan.linkAbs)) !== null
       : false
   if (occupied && control !== null && control !== 'none') {
     const backup = await backupTarget(

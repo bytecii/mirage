@@ -62,7 +62,7 @@ export function strftime(dt: Date, fmt: string, utc: boolean): string {
   const hour = utc ? dt.getUTCHours() : dt.getHours()
   const minute = utc ? dt.getUTCMinutes() : dt.getMinutes()
   const second = utc ? dt.getUTCSeconds() : dt.getSeconds()
-  return fmt.replace(/%([aAbBcCdDeFgGhHIjklMmnNpPqrRsStTuUVwWxXYyzZ%])/g, (_m, code: string) => {
+  const render = (code: string): string => {
     switch (code) {
       case 'a':
         return DAY_NAMES[dow] ?? ''
@@ -186,7 +186,37 @@ export function strftime(dt: Date, fmt: string, utc: boolean): string {
       default:
         return ''
     }
-  })
+  }
+  return fmt.replace(
+    /%([-_0^#]*)(\d*)([aAbBcCdDeFgGhHIjklMmnNpPqrRsStTuUVwWxXYyzZ%])/g,
+    (_m, flags: string, digits: string, code: string) =>
+      modified(render(code), code, flags, digits),
+  )
+}
+
+// GNU's flag and width prefix, pinned against date 9.7: a width on %N
+// keeps that many leading digits and pads a wider one with zeros on the
+// right (%3N is milliseconds), a width on %q zero-pads on the left, and
+// the flags change nothing on either. On any other directive `-` strips
+// the padding, `_` pads with spaces, `0` pads with zeros, `^` upcases,
+// `#` swaps case, and a width pads on the left.
+function modified(base: string, code: string, flags: string, digits: string): string {
+  const width = digits === '' ? null : Number(digits)
+  if (code === '%') return base
+  if (code === 'N') return width === null ? base : base.slice(0, width).padEnd(width, '0')
+  if (code === 'q') return width === null ? base : base.padStart(width, '0')
+  if (flags === '' && width === null) return base
+  let out = base
+  if (flags.includes('-')) out = out.replace(/^[0 ]+(?=.)/, '')
+  if (flags.includes('_')) out = out.replace(/^0+(?=.)/, (zeros) => ' '.repeat(zeros.length))
+  if (flags.includes('0')) out = out.replace(/^ +(?=.)/, (spaces) => '0'.repeat(spaces.length))
+  if (flags.includes('^')) out = out.toUpperCase()
+  if (flags.includes('#')) out = out === out.toUpperCase() ? out.toLowerCase() : out.toUpperCase()
+  if (width !== null) {
+    const fill = flags.includes('_') ? ' ' : flags.includes('0') || /^\d/.test(out) ? '0' : ' '
+    out = out.padStart(width, fill)
+  }
+  return out
 }
 
 export function formatTZOffset(dt: Date): string {

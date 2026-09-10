@@ -1,0 +1,41 @@
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+import { describe, expect, it } from 'vitest'
+import { strftime } from './strftime.ts'
+
+const MOMENT = new Date(Date.UTC(2026, 0, 1, 0, 0, 1, 123))
+
+describe('strftime GNU directives', () => {
+  // Pinned against date 9.7: a width on %N keeps that many leading
+  // digits and pads a wider one with zeros on the right, a width on %q
+  // zero-pads on the left, and the flags change nothing on either.
+  it.each([
+    ['%N', '123000000'],
+    ['%3N', '123'],
+    ['%-N', '123000000'],
+    ['%_3N', '123'],
+    ['%03N', '123'],
+    ['%6N', '123000'],
+    ['%12N', '123000000000'],
+    ['%q', '1'],
+    ['%2q', '01'],
+    ['%%N', '%N'],
+    ['%%q', '%q'],
+    ['%Y/%q/%3N', '2026/1/123'],
+    ['%-d|%_d|%5d|%^b|%#p', '1| 1|00001|JAN|am'],
+  ])('%s renders %s', (fmt, expected) => {
+    expect(strftime(MOMENT, fmt, true)).toBe(expected)
+  })
+})

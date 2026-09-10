@@ -1179,7 +1179,7 @@ def test_parse_flags_g_o_n_imply_long_and_shape_the_columns():
     assert not parse_flags({"hyperlink": "auto"}).hyperlink
     assert parse_flags({
         "time_style": "posix-long-iso"
-    }).columns.time_style == "long-iso"
+    }).columns.time_style == "locale"
 
 
 @pytest.mark.parametrize("flags,message,code", [

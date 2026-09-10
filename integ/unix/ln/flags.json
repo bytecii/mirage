@@ -101,7 +101,7 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "mkdir -p /data/lnf/d /data/lnf/e && printf hi > /data/lnf/a.txt && printf yo > /data/lnf/b.txt && ln -sv /data/lnf/a.txt /data/lnf/d && readlink /data/lnf/d/a.txt",
+      "command": "mkdir -p /data/lnf/d /data/lnf/e && printf k > /data/lnf/d/k.txt && printf k > /data/lnf/e/k.txt && printf hi > /data/lnf/a.txt && printf yo > /data/lnf/b.txt && ln -sv /data/lnf/a.txt /data/lnf/d && readlink /data/lnf/d/a.txt",
       "expect": {
         "exit": 0,
         "stdout": "'/data/lnf/d/a.txt' -> '/data/lnf/a.txt'\n/data/lnf/a.txt\n",
@@ -318,8 +318,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
