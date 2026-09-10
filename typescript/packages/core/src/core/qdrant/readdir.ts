@@ -123,22 +123,14 @@ async function resolvedFilters(
       resolved[column] = value
       continue
     }
-    const values = await accessor.distinct(
-      table,
-      column,
-      resolved,
-      accessor.config.maxRows,
-      value,
-      true,
-    )
-    const matches = values.filter((raw) => groupName(raw, true) === value)
-    if (matches.length === 0) return null
-    if (matches.length > 1) {
+    const sources = await accessor.resolveGroup(table, column, resolved, value, true)
+    if (sources.length === 0) return null
+    if (sources.length > 1) {
       throw new Error(
         `qdrant: basename collision for ${JSON.stringify(column)}: ${JSON.stringify(value)}`,
       )
     }
-    resolved[column] = matches[0] ?? ''
+    resolved[column] = sources[0] ?? ''
   }
   return resolved
 }

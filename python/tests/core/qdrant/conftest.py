@@ -178,6 +178,19 @@ def lineage() -> FakeAccessor:
     return FakeAccessor(config, client)
 
 
+@pytest.fixture
+def slashed() -> FakeAccessor:
+    """Two labels a lossy ``∕`` decode would merge into one directory."""
+    client = FakeQdrantClient()
+    client.points[0].payload["label"] = "a/b"
+    client.points[1].payload["label"] = "a∕b"
+    client.points = client.points[:2]
+    return FakeAccessor(
+        QdrantConfig(collection=COLLECTION,
+                     group_by=["label"],
+                     text_field="name"), client)
+
+
 WIDE_CAP = 5
 WIDE_POINTS = 600
 
@@ -216,6 +229,20 @@ def basename_capped() -> FakeAccessor:
     for point in client.points:
         point.payload["source"] = f"s3://docs/other-{point.id}.pdf"
     client.points[-1].payload["source"] = "s3://archive/target-late.pdf"
+    return FakeAccessor(
+        QdrantConfig(collection=COLLECTION,
+                     group_by=["source"],
+                     basename_fields=["source"],
+                     max_rows=WIDE_CAP), client)
+
+
+@pytest.fixture
+def basename_collision_capped() -> FakeAccessor:
+    """One basename shared by two sources, the second past the row cap."""
+    client = WideQdrantClient()
+    for point in client.points:
+        point.payload["source"] = "s3://one/report.pdf"
+    client.points[-1].payload["source"] = "s3://two/report.pdf"
     return FakeAccessor(
         QdrantConfig(collection=COLLECTION,
                      group_by=["source"],

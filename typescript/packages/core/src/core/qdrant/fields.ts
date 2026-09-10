@@ -53,7 +53,19 @@ function omitPath(row: QdrantRow, parts: string[]): QdrantRow {
   return copied
 }
 
-/** Render one payload value as a VFS segment, optionally using its URL/path basename. */
+const SEPARATOR = '∕'
+const ESCAPE = '⁄'
+
+/**
+ * Render one payload value as a VFS segment, optionally using its URL/path basename.
+ *
+ * `/` renders as `∕` (U+2215), the `pathSafeName` convention every backend
+ * shares. A value that already holds `∕` or `⁄` (U+2044) gets that character
+ * prefixed with `⁄`, so no two values render as one segment and
+ * {@link groupValue} inverts the rendering exactly. Without the escape `a/b`
+ * and `a∕b` would list as the same directory, and descending into it would
+ * filter for only one.
+ */
 export function groupName(value: unknown, basename = false): string {
   let name = String(value as string | number | boolean | bigint)
   if (basename) {
@@ -64,12 +76,32 @@ export function groupName(value: unknown, basename = false): string {
     const leaf = parts[parts.length - 1] ?? ''
     if (leaf !== '') name = leaf
   }
-  return pathSafeName(name)
+  const escaped = name.replaceAll(ESCAPE, ESCAPE + ESCAPE).replaceAll(SEPARATOR, ESCAPE + SEPARATOR)
+  return pathSafeName(escaped)
 }
 
-/** Undo the only transform applied by {@link groupName}. */
+/**
+ * Undo {@link groupName} for a non-basename segment: `∕` reads as `/` and `⁄`
+ * as an escape for the character after it. A basename segment is never
+ * decoded: stripping the parents is lossy, so the lister resolves it against
+ * the payload instead.
+ */
 export function groupValue(name: string): string {
-  return name.replace(/∕/g, '/')
+  let value = ''
+  let escaped = false
+  for (const char of name) {
+    if (escaped) {
+      value += char
+      escaped = false
+    } else if (char === ESCAPE) {
+      escaped = true
+    } else if (char === SEPARATOR) {
+      value += '/'
+    } else {
+      value += char
+    }
+  }
+  return escaped ? value + ESCAPE : value
 }
 
 /** Return the stable, human-readable stem for a point's files. */

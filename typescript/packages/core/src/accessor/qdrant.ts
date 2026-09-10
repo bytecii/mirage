@@ -18,6 +18,7 @@ import { loadOptionalPeer } from '../utils/optional_peer.ts'
 import {
   buildFilter,
   candidateIds,
+  exactNameTest,
   idPrefixTest,
   pointToRow,
   SCROLL_BATCH,
@@ -161,6 +162,31 @@ export class QdrantAccessor extends Accessor {
         values.add(String(value as string | number | boolean))
     }
     return [...values].sort(compareCodePoints)
+  }
+
+  /**
+   * The raw payload values one rendered group segment stands for.
+   *
+   * A basename drops the value's parents, so two sources can render as the
+   * same directory. Telling them apart is a question about every point under
+   * the parent group, not about the first `maxRows`: the scroll runs until it
+   * is exhausted or a second distinct value has rendered as `name`, whichever
+   * comes first. One value is the answer; two is a collision for the caller
+   * to refuse.
+   */
+  async resolveGroup(
+    table: string,
+    column: string,
+    filters: Record<string, string>,
+    name: string,
+    basename = false,
+  ): Promise<string[]> {
+    const seen = new Set<string>()
+    const keep = exactNameTest(column, name, basename, seen)
+    const points = await this.scrollFiltered(table, filters, 2, keep)
+    return points
+      .map((point) => String(fieldValue(point.payload ?? {}, column) as string | number | boolean))
+      .sort(compareCodePoints)
   }
 
   async rowsMatching(

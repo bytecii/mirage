@@ -14,7 +14,14 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { buildFilter, candidateIds, coerce, pointToRow, valuePrefixTest } from './client.ts'
+import {
+  buildFilter,
+  candidateIds,
+  coerce,
+  exactNameTest,
+  pointToRow,
+  valuePrefixTest,
+} from './client.ts'
 
 describe('qdrant client helpers', () => {
   it('coerces numeric strings only', () => {
@@ -50,6 +57,16 @@ describe('qdrant client helpers', () => {
       true,
     )
     expect(keep({ id: 2, payload: { metadata: { source: 's3://archive/notes.pdf' } } })).toBe(false)
+  })
+
+  it('keeps one point per raw value that renders as the name', () => {
+    const seen = new Set<string>()
+    const keep = exactNameTest('metadata.source', 'report.pdf', true, seen)
+    expect(keep({ id: 1, payload: { metadata: { source: 's3://one/report.pdf' } } })).toBe(true)
+    expect(keep({ id: 2, payload: { metadata: { source: 's3://one/report.pdf' } } })).toBe(false)
+    expect(keep({ id: 3, payload: { metadata: { source: 's3://one/notes.pdf' } } })).toBe(false)
+    expect(keep({ id: 4, payload: { metadata: { source: 's3://two/report.pdf' } } })).toBe(true)
+    expect([...seen]).toEqual(['s3://one/report.pdf', 's3://two/report.pdf'])
   })
 
   it('produces id candidates by type, none for invalid ids', () => {

@@ -14,6 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 
+import type { QdrantPoint } from '../core/qdrant/client.ts'
 import { resolveQdrantConfig } from '../resource/qdrant/config.ts'
 import { QdrantAccessor } from './qdrant.ts'
 
@@ -120,8 +121,7 @@ function widePoints(): { id: number; payload: { code: string; name: string } }[]
   return points
 }
 
-function pagingClient(state: { pages: number }) {
-  const points = widePoints()
+function pagingClient(state: { pages: number }, points: QdrantPoint[] = widePoints()) {
   return {
     scroll(_collection: string, opts: { limit: number; offset: number | null }) {
       state.pages += 1
@@ -162,5 +162,45 @@ describe('QdrantAccessor prefix scroll', () => {
 
     expect(rows.map((r) => r.id)).toEqual([1, 2, 3, 4, 5])
     expect(state.pages).toBe(1)
+  })
+})
+
+function sharedBasename(secondAt: number): QdrantPoint[] {
+  const points: QdrantPoint[] = []
+  for (let i = 1; i <= WIDE; i += 1) {
+    const source = i === secondAt ? 's3://two/report.pdf' : 's3://one/report.pdf'
+    points.push({ id: i, payload: { source } })
+  }
+  return points
+}
+
+describe('QdrantAccessor group resolution', () => {
+  it('scans past the row cap for a second source behind one basename', async () => {
+    // The first source alone fills the cap many times over, so a scroll bounded
+    // by matching points would never see the second one.
+    const state = { pages: 0 }
+    const acc = wideAccessor(pagingClient(state, sharedBasename(WIDE)))
+
+    const sources = await acc.resolveGroup('c', 'source', {}, 'report.pdf', true)
+
+    expect(sources).toEqual(['s3://one/report.pdf', 's3://two/report.pdf'])
+    expect(state.pages).toBeGreaterThan(1)
+  })
+
+  it('stops at the second distinct source', async () => {
+    const state = { pages: 0 }
+    const acc = wideAccessor(pagingClient(state, sharedBasename(2)))
+
+    const sources = await acc.resolveGroup('c', 'source', {}, 'report.pdf', true)
+
+    expect(sources).toEqual(['s3://one/report.pdf', 's3://two/report.pdf'])
+    expect(state.pages).toBe(1)
+  })
+
+  it('answers nothing for a basename no source renders as', async () => {
+    const state = { pages: 0 }
+    const acc = wideAccessor(pagingClient(state, sharedBasename(WIDE)))
+
+    await expect(acc.resolveGroup('c', 'source', {}, 'notes.pdf', true)).resolves.toEqual([])
   })
 })

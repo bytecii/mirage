@@ -98,6 +98,30 @@ def value_prefix_test(column: str,
     return keep
 
 
+def exact_name_test(column: str, name: str, basename: bool,
+                    seen: set[str]) -> PointTest:
+    """Keep the first point of every raw value that renders as one name.
+
+    Args:
+        column (str): the payload field the group level is named from.
+        name (str): the rendered segment a path spelled.
+        basename (bool): compare against the rendered path basename.
+        seen (set[str]): raw values already kept, shared across pages.
+    """
+
+    def keep(point: Any) -> bool:
+        value = field_value(point.payload or {}, column)
+        if value is None:
+            return False
+        raw = str(value)
+        if raw in seen or group_name(raw, basename=basename) != name:
+            return False
+        seen.add(raw)
+        return True
+
+    return keep
+
+
 async def _scroll_raw(client: Any,
                       collection: str,
                       flt: models.Filter | None,
@@ -190,6 +214,36 @@ async def distinct_values(accessor: QdrantAccessor,
         if (value := field_value(point.payload or {}, column)) is not None
     }
     return sorted(values)
+
+
+async def resolve_group(accessor: QdrantAccessor,
+                        table: str,
+                        column: str,
+                        filters: dict[str, str],
+                        name: str,
+                        basename: bool = False) -> list[str]:
+    """The raw payload values one rendered group segment stands for.
+
+    A basename drops the value's parents, so two sources can render as
+    the same directory. Telling them apart is a question about every
+    point under the parent group, not about the first ``max_rows``: the
+    scroll runs until it is exhausted or a second distinct value has
+    rendered as ``name``, whichever comes first. One value is the
+    answer; two is a collision for the caller to refuse.
+
+    Args:
+        accessor (QdrantAccessor): the mount's accessor.
+        table (str): the collection.
+        column (str): the payload field the group level is named from.
+        filters (dict[str, str]): the parent groups, already resolved.
+        name (str): the rendered segment a path spelled.
+        basename (bool): whether the level renders basenames.
+    """
+    seen: set[str] = set()
+    points = await _scroll_all(accessor, table, filters, 2,
+                               exact_name_test(column, name, basename, seen))
+    return sorted(
+        str(field_value(point.payload or {}, column)) for point in points)
 
 
 async def rows_matching(accessor: QdrantAccessor,

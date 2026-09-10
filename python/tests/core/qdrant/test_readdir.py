@@ -130,6 +130,28 @@ async def test_document_lineage_uses_nested_fields_and_source_basename(
 
 
 @pytest.mark.asyncio
+async def test_a_value_holding_the_division_slash_keeps_its_own_directory(
+        slashed):
+    root = await readdir(slashed, _ps("/"))
+    assert _names(root) == {"a∕b", "a⁄∕b"}
+    assert _ids(await readdir(slashed, _ps("/a∕b"))) == {"1"}
+    assert _ids(await readdir(slashed, _ps("/a⁄∕b"))) == {"2"}
+
+
+@pytest.mark.asyncio
+async def test_a_basename_collision_past_the_cap_is_refused(
+        basename_collision_capped):
+    # The capped listing sees one source. Opening the directory must not
+    # settle for it: the scan runs past the cap until the second source
+    # with that basename shows up, and refuses rather than picking one.
+    root = await readdir(basename_collision_capped, _ps("/"))
+    assert _names(root) == {"report.pdf"}
+    with pytest.raises(ValueError, match="basename collision"):
+        await readdir(basename_collision_capped, _ps("/report.pdf"))
+    assert (await basename_collision_capped.client()).pages > 1
+
+
+@pytest.mark.asyncio
 async def test_basename_collision_is_refused(lineage):
     from types import SimpleNamespace
 

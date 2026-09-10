@@ -1,4 +1,4 @@
-from mirage.core.qdrant.fields import (field_value, group_name,
+from mirage.core.qdrant.fields import (field_value, group_name, group_value,
                                        point_id_from_stem, row_stem,
                                        without_field)
 from mirage.resource.qdrant.config import QdrantConfig
@@ -19,6 +19,18 @@ def test_a_dotted_key_uses_qdrants_nested_field_semantics():
 def test_source_url_can_render_as_its_basename():
     assert group_name("s3://docs/policies/refund-2026.pdf",
                       basename=True) == "refund-2026.pdf"
+
+
+def test_group_name_gives_every_value_its_own_segment():
+    # ``/`` renders as ``∕``; a value already holding ``∕`` or ``⁄`` has that
+    # character escaped, so ``a/b`` and ``a∕b`` cannot name one directory
+    # and the decode recovers exactly the value that was rendered.
+    assert group_name("a/b") == "a∕b"
+    assert group_name("a∕b") == "a⁄∕b"
+    assert group_name("a⁄b") == "a⁄⁄b"
+    for raw in ("plain", "a/b", "a∕b", "a⁄b", "/∕⁄/", "⁄∕"):
+        assert group_value(group_name(raw)) == raw
+    assert len({group_name(raw) for raw in ("a/b", "a∕b", "a⁄∕b")}) == 3
 
 
 def test_name_field_keeps_the_point_id_for_reverse_lookup():

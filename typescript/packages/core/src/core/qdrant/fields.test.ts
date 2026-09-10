@@ -16,7 +16,14 @@ import { describe, expect, it } from 'vitest'
 
 import { resolveQdrantConfig } from '../../resource/qdrant/config.ts'
 import { byteLength, NAME_MAX_BYTES } from '../../utils/sanitize.ts'
-import { fieldValue, groupName, pointIdFromStem, rowStem, withoutField } from './fields.ts'
+import {
+  fieldValue,
+  groupName,
+  groupValue,
+  pointIdFromStem,
+  rowStem,
+  withoutField,
+} from './fields.ts'
 
 describe('qdrant payload fields', () => {
   it('reads dotted keys with Qdrant nested-field semantics', () => {
@@ -31,6 +38,19 @@ describe('qdrant payload fields', () => {
 
   it('renders a source URL as its basename', () => {
     expect(groupName('s3://docs/policies/refund-2026.pdf', true)).toBe('refund-2026.pdf')
+  })
+
+  it('gives every value its own segment and decodes it back', () => {
+    // `/` renders as `∕`; a value already holding `∕` or `⁄` has that character
+    // escaped, so `a/b` and `a∕b` cannot name one directory and the decode
+    // recovers exactly the value that was rendered.
+    expect(groupName('a/b')).toBe('a∕b')
+    expect(groupName('a∕b')).toBe('a⁄∕b')
+    expect(groupName('a⁄b')).toBe('a⁄⁄b')
+    for (const raw of ['plain', 'a/b', 'a∕b', 'a⁄b', '/∕⁄/', '⁄∕']) {
+      expect(groupValue(groupName(raw))).toBe(raw)
+    }
+    expect(new Set(['a/b', 'a∕b', 'a⁄∕b'].map((raw) => groupName(raw))).size).toBe(3)
   })
 
   it('keeps the point id in a payload-derived filename', () => {

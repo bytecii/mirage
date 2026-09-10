@@ -114,6 +114,20 @@ async def test_does_not_recreate_indexes_on_subsequent_calls():
 
 
 @pytest.mark.asyncio
+async def test_resolve_group_finds_every_source_behind_one_basename(accessor):
+    client = await accessor.client()
+    for point in client.points[:3]:
+        point.payload["source"] = "s3://one/report.pdf"
+    client.points[3].payload["source"] = "s3://two/report.pdf"
+
+    both = await query.resolve_group(accessor, "animals", "source", {},
+                                     "report.pdf", True)
+    assert both == ["s3://one/report.pdf", "s3://two/report.pdf"]
+    assert await query.resolve_group(accessor, "animals", "source", {},
+                                     "other.pdf", True) == []
+
+
+@pytest.mark.asyncio
 async def test_non_index_error_propagates():
     client = _StrictClient()
 

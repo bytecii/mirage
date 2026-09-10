@@ -56,6 +56,23 @@ export function valuePrefixTest(column: string, prefix: string, basename = false
   }
 }
 
+/** Keep the first point of every raw value that renders as one group name. */
+export function exactNameTest(
+  column: string,
+  name: string,
+  basename: boolean,
+  seen: Set<string>,
+): PointTest {
+  return (point) => {
+    const value = fieldValue(point.payload ?? {}, column)
+    if (value === null || value === undefined) return false
+    const raw = String(value as string | number | boolean | bigint)
+    if (seen.has(raw) || groupName(raw, basename) !== name) return false
+    seen.add(raw)
+    return true
+  }
+}
+
 export function pointToRow(point: QdrantPoint, idField: string): QdrantRow {
   const payload = point.payload ?? {}
   const row: QdrantRow = { ...payload }

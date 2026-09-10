@@ -64,8 +64,12 @@ the chunk text is exposed as
 `refund-2026.pdf/004__<point-id>.txt`. The point id remains as a stable suffix,
 so duplicate labels cannot collide and direct reads work without a warm cache.
 `basenameFields` strips URL/path parents from the named `groupBy` fields; omit
-a field to preserve its complete value in one path-safe segment. Basenames must
-be unique within a parent group, and ambiguous listings are refused.
+a field to preserve its complete value in one path-safe segment: `/` renders as
+`∕`, and a value that already holds `∕` or `⁄` has that character prefixed with
+`⁄`, so no two values share a segment. Basenames must be unique within a parent
+group; ambiguous listings are refused, and opening a basename directory checks
+every point of its parent group, so a second source past `maxRows` is refused
+rather than hidden.
 
 ## Filesystem layout
 

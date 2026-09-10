@@ -68,8 +68,19 @@ def without_field(row: Mapping[str, Any], field: str | None) -> dict[str, Any]:
     return copied
 
 
+SEPARATOR = "∕"
+ESCAPE = "⁄"
+
+
 def group_name(value: Any, *, basename: bool = False) -> str:
     """Render one payload value as a VFS segment.
+
+    ``/`` renders as ``∕`` (U+2215), the ``path_safe_name`` convention
+    every backend shares. A value that already holds ``∕`` or ``⁄``
+    (U+2044) gets that character prefixed with ``⁄``, so no two values
+    render as one segment and ``group_value`` inverts the rendering
+    exactly. Without the escape ``a/b`` and ``a∕b`` would list as the
+    same directory, and descending into it would filter for only one.
 
     Args:
         value (Any): raw payload value.
@@ -82,12 +93,36 @@ def group_name(value: Any, *, basename: bool = False) -> str:
         leaf = trimmed.replace("\\", "/").rsplit("/", 1)[-1]
         if leaf:
             name = leaf
-    return path_safe_name(name)
+    escaped = name.replace(ESCAPE, ESCAPE + ESCAPE)
+    escaped = escaped.replace(SEPARATOR, ESCAPE + SEPARATOR)
+    return path_safe_name(escaped)
 
 
 def group_value(name: str) -> str:
-    """Undo the path escaping applied to a non-basename group name."""
-    return name.replace("∕", "/")
+    """Undo ``group_name`` for a non-basename segment.
+
+    ``∕`` reads as ``/`` and ``⁄`` as an escape for the character after
+    it. A basename segment is never decoded: stripping the parents is
+    lossy, so the lister resolves it against the payload instead.
+
+    Args:
+        name (str): the rendered segment a path spelled.
+    """
+    chars: list[str] = []
+    escaped = False
+    for char in name:
+        if escaped:
+            chars.append(char)
+            escaped = False
+        elif char == ESCAPE:
+            escaped = True
+        elif char == SEPARATOR:
+            chars.append("/")
+        else:
+            chars.append(char)
+    if escaped:
+        chars.append(ESCAPE)
+    return "".join(chars)
 
 
 def row_stem(row: Mapping[str, Any], config: QdrantConfig) -> str:

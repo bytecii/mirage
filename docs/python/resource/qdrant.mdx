@@ -66,8 +66,12 @@ from `name_field`; the Qdrant point id remains as a stable suffix so duplicate
 page labels cannot collide and a direct read never depends on a warm listing
 cache. `basename_fields` strips URL/path parents from the named `group_by`
 fields. Leave a field out to preserve its complete value in one path-safe
-segment. Basenames must be unique within their parent group; Mirage refuses an
-ambiguous listing instead of silently merging two source documents.
+segment: `/` renders as `∕`, and a value that already holds `∕` or `⁄` has that
+character prefixed with `⁄`, so no two values share a segment. Basenames must be
+unique within their parent group; Mirage refuses an ambiguous listing instead of
+silently merging two source documents, and opening a basename directory checks
+every point of its parent group, so a second source past `max_rows` is refused
+rather than hidden.
 
 ## Filesystem layout
 

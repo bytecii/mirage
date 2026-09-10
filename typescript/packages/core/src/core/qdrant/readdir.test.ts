@@ -126,6 +126,7 @@ describe('qdrant document lineage', () => {
           ? ['s3://docs/policies/refund-2026.pdf']
           : ['s3://docs/policies/refund-2026.pdf'],
       ),
+    resolveGroup: () => Promise.resolve(['s3://docs/policies/refund-2026.pdf']),
     rowsMatching: () => Promise.resolve([lineageRow]),
   } as unknown as QdrantAccessor
 
@@ -135,6 +136,23 @@ describe('qdrant document lineage', () => {
       '/refund-2026.pdf/004__17.json',
       '/refund-2026.pdf/004__17.txt',
     ])
+  })
+
+  it('refuses a basename two sources render as, wherever the second scrolls', async () => {
+    // Resolution asks the accessor for every source behind the rendered
+    // name, so a collision is refused even when the capped listing showed
+    // only the first one.
+    const seen: { args?: unknown[] } = {}
+    const acc = {
+      config: lineageConfig,
+      tableExists: () => Promise.resolve(true),
+      resolveGroup: (...args: unknown[]) => {
+        seen.args = args
+        return Promise.resolve(['s3://one/report.pdf', 's3://two/report.pdf'])
+      },
+    } as unknown as QdrantAccessor
+    await expect(readdir(acc, spec('/report.pdf'))).rejects.toThrow('basename collision')
+    expect(seen.args).toEqual(['docs', 'metadata.source', {}, 'report.pdf', true])
   })
 })
 

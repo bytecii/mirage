@@ -24,7 +24,8 @@ from mirage.core.hierarchy.readdir import (DirListing, Listed, Lister,
 from mirage.core.hierarchy.scope import ROOT, ScopeMatch
 from mirage.core.qdrant.fields import field_value, group_name, row_stem
 from mirage.core.qdrant.query import (distinct_values, list_tables,
-                                      rows_matching, table_exists)
+                                      resolve_group, rows_matching,
+                                      table_exists)
 from mirage.core.qdrant.render import blob_bytes, render_json, render_text
 from mirage.core.qdrant.scope import detect_for, filters_of, table_of
 from mirage.resource.qdrant.config import QdrantConfig
@@ -124,17 +125,14 @@ async def _resolved_filters(accessor: QdrantAccessor, table: str,
         if column not in accessor.config.basename_fields:
             resolved[column] = value
             continue
-        values = await distinct_values(accessor, table, column, resolved,
-                                       accessor.config.max_rows, value, True)
-        matches = [
-            raw for raw in values if group_name(raw, basename=True) == value
-        ]
-        if not matches:
+        sources = await resolve_group(accessor, table, column, resolved, value,
+                                      True)
+        if not sources:
             return None
-        if len(matches) > 1:
+        if len(sources) > 1:
             raise ValueError(
                 f"qdrant: basename collision for {column!r}: {value!r}")
-        resolved[column] = matches[0]
+        resolved[column] = sources[0]
     return resolved
 
 
