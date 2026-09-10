@@ -188,7 +188,7 @@ export function strftime(dt: Date, fmt: string, utc: boolean): string {
     }
   }
   return fmt.replace(
-    /%([-_0^#]*)(\d*)([aAbBcCdDeFgGhHIjklMmnNpPqrRsStTuUVwWxXYyzZ%])/g,
+    /%([-_0^#+]*)(\d*)([aAbBcCdDeFgGhHIjklMmnNpPqrRsStTuUVwWxXYyzZ%])/g,
     (_m, flags: string, digits: string, code: string) =>
       modified(render(code), code, flags, digits),
   )
@@ -201,14 +201,31 @@ export function strftime(dt: Date, fmt: string, utc: boolean): string {
 // (%0_d is " 3", %_0d is "03"): `-` strips the padding and ignores the
 // width (%-3d is "3"), `_` pads with spaces, `0` with zeros, and a bare
 // width fills with zeros for a digit-led value and spaces otherwise
-// (%3d is "003", %5b is "  Jan"). `^` upcases and `#` swaps case.
+// (%3d is "003", %5b is "  Jan"). `^` upcases and `#` swaps case. `+`
+// pads like `0`, and on %Y, %G and %C also leads with a sign when the
+// value outgrows the digits the directive normally shows or the width
+// leaves room for one (%+5Y is "+2026", %+4Y is "2026", %+6Y is
+// "+02026", %+3C is "+20").
+// The directives GNU's `+` flag signs, with the digits each shows
+// before the sign becomes necessary.
+const YEARISH_DIGITS: Record<string, number> = { Y: 4, G: 4, C: 2 }
+
 function modified(base: string, code: string, flags: string, digits: string): string {
   const width = digits === '' ? null : Number(digits)
   if (code === '%') return base
   if (code === 'N') return width === null ? base : base.slice(0, width).padEnd(width, '0')
   if (flags === '' && width === null) return base
-  const padFlags = flags.replace(/[^-_0]/g, '')
-  const pad = padFlags === '' ? null : padFlags[padFlags.length - 1]
+  const padFlags = flags.replace(/[^-_0+]/g, '')
+  let pad = padFlags === '' ? null : padFlags[padFlags.length - 1]
+  if (pad === '+') {
+    const shown = YEARISH_DIGITS[code]
+    if (shown !== undefined) {
+      const value = Number(base)
+      const sign = value > 10 ** shown - 1 || (width !== null && width > shown) ? '+' : ''
+      return sign + String(value).padStart((width ?? 0) - sign.length, '0')
+    }
+    pad = '0'
+  }
   let out = base
   if (pad === '-') out = out.replace(/^[0 ]+(?=.)/, '')
   if (pad === '_') out = out.replace(/^0+(?=.)/, (zeros) => ' '.repeat(zeros.length))

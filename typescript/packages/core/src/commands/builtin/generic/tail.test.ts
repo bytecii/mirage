@@ -159,6 +159,29 @@ describe('tail -f', () => {
     expect(DEC.decode(io.stderr as Uint8Array)).toBe('tail: /d/log: file truncated\n')
   })
 
+  it('prints a repeated operand once per occurrence', async () => {
+    const fs = new Growing(new Map())
+    fs.set('/d/f', 'l1\n')
+    const abort = new AbortController()
+    const [stream] = (await tailGeneric(
+      [spec('/d/f'), spec('/d/f')],
+      [],
+      followOpts(abort),
+      fs.stream,
+      fs.stat,
+      fs.readRange,
+    )) as [AsyncIterable<Uint8Array>, IOResult]
+    const grower = (async () => {
+      await sleep(60)
+      fs.append('/d/f', 'l2\n')
+    })()
+    const text = await drainFor(stream, 200, abort)
+    await grower
+    expect(text).toBe(
+      '==> /d/f <==\nl1\n\n==> /d/f <==\nl1\n\n==> /d/f <==\nl2\n\n==> /d/f <==\nl2\n',
+    )
+  })
+
   it('switches headers as files take turns', async () => {
     const fs = new Growing(new Map())
     fs.set('/d/p', 'p\n')

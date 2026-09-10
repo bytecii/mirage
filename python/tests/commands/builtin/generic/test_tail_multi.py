@@ -187,6 +187,23 @@ async def test_follow_reads_a_size_unknown_file_whole_every_poll():
 
 
 @pytest.mark.asyncio
+async def test_follow_prints_a_repeated_operand_once_per_occurrence():
+    fs = _Growing({"/d/f": b"l1\n"})
+    stream, _ = await tail_generic(_paths("/d/f", "/d/f"), [], _follow_opts(),
+                                   fs.stat, fs.read, fs.read_range)
+
+    async def grow() -> None:
+        await asyncio.sleep(0.06)
+        fs.data["/d/f"] += b"l2\n"
+
+    grower = asyncio.create_task(grow())
+    chunks = await _drain_for(stream, 0.2)
+    await grower
+    assert b"".join(chunks) == (b"==> /d/f <==\nl1\n\n==> /d/f <==\nl1\n"
+                                b"\n==> /d/f <==\nl2\n\n==> /d/f <==\nl2\n")
+
+
+@pytest.mark.asyncio
 async def test_follow_switches_headers_as_files_take_turns():
     fs = _Growing({"/d/p": b"p\n", "/d/q": b"q\n"})
     stream, _ = await tail_generic(_paths("/d/p", "/d/q"), [], _follow_opts(),

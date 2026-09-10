@@ -360,6 +360,9 @@ async def _follow(
     reading it whole every interval and measuring that: one read per
     poll, rather than a follow that never prints.
 
+    State is per operand, not per path: ``tail -f f f`` prints what
+    ``f`` gains twice, under a header each time, as GNU does.
+
     Args:
         paths (list[PathSpec]): the operands that opened.
         pending (list[PathSpec]): the ones ``--retry`` waits for.
@@ -371,14 +374,15 @@ async def _follow(
         flags (TailFlags): the parsed flags.
         io (IOResult): the result the notices are appended to.
     """
-    positions: dict[str, int] = {}
-    active = list(paths)
-    last: str | None = None
-    for p in active:
+    positions: dict[int, int] = {}
+    active = list(enumerate(paths))
+    waiting = [(len(paths) + i, p) for i, p in enumerate(pending)]
+    last: int | None = None
+    for slot, p in active:
         if show_headers:
             header = f"==> {p.raw_path} <==\n"
             yield (("\n" if last is not None else "") + header).encode()
-        last = p.virtual
+        last = slot
         box = [0]
         async for chunk in tail(_counted(read(p), box),
                                 n=counts.lines,
@@ -386,10 +390,10 @@ async def _follow(
                                 from_line=counts.from_line,
                                 from_byte=counts.from_byte):
             yield chunk
-        positions[p.virtual] = box[0]
-    while active or pending:
+        positions[slot] = box[0]
+    while active or waiting:
         await asyncio.sleep(flags.interval)
-        for p in list(pending):
+        for slot, p in list(waiting):
             try:
                 found = await stat(p)
             except FS_ERRORS:
@@ -398,10 +402,10 @@ async def _follow(
                 continue
             _note(io,
                   f"tail: '{p.raw_path}' has appeared;  following new file\n")
-            pending.remove(p)
-            active.append(p)
-            positions[p.virtual] = 0
-        for p in list(active):
+            waiting.remove((slot, p))
+            active.append((slot, p))
+            positions[slot] = 0
+        for slot, p in list(active):
             try:
                 current = await stat(p)
             except FS_ERRORS as exc:
@@ -412,29 +416,29 @@ async def _follow(
                     _note(
                         io, f"tail: '{p.raw_path}' has become inaccessible: "
                         f"{fs_strerror(exc)}\n")
-                    active.remove(p)
+                    active.remove((slot, p))
                     if flags.retry:
-                        pending.append(p)
+                        waiting.append((slot, p))
                 continue
             size = current.size
             whole: bytes | None = None
             if size is None:
                 whole = await _whole(read, p)
                 size = len(whole)
-            pos = positions[p.virtual]
+            pos = positions[slot]
             if size < pos:
                 _note(io, f"tail: {p.raw_path}: file truncated\n")
                 pos = 0
             if size > pos:
                 data = (whole[pos:] if whole is not None else await _window(
                     read, read_range, p, pos, size - pos))
-                if show_headers and last != p.virtual:
+                if show_headers and last != slot:
                     yield f"\n==> {p.raw_path} <==\n".encode()
-                last = p.virtual
+                last = slot
                 if data:
                     yield data
                 pos += len(data)
-            positions[p.virtual] = pos
+            positions[slot] = pos
     _note(io, "tail: no files remaining\n")
     io.exit_code = 1
 

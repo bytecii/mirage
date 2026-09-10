@@ -135,7 +135,8 @@ async function window(
 // size (a backend that cannot know one without reading reports null,
 // never a guess) is polled by reading it whole every interval and
 // measuring that: one read per poll, rather than a follow that never
-// prints.
+// prints. State is per operand, not per path: `tail -f f f` prints what
+// f gains twice, under a header each time, as GNU does.
 async function* follow(
   paths: readonly PathSpec[],
   pending: PathSpec[],
@@ -148,22 +149,24 @@ async function* follow(
   io: IOResult,
   signal: AbortSignal | undefined,
 ): AsyncGenerator<Uint8Array> {
-  const positions = new Map<string, number>()
-  const active = [...paths]
-  let last: string | null = null
-  for (const p of active) {
+  const positions = new Map<number, number>()
+  const active: [number, PathSpec][] = paths.map((p, i) => [i, p])
+  const waiting: [number, PathSpec][] = pending.map((p, i) => [paths.length + i, p])
+  let last: number | null = null
+  for (const [slot, p] of active) {
     const raw = await materialize(stream(p))
     if (showHeaders) {
       yield ENC.encode(`${last === null ? '' : '\n'}==> ${p.rawPath} <==\n`)
     }
-    last = p.virtual
+    last = slot
     yield tailBytes(raw, counts)
-    positions.set(p.virtual, raw.byteLength)
+    positions.set(slot, raw.byteLength)
   }
-  while ((active.length > 0 || pending.length > 0) && !aborted(signal)) {
+  while ((active.length > 0 || waiting.length > 0) && !aborted(signal)) {
     await pause(flags.interval, signal)
     if (aborted(signal)) return
-    for (const p of [...pending]) {
+    for (const entry of [...waiting]) {
+      const [slot, p] = entry
       let found: FileStat
       try {
         found = await stat(p)
@@ -173,11 +176,12 @@ async function* follow(
       }
       if (found.type === FileType.DIRECTORY) continue
       note(io, `tail: '${p.rawPath}' has appeared;  following new file\n`)
-      pending.splice(pending.indexOf(p), 1)
-      active.push(p)
-      positions.set(p.virtual, 0)
+      waiting.splice(waiting.indexOf(entry), 1)
+      active.push(entry)
+      positions.set(slot, 0)
     }
-    for (const p of [...active]) {
+    for (const entry of [...active]) {
+      const [slot, p] = entry
       let current: FileStat
       try {
         current = await stat(p)
@@ -190,8 +194,8 @@ async function* follow(
             io,
             `tail: '${p.rawPath}' has become inaccessible: ${fsStrerror(err) ?? 'No such file or directory'}\n`,
           )
-          active.splice(active.indexOf(p), 1)
-          if (flags.retry) pending.push(p)
+          active.splice(active.indexOf(entry), 1)
+          if (flags.retry) waiting.push(entry)
         }
         continue
       }
@@ -201,7 +205,7 @@ async function* follow(
         whole = await materialize(stream(p))
         size = whole.byteLength
       }
-      let pos = positions.get(p.virtual) ?? 0
+      let pos = positions.get(slot) ?? 0
       if (size < pos) {
         note(io, `tail: ${p.rawPath}: file truncated\n`)
         pos = 0
@@ -209,12 +213,12 @@ async function* follow(
       if (size > pos) {
         const data =
           whole !== null ? whole.slice(pos) : await window(stream, readRange, p, pos, size - pos)
-        if (showHeaders && last !== p.virtual) yield ENC.encode(`\n==> ${p.rawPath} <==\n`)
-        last = p.virtual
+        if (showHeaders && last !== slot) yield ENC.encode(`\n==> ${p.rawPath} <==\n`)
+        last = slot
         if (data.byteLength > 0) yield data
         pos += data.byteLength
       }
-      positions.set(p.virtual, pos)
+      positions.set(slot, pos)
     }
   }
   if (aborted(signal)) return

@@ -21,6 +21,7 @@ from mirage.types import FileStat, FileType, LsSortBy, LsTimeKind, PathSpec
 from mirage.utils.errors import fs_strerror
 from mirage.utils.key_prefix import rekey
 from mirage.utils.path import CycleError, respell_one
+from mirage.utils.width import char_width
 
 Readdir = Callable[[PathSpec, IndexCacheStore | None], Awaitable[list[str]]]
 Stat = Callable[[PathSpec, IndexCacheStore | None], Awaitable[FileStat]]
@@ -482,6 +483,17 @@ def filevercmp(a: str, b: str) -> int:
     return result
 
 
+def name_width(name: str) -> int:
+    """The columns a name occupies, the key ``--sort=width`` compares:
+    GNU measures the rendered width, so a wide character counts two
+    and a combining mark none.
+
+    Args:
+        name (str): the entry name.
+    """
+    return sum(char_width(ch) for ch in name)
+
+
 def _extension(name: str) -> str:
     """The key ``ls -X`` compares first: the name from its last dot,
     empty for a name without one.
@@ -515,8 +527,9 @@ def _order_rows(rows: list[FileStat],
     stable name sort followed by the primary key reproduces the first half;
     reversing the finished order reproduces the second. `-X` and
     `--sort=width` are stable sorts over the name order too; `-v` is
-    gnulib's version order; `-U` keeps the listing order, which `-r`
-    still reverses. `--group-directories-first` partitions the finished
+    gnulib's version order; `-U` keeps the listing order, and `-r` does
+    not reverse it (GNU's `-r` reverses while sorting, and `-U` does not
+    sort). `--group-directories-first` partitions the finished
     order, so the directories come first in every sort but `-U`, where
     GNU ignores it.
 
@@ -540,13 +553,13 @@ def _order_rows(rows: list[FileStat],
         if sort_by is LsSortBy.EXTENSION:
             order.sort(key=lambda i: _extension(rows[i].name))
         elif sort_by is LsSortBy.WIDTH:
-            order.sort(key=lambda i: len(rows[i].name))
+            order.sort(key=lambda i: name_width(rows[i].name))
         elif sort_by is not LsSortBy.NAME:
             # -t and -S list newest/largest first.
             order.sort(
                 key=lambda i: _primary_value(rows[i], sort_by, time_kind),
                 reverse=True)
-    if reverse:
+    if reverse and sort_by is not LsSortBy.NONE:
         order.reverse()
     if group_dirs_first and sort_by is not LsSortBy.NONE:
         order = ([i for i in order if rows[i].type is FileType.DIRECTORY] +

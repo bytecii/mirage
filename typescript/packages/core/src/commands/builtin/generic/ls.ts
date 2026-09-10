@@ -36,6 +36,7 @@ import { rstripSlash } from '../../../utils/slash.ts'
 import { CycleError, respellOne } from '../../../utils/path.ts'
 import { formatRecords } from '../utils/output.ts'
 import { compareCodePoints } from '../../../utils/sort.ts'
+import { charWidth } from '../../../utils/width.ts'
 
 type Readdir = (p: PathSpec) => Promise<string[]>
 type Stat = (p: PathSpec) => Promise<FileStat>
@@ -284,6 +285,15 @@ export function filevercmp(a: string, b: string): number {
   return result
 }
 
+// The columns a name occupies, the key --sort=width compares: GNU
+// measures the rendered width, so a wide character counts two and a
+// combining mark none.
+export function nameWidth(name: string): number {
+  let width = 0
+  for (const ch of name) width += charWidth(ch.codePointAt(0) ?? 0)
+  return width
+}
+
 // The key `ls -X` compares first: the name from its last dot, empty for
 // a name without one.
 function extensionOf(name: string): string {
@@ -306,7 +316,8 @@ function compareStats(a: FileStat, b: FileStat, sortBy: SortBy, timeKind: LsTime
     const byExt = compareCodePoints(extensionOf(a.name), extensionOf(b.name))
     if (byExt !== 0) return byExt
   } else if (sortBy === 'width') {
-    if (a.name.length !== b.name.length) return a.name.length - b.name.length
+    const byWidth = nameWidth(a.name) - nameWidth(b.name)
+    if (byWidth !== 0) return byWidth
   } else if (sortBy !== 'name' && sortBy !== 'none') {
     const av = primaryValue(a, sortBy, timeKind)
     const bv = primaryValue(b, sortBy, timeKind)
@@ -317,7 +328,8 @@ function compareStats(a: FileStat, b: FileStat, sortBy: SortBy, timeKind: LsTime
   return compareCodePoints(a.name, b.name)
 }
 
-// -U keeps the listing order, which -r still reverses;
+// -U keeps the listing order, and -r does not reverse it (GNU's -r
+// reverses while sorting, and -U does not sort);
 // --group-directories-first partitions the finished order, so the
 // directories come first in every sort but -U, where GNU ignores it.
 export function sortStats(
@@ -329,7 +341,7 @@ export function sortStats(
 ): FileStat[] {
   let ordered: FileStat[]
   if (sortBy === 'none') {
-    ordered = reverse ? [...stats].reverse() : [...stats]
+    ordered = [...stats]
   } else {
     const sign = reverse ? -1 : 1
     ordered = [...stats].sort((a, b) => sign * compareStats(a, b, sortBy, timeKind))
@@ -606,7 +618,7 @@ async function sortOperands(
   for (const operand of operands) {
     keyed.push({ key: await operandKey(operand, sortBy, stat), operand })
   }
-  if (sortBy === 'none') return (reverse ? keyed.reverse() : keyed).map((k) => k.operand)
+  if (sortBy === 'none') return keyed.map((k) => k.operand)
   const sign = reverse ? -1 : 1
   keyed.sort((a, b) => sign * compareStats(a.key, b.key, sortBy, timeKind))
   return keyed.map((k) => k.operand)

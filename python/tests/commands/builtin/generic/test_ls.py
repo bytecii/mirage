@@ -999,14 +999,22 @@ def test_unsorted_keeps_the_listing_order_and_ignores_grouping():
         s.name
         for s in sort_stats(rows, LsSortBy.NONE, False, group_dirs_first=True)
     ] == ["b", "d", "a"]
+    # -r reverses while sorting, and -U does not sort (GNU: `ls -Ur`
+    # lists exactly what `ls -U` lists).
     assert [s.name
-            for s in sort_stats(rows, LsSortBy.NONE, True)] == ["a", "d", "b"]
+            for s in sort_stats(rows, LsSortBy.NONE, True)] == ["b", "d", "a"]
 
 
-def test_width_sort_orders_by_name_length_then_name():
+def test_width_sort_orders_by_rendered_width_then_name():
     rows = [_file("ccc"), _file("b"), _file("aa"), _file("a")]
     assert [s.name for s in sort_stats(rows, LsSortBy.WIDTH, False)
             ] == ["a", "b", "aa", "ccc"]
+    # Pinned on coreutils 9.7 under C.UTF-8: a wide character counts two
+    # columns and a combining mark none.
+    names = ["界", "aa", "é", "a", "e\u0301x"]
+    rows = [_file(n) for n in names]
+    assert [s.name for s in sort_stats(rows, LsSortBy.WIDTH, False)
+            ] == ["a", "é", "aa", "e\u0301x", "界"]
 
 
 def test_filevercmp_pins_gnu_corner_cases():

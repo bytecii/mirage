@@ -1103,6 +1103,120 @@
         "o",
         "time-style"
       ]
+    },
+    {
+      "id": "ls_U_r_keeps_the_listing_order",
+      "seq": 960137,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "[ \"$(ls -U /data/lsf)\" = \"$(ls -Ur /data/lsf)\" ] && echo same",
+      "expect": {
+        "exit": 0,
+        "stdout": "same\n",
+        "stderr": ""
+      },
+      "flags": [
+        "U",
+        "r"
+      ]
+    },
+    {
+      "id": "ls_sort_width_counts_columns",
+      "seq": 960138,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/lsw && printf x > /data/lsw/a && printf x > /data/lsw/aa && printf x > /data/lsw/é && printf x > /data/lsw/界 && ls --sort=width /data/lsw",
+      "expect": {
+        "exit": 0,
+        "stdout": "a\né\naa\n界\n",
+        "stderr": ""
+      },
+      "flags": [
+        "sort"
+      ]
+    },
+    {
+      "id": "ls_time_style_plus_flag",
+      "seq": 960139,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "ls -go --time-style=+%+5Y/%+4Y/%+3C /data/lsf/a.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "-rw-r--r-- 1 5 +2025/2025/+20 /data/lsf/a.txt\n",
+        "stderr": ""
+      },
+      "flags": [
+        "g",
+        "o",
+        "time-style"
+      ]
     }
   ]
 }

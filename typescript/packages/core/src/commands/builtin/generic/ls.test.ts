@@ -26,6 +26,7 @@ import {
   filevercmp,
   lsGeneric,
   parseFlags,
+  sortStats,
 } from './ls.ts'
 import { UsageError } from '../../errors.ts'
 import { specOf } from '../../spec/builtins.ts'
@@ -757,6 +758,19 @@ describe('lsGeneric sort orders', () => {
     expect(filevercmp('.hidden', 'a')).toBeLessThan(0)
     expect(filevercmp('1.0~rc1', '1.0')).toBeLessThan(0)
     expect(filevercmp('abc', 'abc')).toBe(0)
+  })
+
+  it('sortStats: -U keeps the listing order under -r, and width counts columns', () => {
+    const rows = ['b', 'd', 'a'].map((name) => new FileStat({ name, type: FileType.FILE }))
+    const names = (stats: FileStat[]): string[] => stats.map((s) => s.name)
+    expect(names(sortStats(rows, 'none', false))).toEqual(['b', 'd', 'a'])
+    expect(names(sortStats(rows, 'none', true))).toEqual(['b', 'd', 'a'])
+    // Pinned on coreutils 9.7 under C.UTF-8: a wide character counts two
+    // columns and a combining mark none.
+    const wide = ['界', 'aa', 'é', 'a', 'e\u0301x'].map(
+      (name) => new FileStat({ name, type: FileType.FILE }),
+    )
+    expect(names(sortStats(wide, 'width', false))).toEqual(['a', 'é', 'aa', 'e\u0301x', '界'])
   })
 
   it('filevercmp orders bytes past the letters', () => {
