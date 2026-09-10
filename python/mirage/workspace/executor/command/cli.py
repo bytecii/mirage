@@ -143,7 +143,8 @@ def _select_runtime(
 
 
 async def _script_output(inv: CLIInvocation[Any], script: ScriptSource,
-                         runtime: LanguageRuntime, prog: str) -> CommandOutput:
+                         runtime: LanguageRuntime, prog: str,
+                         cwd: PathSpec) -> CommandOutput:
     """Render the invocation onto the selected runtime as one RunArgs.
 
     The script tier's whole contract, the one a native binary could
@@ -159,6 +160,7 @@ async def _script_output(inv: CLIInvocation[Any], script: ScriptSource,
         script (ScriptSource): the install's embedded program.
         runtime (Runtime): the selected interpreter entry.
         prog (str): the installed head word, the program's own name.
+        cwd (PathSpec): the session's virtual working directory.
     """
     env = dict(inv.env)
     if inv.config is not None:
@@ -171,6 +173,7 @@ async def _script_output(inv: CLIInvocation[Any], script: ScriptSource,
         RunArgs(code=script.source,
                 args=list(inv.argv),
                 prog=prog,
+                cwd=cwd,
                 env=env,
                 stdin=stdin,
                 flags=flags))
@@ -364,7 +367,8 @@ async def handle_cli(
             return None, sel_io, ExecutionNode(command=cmd_str,
                                                exit_code=127,
                                                stderr=sel_stderr)
-        body = _script_output(inv, leaf.script, runtime, prog)
+        body = _script_output(inv, leaf.script, runtime, prog,
+                              PathSpec.from_str_path(session.cwd))
     else:
         fn = leaf.fn
         if fn is None:

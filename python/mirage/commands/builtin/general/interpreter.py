@@ -309,6 +309,7 @@ async def run_code(
     flags: dict[str, Any],
     runtime: Runtime | None,
     unavailable: str | None,
+    cwd: PathSpec | None = None,
 ) -> CommandOutput:
     """Run a prepared source on the bound runtime, shared by all.
 
@@ -328,6 +329,7 @@ async def run_code(
             runtime (each runtime reads its own).
         runtime (Runtime | None): the workspace-bound runtime for this
             command; None when no entry captures it.
+        cwd (PathSpec | None): virtual working directory for the guest.
         unavailable (str | None): the dispatcher-recorded reason this
             command has no runtime (a default entry's build error),
             None when nothing captures it at all.
@@ -355,5 +357,6 @@ async def run_code(
                 prog=prepared.argv0,
                 env=env or {},
                 stdin=prepared.stdin,
-                flags=flags))
+                flags=flags,
+                cwd=cwd))
     return run_output(result)

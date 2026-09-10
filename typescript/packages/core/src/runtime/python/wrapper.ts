@@ -152,6 +152,7 @@ _eval_result = (_value_json, _out_bytes.getvalue(), _err_bytes.getvalue(), _ok, 
 export const PYTHON_WRAPPER = String.raw`
 import os, sys, io, traceback
 
+_saved_cwd    = os.getcwd()
 _saved_env    = dict(os.environ)
 _saved_path   = list(sys.path)
 _saved_stdin  = sys.stdin
@@ -234,6 +235,8 @@ try:
         # below, so a trip can only ever land inside this try, where the
         # handlers below own it.
         _arm_interrupt()
+        if _cwd != '':
+            os.chdir(_cwd)
         exec(compile(_user_code, '<string>', 'exec', optimize=_optimize),
              dict(_user_globals))
     except SystemExit as _e:
@@ -269,6 +272,7 @@ finally:
     sys.stdout   = _saved_stdout
     sys.stderr   = _saved_stderr
     sys.argv     = _saved_argv
+    os.chdir(_saved_cwd)
 
 _result = (_out_bytes.getvalue(), _err_bytes.getvalue(), _exit_code)
 `

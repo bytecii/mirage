@@ -34,6 +34,7 @@ interface InterpreterOpts {
   command?: string
   stdin: ByteSource | null
   env: Record<string, string>
+  cwd?: PathSpec
   code: string | null
   // argv[0], derived from which door the source came through; '' is
   // CPython's own answer for a program piped in with no operand, so a
@@ -139,6 +140,7 @@ export function makeInterpreterHandler(spec: InterpreterSpec): InterpreterHandle
         code,
         args,
         env: opts.env,
+        ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
         stdin: stdinBytes,
         ...(opts.prog !== undefined ? { prog: opts.prog } : {}),
         ...(opts.flags !== undefined ? { flags: opts.flags } : {}),

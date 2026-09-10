@@ -552,6 +552,83 @@
           }
         }
       ]
+    },
+    {
+      "id": "shell_cwd",
+      "hosts": [
+        "typescript"
+      ],
+      "world": {
+        "runtimes": [
+          "pyodide",
+          "vfs"
+        ],
+        "mounts": {
+          "/ram": {
+            "resource": "ram",
+            "files": {
+              "sub dir/data.txt": "relative-data\n"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "cd '/ram/sub dir'",
+          "expect": {
+            "exit": 0
+          }
+        },
+        {
+          "command": "python3 -c \"from pathlib import Path; print(Path.cwd()); print(Path('data.txt').read_text(), end=''); Path('out.txt').write_text('written')\"",
+          "expect": {
+            "exit": 0,
+            "stdout": "/ram/sub dir\nrelative-data\n"
+          }
+        },
+        {
+          "command": "cat out.txt",
+          "expect": {
+            "exit": 0,
+            "stdout": "written"
+          }
+        },
+        {
+          "command": "python3 -c \"import os; os.chdir('/ram'); raise ValueError('expected')\"",
+          "expect": {
+            "exit": 1,
+            "stderr_contains": "ValueError: expected"
+          }
+        },
+        {
+          "command": "python3 -c \"from pathlib import Path; print(Path.cwd())\"; pwd",
+          "expect": {
+            "exit": 0,
+            "stdout": "/ram/sub dir\n/ram/sub dir\n"
+          }
+        },
+        {
+          "command": "printf \"from pathlib import Path; print(Path.cwd())\" > cwd.py; python3 cwd.py",
+          "expect": {
+            "exit": 0,
+            "stdout": "/ram/sub dir\n"
+          }
+        },
+        {
+          "command": "python3 <<'PY'\nfrom pathlib import Path\nprint(Path('data.txt').read_text(), end='')\nPY",
+          "expect": {
+            "exit": 0,
+            "stdout": "relative-data\n"
+          }
+        },
+        {
+          "command": "PWD=/not-the-cwd python3 -c \"from pathlib import Path; print(Path.cwd())\"",
+          "expect": {
+            "exit": 0,
+            "stdout": "/ram/sub dir\n"
+          }
+        }
+      ]
     }
   ]
 }

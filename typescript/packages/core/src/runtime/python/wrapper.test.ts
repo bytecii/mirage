@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
+import { PathSpec } from '../../types.ts'
 import { PyodideRuntime } from './pyodide.ts'
 import { PYTHON_EVAL_WRAPPER, PYTHON_REPL_WRAPPER, PYTHON_WRAPPER } from './wrapper.ts'
 
@@ -45,6 +46,54 @@ describe('embedded python wrappers', { timeout: 120_000 }, () => {
         })
         expect(result.value, `${name} is not valid python`).toBe('ok')
       }
+    } finally {
+      await rt.close()
+    }
+  })
+})
+
+describe('Pyodide command cwd', { timeout: 120_000 }, () => {
+  it('isolates queued runs and restores cwd after success and errors', async () => {
+    const rt = new PyodideRuntime()
+    try {
+      await rt.eval(
+        "import os; os.makedirs('/tmp/a', exist_ok=True); os.makedirs('/tmp/b', exist_ok=True)",
+      )
+      const before = await rt.eval('import os; os.getcwd()')
+      if (typeof before.value !== 'string') throw new Error('cwd must be a string')
+      const results = await Promise.all(
+        ['/tmp/a', '/tmp/b'].map((cwd) =>
+          rt.run({
+            code: "import os; print(os.getcwd()); os.chdir('/tmp'); raise ValueError('expected')",
+            args: [],
+            env: { PWD: '/wrong' },
+            stdin: null,
+            cwd: PathSpec.fromStrPath(cwd),
+          }),
+        ),
+      )
+      expect(results.map((r) => new TextDecoder().decode(r.stdout))).toEqual([
+        '/tmp/a\n',
+        '/tmp/b\n',
+      ])
+      expect(results.map((r) => r.exitCode)).toEqual([1, 1])
+      expect((await rt.eval('import os; os.getcwd()')).value).toBe(before.value)
+      const missing = await rt.run({
+        code: "print('must not run')",
+        args: [],
+        env: {},
+        stdin: null,
+        cwd: PathSpec.fromStrPath('/missing-cwd'),
+      })
+      expect(missing.exitCode).toBe(1)
+      expect(new TextDecoder().decode(missing.stdout)).toBe('')
+      const fresh = await rt.run({
+        code: 'import os; print(os.getcwd())',
+        args: [],
+        env: {},
+        stdin: null,
+      })
+      expect(new TextDecoder().decode(fresh.stdout)).toBe(`${before.value}\n`)
     } finally {
       await rt.close()
     }

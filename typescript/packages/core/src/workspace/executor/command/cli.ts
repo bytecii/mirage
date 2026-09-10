@@ -25,7 +25,7 @@ import { renderHelp } from '../../../commands/spec/help.ts'
 import { Operand, type FlagValue } from '../../../commands/spec/types.ts'
 import { UsageError } from '../../../commands/errors.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
-import { wordText, type PathSpec } from '../../../types.ts'
+import { wordText, PathSpec } from '../../../types.ts'
 import { concatBytes } from '../../../core/jq/format.ts'
 import { maybeWithTimeout, runWithTimeout } from '../../../commands/builtin/utils/limit.ts'
 import { CommandTimeoutError } from '../../../commands/errors.ts'
@@ -125,6 +125,7 @@ async function scriptOutput(
   script: ScriptSource,
   runtime: LanguageRuntime,
   prog: string,
+  cwd: PathSpec,
 ): Promise<[Uint8Array | null, IOResult]> {
   const env: Record<string, string> = { ...inv.env }
   if (inv.config !== null && inv.config !== undefined) {
@@ -137,6 +138,7 @@ async function scriptOutput(
     code: script.source,
     args: [...inv.argv],
     prog,
+    cwd,
     env,
     stdin,
     ...(script.module ? { flags: { module: true } } : {}),
@@ -299,7 +301,7 @@ export async function handleCli(
         new ExecutionNode({ command: cmdStr, exitCode: 127, stderr }),
       ]
     }
-    body = scriptOutput(inv, leaf.script, runtime, prog)
+    body = scriptOutput(inv, leaf.script, runtime, prog, PathSpec.fromStrPath(session.cwd))
   } else {
     const fn = leaf.fn
     if (fn === null) {
