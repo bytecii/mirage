@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { ESCAPE_LEAD, SAFE_SLASH, pathSafeName } from '../../utils/sanitize.ts'
+import { ESCAPE_LEAD, SAFE_SLASH, isBlank, pathSafeName } from '../../utils/sanitize.ts'
 
 const ASCII_DIGITS = /^[0-9]+$/
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
@@ -45,7 +45,8 @@ export function isoDateShaped(text: string): boolean {
  * Render a free-form value as one segment `pathSafeDecode` inverts.
  *
  * `/` renders as `∕` the way `pathSafeName` renders it, and a value already
- * holding `∕` or `⁄` has that character prefixed with `⁄`. A blank value takes
+ * holding `∕` or `⁄` has that character prefixed with `⁄`. A blank value
+ * (`isBlank`, the one definition of white space both runtimes read) takes
  * the lead too, so it renders as the lead plus its own characters (the empty
  * value is the lone lead) rather than as `pathSafeName`'s `unknown`;
  * `pathSafeName` itself leads a dot-led name, which the decode's escape rule
@@ -58,7 +59,7 @@ function pathSafeEncode(value: string): string {
   const escaped = value
     .replaceAll(ESCAPE_LEAD, ESCAPE_LEAD + ESCAPE_LEAD)
     .replaceAll(SAFE_SLASH, ESCAPE_LEAD + SAFE_SLASH)
-  return pathSafeName(escaped.trim() === '' ? ESCAPE_LEAD + escaped : escaped)
+  return pathSafeName(isBlank(escaped) ? ESCAPE_LEAD + escaped : escaped)
 }
 
 /**

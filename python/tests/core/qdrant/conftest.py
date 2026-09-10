@@ -204,6 +204,20 @@ def edged() -> FakeAccessor:
                      text_field="name"), client)
 
 
+@pytest.fixture
+def long_basename() -> FakeAccessor:
+    """Two sources whose leaves agree past NAME_MAX and differ at the end."""
+    client = FakeQdrantClient()
+    client.points[0].payload["source"] = f"s3://docs/{'r' * 300}a.pdf"
+    client.points[1].payload["source"] = f"s3://docs/{'r' * 300}b.pdf"
+    client.points = client.points[:2]
+    return FakeAccessor(
+        QdrantConfig(collection=COLLECTION,
+                     group_by=["source"],
+                     basename_fields=["source"],
+                     text_field="name"), client)
+
+
 WIDE_CAP = 5
 WIDE_POINTS = 600
 

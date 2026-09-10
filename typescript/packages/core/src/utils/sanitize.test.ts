@@ -18,6 +18,7 @@ import {
   NAME_MAX_BYTES,
   SAFE_SLASH,
   byteLength,
+  isBlank,
   pathSafeName,
   sanitizeLabel,
   sanitizeName,
@@ -173,5 +174,24 @@ describe('ESCAPE_LEAD', () => {
     expect(pathSafeName('./x')).toBe(`${ESCAPE_LEAD}.${SAFE_SLASH}x`)
     expect(pathSafeName('a.b')).toBe('a.b')
     expect(pathSafeName(' ')).toBe('unknown')
+  })
+})
+
+describe('isBlank', () => {
+  it('is the White_Space property in both languages', () => {
+    // `trim` also strips U+FEFF and leaves U+0085, and python's `str.strip`
+    // also strips U+001C..U+001F, so the same value was blank in one runtime
+    // and spelled in the other. Blank is Unicode's White_Space property,
+    // spelled out once here and read by every name sanitizer and the codec.
+    for (const blank of ['', ' ', '\t\n', '\u0085', '\u00a0', '\u2028', '\u3000']) {
+      expect(isBlank(blank)).toBe(true)
+      expect(pathSafeName(blank)).toBe('unknown')
+      expect(sanitizeName(blank)).toBe('unknown')
+      expect(sanitizeLabel(blank, { fallback: 'X', maxLen: 10 })).toBe('X')
+    }
+    for (const spelled of ['\u001c', '\u001f', '\ufeff', 'a', ' a ']) {
+      expect(isBlank(spelled)).toBe(false)
+    }
+    expect(pathSafeName('\ufeff')).toBe('\ufeff')
   })
 })

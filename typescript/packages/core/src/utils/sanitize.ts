@@ -30,9 +30,19 @@ export const SAFE_SLASH = '∕'
 // hierarchy hides a dot-led segment, and `core/hierarchy/codec` spells its
 // reversible encoding with it.
 export const ESCAPE_LEAD = '⁄'
+// Unicode's White_Space property (PropList.txt), spelled out rather than read
+// off `trim`: JavaScript's `trim` also strips U+FEFF and leaves U+0085, and
+// python's `str.strip` also strips U+001C..U+001F, so a value blank in one
+// runtime rendered a segment the other runtime spelled out.
+const WHITE_SPACE = /^[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/
 
 const UTF8 = new TextEncoder()
 const UTF8_DECODER = new TextDecoder('utf-8')
+
+/** Whether the text is empty or nothing but white space: Unicode White_Space. */
+export function isBlank(text: string): boolean {
+  return WHITE_SPACE.test(text)
+}
 
 /** Measure a string the way the filesystem does: in UTF-8 bytes. */
 export function byteLength(text: string): number {
@@ -88,7 +98,7 @@ export function stripUnderscores(value: string): string {
  * with underscores. Safe for use in shell commands without quoting.
  */
 export function sanitizeName(name: string): string {
-  if (name.trim() === '') return 'unknown'
+  if (isBlank(name)) return 'unknown'
   let cleaned = name.replace(UNSAFE_CHARS, '_')
   cleaned = cleaned.replace(/ /g, '_')
   cleaned = cleaned.replace(MULTI_UNDERSCORE, '_')
@@ -111,7 +121,7 @@ export function sanitizeName(name: string): string {
  * original display name matters more than shell ergonomics.
  */
 export function pathSafeName(name: string): string {
-  if (name.trim() === '') return 'unknown'
+  if (isBlank(name)) return 'unknown'
   const safe = name.replace(/\//g, SAFE_SLASH)
   return safe.startsWith('.') ? ESCAPE_LEAD + safe : safe
 }
@@ -140,7 +150,7 @@ export function sanitizeLabel(
   text: string,
   options: { fallback: string; maxLen: number; maxBytes?: number },
 ): string {
-  if (text.trim() === '') return options.fallback
+  if (isBlank(text)) return options.fallback
   let cleaned = text.replace(UNSAFE_CHARS, '_').replace(/ /g, '_').replace(MULTI_UNDERSCORE, '_')
   cleaned = stripUnderscores(cleaned)
   // The budget counts characters, and python counts code points where

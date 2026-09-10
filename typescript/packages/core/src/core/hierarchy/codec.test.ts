@@ -101,6 +101,20 @@ describe('PATH_SAFE', () => {
     expect(RAW.encode('a/b')).toBe('a/b')
   })
 
+  it('reads blank as the shared White_Space set', () => {
+    // `str.strip` and `trim` disagree at the edges (U+001C..U+001F, U+0085,
+    // U+FEFF), so a value only one runtime called blank took the lead in one
+    // tree and not the other. Blank is the White_Space property in both,
+    // read from `utils/sanitize`.
+    expect(PATH_SAFE.encode('\u0085')).toBe('⁄\u0085')
+    expect(PATH_SAFE.encode('\u3000')).toBe('⁄\u3000')
+    expect(PATH_SAFE.encode('\u001c')).toBe('\u001c')
+    expect(PATH_SAFE.encode('\ufeff')).toBe('\ufeff')
+    for (const raw of ['\u0085', '\u3000', '\u001c', '\ufeff']) {
+      expect(PATH_SAFE.decode(PATH_SAFE.encode(raw))).toBe(raw)
+    }
+  })
+
   it('prefixValue is what a rendered prefix implies about the value', () => {
     // A backend that pushes a glob's literal head into a query needs the
     // VALUE prefix that rendered head stands for. A head cut inside an

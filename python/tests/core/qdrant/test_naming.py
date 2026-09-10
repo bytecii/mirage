@@ -102,3 +102,20 @@ def test_row_stem_keeps_a_dot_led_label_openable():
     assert row_stem({"id": 17, "title": ".env"}, config) == "⁄.env__17"
     assert point_id_from_stem("⁄.env__17", config) == "17"
     assert row_stem({"id": 17, "title": ""}, config) == "unknown__17"
+
+
+def test_a_basename_past_name_max_is_cut_and_keeps_its_identity():
+    # A leaf longer than NAME_MAX rendered whole, and ext4 and APFS refuse
+    # such a name over a FUSE mount, so the rows under it could not be
+    # opened. The segment is cut to fit and keeps the md5 of the whole leaf
+    # as its id, the ``<label>__<id>`` shape every long name takes, so two
+    # leaves that agree for 255 bytes stay two directories.
+    long_a = group_name(f"s3://docs/{'r' * 300}a.pdf", basename=True)
+    long_b = group_name(f"s3://docs/{'r' * 300}b.pdf", basename=True)
+    assert long_a == "r" * 221 + "__ba0797292207781661c03dea74339808"
+    assert long_b != long_a
+    wide = group_name(f"s3://docs/{'界' * 100}", basename=True)
+    assert byte_len(wide) <= NAME_MAX_BYTES
+    assert "\ufffd" not in wide
+    assert wide.endswith("__51d13188e994b54376bb4693d036cf61")
+    assert group_name(f"s3://docs/{'r' * 255}", basename=True) == "r" * 255

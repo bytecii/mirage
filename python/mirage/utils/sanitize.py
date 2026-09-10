@@ -31,6 +31,24 @@ SAFE_SLASH = "∕"
 # hierarchy hides a dot-led segment, and ``core.hierarchy.codec`` spells its
 # reversible encoding with it.
 ESCAPE_LEAD = "⁄"
+# Unicode's White_Space property (PropList.txt), spelled out rather than
+# read off ``str.strip``: Python also strips U+001C..U+001F, and
+# JavaScript's ``trim`` strips U+FEFF but not U+0085, so a value blank in
+# one runtime rendered a segment the other runtime spelled out.
+WHITE_SPACE = re.compile("[\t\n\x0b\x0c\r \x85\xa0\u1680\u2000-\u200a"
+                         "\u2028\u2029\u202f\u205f\u3000]*")
+
+
+def is_blank(text: str) -> bool:
+    """Whether the text is empty or nothing but white space.
+
+    Args:
+        text (str): the string to test.
+
+    Returns:
+        bool: True when every character is Unicode White_Space.
+    """
+    return WHITE_SPACE.fullmatch(text) is not None
 
 
 def byte_len(text: str) -> int:
@@ -79,7 +97,7 @@ def sanitize_name(name: str) -> str:
     Returns:
         str: sanitized name.
     """
-    if not name.strip():
+    if is_blank(name):
         return "unknown"
     cleaned = UNSAFE_CHARS.sub("_", name)
     cleaned = cleaned.replace(" ", "_")
@@ -109,7 +127,7 @@ def path_safe_name(name: str) -> str:
     Returns:
         str: path-safe name, or "unknown" if empty.
     """
-    if not name.strip():
+    if is_blank(name):
         return "unknown"
     safe = name.replace("/", SAFE_SLASH)
     if safe.startswith("."):
@@ -155,7 +173,7 @@ def sanitize_label(text: str,
     Returns:
         str: the sanitized label.
     """
-    if not text.strip():
+    if is_blank(text):
         return fallback
     cleaned = UNSAFE_CHARS.sub("_", text).replace(" ", "_")
     cleaned = MULTI_UNDERSCORE.sub("_", cleaned).strip("_")

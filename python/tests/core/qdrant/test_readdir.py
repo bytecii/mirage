@@ -1,9 +1,11 @@
 import pytest
 
 from mirage.cache.index.ram import RAMIndexCacheStore
+from mirage.core.qdrant.naming import group_name
 from mirage.core.qdrant.readdir import _blob_size, readdir
 from mirage.core.qdrant.render import blob_bytes, render_json, render_text
 from mirage.types import PathSpec
+from mirage.utils.sanitize import NAME_MAX_BYTES, byte_len
 
 
 def _ps(path: str) -> PathSpec:
@@ -175,3 +177,20 @@ async def test_basename_collision_is_refused(lineage):
 
     with pytest.raises(ValueError, match="path collision"):
         await readdir(lineage, _ps("/"))
+
+
+@pytest.mark.asyncio
+async def test_a_basename_past_name_max_lists_within_it_and_opens(
+        long_basename):
+    # The rows under a leaf longer than NAME_MAX were unreachable over a
+    # FUSE mount, which refuses the name. The directory is cut to fit, and
+    # two leaves the cut would merge keep their own directories and rows.
+    names = _names(await readdir(long_basename, _ps("/")))
+    assert len(names) == 2
+    for name in names:
+        assert byte_len(name) <= NAME_MAX_BYTES
+    first = group_name(f"s3://docs/{'r' * 300}a.pdf", basename=True)
+    second = group_name(f"s3://docs/{'r' * 300}b.pdf", basename=True)
+    assert names == {first, second}
+    assert _ids(await readdir(long_basename, _ps(f"/{first}"))) == {"1"}
+    assert _ids(await readdir(long_basename, _ps(f"/{second}"))) == {"2"}

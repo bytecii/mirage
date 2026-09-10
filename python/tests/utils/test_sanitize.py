@@ -13,7 +13,8 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.utils.sanitize import (ESCAPE_LEAD, NAME_MAX_BYTES, SAFE_SLASH,
-                                   byte_len, path_safe_name, sanitize_label)
+                                   byte_len, is_blank, path_safe_name,
+                                   sanitize_label, sanitize_name)
 
 
 def test_sanitize_label_replaces_unsafe_and_spaces():
@@ -117,3 +118,18 @@ def test_path_safe_name_leads_a_dot_led_name_with_the_escape():
     assert path_safe_name("./x") == f"{ESCAPE_LEAD}.{SAFE_SLASH}x"
     assert path_safe_name("a.b") == "a.b"
     assert path_safe_name(" ") == "unknown"
+
+
+def test_is_blank_is_the_white_space_property_in_both_languages():
+    # ``str.strip`` also eats U+001C..U+001F and JavaScript's ``trim`` eats
+    # U+FEFF but not U+0085, so the same value was blank in one runtime and
+    # spelled in the other. Blank is Unicode's White_Space property, spelled
+    # out once here and read by every name sanitizer and the segment codec.
+    for blank in ("", " ", "\t\n", "\x85", "\xa0", "\u2028", "\u3000"):
+        assert is_blank(blank)
+        assert path_safe_name(blank) == "unknown"
+        assert sanitize_name(blank) == "unknown"
+        assert sanitize_label(blank, fallback="X", max_len=10) == "X"
+    for spelled in ("\x1c", "\x1f", "\ufeff", "a", " a "):
+        assert not is_blank(spelled)
+    assert path_safe_name("\x1c") == "\x1c"

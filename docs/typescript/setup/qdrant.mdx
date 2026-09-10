@@ -69,10 +69,12 @@ URL/path parents from the named `groupBy` fields; omit a field to preserve its
 complete value in one path-safe segment: `/` renders as `∕`, a value that
 already holds `∕` or `⁄` has that character prefixed with `⁄`, and a blank value
 or one that starts with `.` is prefixed with `⁄` as well, so every value has its
-own segment that lists and opens. Basenames must be unique within a parent
-group; ambiguous listings are refused, and opening a basename directory checks
-every point of its parent group, so a second source past `maxRows` is refused
-rather than hidden.
+own segment that lists and opens. A basename longer than 255 bytes, which ext4
+and APFS refuse, is cut to fit and ends in `__` plus the md5 of the whole name,
+so two long leaves stay two directories. Basenames must be unique within a
+parent group; ambiguous listings are refused, and opening a basename directory
+checks every point of its parent group, so a second source past `maxRows` is
+refused rather than hidden.
 
 ## Filesystem layout
 

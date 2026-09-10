@@ -16,7 +16,8 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from mirage.utils.sanitize import ESCAPE_LEAD, SAFE_SLASH, path_safe_name
+from mirage.utils.sanitize import (ESCAPE_LEAD, SAFE_SLASH, is_blank,
+                                   path_safe_name)
 
 _ASCII_DIGITS = re.compile(r"^[0-9]+$")
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -55,7 +56,8 @@ def _path_safe_encode(value: str) -> str:
 
     ``/`` renders as ``∕`` the way ``path_safe_name`` renders it, and a
     value already holding ``∕`` or ``⁄`` has that character prefixed
-    with ``⁄``. A blank value takes the lead too, so it renders as the
+    with ``⁄``. A blank value (``is_blank``, the one definition of white
+    space both runtimes read) takes the lead too, so it renders as the
     lead plus its own characters (the empty value is the lone lead)
     rather than as ``path_safe_name``'s ``unknown``; ``path_safe_name``
     itself leads a dot-led name, which the decode's escape rule already
@@ -69,7 +71,7 @@ def _path_safe_encode(value: str) -> str:
     """
     escaped = value.replace(ESCAPE_LEAD, ESCAPE_LEAD + ESCAPE_LEAD)
     escaped = escaped.replace(SAFE_SLASH, ESCAPE_LEAD + SAFE_SLASH)
-    if not escaped.strip():
+    if is_blank(escaped):
         escaped = ESCAPE_LEAD + escaped
     return path_safe_name(escaped)
 

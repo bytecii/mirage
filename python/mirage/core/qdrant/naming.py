@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import hashlib
 from collections.abc import Mapping
 from typing import Any
 
@@ -20,7 +21,7 @@ from mirage.core.qdrant.payload import field_value
 from mirage.core.render.json import value_text
 from mirage.resource.qdrant.config import QdrantConfig
 from mirage.utils.naming import fit_id_name, parse_id_name
-from mirage.utils.sanitize import byte_len, path_safe_name
+from mirage.utils.sanitize import NAME_MAX_BYTES, byte_len, path_safe_name
 
 
 def group_name(value: Any, *, basename: bool = False) -> str:
@@ -31,20 +32,27 @@ def group_name(value: Any, *, basename: bool = False) -> str:
     through ``PATH_SAFE``, so the scope table decodes a segment back to
     the exact value it stands for. A basename level first drops the
     value's URL or path parents, which is lossy, so the lister resolves
-    such a segment against the payload instead of decoding it.
+    such a segment against the payload instead of decoding it. A leaf
+    longer than NAME_MAX, which ext4 and APFS refuse, is cut to fit and
+    keeps the md5 of the whole segment as its id, the ``<label>__<id>``
+    shape every long name takes, so two leaves the cut would merge stay
+    two directories.
 
     Args:
         value (Any): the raw payload value.
         basename (bool): render only the value's URL/path leaf.
     """
     name = value_text(value)
-    if basename:
-        without_query = name.split("#", 1)[0].split("?", 1)[0]
-        trimmed = without_query.rstrip("/\\")
-        leaf = trimmed.replace("\\", "/").rsplit("/", 1)[-1]
-        if leaf:
-            name = leaf
-    return PATH_SAFE.encode(name)
+    if not basename:
+        return PATH_SAFE.encode(name)
+    without_query = name.split("#", 1)[0].split("?", 1)[0]
+    trimmed = without_query.rstrip("/\\")
+    leaf = trimmed.replace("\\", "/").rsplit("/", 1)[-1]
+    segment = PATH_SAFE.encode(leaf or name)
+    if byte_len(segment) <= NAME_MAX_BYTES:
+        return segment
+    return fit_id_name(segment,
+                       hashlib.md5(segment.encode("utf-8")).hexdigest())
 
 
 def row_stem(row: Mapping[str, Any], config: QdrantConfig) -> str:

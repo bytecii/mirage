@@ -109,3 +109,16 @@ def test_path_safe_prefix_value_is_what_a_rendered_prefix_implies():
     assert PATH_SAFE.prefix_value("⁄") == ""
     assert PATH_SAFE.prefix_value("⁄.e") == ".e"
     assert RAW.prefix_value("a∕") == "a∕"
+
+
+def test_path_safe_blank_is_the_shared_white_space_set():
+    # ``str.strip`` and JavaScript's ``trim`` disagree at the edges (U+001C
+    # ..U+001F, U+0085, U+FEFF), so a value only one runtime called blank
+    # took the lead in one tree and not the other. Blank is the White_Space
+    # property in both, read from ``utils.sanitize``.
+    assert PATH_SAFE.encode("\x85") == "⁄\x85"
+    assert PATH_SAFE.encode("\u3000") == "⁄\u3000"
+    assert PATH_SAFE.encode("\x1c") == "\x1c"
+    assert PATH_SAFE.encode("\ufeff") == "\ufeff"
+    for raw in ("\x85", "\u3000", "\x1c", "\ufeff"):
+        assert PATH_SAFE.decode(PATH_SAFE.encode(raw)) == raw

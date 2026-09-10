@@ -13,12 +13,15 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { QdrantConfigResolved } from '../../resource/qdrant/config.ts'
+import { md5Hex } from '../../utils/hash.ts'
 import { fitIdName, parseIdName } from '../../utils/naming.ts'
-import { byteLength, pathSafeName } from '../../utils/sanitize.ts'
+import { NAME_MAX_BYTES, byteLength, pathSafeName } from '../../utils/sanitize.ts'
 import { PATH_SAFE } from '../hierarchy/codec.ts'
 import { valueText } from '../render/json.ts'
 import type { QdrantRow } from './client.ts'
 import { fieldValue } from './payload.ts'
+
+const UTF8 = new TextEncoder()
 
 /**
  * Render one payload value as a VFS directory segment.
@@ -28,19 +31,22 @@ import { fieldValue } from './payload.ts'
  * `PATH_SAFE`, so the scope table decodes a segment back to the exact value it
  * stands for. A basename level first drops the value's URL or path parents,
  * which is lossy, so the lister resolves such a segment against the payload
- * instead of decoding it.
+ * instead of decoding it. A leaf longer than NAME_MAX, which ext4 and APFS
+ * refuse, is cut to fit and keeps the md5 of the whole segment as its id,
+ * the `<label>__<id>` shape every long name takes, so two leaves the cut
+ * would merge stay two directories.
  */
 export function groupName(value: unknown, basename = false): string {
-  let name = valueText(value)
-  if (basename) {
-    const withoutFragment = name.split('#', 1)[0] ?? name
-    const withoutQuery = withoutFragment.split('?', 1)[0] ?? withoutFragment
-    const trimmed = withoutQuery.replace(/[\\/]+$/, '')
-    const parts = trimmed.replace(/\\/g, '/').split('/')
-    const leaf = parts[parts.length - 1] ?? ''
-    if (leaf !== '') name = leaf
-  }
-  return PATH_SAFE.encode(name)
+  const name = valueText(value)
+  if (!basename) return PATH_SAFE.encode(name)
+  const withoutFragment = name.split('#', 1)[0] ?? name
+  const withoutQuery = withoutFragment.split('?', 1)[0] ?? withoutFragment
+  const trimmed = withoutQuery.replace(/[\\/]+$/, '')
+  const parts = trimmed.replace(/\\/g, '/').split('/')
+  const leaf = parts[parts.length - 1] ?? ''
+  const segment = PATH_SAFE.encode(leaf === '' ? name : leaf)
+  if (byteLength(segment) <= NAME_MAX_BYTES) return segment
+  return fitIdName(segment, md5Hex(UTF8.encode(segment)))
 }
 
 /** Return the stable, human-readable stem for a point's files. */

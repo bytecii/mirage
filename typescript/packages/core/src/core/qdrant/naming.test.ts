@@ -65,6 +65,23 @@ describe('qdrant VFS naming', () => {
     }
     expect(pointIdFromStem(stem, config)).toBe('17')
   })
+
+  it('cuts a basename past NAME_MAX and keeps its identity', () => {
+    // A leaf longer than NAME_MAX rendered whole, and ext4 and APFS refuse
+    // such a name over a FUSE mount, so the rows under it could not be
+    // opened. The segment is cut to fit and keeps the md5 of the whole leaf
+    // as its id, the `<label>__<id>` shape every long name takes, so two
+    // leaves that agree for 255 bytes stay two directories.
+    const longA = groupName(`s3://docs/${'r'.repeat(300)}a.pdf`, true)
+    const longB = groupName(`s3://docs/${'r'.repeat(300)}b.pdf`, true)
+    expect(longA).toBe(`${'r'.repeat(221)}__ba0797292207781661c03dea74339808`)
+    expect(longB).not.toBe(longA)
+    const wide = groupName(`s3://docs/${'界'.repeat(100)}`, true)
+    expect(byteLength(wide)).toBeLessThanOrEqual(NAME_MAX_BYTES)
+    expect(wide).not.toContain('\uFFFD')
+    expect(wide.endsWith('__51d13188e994b54376bb4693d036cf61')).toBe(true)
+    expect(groupName(`s3://docs/${'r'.repeat(255)}`, true)).toBe('r'.repeat(255))
+  })
 })
 
 describe('qdrant naming spells values as their JSON', () => {

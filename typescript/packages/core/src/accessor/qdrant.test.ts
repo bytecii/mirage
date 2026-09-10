@@ -15,7 +15,9 @@
 import { describe, expect, it } from 'vitest'
 
 import type { QdrantPoint } from '../core/qdrant/client.ts'
+import { groupName } from '../core/qdrant/naming.ts'
 import { resolveQdrantConfig } from '../resource/qdrant/config.ts'
+import { NAME_MAX_BYTES, byteLength } from '../utils/sanitize.ts'
 import { QdrantAccessor } from './qdrant.ts'
 
 interface ScrollOpts {
@@ -195,6 +197,25 @@ describe('QdrantAccessor group resolution', () => {
 
     expect(sources).toEqual(['s3://one/report.pdf', 's3://two/report.pdf'])
     expect(state.pages).toBe(1)
+  })
+
+  it('resolves a basename cut to NAME_MAX to the one leaf it stands for', async () => {
+    // Two leaves that agree past NAME_MAX render as two directories that
+    // fit the filesystem; the scan compares each candidate through the same
+    // bounded rendering, so the cut name still opens exactly its own leaf.
+    const state = { pages: 0 }
+    const sourceA = `s3://docs/${'r'.repeat(300)}a.pdf`
+    const sourceB = `s3://docs/${'r'.repeat(300)}b.pdf`
+    const acc = wideAccessor(
+      pagingClient(state, [
+        { id: 1, payload: { source: sourceA } },
+        { id: 2, payload: { source: sourceB } },
+      ]),
+    )
+    const name = groupName(sourceA, true)
+    expect(byteLength(name)).toBeLessThanOrEqual(NAME_MAX_BYTES)
+
+    await expect(acc.resolveGroup('c', 'source', {}, name, true)).resolves.toEqual([sourceA])
   })
 
   it('answers nothing for a basename no source renders as', async () => {
