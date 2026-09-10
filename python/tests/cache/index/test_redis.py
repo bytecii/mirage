@@ -12,18 +12,15 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 
 from mirage.cache.index import IndexEntry, LookupStatus
-from mirage.cache.index.redis import (LISTING_CHILDREN, LISTING_EXPIRES_AT,
-                                      LISTING_WRITTEN_AT, RedisIndexCacheStore)
+from mirage.cache.index.redis import RedisIndexCacheStore
 
 REDIS_URL = os.environ.get("REDIS_URL", "")
 pytestmark = pytest.mark.skipif(not REDIS_URL, reason="REDIS_URL not set")
@@ -149,8 +146,6 @@ async def test_list_dir_expired(store):
     await store.set_dir("/dir", entries, expired_at=past)
     time.sleep(1.5)
     result = await store.list_dir("/dir")
-    # Freshness is decided from the listing's own stamp, and the key is
-    # kept past it, so this is EXPIRED as on RAM, never NOT_FOUND.
     assert result.status == LookupStatus.EXPIRED
 
 
@@ -268,29 +263,3 @@ async def test_entry_wire_format_is_the_shared_json(store):
                    index_time="2026-01-01T00:00:00Z",
                    size=6))
     assert await store._client.get(store._entry_key("/a.txt")) == ENTRY_WIRE
-
-
-@pytest.mark.asyncio
-async def test_listing_is_one_json_document_with_its_stamps(store, entry):
-    await store.set_dir("/d", [("f.txt", entry)])
-    raw = await store._client.get(store._children_key("/d"))
-    listing = json.loads(raw)
-    assert listing[LISTING_CHILDREN] == ["/d/f.txt"]
-    assert listing[LISTING_EXPIRES_AT] - listing[LISTING_WRITTEN_AT] == 60
-    assert await store._client.ttl(store._children_key("/d")) > 60
-
-
-@pytest.mark.asyncio
-async def test_seed_then_close_writes_the_seed(entry):
-    prefix = f"test:seedclose:{uuid4()}:"
-    first = RedisIndexCacheStore(ttl=60, url=REDIS_URL, key_prefix=prefix)
-    first.seed({"/d/f.txt": entry}, {"/d": ["/d/f.txt"]},
-               datetime.now(timezone.utc) + timedelta(hours=1))
-    await first.close()
-    second = RedisIndexCacheStore(ttl=60, url=REDIS_URL, key_prefix=prefix)
-    try:
-        assert (await second.list_dir("/d")).entries == ["/d/f.txt"]
-        assert (await second.get("/d/f.txt")).entry is not None
-    finally:
-        await second.clear()
-        await second.close()

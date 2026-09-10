@@ -12,18 +12,21 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { toIsoZ } from '../../utils/dates.ts'
+import { KeyLock } from '../lock.ts'
+import { uuid7 } from '../../utils/ids.ts'
 import { underPath } from '../../utils/key_prefix.ts'
 import { loadOptionalPeer } from '../../utils/optional_peer.ts'
 import { rstripSlash } from '../../utils/slash.ts'
-import { IndexEntry, LookupStatus, type ListResult, type LookupResult } from './config.ts'
+import {
+  IndexEntry,
+  LookupStatus,
+  type IndexDirectory,
+  type ListResult,
+  type LookupResult,
+} from './config.ts'
 import { IndexCacheStore } from './store.ts'
-
-const ENTRY_PREFIX = 'mirage:idx:entry:'
-const CHILDREN_PREFIX = 'mirage:idx:children:'
-const INVALIDATED_KEY = 'mirage:idx:invalidated_at'
-const DEFAULT_KEY_PREFIX = 'mirage:index:'
-// The least time a listing outlives its own expiry in Redis, in seconds.
-export const MIN_EXPIRED_RETENTION = 60
+import { CHILDREN_PREFIX, DEFAULT_KEY_PREFIX, ENTRY_PREFIX, GENERATION_KEY } from './constants.ts'
 
 /**
  * Escape redis MATCH metacharacters in a literal path.
@@ -38,48 +41,11 @@ function globEscape(value: string): string {
 }
 
 /**
- * The JSON a directory listing is stored as.
- *
- * A JSON document rather than a Redis list, because Redis has no empty list:
- * `RPUSH` with no values creates no key, so a directory with no children
- * could never be recorded as listed, every `ls` of it was a cold backend
- * call, and no negative lookup under it was ever absorbed. The two stamps are
- * epoch seconds rather than ISO strings so both languages compare them as
- * numbers; the Python store writes the same three keys (`listing_document`
- * in `cache/index/redis.py`).
- */
-export interface ListingDocument {
-  children: string[]
-  written_at: number
-  expires_at: number
-}
-
-export function listingDocument(children: string[], writtenAt: number, expiresAt: number): string {
-  const doc: ListingDocument = { children, written_at: writtenAt, expires_at: expiresAt }
-  return JSON.stringify(doc)
-}
-
-/**
- * How long Redis keeps a listing: its freshness plus a retention.
- *
- * Freshness is decided by the caller from the document's own stamps, never
- * by Redis dropping the key, so the key has to outlive its expiry: while it
- * does, a lookup answers EXPIRED exactly as the RAM store does for a stale
- * row it still holds, and only once Redis has forgotten it does the answer
- * become NOT_FOUND. The retention is one more TTL and at least a minute. RAM
- * keeps a stale row until something drops it, but Redis is a shared server
- * and its keyspace needs a bound. Mirrors Python `physical_ttl_seconds`.
- */
-export function physicalTtlSeconds(writtenAt: number, expiresAt: number): number {
-  const freshFor = Math.max(0, expiresAt - writtenAt)
-  return Math.ceil(freshFor + Math.max(freshFor, MIN_EXPIRED_RETENTION))
-}
-
-/**
- * The entry JSON on the wire: the shape pydantic writes for the Python
- * `IndexEntry` (snake_case, every field), so one Redis serves both languages.
- * `extra` rides along because it is load-bearing (`size_bytes`,
- * `folder.childCount` that `find -empty` reads on Graph backends).
+ * The one wire format for an entry: what pydantic writes for the Python
+ * `IndexEntry`, snake_case and every field, so an entry either language
+ * writes is one the other reads and one Redis can serve both. `extra` rides
+ * along because it is load-bearing (`size_bytes`, the `folder.childCount`
+ * that `find -empty` reads on Graph backends).
  */
 interface EntryWire {
   id: string
@@ -120,7 +86,7 @@ function fromWire(raw: string): IndexEntry {
 }
 
 interface RedisPipeline {
-  set: (key: string, value: string, options?: { EX: number }) => RedisPipeline
+  set: (key: string, value: string, options?: { NX: boolean }) => RedisPipeline
   del: (key: string) => RedisPipeline
   exec: () => Promise<unknown>
 }
@@ -128,8 +94,8 @@ interface RedisPipeline {
 export interface RedisClientLike {
   connect: () => Promise<unknown>
   get: (key: string) => Promise<string | null>
-  set: (key: string, value: string, options?: { EX: number }) => Promise<unknown>
   mGet: (keys: string[]) => Promise<(string | null)[]>
+  set: (key: string, value: string, options?: { NX: boolean }) => Promise<unknown>
   del: (key: string | string[]) => Promise<unknown>
   multi: () => RedisPipeline
   scanIterator: (options: { MATCH: string }) => AsyncIterable<string | string[]>
@@ -144,35 +110,25 @@ export interface RedisIndexCacheOptions {
   keyPrefix?: string
 }
 
-/**
- * Redis-backed index cache for remote resource metadata.
- *
- * Entries are the JSON pydantic writes for the Python `IndexEntry`, and a
- * directory listing is one JSON document (`listingDocument`) carrying the
- * child keys and two epoch-second stamps, `written_at` and `expires_at`.
- * Freshness is decided here, from those stamps, not by Redis dropping the
- * key: the key outlives its expiry (`physicalTtlSeconds`), so a lookup in
- * that window answers EXPIRED as the RAM store does, and `invalidate` writes
- * one `invalidated_at` marker that every listing written before it compares
- * stale against, entries kept. `listDir` is therefore one `MGET` of the
- * listing and the marker.
- *
- * Key layout:
- *
- *     {keyPrefix}mirage:idx:entry:{resourcePath}     -> IndexEntry JSON
- *     {keyPrefix}mirage:idx:children:{resourcePath}  -> listing JSON
- *     {keyPrefix}mirage:idx:invalidated_at           -> epoch seconds
- *
- * Mirrors Python `RedisIndexCacheStore` (`cache/index/redis.py`).
- */
+// Directory records retain stale listings like RAM; Redis maxmemory eviction
+// can still turn any cached fact into a miss.
 export class RedisIndexCacheStore extends IndexCacheStore {
   private readonly ttl: number
   private readonly url: string
   private readonly providedClient: RedisClientLike | null
   private readonly entryPrefix: string
   private readonly childrenPrefix: string
-  private readonly invalidatedKey: string
+  private readonly generationKey: string
+  private readonly initializingGenerations = new Map<string, Promise<string>>()
   private clientPromise: Promise<RedisClientLike> | null = null
+
+  private readonly seedLock = new KeyLock()
+  private readonly pendingSeeds: {
+    entries: Map<string, IndexEntry>
+    children: Map<string, string[]>
+    expiresAt: number
+  }[] = []
+  private closed = false
 
   constructor(options: RedisIndexCacheOptions = {}) {
     super()
@@ -182,7 +138,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     const prefix = options.keyPrefix ?? DEFAULT_KEY_PREFIX
     this.entryPrefix = `${prefix}${ENTRY_PREFIX}`
     this.childrenPrefix = `${prefix}${CHILDREN_PREFIX}`
-    this.invalidatedKey = `${prefix}${INVALIDATED_KEY}`
+    this.generationKey = `${prefix}${GENERATION_KEY}`
   }
 
   private entryKey(path: string): string {
@@ -213,19 +169,107 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     return this.clientPromise
   }
 
-  private writeListing(
-    pipe: RedisPipeline,
-    resourcePath: string,
-    childKeys: string[],
-    writtenAt: number,
-    expiresAt: number,
+  seed(
+    entries: ReadonlyMap<string, IndexEntry>,
+    children: ReadonlyMap<string, readonly string[]>,
+    expiresAt: Date,
   ): void {
-    pipe.set(this.childrenKey(resourcePath), listingDocument(childKeys, writtenAt, expiresAt), {
-      EX: physicalTtlSeconds(writtenAt, expiresAt),
+    const nowIso = toIsoZ(new Date())
+    this.pendingSeeds.push({
+      entries: new Map(
+        [...entries].map(([path, entry]) => [
+          path,
+          entry.indexTime === '' ? entry.copyWith({ indexTime: nowIso }) : entry,
+        ]),
+      ),
+      children: new Map([...children].map(([path, keys]) => [path, [...keys]])),
+      expiresAt: expiresAt.getTime() / 1000,
     })
   }
 
+  private generation(c: RedisClientLike, key: string): Promise<string> {
+    const pending = this.initializingGenerations.get(key)
+    if (pending !== undefined) return pending
+    // Parallel directory refills in this store share one global initializer.
+    // Do not retain it afterwards: the next read must observe invalidations.
+    const initialized = (async () => {
+      const current = await c.get(key)
+      if (current !== null) return current
+      // A new token after eviction must never revive an old listing.
+      const generation = uuid7()
+      await c.set(key, generation, { NX: true })
+      // Even when NX loses, keep our attempted token. A later read could adopt
+      // a replacement written by an invalidation/refill and revive old data.
+      return generation
+    })().finally(() => {
+      this.initializingGenerations.delete(key)
+    })
+    this.initializingGenerations.set(key, initialized)
+    return initialized
+  }
+
+  private flushSeed(): Promise<void> {
+    return this.seedLock.withLock('seed', async () => {
+      while (this.pendingSeeds.length > 0) {
+        const pending = [...this.pendingSeeds]
+        const c = await this.client()
+        const generation = await this.generation(c, this.generationKey)
+        const directories = new Map<string, string>()
+        const paths = [...new Set(pending.flatMap((seed) => [...seed.children.keys()]))]
+        if (paths.length > 0) {
+          const current = await c.mGet(paths.map((path) => `${this.generationKey}:${path}`))
+          const missing = new Map<string, string>()
+          // Keep observed tokens: rereading them after a concurrent invalidation
+          // could stamp the pending snapshot with a replacement generation.
+          for (const [i, path] of paths.entries()) {
+            const token = current[i]
+            if (token == null) missing.set(path, uuid7())
+            else directories.set(path, token)
+          }
+          if (missing.size > 0) {
+            const initialize = c.multi()
+            for (const [path, token] of missing) {
+              initialize.set(`${this.generationKey}:${path}`, token, { NX: true })
+            }
+            await initialize.exec()
+            for (const [path, token] of missing) directories.set(path, token)
+          }
+        }
+        const pipe = c.multi()
+        for (const seed of pending) {
+          for (const [path, entry] of seed.entries) {
+            pipe.set(this.entryKey(path), JSON.stringify(toWire(entry)))
+          }
+          for (const [path, keys] of seed.children) {
+            const listing: IndexDirectory = {
+              entries: keys,
+              expires_at: seed.expiresAt,
+              generation: `${generation}:${directories.get(path) ?? ''}`,
+            }
+            pipe.set(this.childrenKey(path), JSON.stringify(listing))
+          }
+        }
+        await pipe.exec()
+        this.pendingSeeds.splice(0, pending.length)
+      }
+    })
+  }
+
+  async entries(): Promise<Map<string, IndexEntry>> {
+    await this.flushSeed()
+    const c = await this.client()
+    const entries = new Map<string, IndexEntry>()
+    for await (const batch of c.scanIterator({ MATCH: `${globEscape(this.entryPrefix)}*` })) {
+      for (const key of Array.isArray(batch) ? batch : [batch]) {
+        const raw = await c.get(key)
+        if (raw !== null) entries.set(key.slice(this.entryPrefix.length), fromWire(raw))
+      }
+    }
+    return entries
+  }
+
   async get(resourcePath: string): Promise<LookupResult> {
+    await this.flushSeed()
     const c = await this.client()
     const raw = await c.get(this.entryKey(resourcePath))
     if (raw === null) return { status: LookupStatus.NOT_FOUND }
@@ -233,27 +277,31 @@ export class RedisIndexCacheStore extends IndexCacheStore {
   }
 
   async put(resourcePath: string, entry: IndexEntry): Promise<void> {
+    await this.flushSeed()
     const c = await this.client()
     const stored =
-      entry.indexTime === '' ? entry.copyWith({ indexTime: new Date().toISOString() }) : entry
+      entry.indexTime === '' ? entry.copyWith({ indexTime: toIsoZ(new Date()) }) : entry
     await c.set(this.entryKey(resourcePath), JSON.stringify(toWire(stored)))
   }
 
   async listDir(resourcePath: string): Promise<ListResult> {
+    await this.flushSeed()
     const c = await this.client()
-    const [rawListing, rawMarker] = await c.mGet([
+    const [raw, current, directory] = await c.mGet([
       this.childrenKey(resourcePath),
-      this.invalidatedKey,
+      this.generationKey,
+      `${this.generationKey}:${resourcePath}`,
     ])
-    if (rawListing === null || rawListing === undefined) return { status: LookupStatus.NOT_FOUND }
-    const listing = JSON.parse(rawListing) as ListingDocument
-    // Stale when its own expiry has passed, or when `invalidate` ran after
-    // it was written; both mirror the RAM store's expiry map.
-    if (Date.now() / 1000 > listing.expires_at) return { status: LookupStatus.EXPIRED }
-    if (rawMarker !== null && rawMarker !== undefined && Number(rawMarker) >= listing.written_at) {
+    if (raw == null) return { status: LookupStatus.NOT_FOUND }
+    const listing = JSON.parse(raw) as IndexDirectory
+    if (
+      current == null ||
+      directory == null ||
+      listing.generation !== `${current}:${directory}` ||
+      Date.now() / 1000 >= listing.expires_at
+    )
       return { status: LookupStatus.EXPIRED }
-    }
-    return { entries: [...listing.children] }
+    return { entries: listing.entries }
   }
 
   async setDir(
@@ -261,10 +309,13 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     entries: readonly [string, IndexEntry][],
     expiredAt?: Date | null,
   ): Promise<void> {
+    await this.flushSeed()
     const c = await this.client()
     const now = new Date()
-    const nowIso = now.toISOString()
+    const nowIso = toIsoZ(now)
     const prefix = resourcePath === '/' ? '/' : `${resourcePath}/`
+    const generation = await this.generation(c, this.generationKey)
+    const directory = await this.generation(c, `${this.generationKey}:${resourcePath}`)
     const pipe = c.multi()
     const childKeys: string[] = []
     for (const [name, entry] of entries) {
@@ -273,82 +324,78 @@ export class RedisIndexCacheStore extends IndexCacheStore {
       pipe.set(this.entryKey(fullPath), JSON.stringify(toWire(stored)))
       childKeys.push(fullPath)
     }
-    const writtenAt = now.getTime() / 1000
-    const expiresAt =
-      expiredAt !== null && expiredAt !== undefined
-        ? expiredAt.getTime() / 1000
-        : writtenAt + this.ttl
-    this.writeListing(pipe, resourcePath, childKeys, writtenAt, expiresAt)
+    const listing: IndexDirectory = {
+      entries: childKeys,
+      generation: `${generation}:${directory}`,
+      expires_at: (expiredAt?.getTime() ?? now.getTime() + this.ttl * 1000) / 1000,
+    }
+    pipe.set(this.childrenKey(resourcePath), JSON.stringify(listing))
     await pipe.exec()
   }
 
   async invalidateDir(resourcePath: string): Promise<void> {
+    await this.flushSeed()
     const c = await this.client()
-    const childrenKey = this.childrenKey(resourcePath)
-    const raw = await c.get(childrenKey)
+    const raw = await c.get(this.childrenKey(resourcePath))
+    const childPaths = raw === null ? [] : (JSON.parse(raw) as IndexDirectory).entries
     const pipe = c.multi()
-    if (raw !== null) {
-      for (const child of (JSON.parse(raw) as ListingDocument).children) {
-        pipe.del(this.entryKey(child))
-      }
+    for (const child of childPaths) {
+      pipe.del(this.entryKey(child))
     }
-    pipe.del(childrenKey)
+    pipe.del(this.childrenKey(resourcePath))
+    pipe.del(`${this.generationKey}:${resourcePath}`)
     await pipe.exec()
   }
 
   private async scanDelete(prefix: string, resourcePath: string): Promise<void> {
     const c = await this.client()
-    const pattern = `${prefix}${globEscape(rstripSlash(resourcePath))}*`
+    const pattern = `${globEscape(prefix + rstripSlash(resourcePath))}*`
     const keys: string[] = []
     for await (const k of c.scanIterator({ MATCH: pattern })) {
       const batch = Array.isArray(k) ? k : [k]
       for (const key of batch) {
-        if (underPath(key.slice(prefix.length), resourcePath)) keys.push(key)
+        const path = key.slice(prefix.length)
+        if (underPath(path, resourcePath)) keys.push(key)
       }
     }
     if (keys.length > 0) await c.del(keys)
   }
 
   async invalidatePrefix(resourcePath: string): Promise<void> {
+    await this.flushSeed()
     await this.scanDelete(this.entryPrefix, resourcePath)
     await this.scanDelete(this.childrenPrefix, resourcePath)
+    await this.scanDelete(`${this.generationKey}:`, resourcePath)
   }
 
-  /**
-   * Mark every listing stale without discarding it.
-   *
-   * One marker key, `invalidated_at`, rather than a rewrite of every listing:
-   * `listDir` reads it beside the listing in the same `MGET` and calls a
-   * listing written at or before it EXPIRED. A listing written afterwards is
-   * fresh again, and entries are left alone, so `get` keeps answering, which
-   * is what the RAM store's in-place expiry gives a backend whose index *is*
-   * its listing (github, hf_hub): a refetch instead of an ENOENT.
-   */
   async invalidate(): Promise<void> {
+    await this.flushSeed()
     const c = await this.client()
-    await c.set(this.invalidatedKey, String(Date.now() / 1000))
+    // Atomically expire listings without overwriting concurrent refills/deletions.
+    await c.set(this.generationKey, uuid7())
   }
 
-  async clear(): Promise<void> {
-    const c = await this.client()
-    for (const pattern of [`${this.entryPrefix}*`, `${this.childrenPrefix}*`]) {
-      const keys: string[] = []
-      for await (const k of c.scanIterator({ MATCH: pattern })) {
-        if (Array.isArray(k)) keys.push(...k)
-        else keys.push(k)
-      }
-      if (keys.length > 0) await c.del(keys)
-    }
-    await c.del(this.invalidatedKey)
+  clear(): Promise<void> {
+    return this.seedLock.withLock('seed', async () => {
+      this.pendingSeeds.length = 0
+      await this.scanDelete(this.entryPrefix, '/')
+      await this.scanDelete(this.childrenPrefix, '/')
+      await this.scanDelete(`${this.generationKey}:`, '/')
+      const c = await this.client()
+      await c.del(this.generationKey)
+    })
   }
 
   override async close(): Promise<void> {
-    if (this.providedClient !== null) return
-    if (this.clientPromise === null) return
-    const c = await this.clientPromise
-    const typed = c as unknown as { destroy?: () => void }
-    if (typeof typed.destroy === 'function') typed.destroy()
-    else if (c.isOpen) await c.quit()
-    this.clientPromise = null
+    if (this.closed) return
+    await this.flushSeed()
+    if (this.providedClient === null && this.clientPromise !== null) {
+      const c = await this.clientPromise
+      const typed = c as unknown as { destroy?: () => void }
+      if (typeof typed.destroy === 'function') typed.destroy()
+      else if (c.isOpen) await c.quit()
+      this.clientPromise = null
+    }
+    this.closed = true
   }
 }
