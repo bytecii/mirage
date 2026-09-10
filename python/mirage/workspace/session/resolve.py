@@ -511,6 +511,76 @@ def narrow(session: Session, compiled: CompiledProfile) -> None:
     session.profile = compiled.profile
 
 
+def narrowing_of(session: Session) -> CompiledProfile:
+    """A session's narrowing read back as a compiled profile.
+
+    What :func:`narrow` stamps, in the shape it stamps from, so a
+    caller that narrows a live session speculatively can put the
+    session back with ``narrow(session, saved)``. A restore does
+    exactly that: it joins each table's profile onto the session
+    before the ``pre_session`` gate runs, and a refusal there has to
+    leave the workspace as it was. The scratch halves of a profile
+    (``env``, ``cwd``) are not narrowing and are not read.
+
+    Args:
+        session (Session): the session to read.
+    """
+    return CompiledProfile(mount_modes=dict(session.mount_modes)
+                           if session.mount_modes is not None else None,
+                           hidden_paths=session.hidden_paths,
+                           hidden_vars=session.hidden_vars,
+                           env=None,
+                           cwd=None,
+                           commands=session.commands,
+                           script=session.script,
+                           shown_paths=session.shown_paths,
+                           hide_reasons=session.hide_reasons,
+                           profile=session.profile)
+
+
+def narrow_profile(session: Session, compiled: CompiledProfile) -> None:
+    """Join a profile onto a session that is already running, never wider.
+
+    :func:`narrow` stamps a profile onto a session the host creates or
+    resets; this adds one to a live session, which is what a restore
+    does to the session a stored table lands on. A table names the
+    profile its source session ran under, and the target's document of
+    that name is what must govern the restored session — including its
+    policy program, which the table cannot carry and
+    :func:`narrow_restored` deliberately never takes off it. The join
+    is :func:`narrow_restored`'s, for the same reason: restrictions
+    union, grants intersect, so a session that has accumulated
+    restrictions of its own keeps every one of them.
+
+    The program is the profile's when the session runs none, and the
+    session's when it does: a checkout must not swap out a program the
+    host installed with ``set_session_profile``, which stays the host's
+    reset. The name travels with the program, so a session never
+    reports a group whose script it is not running.
+
+    Args:
+        session (Session): the live session.
+        compiled (CompiledProfile): the target's profile of the name
+            the table carries.
+    """
+    modes = _merge_modes(session.mount_modes, compiled.mount_modes)
+    hidden = _merge_hidden_paths(session.hidden_paths, compiled.hidden_paths)
+    shown = _merge_shown(session.shown_paths, compiled.shown_paths,
+                         session.mount_modes, compiled.mount_modes,
+                         session.hidden_paths, compiled.hidden_paths)
+    session.hidden_vars = _merge_hidden_vars(session.hidden_vars,
+                                             compiled.hidden_vars)
+    session.hide_reasons = _merge_groups(session.hide_reasons,
+                                         compiled.hide_reasons)
+    session.commands = _merge_commands(session.commands, compiled.commands)
+    if session.script is None:
+        session.script = compiled.script
+        session.profile = compiled.profile
+    session.mount_modes = modes
+    session.hidden_paths = hidden
+    session.shown_paths = shown
+
+
 def apply_profile(session: Session, compiled: CompiledProfile) -> None:
     """Narrow a fresh session and seed its scratch state from the profile.
 
@@ -702,23 +772,45 @@ def _capped(mode: MountMode, caps: dict[str, MountMode] | None,
     return mode if cap is None else weaker_mode(mode, cap)
 
 
+def _hides_show(hidden: HiddenPaths | None, path: str) -> bool:
+    """Whether one side's hides cover a show entry the other side states.
+
+    The question a one-sided show turns on, and it is asked of the
+    *other* side's hides, never of the merged set: a show exists to
+    re-open what a hide covers, so the side that states the show has a
+    hide over it by construction, and testing the union would drop
+    every show against its own hide. An exact entry is tested against
+    those hides; a pattern re-opens by name and no comparison proves
+    which names a hide leaves open, so it counts as covered wherever
+    the other side hides at all.
+
+    Args:
+        hidden (HiddenPaths | None): the other side's hide set, None
+            when that side hides nothing.
+        path (str): the show entry's path.
+    """
+    if hidden is None or (not hidden.paths and not hidden.patterns):
+        return False
+    return is_glob(path) or hide_depth(hidden, path) is not None
+
+
 def _merge_show(mine: ShowEntry, other: ShowEntry | None,
                 my_caps: dict[str, MountMode] | None,
                 other_caps: dict[str, MountMode] | None,
-                hidden: HiddenPaths | None) -> ShowEntry | None:
+                other_hidden: HiddenPaths | None) -> ShowEntry | None:
     """One show entry as both sides allow it, or None to drop it.
 
     A show does two things, and each side has to have said it. It
-    re-opens whatever the other side hides at its anchor, so an entry
-    only one side states survives only where the merged hide set covers
-    nothing (a pattern re-opens by name and is dropped outright). It
-    states the mode below its anchor, and a show scores deeper than a
-    per-mount cap, so a mode only one side states is held under the
-    other side's cap there; two stated modes take the weaker; two
-    list-form entries stay list-form, since the merged caps already
-    hold the weaker mode below them. The entry itself is returned when
-    nothing changed, so an identical table leaves the session's objects
-    in place.
+    re-opens what a hide covers, so an entry only one side states
+    survives exactly where the other side hides nothing over it
+    (:func:`_hides_show`) — that side left the path open, so both
+    allow it. It states the mode below its anchor, and a show scores
+    deeper than a per-mount cap, so a mode only one side states is
+    held under the other side's cap there; two stated modes take the
+    weaker; two list-form entries stay list-form, since the merged
+    caps already hold the weaker mode below them. The entry itself is
+    returned when nothing changed, so an identical table leaves the
+    session's objects in place.
 
     Args:
         mine (ShowEntry): the entry on the side being walked.
@@ -726,10 +818,10 @@ def _merge_show(mine: ShowEntry, other: ShowEntry | None,
             path, None when it states none.
         my_caps (dict[str, MountMode] | None): this side's caps.
         other_caps (dict[str, MountMode] | None): the other side's.
-        hidden (HiddenPaths | None): the merged hide set.
+        other_hidden (HiddenPaths | None): the other side's hide set.
     """
     if other is None:
-        if is_glob(mine.path) or hide_depth(hidden, mine.path) is not None:
+        if _hides_show(other_hidden, mine.path):
             return None
         if mine.mode is None:
             return mine
@@ -748,16 +840,21 @@ def _merge_show(mine: ShowEntry, other: ShowEntry | None,
 def _merge_shown(base: ShownPaths | None, table: ShownPaths | None,
                  base_caps: dict[str, MountMode] | None,
                  table_caps: dict[str, MountMode] | None,
-                 hidden: HiddenPaths | None) -> ShownPaths | None:
+                 base_hidden: HiddenPaths | None,
+                 table_hidden: HiddenPaths | None) -> ShownPaths | None:
     """Both sides' show entries as both allow them (:func:`_merge_show`),
     the session's first; the session's own object when nothing changed.
+
+    Each side is walked against the *other* side's hides, which is why
+    both sets are passed rather than their union.
 
     Args:
         base (ShownPaths | None): the session's entries.
         table (ShownPaths | None): the stored table's entries.
         base_caps (dict[str, MountMode] | None): the session's caps.
         table_caps (dict[str, MountMode] | None): the table's caps.
-        hidden (HiddenPaths | None): the merged hide set.
+        base_hidden (HiddenPaths | None): the session's hide set.
+        table_hidden (HiddenPaths | None): the table's hide set.
     """
     if base is None and table is None:
         return None
@@ -768,13 +865,13 @@ def _merge_shown(base: ShownPaths | None, table: ShownPaths | None,
     out: list[ShowEntry] = []
     for entry in base_entries:
         merged = _merge_show(entry, by_table.get(entry.path), base_caps,
-                             table_caps, hidden)
+                             table_caps, table_hidden)
         if merged is not None:
             out.append(merged)
     for entry in table_entries:
         if entry.path in by_base:
             continue
-        merged = _merge_show(entry, None, table_caps, base_caps, hidden)
+        merged = _merge_show(entry, None, table_caps, base_caps, base_hidden)
         if merged is not None:
             out.append(merged)
     if base is not None and tuple(out) == base.entries:
@@ -806,10 +903,12 @@ def narrow_restored(session: Session, table: Session) -> None:
     can only add restrictions to a live session, never lift one: a hide
     from one version survives checking out another, and
     ``set_session_profile`` is the host's reset. And a show only one
-    side states is dropped where a hide covers its anchor, mode and
-    all, so a mode it restricted there reverts to the target's
-    allowance; the show grammar has no spelling for a mode without a
-    re-open.
+    side states is dropped where the *other* side hides its anchor,
+    mode and all, so a mode it restricted there reverts to the
+    target's allowance; the show grammar has no spelling for a mode
+    without a re-open. Its own side's hide never drops it: a show is
+    always stated against a hide, so reading the union would erase
+    every show exception the other side simply never mentioned.
 
     Args:
         session (Session): the session the table lands on, already
@@ -820,7 +919,8 @@ def narrow_restored(session: Session, table: Session) -> None:
     modes = _merge_modes(session.mount_modes, table.mount_modes)
     hidden = _merge_hidden_paths(session.hidden_paths, table.hidden_paths)
     shown = _merge_shown(session.shown_paths, table.shown_paths,
-                         session.mount_modes, table.mount_modes, hidden)
+                         session.mount_modes, table.mount_modes,
+                         session.hidden_paths, table.hidden_paths)
     session.hidden_vars = _merge_hidden_vars(session.hidden_vars,
                                              table.hidden_vars)
     session.hide_reasons = _merge_groups(session.hide_reasons,

@@ -27,7 +27,13 @@ import { PermissionsPolicy } from '../../policy/builtin/permissions.ts'
 import { type CompiledProfile, profileFromJSON, profileToJSON } from '../../policy/profile.ts'
 import { ScriptPolicy } from '../../policy/script.ts'
 import { DEFAULT_PROFILE } from '../session/constants.ts'
-import { compileProfile, narrow, narrowRestored } from '../session/resolve.ts'
+import {
+  compileProfile,
+  narrow,
+  narrowingOf,
+  narrowProfile,
+  narrowRestored,
+} from '../session/resolve.ts'
 import { setCwd } from '../session/shell_dirs.ts'
 import { gateRestoredVars } from '../session/state.ts'
 import type { CLIInstall } from '../cli/types.ts'
@@ -547,25 +553,36 @@ function targetProfile(ws: Workspace, name: string | null): CompiledProfile {
 /**
  * Vet every session table and the env template before any of it lands.
  *
- * Three steps, and nothing lands in any of them. Each table's profile
- * name is resolved against the target's document (`targetProfile`), so
- * a name the target does not define refuses the load before a mount, a
- * session or the template has moved, the same loud rule a redacted
- * mount gets. A table whose id the target lacks then gets its session
- * created and narrowed under that profile here, because
+ * Three steps, and nothing durable lands in any of them. Each table's
+ * profile name is resolved against the target's document
+ * (`targetProfile`), so a name the target does not define refuses the
+ * load before a mount, a session or the template has moved, the same
+ * loud rule a redacted mount gets.
+ *
+ * Every table's session is then put under that profile, since the
+ * profile is what the target's document says a session of that name
+ * runs under and the table itself cannot carry a policy program. A
+ * table whose id the target lacks gets its session created and narrowed
+ * (`narrow`) — which also matters for the gate, because
  * `ScriptPolicy.preSession` reads `scriptOf(sessionId)` off the manager
- * and answers the default profile for an id it does not know; the
- * snapshot's default id is the one exception, since `adoptDefault`
- * re-keys the live default onto it and would delete a session created
- * under that id instead. Then every table and the template fire the
- * `preSession` gate (`gateRestoredVars`): a refusal that arrived once an
- * earlier session had already been overwritten left the workspace in a
- * state no snapshot describes, and one its close then persisted. A
- * refusal anywhere discards the sessions created here, so the store
- * never sees a half-made table. The template is gated under the id the
- * restore makes the default session, which is the session a live write
- * of it would land in. Returns the parsed session tables and the
- * template, null when the snapshot carries none. Mirrors the Python
+ * and answers the default profile for an id it does not know. A session
+ * already here is joined instead of stamped over (`narrowProfile`): it
+ * keeps every restriction of its own, so a checkout still cannot widen
+ * a live session, and it keeps a program the host installed with
+ * `setSessionProfile`. The snapshot's default id names the live default
+ * session here, since `adoptDefault` re-keys that session onto it later
+ * and creating one under that id would have it deleted instead.
+ *
+ * Then every table and the template fire the `preSession` gate
+ * (`gateRestoredVars`): a refusal that arrived once an earlier session
+ * had already been overwritten left the workspace in a state no
+ * snapshot describes, and one its close then persisted. A refusal
+ * anywhere discards the sessions created here and puts the joined ones
+ * back as they were (`narrowingOf`), so the store never sees a
+ * half-made table. The template is gated under the id the restore makes
+ * the default session, which is the session a live write of it would
+ * land in. Returns the parsed session tables and the template, null
+ * when the snapshot carries none. Mirrors the Python
  * `_gate_restored_state`.
  */
 async function gateRestoredState(
@@ -580,6 +597,7 @@ async function gateRestoredState(
   ])
   const live = new Set(ws.sessionManager.list().map((s) => s.sessionId))
   const created: string[] = []
+  const joined = new Map<string, [Session, CompiledProfile]>()
   let seed: Record<string, ShellVar> | null = null
   let vetted = false
   try {
@@ -588,7 +606,19 @@ async function gateRestoredState(
       if (sid !== defaultSid && !live.has(sid)) {
         created.push(sid)
         narrow(ws.sessionManager.create(sid), profile)
+        continue
       }
+      // A session already here keeps everything it restricts, so the
+      // profile joins onto it instead of stamping over it
+      // (`narrowProfile`); the snapshot's default id is the live
+      // default session until `adoptDefault` re-keys it. The join runs
+      // before the gate so a policy program the profile carries is in
+      // force while the table is vetted, and is rolled back with the
+      // created sessions below.
+      const landing = live.has(sid) ? sid : ws.sessionManager.defaultId
+      const session = ws.sessionManager.get(landing)
+      if (!joined.has(landing)) joined.set(landing, [session, narrowingOf(session)])
+      narrowProfile(session, profile)
     }
     for (const fields of tables) {
       await gateRestoredVars(ws.registry.policies, fields.sessionId, fields.vars)
@@ -599,7 +629,10 @@ async function gateRestoredState(
     }
     vetted = true
   } finally {
-    if (!vetted) for (const sid of created) ws.sessionManager.discard(sid)
+    if (!vetted) {
+      for (const sid of created) ws.sessionManager.discard(sid)
+      for (const [session, before] of joined.values()) narrow(session, before)
+    }
   }
   return [tables, seed]
 }

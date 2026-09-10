@@ -921,3 +921,178 @@ async def test_a_recorded_policy_class_the_target_lacks_is_reported(caplog):
         target = await Workspace.from_state(state, policies=[DenyGate()])
         await target.close()
     assert not any("policy class" in r.getMessage() for r in caplog.records)
+
+
+LOCKED = {
+    "commands": {
+        "allow": ["echo", "cat", "rm", "ls", "test"],
+        "deny": ["rm"],
+    },
+    "policy": {
+        "script": {
+            "source":
+            "def pre_command(ctx):\n"
+            "    if ctx['command']['name'] == 'cat':\n"
+            "        return {'deny': 'no reading here'}\n"
+            "    return None\n",
+            "language":
+            "python",
+        },
+        "runtime": "monty",
+    },
+}
+
+
+# The gate created and narrowed the sessions it had to make, but left
+# the default session and every live one on whatever profile they
+# already ran under, so the target's document of the name a table
+# carries never governed the restored session: `narrow_restored` takes
+# no program and no new restriction off a table, and nothing else
+# applied the document's.
+@pytest.mark.asyncio
+async def test_the_default_sessions_named_profile_governs_after_a_load():
+    source = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       profiles={"locked": LOCKED})
+    try:
+        assert (await source.execute("echo kept > /f.txt")).exit_code == 0
+        await source.set_session_profile(source.default_session_id, "locked")
+        assert (await source.execute("cat /f.txt")).exit_code == 126
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    target = await Workspace.from_state(state)
+    try:
+        restored = target.get_session(target.default_session_id)
+        assert restored.profile == "locked"
+        assert restored.script is not None
+        # `cat` is on the profile's allow list and not on its deny
+        # list, so only the profile's policy program can refuse it.
+        assert (await target.execute("cat /f.txt")).exit_code == 126
+        assert (await target.execute("rm /f.txt")).exit_code == 126
+        assert (await target.execute("echo ok")).exit_code == 0
+        assert (await target.execute("ls /")).exit_code == 0
+    finally:
+        await target.close()
+
+
+# The same rule with no policy program in sight: a loader that supplies
+# a stricter version of the profile a table names governs the restored
+# session, where before only the table's own restrictions landed.
+@pytest.mark.asyncio
+async def test_a_stricter_loader_profile_governs_the_restored_default():
+    source = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       profiles={"crew": {
+                           "commands": {
+                               "deny": ["rm"]
+                           }
+                       }})
+    try:
+        assert (await source.execute("echo kept > /f.txt")).exit_code == 0
+        await source.set_session_profile(source.default_session_id, "crew")
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    target = await Workspace.from_state(
+        state, profiles={"crew": {
+            "commands": {
+                "deny": ["rm", "cat"]
+            }
+        }})
+    try:
+        restored = target.get_session(target.default_session_id)
+        assert restored.profile == "crew"
+        assert (await target.execute("rm /f.txt")).exit_code == 126
+        assert (await target.execute("cat /f.txt")).exit_code == 126
+        assert (await target.execute("ls /")).exit_code == 0
+    finally:
+        await target.close()
+
+
+# The other half of the same rule: a checkout adds the version's
+# restrictions to a live session and lifts none of the live ones, and
+# the program the host installed with set_session_profile stays.
+@pytest.mark.asyncio
+async def test_a_checkout_never_lifts_a_live_sessions_program():
+    source = Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+    try:
+        assert (await source.execute("echo kept > /f.txt")).exit_code == 0
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    target = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       profiles={"locked": LOCKED})
+    try:
+        await target.set_session_profile(target.default_session_id, "locked")
+        program = target.get_session(target.default_session_id).script
+        await apply_state_dict(target, state, replace_cache=True)
+        live = target.get_session(target.default_session_id)
+        assert live.script is program
+        assert live.profile == "locked"
+        assert (await target.execute("cat /f.txt")).exit_code == 126
+        assert (await target.execute("rm /f.txt")).exit_code == 126
+        assert (await target.execute("ls /")).exit_code == 0
+    finally:
+        await target.close()
+
+
+# A refusal after the profiles have been joined onto the live sessions
+# puts them back: the workspace is the one the snapshot never touched.
+@pytest.mark.asyncio
+async def test_a_refused_table_puts_a_joined_live_session_back():
+    source = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       profiles={"locked": LOCKED})
+    try:
+        await source.set_session_profile(source.default_session_id, "locked")
+        assert (await source.execute("export SEALED=1")).exit_code == 0
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+
+    class RefuseSealed(Policy):
+
+        async def pre_session(self, ctx: SessionContext) -> Deny | None:
+            return Deny("sealed is refused") if ctx.key == "SEALED" else None
+
+    target = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       profiles={"locked": LOCKED},
+                       policies=[RefuseSealed()])
+    try:
+        before = target.get_session(target.default_session_id).to_dict()
+        with pytest.raises(PolicyDenied):
+            await apply_state_dict(target, state)
+        assert target.get_session(
+            target.default_session_id).to_dict() == before
+    finally:
+        await target.close()
+
+
+# `profile=None` is a value on the loader, not an omission: a caller
+# clearing the default profile a snapshot names could not say so while
+# None was also the absent-argument marker.
+@pytest.mark.asyncio
+async def test_an_explicit_none_profile_clears_the_recorded_default():
+    source = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       profiles={"locked": LOCKED})
+    try:
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    state[StateKey.PROFILE] = "locked"
+    kept = await Workspace.from_state(state, profiles={"locked": LOCKED})
+    try:
+        assert kept._default_profile_name == "locked"
+    finally:
+        await kept.close()
+    cleared = await Workspace.from_state(state,
+                                         profiles={"locked": LOCKED},
+                                         profile=None)
+    try:
+        assert cleared._default_profile_name is None
+    finally:
+        await cleared.close()

@@ -15,6 +15,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from enum import Enum, auto
 from types import TracebackType
 from typing import Any, Literal, overload
 
@@ -97,6 +98,20 @@ from mirage.workspace.workspace.types import ResourceMount
 from mirage.workspace.workspace.watch import WatchDelegate, WatchManager
 
 logger = logging.getLogger(__name__)
+
+
+class _Omitted(Enum):
+    """A loader argument nobody passed, which None cannot stand for.
+
+    An enum, not a sentinel object: ``profile=None`` is a real value on
+    ``load``/``from_state`` — it says the target runs with no default
+    profile at all — so the absent argument needs a spelling of its own
+    or a caller could never clear the name a snapshot carries.
+    """
+    TOKEN = auto()
+
+
+_OMITTED = _Omitted.TOKEN
 
 
 class Workspace:
@@ -822,7 +837,7 @@ class Workspace:
         | None = None,
             profiles: Mapping[str, SessionProfile | Mapping[str, Any]]
         | None = None,
-            profile: str | None = None,
+            profile: str | None | _Omitted = _OMITTED,
             policies: list[Policy] | None = None,
             drift_policy: DriftPolicy = DriftPolicy.STRICT) -> "Workspace":
         """Reconstruct a Workspace from a tar.
@@ -865,7 +880,9 @@ class Workspace:
                 and one that omits the snapshot's default profile fails
                 at construction as an unknown name.
             profile: the default profile's name, replacing the
-                snapshot's.
+                snapshot's. None is a value here, not an omission: it
+                loads with no default profile at all, where leaving
+                the argument out keeps the snapshot's.
             policies: the coded policies to register. A snapshot names
                 the source's policy classes and cannot carry them;
                 `from_state` warns about a recorded name no registered
@@ -896,7 +913,7 @@ class Workspace:
         | None = None,
             profiles: Mapping[str, SessionProfile | Mapping[str, Any]]
         | None = None,
-            profile: str | None = None,
+            profile: str | None | _Omitted = _OMITTED,
             policies: list[Policy] | None = None,
             drift_policy: DriftPolicy = DriftPolicy.STRICT) -> "Workspace":
         """Reconstruct a Workspace directly from a state dict (no tar).
@@ -920,7 +937,9 @@ class Workspace:
             profiles: the named profiles to restore under, replacing
                 the snapshot's documents (see `load`).
             profile: the default profile's name, replacing the
-                snapshot's.
+                snapshot's. None is a value here, not an omission: it
+                loads with no default profile at all, where leaving
+                the argument out keeps the snapshot's.
             policies: the coded policies to register; a recorded name
                 none of them answers to is reported at warning level.
             drift_policy: STRICT (default) raises on mismatch. OFF
@@ -988,7 +1007,7 @@ class Workspace:
         | None = None,
         profiles: Mapping[str, SessionProfile | Mapping[str, Any]]
         | None = None,
-        profile: str | None = None,
+        profile: str | None | _Omitted = _OMITTED,
         policies: list[Policy] | None = None,
     ) -> "Workspace":
         args = build_mount_args(state, resources, clis)
@@ -1002,7 +1021,7 @@ class Workspace:
                  clis=args.clis,
                  secrets=secrets,
                  profiles=args.profiles if profiles is None else profiles,
-                 profile=args.profile if profile is None else profile,
+                 profile=args.profile if profile is _OMITTED else profile,
                  policies=policies)
         if resources:
             ws._shared_resources = {id(r) for r in resources.values()}

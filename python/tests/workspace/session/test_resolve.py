@@ -14,8 +14,8 @@ from mirage.policy.profile import (  # isort: skip
     CommandsBlock, MountCommandsBlock, PathsBlock, ProfileMount,
     SessionProfile, VarsBlock)
 from mirage.workspace.session.resolve import (  # isort: skip
-    apply_profile, compile_commands, compile_profile, narrow, narrow_restored,
-    resolve_profile, with_inline)
+    apply_profile, compile_commands, compile_profile, narrow, narrow_profile,
+    narrow_restored, narrowing_of, resolve_profile, with_inline)
 
 PROFILES = {
     "default":
@@ -562,3 +562,124 @@ def test_narrow_restored_keeps_the_sessions_program_and_name():
     assert session.profile == "target"
     assert session.script is target.script
     assert session.commands == table.commands
+
+
+# A show is always stated against a hide, so reading the merged hide set
+# dropped every one-sided show under its own side's hide: a table that
+# simply never mentioned /vault took /vault/public away with it.
+def test_narrow_restored_keeps_a_one_sided_show_under_its_own_hide():
+    session = Session(
+        session_id="s",
+        hidden_paths=HiddenPaths(paths=("/vault", )),
+        shown_paths=ShownPaths(
+            entries=(ShowEntry(path="/vault/public", mode=None), )))
+    narrow_restored(session, _restored())
+    assert session.shown_paths == ShownPaths(
+        entries=(ShowEntry(path="/vault/public", mode=None), ))
+    assert path_visible(session.hidden_paths, session.shown_paths,
+                        "/vault/public")
+    # The same either way round: the table's show under the table's own
+    # hide survives an unrestricted session.
+    other = Session(session_id="s")
+    narrow_restored(
+        other,
+        _restored(hidden_paths=HiddenPaths(paths=("/vault", )),
+                  shown_paths=ShownPaths(
+                      entries=(ShowEntry(path="/vault/public", mode=None), ))))
+    assert other.shown_paths == ShownPaths(
+        entries=(ShowEntry(path="/vault/public", mode=None), ))
+
+
+# A pattern show is the same case: dropped only where the other side
+# hides at all, since no comparison proves which names it leaves open.
+def test_narrow_restored_keeps_a_one_sided_pattern_show_when_nothing_hides():
+    session = Session(
+        session_id="s",
+        hidden_paths=HiddenPaths(paths=("/work/aaa", )),
+        shown_paths=ShownPaths(
+            entries=(ShowEntry(path="/work/aaa/*.txt", mode=None), )))
+    narrow_restored(session, _restored())
+    assert session.shown_paths == ShownPaths(
+        entries=(ShowEntry(path="/work/aaa/*.txt", mode=None), ))
+    hidden = Session(
+        session_id="s",
+        hidden_paths=HiddenPaths(paths=("/work/aaa", )),
+        shown_paths=ShownPaths(
+            entries=(ShowEntry(path="/work/aaa/*.txt", mode=None), )))
+    narrow_restored(hidden,
+                    _restored(hidden_paths=HiddenPaths(paths=("/work", ))))
+    assert hidden.shown_paths is None
+
+
+def test_narrow_profile_joins_restrictions_onto_a_live_session():
+    session = Session(session_id="s",
+                      mount_modes={"/repo": MountMode.WRITE},
+                      hidden_paths=HiddenPaths(paths=("/repo/live", )))
+    narrow_profile(
+        session,
+        compile_profile(
+            SessionProfile(mounts={"/repo": "r"},
+                           paths=PathsBlock(hide=("/repo/sealed", )),
+                           commands=CommandsBlock(deny=("rm", ))), "named"))
+    assert session.mount_modes == {"/repo": MountMode.READ}
+    assert path_hidden(session.hidden_paths, "/repo/live")
+    assert path_hidden(session.hidden_paths, "/repo/sealed")
+    assert session.profile == "named"
+
+
+# A program the host installed with set_session_profile is the host's,
+# and a restore only adds restrictions: the name travels with it, so a
+# session never reports a group whose script it is not running.
+def test_narrow_profile_keeps_a_program_the_session_already_runs():
+    running = compile_profile(
+        SessionProfile(
+            policy={
+                "script": {
+                    "source": "def pre_command(ctx):\n    return None\n",
+                    "language": "python",
+                },
+                "runtime": "monty",
+            }), "locked")
+    session = Session(session_id="s")
+    narrow(session, running)
+    narrow_profile(session, compile_profile(SessionProfile(cwd="/x"),
+                                            "wanted"))
+    assert session.script is running.script
+    assert session.profile == "locked"
+
+
+def test_narrow_profile_takes_the_program_of_a_session_running_none():
+    wanted = compile_profile(
+        SessionProfile(
+            policy={
+                "script": {
+                    "source": "def pre_command(ctx):\n    return None\n",
+                    "language": "python",
+                },
+                "runtime": "monty",
+            }), "wanted")
+    session = Session(session_id="s")
+    narrow_profile(session, wanted)
+    assert session.script is wanted.script
+    assert session.profile == "wanted"
+
+
+def test_narrowing_of_round_trips_through_narrow():
+    compiled = compile_profile(
+        SessionProfile(mounts={"/repo": "r"},
+                       paths=PathsBlock(hide=("/repo/sealed", ),
+                                        show={"/repo/sealed/public": "r"}),
+                       vars=VarsBlock(hide=("AWS_*", )),
+                       commands=CommandsBlock(deny=("rm", ))), "named")
+    session = Session(session_id="s")
+    narrow(session, compiled)
+    before = session.to_dict()
+    saved = narrowing_of(session)
+    narrow_profile(
+        session,
+        compile_profile(
+            SessionProfile(mounts={"/repo": "rwx"},
+                           paths=PathsBlock(hide=("/other", ))), "wider"))
+    assert session.to_dict() != before
+    narrow(session, saved)
+    assert session.to_dict() == before

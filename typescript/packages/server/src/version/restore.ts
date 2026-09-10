@@ -68,11 +68,11 @@ function mergeMountFiles(
  * `categories` picks a subset and leaves the live state of the others
  * untouched; `paths` restores only the matching files (a path selects
  * itself or its subtree) and implies the files category alone. Restoring
- * sessions lands each table under the live document's profile of the
- * same name and never wider than the live session already is
- * (`narrowRestored`): a checkout can add a version's restrictions to a
- * live session, never lift the live ones, and `setSessionProfile` is the
- * host's reset. Compare two versions with stateDiff to see the narrowing
+ * sessions joins the live document's profile of each table's name onto
+ * the session (`narrowProfile`) and then the table itself
+ * (`narrowRestored`), and neither join widens: a checkout can add a
+ * version's restrictions and the document's to a live session, never
+ * lift the live ones, and `setSessionProfile` is the host's reset. Compare two versions with stateDiff to see the narrowing
  * changes up front. Mirrors the Python restore.
  */
 export async function restore(

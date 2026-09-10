@@ -21,17 +21,27 @@ import type { AdmissionRules, CommandRule, OpsContext } from '../../policy/types
 import { MountMode, PathSpec } from '../../types.ts'
 import { pathHidden, pathVisible } from '../../utils/hidden.ts'
 import { parseSessionProfile, type SessionProfile } from '../../policy/profile.ts'
+import { ScriptSource } from '../../runtime/routing/types.ts'
 import {
   applyProfile,
   compileCommands,
   compileProfile,
   narrow,
+  narrowingOf,
+  narrowProfile,
   narrowRestored,
   resolveProfile,
   withInline,
 } from './resolve.ts'
 import { Session } from './session.ts'
 import { VarAttr } from '../../shell/variable.ts'
+
+const POLICY_DOC = {
+  policy: {
+    script: new ScriptSource('export function preCommand() {\n  return null\n}\n', 'js'),
+    runtime: 'quickjs',
+  },
+}
 
 function readOp(virtual: string): OpsContext {
   return {
@@ -637,5 +647,126 @@ describe('narrowRestored', () => {
     expect(session.profile).toBe('target')
     expect(session.script).toBe(target.script)
     expect(session.commands).toEqual(rules)
+  })
+
+  // A show is always stated against a hide, so reading the merged hide
+  // set dropped every one-sided show under its own side's hide: a table
+  // that simply never mentioned /vault took /vault/public away with it.
+  it('keeps a one-sided show under its own hide', () => {
+    const session = new Session({
+      sessionId: 's',
+      hiddenPaths: { paths: ['/vault'], patterns: [] },
+      shownPaths: { entries: [{ path: '/vault/public', mode: null }] },
+    })
+    narrowRestored(session, table({ sessionId: 'table' }))
+    expect(session.shownPaths).toEqual({ entries: [{ path: '/vault/public', mode: null }] })
+    expect(pathVisible(session.hiddenPaths, session.shownPaths, '/vault/public')).toBe(true)
+    // The same either way round: the table's show under the table's own
+    // hide survives an unrestricted session.
+    const other = new Session({ sessionId: 's' })
+    narrowRestored(
+      other,
+      table({
+        sessionId: 'table',
+        hiddenPaths: { paths: ['/vault'], patterns: [] },
+        shownPaths: { entries: [{ path: '/vault/public', mode: null }] },
+      }),
+    )
+    expect(other.shownPaths).toEqual({ entries: [{ path: '/vault/public', mode: null }] })
+  })
+
+  // A pattern show is the same case: dropped only where the other side
+  // hides at all, since no comparison proves which names it leaves open.
+  it('keeps a one-sided pattern show when nothing on the other side hides', () => {
+    const session = new Session({
+      sessionId: 's',
+      hiddenPaths: { paths: ['/work/aaa'], patterns: [] },
+      shownPaths: { entries: [{ path: '/work/aaa/*.txt', mode: null }] },
+    })
+    narrowRestored(session, table({ sessionId: 'table' }))
+    expect(session.shownPaths).toEqual({ entries: [{ path: '/work/aaa/*.txt', mode: null }] })
+    const hidden = new Session({
+      sessionId: 's',
+      hiddenPaths: { paths: ['/work/aaa'], patterns: [] },
+      shownPaths: { entries: [{ path: '/work/aaa/*.txt', mode: null }] },
+    })
+    narrowRestored(
+      hidden,
+      table({ sessionId: 'table', hiddenPaths: { paths: ['/work'], patterns: [] } }),
+    )
+    expect(hidden.shownPaths).toBeNull()
+  })
+})
+
+describe('narrowProfile', () => {
+  const PROGRAM = parseSessionProfile(POLICY_DOC)
+
+  it('joins restrictions onto a live session', () => {
+    const session = new Session({
+      sessionId: 's',
+      mountModes: new Map([['/repo', MountMode.WRITE]]),
+      hiddenPaths: { paths: ['/repo/live'], patterns: [] },
+    })
+    narrowProfile(
+      session,
+      compileProfile(
+        parseSessionProfile({
+          mounts: { '/repo': 'r' },
+          paths: { hide: ['/repo/sealed'] },
+          commands: { deny: ['rm'] },
+        }),
+        'named',
+      ),
+    )
+    expect(session.mountModes).toEqual(new Map([['/repo', MountMode.READ]]))
+    expect(pathHidden(session.hiddenPaths, '/repo/live')).toBe(true)
+    expect(pathHidden(session.hiddenPaths, '/repo/sealed')).toBe(true)
+    expect(session.profile).toBe('named')
+  })
+
+  // A program the host installed with setSessionProfile is the host's,
+  // and a restore only adds restrictions: the name travels with it, so
+  // a session never reports a group whose script it is not running.
+  it('keeps a program the session already runs', () => {
+    const running = compileProfile(PROGRAM, 'locked')
+    const session = new Session({ sessionId: 's' })
+    narrow(session, running)
+    narrowProfile(session, compileProfile(parseSessionProfile({ cwd: '/x' }), 'wanted'))
+    expect(session.script).toBe(running.script)
+    expect(session.profile).toBe('locked')
+  })
+
+  it('takes the program of a session running none', () => {
+    const wanted = compileProfile(PROGRAM, 'wanted')
+    const session = new Session({ sessionId: 's' })
+    narrowProfile(session, wanted)
+    expect(session.script).toBe(wanted.script)
+    expect(session.profile).toBe('wanted')
+  })
+
+  it('round trips through narrowingOf and narrow', () => {
+    const compiled = compileProfile(
+      parseSessionProfile({
+        mounts: { '/repo': 'r' },
+        paths: { hide: ['/repo/sealed'], show: { '/repo/sealed/public': 'r' } },
+        vars: { hide: ['AWS_*'] },
+        commands: { deny: ['rm'] },
+      }),
+      'named',
+    )
+    const session = new Session({ sessionId: 's' })
+    narrow(session, compiled)
+    const before = session.toJSON()
+    const saved = narrowingOf(session)
+    narrowProfile(
+      session,
+      compileProfile(
+        parseSessionProfile({ mounts: { '/repo': 'rwx' }, paths: { hide: ['/other'] } }),
+        'wider',
+      ),
+    )
+    expect(session.toJSON()).not.toEqual(before)
+    narrow(session, saved)
+    expect(session.toJSON()).toEqual(before)
   })
 })

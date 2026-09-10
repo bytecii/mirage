@@ -804,6 +804,14 @@ const RESTRICTED = {
   commands: { deny: ['rm'], ask: [{ reason: 'creates files', commands: ['touch'] }] },
 }
 
+const LOCKED = {
+  commands: { allow: ['echo', 'cat', 'rm', 'ls', 'test'], deny: ['rm'] },
+  policy: {
+    script: new ScriptSource('export function preCommand() {\n  return null\n}\n', 'js'),
+    runtime: 'quickjs',
+  },
+}
+
 function profiled(
   profiles: Record<string, unknown>,
   options: Partial<WorkspaceOptions> = {},
@@ -1069,5 +1077,70 @@ describe('the document rides the state and the restore never widens', () => {
     } finally {
       warn.mockRestore()
     }
+  })
+
+  // The gate created and narrowed the sessions it had to make, but left
+  // the default session and every live one on whatever profile they
+  // already ran under, so the target's document of the name a table
+  // carries never governed the restored session: `narrowRestored` takes
+  // no program and no new restriction off a table, and nothing else
+  // applied the document's.
+  it('a stricter loader profile governs the restored default session', async () => {
+    const source = profiled({ crew: { commands: { deny: ['rm'] } } })
+    expect((await source.execute('echo kept > /data/f.txt')).exitCode).toBe(0)
+    await source.setSessionProfile(source.defaultSessionId, 'crew')
+    const state = await toStateDict(source)
+    await source.close()
+    const target = await Workspace.fromState(state, {
+      ...loadOptions(),
+      profiles: { crew: parseSessionProfile({ commands: { deny: ['rm', 'cat'] } }) },
+    })
+    const restored = target.getSession(target.defaultSessionId)
+    expect(restored.profile).toBe('crew')
+    const sid = target.defaultSessionId
+    expect((await line(target, 'rm /data/f.txt', sid)).exit).toBe(126)
+    expect((await line(target, 'cat /data/f.txt', sid)).exit).toBe(126)
+    expect((await line(target, 'ls /data', sid)).exit).toBe(0)
+    await target.close()
+  })
+
+  // The other half of the same rule: a checkout adds the version's
+  // restrictions to a live session and lifts none of the live ones, and
+  // the program the host installed with setSessionProfile stays.
+  it("a checkout never lifts a live session's program", async () => {
+    const source = profiled({})
+    expect((await source.execute('echo kept > /data/f.txt')).exitCode).toBe(0)
+    const state = await toStateDict(source)
+    await source.close()
+    const target = profiled({ locked: LOCKED })
+    await target.setSessionProfile(target.defaultSessionId, 'locked')
+    const program = target.getSession(target.defaultSessionId).script
+    expect(program).not.toBeNull()
+    await applyStateDict(target, state, { replaceCache: true })
+    const live = target.getSession(target.defaultSessionId)
+    expect(live.script).toBe(program)
+    expect(live.profile).toBe('locked')
+    expect((await line(target, 'rm /data/f.txt', target.defaultSessionId)).exit).toBe(126)
+    await target.close()
+  })
+
+  // A refusal after the profiles have been joined onto the live
+  // sessions puts them back: the workspace is the one the snapshot
+  // never touched.
+  it('a refused table puts a joined live session back', async () => {
+    const source = profiled({ crew: { commands: { deny: ['rm'] } } })
+    await source.setSessionProfile(source.defaultSessionId, 'crew')
+    expect((await source.execute('export SEALED=1')).exitCode).toBe(0)
+    const state = await toStateDict(source)
+    await source.close()
+    const refuseSealed: Policy = {
+      preSession: (ctx) =>
+        ctx.key === 'SEALED' ? { kind: 'deny', reason: 'sealed is refused' } : null,
+    }
+    const target = profiled({ crew: { commands: { deny: ['rm'] } } }, { policies: [refuseSealed] })
+    const before = target.getSession(target.defaultSessionId).toJSON()
+    await expect(applyStateDict(target, state)).rejects.toThrow()
+    expect(target.getSession(target.defaultSessionId).toJSON()).toEqual(before)
+    await target.close()
   })
 })

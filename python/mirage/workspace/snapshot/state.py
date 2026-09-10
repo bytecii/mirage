@@ -43,7 +43,8 @@ from mirage.version import __version__
 from mirage.workspace.mount.namespace import NodeMeta
 from mirage.workspace.session.constants import DEFAULT_PROFILE
 from mirage.workspace.session.resolve import (compile_profile, narrow,
-                                              narrow_restored)
+                                              narrow_profile, narrow_restored,
+                                              narrowing_of)
 from mirage.workspace.session.session import (Session, vars_from_fields,
                                               vars_to_fields)
 from mirage.workspace.session.shell_dirs import set_cwd
@@ -478,25 +479,36 @@ def _target_profile(ws, name: str | None) -> CompiledProfile:
 async def _gate_restored_state(ws, state: dict[str, Any]) -> RestoredEnv:
     """Vet every session table and the env template before any of it lands.
 
-    Three steps, and nothing lands in any of them. Each table's profile
-    name is resolved against the target's document
-    (``_target_profile``), so a name the target does not define refuses
-    the load before a mount, a session or the template has moved, the
-    same loud rule a redacted mount gets. A table whose id the target
-    lacks then gets its session created and narrowed under that profile
-    here, because ``ScriptPolicy.pre_session`` reads
-    ``script_of(session_id)`` off the manager and answers the default
-    profile for an id it does not know; the snapshot's default id is the
-    one exception, since ``adopt_default`` re-keys the live default onto
-    it and would delete a session created under that id instead. Then
-    every table and the template fire the ``pre_session`` gate
+    Three steps, and nothing durable lands in any of them. Each
+    table's profile name is resolved against the target's document
+    (``_target_profile``), so a name the target does not define
+    refuses the load before a mount, a session or the template has
+    moved, the same loud rule a redacted mount gets.
+
+    Every table's session is then put under that profile, since the
+    profile is what the target's document says a session of that name
+    runs under and the table itself cannot carry a policy program. A
+    table whose id the target lacks gets its session created and
+    narrowed (``narrow``) — which also matters for the gate, because
+    ``ScriptPolicy.pre_session`` reads ``script_of(session_id)`` off
+    the manager and answers the default profile for an id it does not
+    know. A session already here is joined instead of stamped over
+    (``narrow_profile``): it keeps every restriction of its own, so a
+    checkout still cannot widen a live session, and it keeps a program
+    the host installed with ``set_session_profile``. The snapshot's
+    default id names the live default session here, since
+    ``adopt_default`` re-keys that session onto it later and creating
+    one under that id would have it deleted instead.
+
+    Then every table and the template fire the ``pre_session`` gate
     (``gate_restored_vars``): a refusal that arrived once an earlier
     session had already been overwritten left the workspace in a state
     no snapshot describes, and one its close then persisted. A refusal
-    anywhere discards the sessions created here, so the store never
-    sees a half-made table. The template is gated under the id the
-    restore makes the default session, which is the session a live
-    write of it would land in.
+    anywhere discards the sessions created here and puts the joined
+    ones back as they were (``narrowing_of``), so the store never sees
+    a half-made table. The template is gated under the id the restore
+    makes the default session, which is the session a live write of it
+    would land in.
 
     Args:
         ws (Workspace): the target workspace.
@@ -514,6 +526,7 @@ async def _gate_restored_state(ws, state: dict[str, Any]) -> RestoredEnv:
     compiled = [_target_profile(ws, fields.profile) for fields in tables]
     live = {session.session_id for session in ws._session_mgr.list()}
     created: list[str] = []
+    joined: dict[str, tuple[Session, CompiledProfile]] = {}
     seed_vars: dict[str, ShellVar] | None = None
     vetted = False
     try:
@@ -522,6 +535,19 @@ async def _gate_restored_state(ws, state: dict[str, Any]) -> RestoredEnv:
             if sid != default_sid and sid not in live:
                 created.append(sid)
                 narrow(ws._session_mgr.create(sid), profile)
+                continue
+            # A session already here keeps everything it restricts, so
+            # the profile joins onto it instead of stamping over it
+            # (``narrow_profile``); the snapshot's default id is the
+            # live default session until ``adopt_default`` re-keys it.
+            # The join runs before the gate so a policy program the
+            # profile carries is in force while the table is vetted,
+            # and is rolled back with the created sessions below.
+            landing = sid if sid in live else ws._session_mgr.default_id
+            session = ws._session_mgr.get(landing)
+            if landing not in joined:
+                joined[landing] = (session, narrowing_of(session))
+            narrow_profile(session, profile)
         for fields in tables:
             await gate_restored_vars(ws.policies, fields.session_id,
                                      fields.vars)
@@ -536,6 +562,8 @@ async def _gate_restored_state(ws, state: dict[str, Any]) -> RestoredEnv:
         if not vetted:
             for sid in created:
                 ws._session_mgr.discard(sid)
+            for session, before in joined.values():
+                narrow(session, before)
     return tables, seed_vars
 
 

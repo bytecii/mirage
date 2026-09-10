@@ -431,6 +431,74 @@ export function narrow(session: Session, compiled: CompiledProfile): void {
 }
 
 /**
+ * A session's narrowing read back as a compiled profile.
+ *
+ * What `narrow` stamps, in the shape it stamps from, so a caller that
+ * narrows a live session speculatively can put the session back with
+ * `narrow(session, saved)`. A restore does exactly that: it joins each
+ * table's profile onto the session before the `preSession` gate runs,
+ * and a refusal there has to leave the workspace as it was. The
+ * scratch halves of a profile (`env`, `cwd`) are not narrowing and are
+ * not read.
+ */
+export function narrowingOf(session: Session): CompiledProfile {
+  return {
+    mountModes: session.mountModes === null ? null : new Map(session.mountModes),
+    hiddenPaths: session.hiddenPaths,
+    hiddenVars: session.hiddenVars,
+    env: null,
+    cwd: null,
+    commands: session.commands,
+    script: session.script,
+    shownPaths: session.shownPaths,
+    hideReasons: session.hideReasons,
+    profile: session.profile,
+  }
+}
+
+/**
+ * Join a profile onto a session that is already running, never wider.
+ *
+ * `narrow` stamps a profile onto a session the host creates or resets;
+ * this adds one to a live session, which is what a restore does to the
+ * session a stored table lands on. A table names the profile its source
+ * session ran under, and the target's document of that name is what
+ * must govern the restored session — including its policy program,
+ * which the table cannot carry and `narrowRestored` deliberately never
+ * takes off it. The join is `narrowRestored`'s, for the same reason:
+ * restrictions union, grants intersect, so a session that has
+ * accumulated restrictions of its own keeps every one of them.
+ *
+ * The program is the profile's when the session runs none, and the
+ * session's when it does: a checkout must not swap out a program the
+ * host installed with `setSessionProfile`, which stays the host's
+ * reset. The name travels with the program, so a session never reports
+ * a group whose script it is not running.
+ */
+export function narrowProfile(session: Session, compiled: CompiledProfile): void {
+  const modes = mergeModes(session.mountModes, compiled.mountModes)
+  const hidden = mergeHiddenPaths(session.hiddenPaths, compiled.hiddenPaths)
+  const shown = mergeShown(
+    session.shownPaths,
+    compiled.shownPaths ?? null,
+    session.mountModes,
+    compiled.mountModes,
+    session.hiddenPaths,
+    compiled.hiddenPaths,
+  )
+  session.hiddenVars = mergeHiddenVars(session.hiddenVars, compiled.hiddenVars)
+  session.hideReasons = mergeGroups(session.hideReasons, compiled.hideReasons ?? [])
+  session.commands = mergeCommands(session.commands, compiled.commands)
+  if (session.script === null) {
+    session.script = compiled.script ?? null
+    session.profile = compiled.profile ?? null
+  }
+  session.mountModes = modes
+  session.hiddenPaths = hidden
+  session.shownPaths = shown
+}
+
+/**
  * Narrow a fresh session and seed its scratch state from the profile.
  * A profile's env is a *process* environment, the same shape
  * `ws.env = {...}` speaks, so every name in it is exported: seeding
@@ -632,12 +700,30 @@ function capped(
 }
 
 /**
+ * Whether one side's hides cover a show entry the other side states.
+ *
+ * The question a one-sided show turns on, and it is asked of the
+ * *other* side's hides, never of the merged set: a show exists to
+ * re-open what a hide covers, so the side that states the show has a
+ * hide over it by construction, and testing the union would drop every
+ * show against its own hide. An exact entry is tested against those
+ * hides; a pattern re-opens by name and no comparison proves which
+ * names a hide leaves open, so it counts as covered wherever the other
+ * side hides at all.
+ */
+function hidesShow(hidden: HiddenPaths | null, path: string): boolean {
+  if (hidden === null) return false
+  if ((hidden.paths ?? []).length === 0 && (hidden.patterns ?? []).length === 0) return false
+  return isGlob(path) || hideDepth(hidden, path) !== null
+}
+
+/**
  * One show entry as both sides allow it, or null to drop it.
  *
  * A show does two things, and each side has to have said it. It
- * re-opens whatever the other side hides at its anchor, so an entry
- * only one side states survives only where the merged hide set covers
- * nothing (a pattern re-opens by name and is dropped outright). It
+ * re-opens what a hide covers, so an entry only one side states
+ * survives exactly where the other side hides nothing over it
+ * (`hidesShow`) — that side left the path open, so both allow it. It
  * states the mode below its anchor, and a show scores deeper than a
  * per-mount cap, so a mode only one side states is held under the other
  * side's cap there; two stated modes take the weaker; two list-form
@@ -650,11 +736,11 @@ function mergeShow(
   other: ShowEntry | null,
   myCaps: ReadonlyMap<string, MountMode> | null,
   otherCaps: ReadonlyMap<string, MountMode> | null,
-  hidden: HiddenPaths | null,
+  otherHidden: HiddenPaths | null,
 ): ShowEntry | null {
   let mode: MountMode | null
   if (other === null) {
-    if (isGlob(mine.path) || hideDepth(hidden, mine.path) !== null) return null
+    if (hidesShow(otherHidden, mine.path)) return null
     if (mine.mode === null) return mine
     mode = capped(mine.mode, otherCaps, mine.path)
   } else if (mine.mode === null && other.mode === null) {
@@ -678,7 +764,8 @@ function mergeShown(
   table: ShownPaths | null,
   baseCaps: ReadonlyMap<string, MountMode> | null,
   tableCaps: ReadonlyMap<string, MountMode> | null,
-  hidden: HiddenPaths | null,
+  baseHidden: HiddenPaths | null,
+  tableHidden: HiddenPaths | null,
 ): ShownPaths | null {
   if (base === null && table === null) return null
   const baseEntries = base?.entries ?? []
@@ -687,12 +774,18 @@ function mergeShown(
   const byBase = new Set(baseEntries.map((entry) => entry.path))
   const out: ShowEntry[] = []
   for (const entry of baseEntries) {
-    const merged = mergeShow(entry, byTable.get(entry.path) ?? null, baseCaps, tableCaps, hidden)
+    const merged = mergeShow(
+      entry,
+      byTable.get(entry.path) ?? null,
+      baseCaps,
+      tableCaps,
+      tableHidden,
+    )
     if (merged !== null) out.push(merged)
   }
   for (const entry of tableEntries) {
     if (byBase.has(entry.path)) continue
-    const merged = mergeShow(entry, null, tableCaps, baseCaps, hidden)
+    const merged = mergeShow(entry, null, tableCaps, baseCaps, baseHidden)
     if (merged !== null) out.push(merged)
   }
   if (
@@ -727,10 +820,13 @@ function mergeShown(
  * Two consequences worth stating. On a running workspace a checkout can
  * only add restrictions to a live session, never lift one: a hide from
  * one version survives checking out another, and `setSessionProfile` is
- * the host's reset. And a show only one side states is dropped where a
- * hide covers its anchor, mode and all, so a mode it restricted there
- * reverts to the target's allowance; the show grammar has no spelling
- * for a mode without a re-open. Mirrors the Python `narrow_restored`.
+ * the host's reset. And a show only one side states is dropped where
+ * the *other* side hides its anchor, mode and all, so a mode it
+ * restricted there reverts to the target's allowance; the show grammar
+ * has no spelling for a mode without a re-open. Its own side's hide
+ * never drops it: a show is always stated against a hide, so reading
+ * the union would erase every show exception the other side simply
+ * never mentioned. Mirrors the Python `narrow_restored`.
  */
 export function narrowRestored(session: Session, table: Session): void {
   const modes = mergeModes(session.mountModes, table.mountModes)
@@ -740,7 +836,8 @@ export function narrowRestored(session: Session, table: Session): void {
     table.shownPaths,
     session.mountModes,
     table.mountModes,
-    hidden,
+    session.hiddenPaths,
+    table.hiddenPaths,
   )
   session.hiddenVars = mergeHiddenVars(session.hiddenVars, table.hiddenVars)
   session.hideReasons = mergeGroups(session.hideReasons, table.hideReasons)
