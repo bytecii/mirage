@@ -16,8 +16,7 @@ from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagValue, FlagView
 from mirage.commands.spec.usage import usage_hint
 from mirage.io.types import ByteSource, IOResult
-from mirage.types import (FileStat, FileType, PathSpec, PolymorphicReadFn,
-                          StatFn)
+from mirage.types import FileType, PathSpec, PolymorphicReadFn, StatFn
 from mirage.utils.errors import FS_ERRORS, fs_strerror
 from mirage.utils.stream import ensure_stream
 
@@ -329,6 +328,37 @@ async def _whole(read: Callable[..., Any], path: PathSpec) -> bytes:
     return b"".join([chunk async for chunk in _counted(read(path), [0])])
 
 
+async def _catch_up(read: Callable[..., Any], read_range: ReadRangeFn | None,
+                    io: IOResult, p: PathSpec, size: int | None,
+                    pos: int) -> tuple[bytes, int]:
+    """What a followed file gained past ``pos``, and where the next poll
+    starts: a size-unknown file is read whole and measured, and a file
+    shorter than ``pos`` was truncated, which is noted and read from the
+    start.
+
+    Args:
+        read (Callable[..., Any]): bound whole-file reader.
+        read_range (ReadRangeFn | None): the backend's byte window, if
+            it has one.
+        io (IOResult): the result a truncation notice lands on.
+        p (PathSpec): the file.
+        size (int | None): the size the poll's stat reported.
+        pos (int): how far the previous poll read.
+    """
+    whole: bytes | None = None
+    if size is None:
+        whole = await _whole(read, p)
+        size = len(whole)
+    if size < pos:
+        _note(io, f"tail: {p.raw_path}: file truncated\n")
+        pos = 0
+    if size <= pos:
+        return b"", pos
+    data = (whole[pos:] if whole is not None else await _window(
+        read, read_range, p, pos, size - pos))
+    return data, pos + len(data)
+
+
 async def _follow(
     paths: list[PathSpec],
     pending: list[tuple[PathSpec, str]],
@@ -347,10 +377,11 @@ async def _follow(
     stat'ed, bytes past the last position are printed under that file's
     header when the previous output was another file's, and a size that
     shrank is ``file truncated`` and a restart from the top. A file that
-    goes away is dropped with ``has become inaccessible`` under
-    ``--follow=name``; ``--retry`` keeps polling for it (and for one
-    that was never there) and announces ``has appeared`` when it turns
-    up, reading it from the start as GNU does after a rotation. The
+    goes away, at the poll's stat or at the read right after it, is
+    dropped with ``has become inaccessible`` under ``--follow=name``;
+    ``--retry`` keeps polling for it (and for one that was never there)
+    and announces ``has appeared`` when it turns up, reading it from the
+    start as GNU does after a rotation. The
     loop ends only when nothing is left to follow (``no files
     remaining``, exit 1) or the caller stops draining, which is how
     ``timeout`` and a killed job end it. A followed file that a
@@ -420,15 +451,21 @@ async def _follow(
             active.append((slot, p))
             positions[slot] = 0
         for slot, p in list(active):
-            current: FileStat | None
+            grown: tuple[bytes, int] | None
             try:
                 current = await stat(p)
+                if current.type is FileType.DIRECTORY:
+                    grown = None
+                else:
+                    grown = await _catch_up(read, read_range, io, p,
+                                            current.size, positions[slot])
             except IsADirectoryError:
-                current = None
+                grown = None
             except FS_ERRORS as exc:
-                # Only name-following notices a path that went away; under
-                # a descriptor --retry covers the initial open alone, as
-                # in GNU.
+                # A path that went away, whether its stat failed or the
+                # read right after it did (a rotation between the two).
+                # Only name-following notices; under a descriptor
+                # --retry covers the initial open alone, as in GNU.
                 if flags.follow_name:
                     _note(
                         io, f"tail: '{p.raw_path}' has become inaccessible: "
@@ -437,7 +474,7 @@ async def _follow(
                     if flags.retry:
                         waiting.append((slot, p, APPEARED))
                 continue
-            if current is None or current.type is FileType.DIRECTORY:
+            if grown is None:
                 if not flags.follow_name:
                     continue
                 line = (f"tail: '{p.raw_path}' has been replaced with an "
@@ -449,25 +486,12 @@ async def _follow(
                 if flags.retry:
                     waiting.append((slot, p, ACCESSIBLE))
                 continue
-            size = current.size
-            whole: bytes | None = None
-            if size is None:
-                whole = await _whole(read, p)
-                size = len(whole)
-            pos = positions[slot]
-            if size < pos:
-                _note(io, f"tail: {p.raw_path}: file truncated\n")
-                pos = 0
-            if size > pos:
-                data = (whole[pos:] if whole is not None else await _window(
-                    read, read_range, p, pos, size - pos))
+            data, positions[slot] = grown
+            if data:
                 if show_headers and last != slot:
                     yield f"\n==> {p.raw_path} <==\n".encode()
                 last = slot
-                if data:
-                    yield data
-                pos += len(data)
-            positions[slot] = pos
+                yield data
     _note(io, "tail: no files remaining\n")
     io.exit_code = 1
 

@@ -473,6 +473,85 @@ describe('tail -f', () => {
     ).toBe(true)
   })
 
+  it.each([true, false])(
+    '-F treats a read that finds nothing as inaccessible (sized %s)',
+    async (sized) => {
+      // A rotation can land between a poll's stat and its read; -F then
+      // takes the same road as a failed stat, `has become inaccessible`,
+      // and picks the name up again from the start when it is back.
+      const fs = new Growing(new Map([['/d/f', ENC.encode('a\n')]]), sized)
+      let trip = false
+      const tripped = (): void => {
+        if (!trip) return
+        trip = false
+        const err = new Error('ENOENT') as Error & { code: string }
+        err.code = 'ENOENT'
+        throw err
+      }
+      const stream = async function* (p: PathSpec): AsyncIterable<Uint8Array> {
+        tripped()
+        yield* fs.stream(p)
+      }
+      const readRange = (p: PathSpec, offset: number, size: number): Promise<Uint8Array> => {
+        tripped()
+        return fs.readRange(p, offset, size)
+      }
+      const abort = new AbortController()
+      const [out, io] = (await tailGeneric(
+        [spec('/d/f')],
+        [],
+        followOpts(abort, { F: true }),
+        stream,
+        fs.stat,
+        readRange,
+      )) as [AsyncIterable<Uint8Array>, IOResult]
+      const grower = (async () => {
+        await sleep(60)
+        fs.set('/d/f', 'a\nb\n')
+        trip = true
+      })()
+      const text = await drainFor(out, 300, abort)
+      await grower
+      expect(text).toBe('a\na\nb\n')
+      expect(DEC.decode(io.stderr as Uint8Array)).toBe(
+        "tail: '/d/f' has become inaccessible: No such file or directory\ntail: '/d/f' has appeared;  following new file\n",
+      )
+    },
+  )
+
+  it('--follow=name gives up on a read that finds nothing', async () => {
+    const fs = new Growing(new Map([['/d/f', ENC.encode('a\n')]]))
+    let trip = false
+    const readRange = (p: PathSpec, offset: number, size: number): Promise<Uint8Array> => {
+      if (!trip) return fs.readRange(p, offset, size)
+      trip = false
+      const err = new Error('ENOENT') as Error & { code: string }
+      err.code = 'ENOENT'
+      return Promise.reject(err)
+    }
+    const abort = new AbortController()
+    const [stream, io] = (await tailGeneric(
+      [spec('/d/f')],
+      [],
+      followOpts(abort, { follow: 'name' }),
+      fs.stream,
+      fs.stat,
+      readRange,
+    )) as [AsyncIterable<Uint8Array>, IOResult]
+    const grower = (async () => {
+      await sleep(60)
+      fs.set('/d/f', 'a\nb\n')
+      trip = true
+    })()
+    const text = await drainFor(stream, 300, abort)
+    await grower
+    expect(text).toBe('a\n')
+    expect(DEC.decode(io.stderr as Uint8Array)).toBe(
+      "tail: '/d/f' has become inaccessible: No such file or directory\ntail: no files remaining\n",
+    )
+    expect(io.exitCode).toBe(1)
+  })
+
   it('--follow=name reports a file that vanishes', async () => {
     const fs = new Growing(new Map())
     fs.set('/d/gone', 'x\n')

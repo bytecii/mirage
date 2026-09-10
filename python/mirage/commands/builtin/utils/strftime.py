@@ -20,6 +20,32 @@ GNU_PAD_FLAGS = "-_0+"
 # The directives GNU's `+` flag signs, with the digits each shows before
 # the sign becomes necessary.
 YEARISH_DIGITS = {"Y": 4, "G": 4, "C": 2}
+# The numeric directives, with the digits each shows by default; a width
+# typed on one replaces that default rather than adding to it.
+NUMERIC_DIGITS = {
+    "C": 2,
+    "d": 2,
+    "e": 2,
+    "g": 2,
+    "G": 4,
+    "H": 2,
+    "I": 2,
+    "j": 3,
+    "k": 2,
+    "l": 2,
+    "m": 2,
+    "M": 2,
+    "S": 2,
+    "u": 1,
+    "U": 2,
+    "V": 2,
+    "w": 1,
+    "W": 2,
+    "y": 2,
+    "Y": 4,
+}
+# The numeric directives GNU fills with spaces rather than zeros.
+SPACE_PADDED = "ekl"
 
 
 def winning_pad(flags: str) -> str | None:
@@ -108,6 +134,30 @@ def epoch_seconds(dt: datetime, flags: str, width: int | None) -> str:
     return pad_signed(sign, str(abs(value)), winning_pad(flags), digits)
 
 
+def pad_number(dt: datetime, directive: str, flags: str,
+               width: int | None) -> str:
+    """Render a numeric directive under GNU's flags and width: the width
+    replaces the default digits rather than adding to them (``%1d`` is
+    ``3``, ``%3d`` is ``003``), ``_`` pads with spaces and ``-`` with
+    nothing, and a bare width pads with the directive's own filler,
+    zeros everywhere but ``%e``, ``%k`` and ``%l`` (``%3e`` is
+    ``"  3"``, ``%03e`` is ``003``).
+
+    Args:
+        dt (datetime): the moment being rendered.
+        directive (str): the directive letter, a key of NUMERIC_DIGITS.
+        flags (str): the flag characters typed between ``%`` and the
+            width.
+        width (int | None): the minimum field width, if typed.
+    """
+    value = int(dt.strftime("%" + directive))
+    pad = winning_pad(flags)
+    if pad is None:
+        pad = "_" if directive in SPACE_PADDED else "0"
+    digits = NUMERIC_DIGITS[directive] if width is None else width
+    return pad_signed("", str(value), pad, digits)
+
+
 def pad_quarter(quarter: str, flags: str, width: int | None) -> str:
     """Pad ``%q``'s digit the way GNU date pads a number.
 
@@ -171,9 +221,12 @@ def gnu_strftime(dt: datetime, fmt: str) -> str:
     ``%::z`` and ``%:::z`` are rendered here too (``zone_offset``), as
     is ``%s`` (``epoch_seconds``), since neither C library pads a
     negative number or an offset the way GNU does. A colon before any
-    other directive stays literal, as in GNU. Every other directive
-    passes to strftime with its prefix intact; ``%%`` pairs are stepped
-    over, keeping ``%%q`` literal.
+    other directive stays literal, as in GNU. A numeric directive that
+    carries a width or a padding flag is rendered here as well
+    (``pad_number``), because GNU's width replaces the default digits
+    where the C library's adds to them (``%1d`` is ``3``, not ``03``).
+    Every other directive passes to strftime with its prefix intact;
+    ``%%`` pairs are stepped over, keeping ``%%q`` literal.
 
     Args:
         dt (datetime): the moment being rendered.
@@ -199,30 +252,33 @@ def gnu_strftime(dt: datetime, fmt: str) -> str:
             out.append("%%" + fmt[i + 1:])
             break
         width = int(fmt[j:k]) if k > j else None
+        flags = fmt[i + 1:j]
+        pad = winning_pad(flags)
         directive = fmt[c]
         if directive == "z":
-            out.append(zone_offset(dt, c - k, fmt[i + 1:j], width))
+            out.append(zone_offset(dt, c - k, flags, width))
         elif c > k:
             out.append("%%" + fmt[i + 1:c + 1])
         elif directive == "s":
-            out.append(epoch_seconds(dt, fmt[i + 1:j], width))
+            out.append(epoch_seconds(dt, flags, width))
         elif directive == "q":
             quarter = str((dt.month - 1) // 3 + 1)
-            out.append(pad_quarter(quarter, fmt[i + 1:j], width))
+            out.append(pad_quarter(quarter, flags, width))
         elif directive == "N":
             nanos = f"{dt.microsecond * 1000:09d}"
             out.append(nanos[:width].ljust(width, "0") if width else nanos)
-        elif "+" in fmt[i + 1:j]:
-            flags = fmt[i + 1:j]
-            if winning_pad(flags) == "+" and directive in YEARISH_DIGITS:
-                out.append(plus_year(dt, directive, width))
-            elif winning_pad(flags) == "+" and directive == "F":
-                # %F is %+4Y-%m-%d, so the width reaches the year.
-                year = plus_year(dt, "Y", width - 6 if width else None)
-                out.append(year + dt.strftime("-%m-%d"))
-            else:
-                zero = "0" if winning_pad(flags) == "+" else ""
-                out.append("%" + flags.replace("+", zero) + fmt[j:k + 1])
+        elif pad == "+" and directive in YEARISH_DIGITS:
+            out.append(plus_year(dt, directive, width))
+        elif pad == "+" and directive == "F":
+            # %F is %+4Y-%m-%d, so the width reaches the year.
+            year = plus_year(dt, "Y", width - 6 if width else None)
+            out.append(year + dt.strftime("-%m-%d"))
+        elif directive in NUMERIC_DIGITS and (width is not None
+                                              or pad is not None):
+            out.append(pad_number(dt, directive, flags, width))
+        elif "+" in flags:
+            zero = "0" if pad == "+" else ""
+            out.append("%" + flags.replace("+", zero) + fmt[j:k + 1])
         else:
             out.append(fmt[i:k + 1])
         i = c + 1

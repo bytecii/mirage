@@ -116,6 +116,31 @@ class _Growing:
         return self.data[p.virtual][offset:offset + size]
 
 
+class _GoneAtRead(_Growing):
+    """A fake whose file is gone at the read that follows a poll's stat,
+    once, as a rotation landing between the two leaves it."""
+
+    def __init__(self,
+                 data: dict[str, bytes | None],
+                 sized: bool = True) -> None:
+        super().__init__(data, sized)
+        self.trip = False
+
+    def _tripped(self, p: PathSpec) -> bool:
+        if not self.trip:
+            return False
+        self.trip = False
+        raise FileNotFoundError(p.virtual)
+
+    async def read(self, p: PathSpec) -> bytes:
+        self._tripped(p)
+        return await super().read(p)
+
+    async def read_range(self, p: PathSpec, offset: int, size: int) -> bytes:
+        self._tripped(p)
+        return await super().read_range(p, offset, size)
+
+
 async def _drain_for(gen, seconds: float) -> list[bytes]:
     chunks: list[bytes] = []
 
@@ -527,3 +552,53 @@ async def test_follow_descriptor_prints_nothing_while_a_directory_stands_there(
     assert b"".join(chunks) == b"a\n"
     assert not io.stderr
     assert io.exit_code == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sized", [True, False])
+async def test_follow_name_treats_a_read_that_finds_nothing_as_inaccessible(
+        sized):
+    # A rotation can land between a poll's stat and its read; -F then
+    # takes the same road as a failed stat, `has become inaccessible`,
+    # and picks the name up again from the start when it is back.
+    fs = _GoneAtRead({"/d/f": b"a\n"}, sized=sized)
+    stream, io = await tail_generic(_paths("/d/f"), [], _follow_opts(F=True),
+                                    fs.stat, fs.read, fs.read_range)
+    assert stream is not None
+
+    async def rotate() -> None:
+        await asyncio.sleep(0.06)
+        fs.data["/d/f"] = b"a\nb\n"
+        fs.trip = True
+
+    grower = asyncio.create_task(rotate())
+    chunks = await _drain_for(stream, 0.3)
+    await grower
+    assert b"".join(chunks) == b"a\na\nb\n"
+    assert io.stderr == (
+        b"tail: '/d/f' has become inaccessible: No such file or directory\n"
+        b"tail: '/d/f' has appeared;  following new file\n")
+
+
+@pytest.mark.asyncio
+async def test_follow_name_without_retry_gives_up_on_a_read_that_finds_nothing(
+):
+    fs = _GoneAtRead({"/d/f": b"a\n"})
+    stream, io = await tail_generic(_paths("/d/f"), [],
+                                    _follow_opts(follow="name"), fs.stat,
+                                    fs.read, fs.read_range)
+    assert stream is not None
+
+    async def rotate() -> None:
+        await asyncio.sleep(0.06)
+        fs.data["/d/f"] = b"a\nb\n"
+        fs.trip = True
+
+    grower = asyncio.create_task(rotate())
+    chunks = await _drain_for(stream, 0.3)
+    await grower
+    assert b"".join(chunks) == b"a\n"
+    assert io.stderr == (
+        b"tail: '/d/f' has become inaccessible: No such file or directory\n"
+        b"tail: no files remaining\n")
+    assert io.exit_code == 1

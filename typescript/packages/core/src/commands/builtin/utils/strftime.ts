@@ -206,7 +206,9 @@ export function strftime(dt: Date, fmt: string, utc: boolean): string {
 // (%0_d is " 3", %_0d is "03"): `-` strips the padding and ignores the
 // width (%-3d is "3"), `_` pads with spaces, `0` with zeros, and a bare
 // width fills with zeros for a digit-led value and spaces otherwise
-// (%3d is "003", %5b is "  Jan"). `^` upcases; `#` is per directive
+// (%3d is "003", %5b is "  Jan"); on a numeric directive the width
+// replaces the default digits rather than adding to them (%1d is "3",
+// %1j is "3", %3e is "  3", %03e is "003"). `^` upcases; `#` is per directive
 // and outranks `^`: it lowers %p and %Z, uppers the day and month names,
 // and changes nothing else (%^#B and %#^B are both JANUARY, %^#p and
 // %#^p both am). `+`
@@ -221,6 +223,33 @@ export function strftime(dt: Date, fmt: string, utc: boolean): string {
 // The directives GNU's `+` flag signs, with the digits each shows
 // before the sign becomes necessary.
 const YEARISH_DIGITS: Record<string, number> = { Y: 4, G: 4, C: 2 }
+
+// The numeric directives, with the digits each shows by default; a width
+// typed on one replaces that default rather than adding to it.
+const NUMERIC_DIGITS: Record<string, number> = {
+  C: 2,
+  d: 2,
+  e: 2,
+  g: 2,
+  G: 4,
+  H: 2,
+  I: 2,
+  j: 3,
+  k: 2,
+  l: 2,
+  m: 2,
+  M: 2,
+  S: 2,
+  u: 1,
+  U: 2,
+  V: 2,
+  w: 1,
+  W: 2,
+  y: 2,
+  Y: 4,
+}
+// The numeric directives GNU fills with spaces rather than zeros.
+const SPACE_PADDED = new Set(['e', 'k', 'l'])
 
 // The directives that render a whole date or time. GNU applies the
 // padding flags to their parts, not to the finished text, so `-`, `_`
@@ -296,6 +325,11 @@ function modified(base: string, code: string, flags: string, digits: string): st
       return sign + String(value).padStart((width ?? 0) - sign.length, '0')
     }
     pad = '0'
+  }
+  const shown = NUMERIC_DIGITS[code]
+  if (shown !== undefined) {
+    const filler = pad ?? (SPACE_PADDED.has(code) ? '_' : '0')
+    return padSigned('', String(Number(base)), filler, width ?? shown)
   }
   let out = base
   if (pad === '-') out = out.replace(/^[0 ]+(?=.)/, '')

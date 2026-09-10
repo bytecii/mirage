@@ -88,6 +88,27 @@ describe('strftime GNU directives', () => {
     expect(strftime(new Date(-100000), '%5s|%_5s|%2s', true)).toBe('-0100| -100|-100')
   })
 
+  it('lets a width replace the default digits', () => {
+    // Pinned against date 9.7: a width on a numeric directive replaces
+    // its default padding rather than adding to it, and %e, %k and %l
+    // fill with spaces where the rest fill with zeros.
+    const narrow = new Date(Date.UTC(2026, 0, 3, 5, 7, 9))
+    expect(
+      strftime(
+        narrow,
+        '%1d|%2d|%3d|%_3d|%-3d|%03d|%1j|%2j|%4j|%1e|%3e|%_1e|%03e|%-e|%0e|%_e',
+        true,
+      ),
+    ).toBe('3|03|003|  3|3|003|3|03|0003|3|  3|3|003|3|03| 3')
+    expect(
+      strftime(narrow, '%1Y|%5Y|%1y|%1m|%_m|%1H|%1M|%1S|%1k|%3k|%1l|%1u|%3u|%1w|%1U|%1W', true),
+    ).toBe('2026|02026|26|1| 1|5|7|9|5|  5|5|6|006|6|0|0')
+    expect(
+      strftime(narrow, '%1V|%1C|%1g|%1G|%1I|%+5d|%+1d|%+3e|%^3d|%#3d|%-d|%-_3d|%_-3d', true),
+    ).toBe('1|20|26|2026|5|00003|3|003|003|003|3|  3|3')
+    expect(strftime(narrow, '%5a|%05a|%-5a|%_5a', true)).toBe('  Sat|00Sat|Sat|  Sat')
+  })
+
   it('renders the local zone with its colon forms', () => {
     const prior = process.env.TZ
     process.env.TZ = 'Asia/Kolkata'

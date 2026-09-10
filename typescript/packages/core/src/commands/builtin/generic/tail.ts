@@ -109,6 +109,35 @@ async function pause(seconds: number, signal: AbortSignal | undefined): Promise<
   })
 }
 
+// What a followed file gained past `pos`, and where the next poll
+// starts: a size-unknown file is read whole and measured, and a file
+// shorter than `pos` was truncated, which is noted and read from the
+// start.
+async function catchUp(
+  stream: Stream,
+  readRange: ReadRange | null,
+  io: IOResult,
+  p: PathSpec,
+  size: number | null,
+  pos: number,
+): Promise<[Uint8Array, number]> {
+  let whole: Uint8Array | null = null
+  let length = size
+  if (length === null) {
+    whole = await materialize(stream(p))
+    length = whole.byteLength
+  }
+  let start = pos
+  if (length < start) {
+    note(io, `tail: ${p.rawPath}: file truncated\n`)
+    start = 0
+  }
+  if (length <= start) return [new Uint8Array(), start]
+  const data =
+    whole !== null ? whole.slice(start) : await window(stream, readRange, p, start, length - start)
+  return [data, start + data.byteLength]
+}
+
 async function window(
   stream: Stream,
   readRange: ReadRange | null,
@@ -186,14 +215,20 @@ async function* follow(
     }
     for (const entry of [...active]) {
       const [slot, p] = entry
-      let current: FileStat | null = null
+      let grown: [Uint8Array, number] | null
       try {
-        current = await stat(p)
+        const current = await stat(p)
+        grown =
+          current.type === FileType.DIRECTORY
+            ? null
+            : await catchUp(stream, readRange, io, p, current.size, positions.get(slot) ?? 0)
       } catch (err) {
         if (!isFsError(err)) throw err
         if (!isEisdir(err)) {
-          // Only name-following notices a path that went away; under a
-          // descriptor --retry covers the initial open alone, as in GNU.
+          // A path that went away, whether its stat failed or the read
+          // right after it did (a rotation between the two). Only
+          // name-following notices; under a descriptor --retry covers
+          // the initial open alone, as in GNU.
           if (flags.byName) {
             note(
               io,
@@ -204,8 +239,9 @@ async function* follow(
           }
           continue
         }
+        grown = null
       }
-      if (current === null || current.type === FileType.DIRECTORY) {
+      if (grown === null) {
         // A directory replaced the file: name-following gives the name
         // up, or under --retry waits for a file to stand there again; a
         // descriptor follow prints nothing, as GNU's does while it holds
@@ -217,24 +253,11 @@ async function* follow(
         if (flags.retry) waiting.push([slot, p, ACCESSIBLE])
         continue
       }
-      let size = current.size
-      let whole: Uint8Array | null = null
-      if (size === null) {
-        whole = await materialize(stream(p))
-        size = whole.byteLength
-      }
-      let pos = positions.get(slot) ?? 0
-      if (size < pos) {
-        note(io, `tail: ${p.rawPath}: file truncated\n`)
-        pos = 0
-      }
-      if (size > pos) {
-        const data =
-          whole !== null ? whole.slice(pos) : await window(stream, readRange, p, pos, size - pos)
+      const [data, pos] = grown
+      if (data.byteLength > 0) {
         if (showHeaders && last !== slot) yield ENC.encode(`\n==> ${p.rawPath} <==\n`)
         last = slot
-        if (data.byteLength > 0) yield data
-        pos += data.byteLength
+        yield data
       }
       positions.set(slot, pos)
     }

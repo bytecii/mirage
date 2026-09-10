@@ -1397,6 +1397,26 @@
         "o",
         "time-style"
       ]
+    },
+    {
+      "id": "ls_time_style_width_replaces_the_default_digits",
+      "seq": 960145,
+      "targets": [
+        "ram",
+        "disk",
+        "redis"
+      ],
+      "command": "mkdir -p /data/lsw && printf x > /data/lsw/a.txt && touch -d '2001-02-03T12:00:00' /data/lsw/a.txt && ls -go --time-style='+%1d,%-m,%1j,%03e,%1Y,%1y,%3u,%+1d' /data/lsw/a.txt | awk '{print $4}'",
+      "expect": {
+        "exit": 0,
+        "stdout": "3,2,34,003,2001,1,006,3\n",
+        "stderr": ""
+      },
+      "flags": [
+        "g",
+        "o",
+        "time-style"
+      ]
     }
   ]
 }
