@@ -39,8 +39,7 @@ export const GDOCS_PROMPT = `{prefix}
           "tabProperties": {
             "tabId": "t.0",              # names a tab for gws docs write
             "title": "Tab 1",
-            "index": 0,
-            "nestingLevel": 0
+            "index": 0
           },
           "documentTab": {
             "body": {
@@ -62,6 +61,9 @@ export const GDOCS_PROMPT = `{prefix}
             "namedStyles": {...}
           },
           "childTabs": [ { ...same shape, nested to any depth... } ]
+                                       # a NESTED tab additionally carries
+                                       # parentTabId and nestingLevel; a
+                                       # root tab carries neither
         }
       ],
       "revisionId": "..."

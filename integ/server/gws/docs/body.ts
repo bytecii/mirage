@@ -101,15 +101,18 @@ export function copyDocTabs(tabs: DocTab[]): DocTab[] {
 }
 
 function fmtTab(tab: DocTab, index: number, parentTabId: string | null, nesting: number): JsonObj {
-  const tabProperties: JsonObj = {
-    tabId: tab.tabId,
-    title: tab.title,
-    index,
-    nestingLevel: nesting,
+  const tabProperties: JsonObj = { tabId: tab.tabId, title: tab.title, index }
+  // Both are ABSENT on a root tab, probed against the live API on
+  // 2026-09-10: a real root tab answers with exactly
+  // {index, tabId, title}. `nestingLevel` is documented output-only and
+  // Google does not send it at depth 0 even though it sends `index: 0`,
+  // so emitting a 0 here would invent a field a caller could come to
+  // depend on and then find missing in production, which is the same
+  // trap includeTabsContent itself set.
+  if (parentTabId !== null) {
+    tabProperties.parentTabId = parentTabId
+    tabProperties.nestingLevel = nesting
   }
-  // Absent at the root, which is what the API means by "Empty when the
-  // current tab is a root-level tab".
-  if (parentTabId !== null) tabProperties.parentTabId = parentTabId
   const out: JsonObj = { tabProperties, documentTab: { body: buildDocBody(tab.text) } }
   if (tab.childTabs.length > 0) {
     out.childTabs = tab.childTabs.map((child, i) => fmtTab(child, i, tab.tabId, nesting + 1))
