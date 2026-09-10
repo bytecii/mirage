@@ -22,6 +22,7 @@ MOMENT = datetime(2026, 1, 1, 0, 0, 1, 123456)
 ZONED = datetime(1970, 1, 1, tzinfo=timezone(timedelta(hours=5, minutes=30)))
 BEFORE_EPOCH = datetime.fromtimestamp(-1, timezone.utc)
 NARROW = datetime(2026, 1, 3, 5, 7, 9, tzinfo=timezone.utc)
+SEPTEMBER = datetime(2026, 9, 3, 5, 7, 9, tzinfo=timezone.utc)
 
 
 @pytest.mark.parametrize("fmt,expected", [
@@ -170,6 +171,40 @@ def test_widths_replace_the_default_digits(fmt: str, expected: str):
     # its default padding rather than adding to it, and %e, %k and %l
     # fill with spaces where the rest fill with zeros.
     assert gnu_strftime(NARROW, fmt) == expected
+
+
+@pytest.mark.parametrize("fmt,expected", [
+    ("%12F", "002026-09-03"),
+    ("%-12F", "2026-09-03"),
+    ("%_12F", "  2026-09-03"),
+    ("%012F", "002026-09-03"),
+    ("%+12F", "+02026-09-03"),
+    ("%6F", "2026-09-03"),
+    ("%9F", "2026-09-03"),
+    ("%_9F", "2026-09-03"),
+    ("%+9F", "2026-09-03"),
+    ("%^F", "2026-09-03"),
+    ("%#F", "2026-09-03"),
+    ("%12D", "    09/03/26"),
+    ("%-12D", "09/03/26"),
+    ("%_12D", "    09/03/26"),
+    ("%012D", "000009/03/26"),
+    ("%+12D", "000009/03/26"),
+    ("%12T", "    05:07:09"),
+    ("%012T", "000005:07:09"),
+    ("%+12T", "000005:07:09"),
+    ("%12R", "       05:07"),
+    ("%12r", " 05:07:09 AM"),
+    ("%12c", "Thu Sep  3 05:07:09 2026"),
+    ("%^12c", "THU SEP  3 05:07:09 2026"),
+    ("%12x", "    09/03/26"),
+    ("%12X", "    05:07:09"),
+])
+def test_widths_pad_a_composite_whole(fmt: str, expected: str):
+    # Pinned against date 9.7: a width on a composite pads the rendered
+    # whole, with spaces bare or under `_` and zeros under `0` or `+`;
+    # %F alone lets a bare, `0` or `+` width reach the year.
+    assert gnu_strftime(SEPTEMBER, fmt) == expected
 
 
 def test_naive_moment_takes_the_local_zone():

@@ -581,6 +581,42 @@ async def test_follow_name_treats_a_read_that_finds_nothing_as_inaccessible(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("flags", [{"F": True}, {"f": True, "retry": True}])
+async def test_retry_waits_for_an_operand_whose_first_read_fails(flags):
+    # The first read is the open (there is no handle to hold), so one
+    # that fails after the operand's stat passed is a failed open:
+    # reported as the stat's failure would have been, and waited for
+    # under --retry, which covers the initial open under a descriptor
+    # follow too.
+    fs = _GoneAtRead({"/d/f": b"a\n"})
+    fs.trip = True
+    stream, io = await tail_generic(_paths("/d/f"), [], _follow_opts(**flags),
+                                    fs.stat, fs.read, fs.read_range)
+    assert stream is not None
+    chunks = await _drain_for(stream, 0.3)
+    assert b"".join(chunks) == b"a\n"
+    assert io.exit_code == 1
+    assert io.stderr == (
+        (b"tail: warning: --retry only effective for the initial open\n"
+         if "f" in flags else b"") + b"tail: /d/f: No such file or directory\n"
+        b"tail: '/d/f' has appeared;  following new file\n")
+
+
+@pytest.mark.asyncio
+async def test_follow_without_retry_gives_up_on_a_failed_first_read():
+    fs = _GoneAtRead({"/d/f": b"a\n"})
+    fs.trip = True
+    stream, io = await tail_generic(_paths("/d/f"), [], _follow_opts(f=True),
+                                    fs.stat, fs.read, fs.read_range)
+    assert stream is not None
+    chunks = await _drain_for(stream, 0.3)
+    assert chunks == []
+    assert io.stderr == (b"tail: /d/f: No such file or directory\n"
+                         b"tail: no files remaining\n")
+    assert io.exit_code == 1
+
+
+@pytest.mark.asyncio
 async def test_follow_name_without_retry_gives_up_on_a_read_that_finds_nothing(
 ):
     fs = _GoneAtRead({"/d/f": b"a\n"})

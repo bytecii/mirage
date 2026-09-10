@@ -88,6 +88,22 @@ describe('strftime GNU directives', () => {
     expect(strftime(new Date(-100000), '%5s|%_5s|%2s', true)).toBe('-0100| -100|-100')
   })
 
+  it('lets a width pad a composite whole', () => {
+    // Pinned against date 9.7: a width on a composite pads the rendered
+    // whole, with spaces bare or under `_` and zeros under `0` or `+`;
+    // %F alone lets a bare, `0` or `+` width reach the year.
+    const moment = new Date(Date.UTC(2026, 8, 3, 5, 7, 9))
+    expect(strftime(moment, '%12F|%-12F|%_12F|%012F|%+12F|%6F|%9F|%_9F|%+9F|%^F|%#F', true)).toBe(
+      '002026-09-03|2026-09-03|  2026-09-03|002026-09-03|+02026-09-03|2026-09-03|2026-09-03|2026-09-03|2026-09-03|2026-09-03|2026-09-03',
+    )
+    expect(strftime(moment, '%12D|%-12D|%_12D|%012D|%+12D|%12T|%012T|%+12T|%12R|%12r', true)).toBe(
+      '    09/03/26|09/03/26|    09/03/26|000009/03/26|000009/03/26|    05:07:09|000005:07:09|000005:07:09|       05:07| 05:07:09 AM',
+    )
+    expect(strftime(moment, '%12c|%^12c|%12x|%12X', true)).toBe(
+      'Thu Sep  3 05:07:09 2026|THU SEP  3 05:07:09 2026|    09/03/26|    05:07:09',
+    )
+  })
+
   it('lets a width replace the default digits', () => {
     // Pinned against date 9.7: a width on a numeric directive replaces
     // its default padding rather than adding to it, and %e, %k and %l

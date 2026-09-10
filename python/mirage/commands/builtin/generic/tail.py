@@ -17,7 +17,7 @@ from mirage.commands.spec.types import FlagValue, FlagView
 from mirage.commands.spec.usage import usage_hint
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileType, PathSpec, PolymorphicReadFn, StatFn
-from mirage.utils.errors import FS_ERRORS, fs_strerror
+from mirage.utils.errors import FS_ERRORS, fs_error_line, fs_strerror
 from mirage.utils.stream import ensure_stream
 
 DEFAULT_SLEEP_INTERVAL = 1.0
@@ -376,14 +376,17 @@ async def _follow(
     GNU tail -f is a poll: every ``-s`` seconds each followed file is
     stat'ed, bytes past the last position are printed under that file's
     header when the previous output was another file's, and a size that
-    shrank is ``file truncated`` and a restart from the top. A file that
-    goes away, at the poll's stat or at the read right after it, is
-    dropped with ``has become inaccessible`` under ``--follow=name``;
-    ``--retry`` keeps polling for it (and for one that was never there)
-    and announces ``has appeared`` when it turns up, reading it from the
-    start as GNU does after a rotation. The
-    loop ends only when nothing is left to follow (``no files
-    remaining``, exit 1) or the caller stops draining, which is how
+    shrank is ``file truncated`` and a restart from the top. An operand
+    whose first read fails after its stat passed is a failed open,
+    reported as one and, under ``--retry``, waited for like a file that
+    was never there. A file that goes away later, at the poll's stat or
+    at the read right after it, is dropped with ``has become
+    inaccessible`` under ``--follow=name``; ``--retry`` keeps polling
+    for it (and for one that was never there) and announces ``has
+    appeared`` when it turns up, reading it from the start as GNU does
+    after a rotation. The loop ends only when nothing is left to follow
+    (``no files remaining``, exit 1) or the caller stops draining, which
+    is how
     ``timeout`` and a killed job end it. A followed file that a
     directory replaces is ``has been replaced with an untailable
     file``: name-following gives the name up, or under ``--retry``
@@ -424,17 +427,34 @@ async def _follow(
     active = list(enumerate(paths))
     waiting = [(len(paths) + i, p, how) for i, (p, how) in enumerate(pending)]
     last: int | None = None
-    for slot, p in active:
+    for slot, p in list(active):
+        box = [0]
+        try:
+            chunks = [
+                chunk async for chunk in tail(_counted(read(p), box),
+                                              n=counts.lines,
+                                              c=counts.byte_count,
+                                              from_line=counts.from_line,
+                                              from_byte=counts.from_byte)
+            ]
+        except FS_ERRORS as exc:
+            # There is no handle to hold, so this first read is the
+            # open: one that fails after the operand's stat passed is
+            # GNU's failed open, reported the way the stat's failure
+            # would have been, and under --retry waited for like a
+            # file that was never there (this is the initial open that
+            # a descriptor follow's --retry covers).
+            _note(io, fs_error_line("tail", p, exc))
+            io.exit_code = 1
+            active.remove((slot, p))
+            if flags.retry:
+                waiting.append((slot, p, APPEARED))
+            continue
         if show_headers:
             header = f"==> {p.raw_path} <==\n"
             yield (("\n" if last is not None else "") + header).encode()
         last = slot
-        box = [0]
-        async for chunk in tail(_counted(read(p), box),
-                                n=counts.lines,
-                                c=counts.byte_count,
-                                from_line=counts.from_line,
-                                from_byte=counts.from_byte):
+        for chunk in chunks:
             yield chunk
         positions[slot] = box[0]
     while active or waiting:

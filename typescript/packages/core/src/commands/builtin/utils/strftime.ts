@@ -254,9 +254,11 @@ const SPACE_PADDED = new Set(['e', 'k', 'l'])
 // The directives that render a whole date or time. GNU applies the
 // padding flags to their parts, not to the finished text, so `-`, `_`
 // and `0` change nothing (%-D stays 09/03/26), `^` upcases the text, and
-// a width pads the whole on the left with spaces; %F is the exception,
-// being %+4Y-%m-%d, so a bare, `0` or `+` width reaches the year
-// (%12F is 002026-09-03, %+12F is +02026-09-03).
+// a width pads the whole on the left, with spaces under a bare width or
+// `_` and with zeros under `0` or `+` (%12D is "    09/03/26", %012D is
+// 000009/03/26); %F is the exception, being %+4Y-%m-%d, so a bare, `0`
+// or `+` width reaches the year (%12F is 002026-09-03, %+12F is
+// +02026-09-03) while `_` still pads the whole with spaces.
 const COMPOSITES = new Set(['c', 'D', 'F', 'r', 'R', 'T', 'x', 'X'])
 
 function paddedComposite(
@@ -274,7 +276,7 @@ function paddedComposite(
     const sign = pad === '+' && (year > 9999 || yearWidth > 4) ? '+' : ''
     return sign + String(year).padStart(yearWidth - sign.length, '0') + out.slice(-6)
   }
-  return out.padStart(width, ' ')
+  return out.padStart(width, pad === '0' || pad === '+' ? '0' : ' ')
 }
 
 function winningPad(flags: string): string | null {

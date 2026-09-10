@@ -478,9 +478,18 @@ async def make_link(
     backup_note = ""
     # The door refuses an occupied name for a symlink; a byte copy would
     # overwrite one, and a backup has to see it first, so those two probe.
-    occupied = (_visible_link(namespace, plan.link_abs)
-                or await path_stat(dispatch, plan.link_abs) is not None
-                if data is not None or backs else False)
+    # A backup moves a file aside, never a directory: GNU refuses the
+    # directory (`ln -bT a d` is `cannot overwrite directory`) where it
+    # would otherwise rename the whole tree to `d~`. A symlink standing
+    # there is what -T names, and that one is backed up.
+    occupied = False
+    if data is not None or backs:
+        found = (None if _visible_link(namespace, plan.link_abs) else await
+                 path_stat(dispatch, plan.link_abs))
+        if (backs and found is not None and found.type is FileType.DIRECTORY):
+            errors.append(f"ln: {typed}: cannot overwrite directory\n")
+            return
+        occupied = found is not None or _visible_link(namespace, plan.link_abs)
     if occupied and backs:
         backup = await backup_target(partial(_readdir, dispatch), link_spec,
                                      flags.backup or "existing", flags.suffix)

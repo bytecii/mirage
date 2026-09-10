@@ -84,6 +84,43 @@ describe('ln -f on the same file', () => {
   })
 })
 
+describe('ln -b on a directory', () => {
+  it('refuses a directory destination instead of backing it up', async () => {
+    // Pinned on coreutils 9.7: a backup moves a file aside, never a
+    // directory, so `ln -bT a d` is refused with the directory intact
+    // where mirage used to rename the whole tree to `d~`; a symlink
+    // standing at the name is what -T names and is backed up; without
+    // -T the directory is where the link goes.
+    const ws = await makeWs()
+    try {
+      await ws.execute('mkdir -p /data/d; printf hi > /data/a.txt')
+      for (const line of [
+        'ln -sbT /data/a.txt /data/d',
+        'ln -bT /data/a.txt /data/d',
+        'ln -sfbT /data/a.txt /data/d',
+        'ln -s --backup=numbered -T /data/a.txt /data/d',
+      ]) {
+        const r = await ws.execute(line)
+        expect(r.exitCode).toBe(1)
+        expect(err(r)).toBe('ln: /data/d: cannot overwrite directory\n')
+        const ls = await ws.execute('ls /data')
+        expect(DEC.decode(ls.stdout)).toBe('a.txt\nd\n')
+        expect(ws.namespace.isLink('/data/d')).toBe(false)
+      }
+      let r = await ws.execute('ln -sb /data/a.txt /data/d')
+      expect(r.exitCode).toBe(0)
+      expect(ws.namespace.readlink('/data/d/a.txt')).toBe('/data/a.txt')
+      await ws.execute('ln -s /data/d /data/lk')
+      r = await ws.execute('ln -sbT /data/a.txt /data/lk')
+      expect(r.exitCode).toBe(0)
+      expect(ws.namespace.readlink('/data/lk')).toBe('/data/a.txt')
+      expect(ws.namespace.readlink('/data/lk~')).toBe('/data/d')
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
 describe('rm and unlink reach a link through the op door', () => {
   it('rm of a link goes through the door', async () => {
     // The strip used to write the node table directly, so a preOps

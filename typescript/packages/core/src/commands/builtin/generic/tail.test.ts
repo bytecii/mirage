@@ -519,6 +519,68 @@ describe('tail -f', () => {
     },
   )
 
+  it.each([{ F: true }, { f: true, retry: true }])(
+    '--retry waits for an operand whose first read fails (%o)',
+    async (flags) => {
+      // The first read is the open (there is no handle to hold), so one
+      // that fails after the operand's stat passed is a failed open:
+      // reported as the stat's failure would have been, and waited for
+      // under --retry, which covers the initial open under a descriptor
+      // follow too.
+      const fs = new Growing(new Map([['/d/f', ENC.encode('a\n')]]))
+      let trip = true
+      const stream = async function* (p: PathSpec): AsyncIterable<Uint8Array> {
+        if (trip) {
+          trip = false
+          const err = new Error('ENOENT') as Error & { code: string }
+          err.code = 'ENOENT'
+          throw err
+        }
+        yield* fs.stream(p)
+      }
+      const abort = new AbortController()
+      const [out, io] = (await tailGeneric(
+        [spec('/d/f')],
+        [],
+        followOpts(abort, flags),
+        stream,
+        fs.stat,
+        fs.readRange,
+      )) as [AsyncIterable<Uint8Array>, IOResult]
+      const text = await drainFor(out, 300, abort)
+      expect(text).toBe('a\n')
+      expect(io.exitCode).toBe(1)
+      expect(DEC.decode(io.stderr as Uint8Array)).toBe(
+        ('f' in flags ? 'tail: warning: --retry only effective for the initial open\n' : '') +
+          "tail: /d/f: No such file or directory\ntail: '/d/f' has appeared;  following new file\n",
+      )
+    },
+  )
+
+  it('-f without --retry gives up on an operand whose first read fails', async () => {
+    const fs = new Growing(new Map([['/d/f', ENC.encode('a\n')]]))
+    const stream = (): AsyncIterable<Uint8Array> => {
+      const err = new Error('ENOENT') as Error & { code: string }
+      err.code = 'ENOENT'
+      return { [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(err) }) }
+    }
+    const abort = new AbortController()
+    const [out, io] = (await tailGeneric(
+      [spec('/d/f')],
+      [],
+      followOpts(abort, { f: true }),
+      stream,
+      fs.stat,
+      fs.readRange,
+    )) as [AsyncIterable<Uint8Array>, IOResult]
+    const text = await drainFor(out, 300, abort)
+    expect(text).toBe('')
+    expect(io.exitCode).toBe(1)
+    expect(DEC.decode(io.stderr as Uint8Array)).toBe(
+      'tail: /d/f: No such file or directory\ntail: no files remaining\n',
+    )
+  })
+
   it('--follow=name gives up on a read that finds nothing', async () => {
     const fs = new Growing(new Map([['/d/f', ENC.encode('a\n')]]))
     let trip = false

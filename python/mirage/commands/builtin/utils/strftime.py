@@ -46,6 +46,9 @@ NUMERIC_DIGITS = {
 }
 # The numeric directives GNU fills with spaces rather than zeros.
 SPACE_PADDED = "ekl"
+# The directives that stand for several parts (%F is %+4Y-%m-%d, %D is
+# %m/%d/%y, %T is %H:%M:%S), which GNU pads as a whole.
+COMPOSITES = "cDFrRTxX"
 
 
 def winning_pad(flags: str) -> str | None:
@@ -176,6 +179,40 @@ def pad_quarter(quarter: str, flags: str, width: int | None) -> str:
     return quarter.rjust(width, " " if pad == "_" else "0")
 
 
+def pad_composite(dt: datetime, directive: str, flags: str,
+                  width: int | None) -> str:
+    """Pad a composite directive (``%F``, ``%D``, ``%T``, ``%c`` and the
+    rest of ``COMPOSITES``) the way GNU date does: the flags reach the
+    parts, so ``-``, ``_`` and ``0`` alone change nothing, ``^`` upcases
+    the text, and a width pads the whole on the left, with spaces under
+    a bare width or ``_`` and with zeros under ``0`` or ``+``
+    (``%12D`` is ``"    09/03/26"``, ``%012D`` is ``000009/03/26``);
+    ``-`` drops the padding. ``%F`` is ``%+4Y-%m-%d``, so there a bare,
+    ``0`` or ``+`` width reaches the year instead (``%12F`` is
+    ``002026-09-03``, ``%+12F`` is ``+02026-09-03``) while ``_`` still
+    pads the whole with spaces.
+
+    Args:
+        dt (datetime): the moment being rendered.
+        directive (str): one of ``COMPOSITES``.
+        flags (str): the flag characters typed between ``%`` and the
+            width.
+        width (int | None): the minimum field width, if typed.
+    """
+    text = dt.strftime("%" + directive)
+    if "^" in flags:
+        text = text.upper()
+    pad = winning_pad(flags)
+    if width is None or pad == "-":
+        return text
+    if directive == "F" and pad != "_":
+        rest = dt.strftime("-%m-%d")
+        if pad == "+":
+            return plus_year(dt, "Y", width - 6) + rest
+        return pad_signed("", str(dt.year), "0", width - 6) + rest
+    return text.rjust(width, "0" if pad in ("0", "+") else " ")
+
+
 def plus_year(dt: datetime, directive: str, width: int | None) -> str:
     """Render ``%+Y``, ``%+G`` or ``%+C`` as GNU date does: zero-padded
     to the width, and led by ``+`` when the value outgrows the digits
@@ -214,10 +251,13 @@ def gnu_strftime(dt: datetime, fmt: str) -> str:
     the left under the padding flags (``%_2q`` is ``" 3"``, ``%-2q`` is
     ``3``). GNU's ``+`` flag is expanded here too, since the C library
     does not know it: on ``Y``, ``G`` and ``C`` it signs the value
-    (``plus_year``), on ``F`` it signs the year the width reaches
-    (``%+12F`` is ``+02026-09-03``), and anywhere else it is ``0``, so
-    ``%+5d`` reaches strftime as ``%05d``; a ``+`` that a later padding
-    flag outranks is dropped. ``%z`` and its colon forms ``%:z``,
+    (``plus_year``), and anywhere else it is ``0``, so ``%+5d`` reaches
+    strftime as ``%05d``; a ``+`` that a later padding flag outranks is
+    dropped. A composite directive (``%F``, ``%D``, ``%T``, ``%c`` and
+    friends) that carries any flag or width is padded here as a whole
+    (``pad_composite``), since the C libraries disagree with GNU and
+    with each other about it (``%12F`` is ``002026-09-03``, which glibc
+    space-pads and macOS mangles). ``%z`` and its colon forms ``%:z``,
     ``%::z`` and ``%:::z`` are rendered here too (``zone_offset``), as
     is ``%s`` (``epoch_seconds``), since neither C library pads a
     negative number or an offset the way GNU does. A colon before any
@@ -269,10 +309,8 @@ def gnu_strftime(dt: datetime, fmt: str) -> str:
             out.append(nanos[:width].ljust(width, "0") if width else nanos)
         elif pad == "+" and directive in YEARISH_DIGITS:
             out.append(plus_year(dt, directive, width))
-        elif pad == "+" and directive == "F":
-            # %F is %+4Y-%m-%d, so the width reaches the year.
-            year = plus_year(dt, "Y", width - 6 if width else None)
-            out.append(year + dt.strftime("-%m-%d"))
+        elif directive in COMPOSITES and (flags or width is not None):
+            out.append(pad_composite(dt, directive, flags, width))
         elif directive in NUMERIC_DIGITS and (width is not None
                                               or pad is not None):
             out.append(pad_number(dt, directive, flags, width))

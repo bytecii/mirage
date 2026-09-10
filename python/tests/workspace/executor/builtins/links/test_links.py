@@ -92,6 +92,36 @@ async def test_ln_f_refuses_the_same_file_before_removing_it():
 
 
 @pytest.mark.asyncio
+async def test_ln_backup_refuses_a_directory_destination():
+    # Pinned on coreutils 9.7: a backup moves a file aside, never a
+    # directory, so `ln -bT a d` is refused with the directory intact
+    # where mirage used to rename the whole tree to `d~`; a symlink
+    # standing at the name is what -T names and is backed up; without
+    # -T the directory is where the link goes.
+    ws = _ws()
+    await ws.execute("mkdir -p /data/d; printf hi > /data/a.txt")
+    for line in (
+            "ln -sbT /data/a.txt /data/d",
+            "ln -bT /data/a.txt /data/d",
+            "ln -sfbT /data/a.txt /data/d",
+            "ln -s --backup=numbered -T /data/a.txt /data/d",
+    ):
+        r = await ws.execute(line)
+        assert r.exit_code == 1
+        assert r.stderr == b"ln: /data/d: cannot overwrite directory\n"
+        assert (await ws.execute("ls /data")).stdout == b"a.txt\nd\n"
+        assert not ws.namespace.is_link("/data/d")
+    r = await ws.execute("ln -sb /data/a.txt /data/d")
+    assert r.exit_code == 0
+    assert ws.namespace.readlink("/data/d/a.txt") == "/data/a.txt"
+    await ws.execute("ln -s /data/d /data/lk")
+    r = await ws.execute("ln -sbT /data/a.txt /data/lk")
+    assert r.exit_code == 0
+    assert ws.namespace.readlink("/data/lk") == "/data/a.txt"
+    assert ws.namespace.readlink("/data/lk~") == "/data/d"
+
+
+@pytest.mark.asyncio
 async def test_rm_of_a_link_goes_through_the_door():
     # The strip used to write the node table directly, so a pre_ops
     # policy protecting a link never fired for `rm` while it fired for

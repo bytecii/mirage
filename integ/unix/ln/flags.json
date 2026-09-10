@@ -673,6 +673,45 @@
         "gdrive-folder",
         "box"
       ]
+    },
+    {
+      "id": "ln_backup_refuses_a_directory_destination",
+      "seq": 611046,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/lnbd/d && printf y > /data/lnbd/d/k && printf x > /data/lnbd/a.txt && ln -sbT /data/lnbd/a.txt /data/lnbd/d; echo code=$?; ls /data/lnbd",
+      "expect": {
+        "exit": 0,
+        "stdout": "code=1\na.txt\nd\n",
+        "stderr": "ln: /data/lnbd/d: cannot overwrite directory\n"
+      },
+      "flags": [
+        "s",
+        "b",
+        "T"
+      ]
     }
   ]
 }

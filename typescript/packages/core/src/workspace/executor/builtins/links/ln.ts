@@ -424,10 +424,21 @@ export async function makeLink(
   }
   // The door refuses an occupied name for a symlink; a byte copy would
   // overwrite one, and a backup has to see it first, so those two probe.
-  let occupied =
-    data !== null || backs
-      ? visibleLink(namespace, plan.linkAbs) || (await pathStat(dispatch, plan.linkAbs)) !== null
-      : false
+  // A backup moves a file aside, never a directory: GNU refuses the
+  // directory (`ln -bT a d` is `cannot overwrite directory`) where it
+  // would otherwise rename the whole tree to `d~`. A symlink standing
+  // there is what -T names, and that one is backed up.
+  let occupied = false
+  if (data !== null || backs) {
+    const found = visibleLink(namespace, plan.linkAbs)
+      ? null
+      : await pathStat(dispatch, plan.linkAbs)
+    if (backs && found !== null && found.type === FileType.DIRECTORY) {
+      errors.push(`ln: ${typed}: cannot overwrite directory\n`)
+      return
+    }
+    occupied = found !== null || visibleLink(namespace, plan.linkAbs)
+  }
   if (occupied && backs) {
     const backup = await backupTarget(
       async (p) => await pathReaddir(dispatch, p.virtual),

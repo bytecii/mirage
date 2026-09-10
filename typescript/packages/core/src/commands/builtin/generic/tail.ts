@@ -154,8 +154,11 @@ async function window(
 // -f is a poll: every -s seconds each followed file is stat'ed, bytes
 // past the last position are printed under that file's header when the
 // previous output was another file's, and a size that shrank is `file
-// truncated` and a restart from the top. A file that goes away is
-// dropped with `has become inaccessible` under --follow=name; --retry
+// truncated` and a restart from the top. An operand whose first read
+// fails after its stat passed is a failed open, reported as one and,
+// under --retry, waited for like a file that was never there. A file that
+// goes away later is dropped with `has become inaccessible` under
+// --follow=name; --retry
 // keeps polling for it (and for one that was never there) and announces
 // `has appeared` when it turns up, reading it from the start as GNU does
 // after a rotation. The loop ends only when nothing is left to follow
@@ -186,8 +189,24 @@ async function* follow(
     how,
   ])
   let last: number | null = null
-  for (const [slot, p] of active) {
-    const raw = await materialize(stream(p))
+  for (const entry of [...active]) {
+    const [slot, p] = entry
+    let raw: Uint8Array
+    try {
+      raw = await materialize(stream(p))
+    } catch (err) {
+      if (!isFsError(err)) throw err
+      // There is no handle to hold, so this first read is the open: one
+      // that fails after the operand's stat passed is GNU's failed open,
+      // reported the way the stat's failure would have been, and under
+      // --retry waited for like a file that was never there (this is the
+      // initial open that a descriptor follow's --retry covers).
+      note(io, fsErrorLine('tail', p, err))
+      io.exitCode = 1
+      active.splice(active.indexOf(entry), 1)
+      if (flags.retry) waiting.push([slot, p, APPEARED])
+      continue
+    }
     if (showHeaders) {
       yield ENC.encode(`${last === null ? '' : '\n'}==> ${p.rawPath} <==\n`)
     }
