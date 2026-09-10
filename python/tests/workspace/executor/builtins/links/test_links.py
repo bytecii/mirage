@@ -64,6 +64,34 @@ class PinLinks(Policy):
 
 
 @pytest.mark.asyncio
+async def test_ln_f_refuses_the_same_file_before_removing_it():
+    # Pinned on coreutils 9.7: `ln -sf a a` and `ln -f a a` are refused
+    # and the file survives, spelled as typed on both sides; a backup
+    # waives the check; a destination that is not there is not the
+    # same file and becomes a self-loop, as in GNU.
+    ws = _ws()
+    await ws.execute("printf hi > /data/a.txt")
+    for line, wording in (
+        ("ln -sf /data/a.txt /data/a.txt", "'/data/a.txt' and '/data/a.txt'"),
+        ("ln -f /data/a.txt /data/a.txt", "'/data/a.txt' and '/data/a.txt'"),
+        ("cd /data && ln -sf a.txt ./a.txt", "'a.txt' and './a.txt'"),
+        ("cd /data && ln -sfT a.txt a.txt", "'a.txt' and 'a.txt'"),
+    ):
+        r = await ws.execute(line)
+        assert r.exit_code == 1
+        assert r.stderr == f"ln: {wording} are the same file\n".encode()
+        assert (await ws.execute("cat /data/a.txt")).stdout == b"hi"
+        assert not ws.namespace.is_link("/data/a.txt")
+    r = await ws.execute("ln -sfb /data/a.txt /data/a.txt")
+    assert r.exit_code == 0
+    assert (await ws.execute("cat /data/a.txt~")).stdout == b"hi"
+    assert ws.namespace.readlink("/data/a.txt") == "/data/a.txt"
+    r = await ws.execute("ln -sf /data/nope /data/nope")
+    assert r.exit_code == 0
+    assert ws.namespace.readlink("/data/nope") == "/data/nope"
+
+
+@pytest.mark.asyncio
 async def test_rm_of_a_link_goes_through_the_door():
     # The strip used to write the node table directly, so a pre_ops
     # policy protecting a link never fired for `rm` while it fired for

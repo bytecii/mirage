@@ -93,10 +93,12 @@ def gnu_strftime(dt: datetime, fmt: str) -> str:
     the left under the padding flags (``%_2q`` is ``" 3"``, ``%-2q`` is
     ``3``). GNU's ``+`` flag is expanded here too, since the C library
     does not know it: on ``Y``, ``G`` and ``C`` it signs the value
-    (``plus_year``), and anywhere else it is ``0``, so ``%+5d`` reaches
-    strftime as ``%05d``; a ``+`` that a later padding flag outranks is
-    dropped. Every other directive passes to strftime with its prefix
-    intact; ``%%`` pairs are stepped over, keeping ``%%q`` literal.
+    (``plus_year``), on ``F`` it signs the year the width reaches
+    (``%+12F`` is ``+02026-09-03``), and anywhere else it is ``0``, so
+    ``%+5d`` reaches strftime as ``%05d``; a ``+`` that a later padding
+    flag outranks is dropped. Every other directive passes to strftime
+    with its prefix intact; ``%%`` pairs are stepped over, keeping
+    ``%%q`` literal.
 
     Args:
         dt (datetime): the moment being rendered.
@@ -130,6 +132,10 @@ def gnu_strftime(dt: datetime, fmt: str) -> str:
             flags = fmt[i + 1:j]
             if winning_pad(flags) == "+" and directive in YEARISH_DIGITS:
                 out.append(plus_year(dt, directive, width))
+            elif winning_pad(flags) == "+" and directive == "F":
+                # %F is %+4Y-%m-%d, so the width reaches the year.
+                year = plus_year(dt, "Y", width - 6 if width else None)
+                out.append(year + dt.strftime("-%m-%d"))
             else:
                 zero = "0" if winning_pad(flags) == "+" else ""
                 out.append("%" + flags.replace("+", zero) + fmt[j:k + 1])

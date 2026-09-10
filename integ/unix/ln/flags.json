@@ -635,6 +635,44 @@
         "T",
         "t"
       ]
+    },
+    {
+      "id": "ln_f_refuses_the_same_file",
+      "command": "printf same > /data/lnf/same.txt && ln -sf /data/lnf/same.txt /data/lnf/same.txt; echo code=$?; ln -f /data/lnf/same.txt /data/lnf/same.txt; echo code=$?; cat /data/lnf/same.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "code=1\ncode=1\nsame",
+        "stderr": "ln: '/data/lnf/same.txt' and '/data/lnf/same.txt' are the same file\nln: '/data/lnf/same.txt' and '/data/lnf/same.txt' are the same file\n"
+      },
+      "flags": [
+        "s",
+        "f"
+      ],
+      "seq": 611045,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ]
     }
   ]
 }

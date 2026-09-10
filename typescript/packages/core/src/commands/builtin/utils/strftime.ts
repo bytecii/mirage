@@ -210,13 +210,40 @@ export function strftime(dt: Date, fmt: string, utc: boolean): string {
 // before the sign becomes necessary.
 const YEARISH_DIGITS: Record<string, number> = { Y: 4, G: 4, C: 2 }
 
+// The directives that render a whole date or time. GNU applies the
+// padding flags to their parts, not to the finished text, so `-`, `_`
+// and `0` change nothing (%-D stays 09/03/26), `^` upcases the text, and
+// a width pads the whole on the left with spaces; %F is the exception,
+// being %+4Y-%m-%d, so a bare, `0` or `+` width reaches the year
+// (%12F is 002026-09-03, %+12F is +02026-09-03).
+const COMPOSITES = new Set(['c', 'D', 'F', 'r', 'R', 'T', 'x', 'X'])
+
+function paddedComposite(
+  base: string,
+  code: string,
+  pad: string | null,
+  upcase: boolean,
+  width: number | null,
+): string {
+  const out = upcase ? base.toUpperCase() : base
+  if (width === null || pad === '-') return out
+  if (code === 'F' && pad !== '_') {
+    const year = Number(out.slice(0, -6))
+    const yearWidth = width - 6
+    const sign = pad === '+' && (year > 9999 || yearWidth > 4) ? '+' : ''
+    return sign + String(year).padStart(yearWidth - sign.length, '0') + out.slice(-6)
+  }
+  return out.padStart(width, ' ')
+}
+
 function modified(base: string, code: string, flags: string, digits: string): string {
   const width = digits === '' ? null : Number(digits)
   if (code === '%') return base
   if (code === 'N') return width === null ? base : base.slice(0, width).padEnd(width, '0')
   if (flags === '' && width === null) return base
   const padFlags = flags.replace(/[^-_0+]/g, '')
-  let pad = padFlags === '' ? null : padFlags[padFlags.length - 1]
+  let pad: string | null = padFlags === '' ? null : (padFlags[padFlags.length - 1] ?? null)
+  if (COMPOSITES.has(code)) return paddedComposite(base, code, pad, flags.includes('^'), width)
   if (pad === '+') {
     const shown = YEARISH_DIGITS[code]
     if (shown !== undefined) {

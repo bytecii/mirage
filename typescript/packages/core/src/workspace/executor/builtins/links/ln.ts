@@ -409,13 +409,26 @@ export async function makeLink(
   let backupNote = ''
   const control = flags.backup
   const backs = control !== null && control !== 'none'
+  // GNU's same-name check, before any backup or removal: -f would
+  // otherwise unlink the source it is about to link, leaving `ln -sf a a`
+  // a self-loop where a file was. GNU waives it when a backup keeps the
+  // original, so `ln -sfb a a` still goes through.
+  if (
+    flags.force &&
+    !backs &&
+    absPath(plan.source, cwd) === plan.linkAbs &&
+    (visibleLink(namespace, plan.linkAbs) || (await pathStat(dispatch, plan.linkAbs)) !== null)
+  ) {
+    errors.push(`ln: '${targetTyped}' and '${typed}' are the same file\n`)
+    return
+  }
   // The door refuses an occupied name for a symlink; a byte copy would
   // overwrite one, and a backup has to see it first, so those two probe.
   let occupied =
     data !== null || backs
       ? visibleLink(namespace, plan.linkAbs) || (await pathStat(dispatch, plan.linkAbs)) !== null
       : false
-  if (occupied && control !== null && control !== 'none') {
+  if (occupied && backs) {
     const backup = await backupTarget(
       async (p) => await pathReaddir(dispatch, p.virtual),
       linkSpec,

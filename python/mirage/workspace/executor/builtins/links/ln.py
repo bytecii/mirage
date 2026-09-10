@@ -417,6 +417,10 @@ async def make_link(
     hard link of a symlink is the link itself, so it becomes a second
     symlink with the same target, unless ``-L`` asks for the target's
     bytes; a hard link of a file is a byte copy through the op door.
+    Under ``-f`` a destination that is the source's own name is refused
+    as GNU's ``are the same file`` before any backup or removal, since
+    removing it would remove the source; GNU waives that when a backup
+    keeps the original, so ``ln -sfb a a`` still goes through.
 
     Args:
         namespace (Namespace): the link table.
@@ -463,13 +467,21 @@ async def make_link(
         errors.append(f"ln: failed to create {kind} '{typed}': File exists\n")
         return
     link_spec = PathSpec.from_str_path(plan.link_abs)
+    backs = flags.backup not in (None, "none")
+    if (flags.force and not backs
+            and abs_path(plan.source, cwd) == plan.link_abs
+            and (_visible_link(namespace, plan.link_abs)
+                 or await path_stat(dispatch, plan.link_abs) is not None)):
+        errors.append(
+            f"ln: '{target_typed}' and '{typed}' are the same file\n")
+        return
     backup_note = ""
     # The door refuses an occupied name for a symlink; a byte copy would
     # overwrite one, and a backup has to see it first, so those two probe.
-    occupied = (_visible_link(namespace, plan.link_abs) or await path_stat(
-        dispatch, plan.link_abs) is not None if data is not None
-                or flags.backup not in (None, "none") else False)
-    if occupied and flags.backup not in (None, "none"):
+    occupied = (_visible_link(namespace, plan.link_abs)
+                or await path_stat(dispatch, plan.link_abs) is not None
+                if data is not None or backs else False)
+    if occupied and backs:
         backup = await backup_target(partial(_readdir, dispatch), link_spec,
                                      flags.backup or "existing", flags.suffix)
         if backup is not None:

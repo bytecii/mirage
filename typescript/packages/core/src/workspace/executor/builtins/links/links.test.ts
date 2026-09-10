@@ -47,6 +47,43 @@ function err(result: { stderr: Uint8Array | null }): string {
   return result.stderr === null ? '' : DEC.decode(result.stderr)
 }
 
+describe('ln -f on the same file', () => {
+  it('refuses the same file before removing it', async () => {
+    // Pinned on coreutils 9.7: `ln -sf a a` and `ln -f a a` are refused
+    // and the file survives, spelled as typed on both sides; a backup
+    // waives the check; a destination that is not there is not the same
+    // file and becomes a self-loop, as in GNU.
+    const ws = await makeWs()
+    try {
+      await ws.execute('printf hi > /data/a.txt')
+      const cases: [string, string][] = [
+        ['ln -sf /data/a.txt /data/a.txt', "'/data/a.txt' and '/data/a.txt'"],
+        ['ln -f /data/a.txt /data/a.txt', "'/data/a.txt' and '/data/a.txt'"],
+        ['cd /data && ln -sf a.txt ./a.txt', "'a.txt' and './a.txt'"],
+        ['cd /data && ln -sfT a.txt a.txt', "'a.txt' and 'a.txt'"],
+      ]
+      for (const [line, wording] of cases) {
+        const r = await ws.execute(line)
+        expect(r.exitCode).toBe(1)
+        expect(err(r)).toBe(`ln: ${wording} are the same file\n`)
+        const cat = await ws.execute('cat /data/a.txt')
+        expect(DEC.decode(cat.stdout)).toBe('hi')
+        expect(ws.namespace.isLink('/data/a.txt')).toBe(false)
+      }
+      let r = await ws.execute('ln -sfb /data/a.txt /data/a.txt')
+      expect(r.exitCode).toBe(0)
+      const kept = await ws.execute('cat /data/a.txt~')
+      expect(DEC.decode(kept.stdout)).toBe('hi')
+      expect(ws.namespace.readlink('/data/a.txt')).toBe('/data/a.txt')
+      r = await ws.execute('ln -sf /data/nope /data/nope')
+      expect(r.exitCode).toBe(0)
+      expect(ws.namespace.readlink('/data/nope')).toBe('/data/nope')
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
 describe('rm and unlink reach a link through the op door', () => {
   it('rm of a link goes through the door', async () => {
     // The strip used to write the node table directly, so a preOps
