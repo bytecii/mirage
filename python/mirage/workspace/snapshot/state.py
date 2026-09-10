@@ -31,6 +31,7 @@ from mirage.runtime.types import Language, ScriptSource
 from mirage.shell.console import (KILLED_OUTCOME, Channel, ConsoleChunk,
                                   JobConsole, RAMConsoleStore, exit_outcome)
 from mirage.shell.job_table import Job, JobStatus
+from mirage.shell.variable import ShellVar
 from mirage.types import ConsistencyPolicy, JsonValue, MountMode, ResourceName
 from mirage.version import __version__
 from mirage.workspace.mount.namespace import NodeMeta
@@ -43,7 +44,7 @@ from mirage.workspace.snapshot.drift import (capture_fingerprints,
                                              live_only_mount_prefixes)
 from mirage.workspace.snapshot.keys import (CacheKey, CLIKey, JobKey, MountKey,
                                             ResourceStateKey, ScriptKey,
-                                            SessionKey, StateKey)
+                                            StateKey)
 from mirage.workspace.snapshot.utils import FORMAT_VERSION, norm_mount_prefix
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,11 @@ logger = logging.getLogger(__name__)
 # shares directly installed programs.
 CLIOverrides = dict[str, dict[str, Any]
                     | tuple[str | CLISpec, dict[str, Any] | None]]
+
+# What a snapshot restores into the env plane, once the gate has passed
+# it: the parsed session tables and the env template (None when the
+# snapshot carries none).
+RestoredEnv = tuple[list[Session], dict[str, ShellVar] | None]
 
 
 def cli_config_dump(config: BaseModel | dict[str, JsonValue] | None,
@@ -307,11 +313,13 @@ async def apply_state_dict(ws, state: dict[str, Any]) -> None:
     from build_mount_args. This function is purely additive — it does
     not construct anything.
 
-    Restored session variables and the env template clear the target's
-    ``pre_session`` gate first (``gate_restored_vars``), name by name;
-    a refusal aborts the load. A snapshot mount with no mount at that
+    Every session table and the env template clear the target's
+    ``pre_session`` gate first (``_gate_restored_state``), before any
+    mount, session or template lands, so a refusal aborts the load with
+    the workspace as it was. A snapshot mount with no mount at that
     exact prefix here is not restored and is reported at warning level.
     """
+    sessions, seed_vars = await _gate_restored_state(ws, state)
     # load_state runs for ALL mounts (overridden too), so disk content
     # is written into the new root, redis content into the new URL, etc.
     # Cred-only resources (S3 et al.) define load_state as no-op.
@@ -329,15 +337,11 @@ async def apply_state_dict(ws, state: dict[str, Any]) -> None:
             continue
         mount.resource.load_state(m[MountKey.RESOURCE_STATE])
 
-    await _restore_sessions(ws, state)
+    await _restore_sessions(ws, state, sessions)
     # The env template is constructor state the rebuilt workspace was
     # never given: without it a session created after the load starts
     # bare while restored ones carry every workspace env entry.
-    seed = state.get(StateKey.ENV)
-    if seed:
-        seed_vars = vars_from_fields(seed)
-        await gate_restored_vars(ws.policies, ws._session_mgr.default_id,
-                                 seed_vars)
+    if seed_vars is not None:
         ws._session_mgr.restore_seed(seed_vars)
     # current_agent_id is not restored: the agent of a line is carried
     # per execution (the call's agent_id, else the default), never held
@@ -356,7 +360,45 @@ async def _restore_nodes(ws, state: dict[str, Any]) -> None:
     await ws._namespace.replace_nodes(entries)
 
 
-async def _restore_sessions(ws, state: dict[str, Any]) -> None:
+async def _gate_restored_state(ws, state: dict[str, Any]) -> RestoredEnv:
+    """Vet every env input the snapshot carries before any of it lands.
+
+    Each session table and the env template fire the ``pre_session``
+    gate (``gate_restored_vars``) here, ahead of the mounts' load_state
+    and the session writes: a refusal that arrived once an earlier
+    session had already been overwritten left the workspace in a state
+    no snapshot describes, and one its close then persisted. The
+    template is gated under the id the restore makes the default
+    session, which is the session a live write of it would land in.
+
+    Args:
+        ws (Workspace): the target workspace.
+        state (dict[str, Any]): the snapshot state.
+
+    Returns:
+        The parsed session tables, and the env template or None when
+        the snapshot carries none.
+    """
+    sessions = [
+        Session.from_dict(s_data)
+        for s_data in state.get(StateKey.SESSIONS, [])
+    ]
+    for fields in sessions:
+        await gate_restored_vars(ws.policies, fields.session_id, fields.vars)
+    seed = state.get(StateKey.ENV)
+    if not seed:
+        return sessions, None
+    default_sid = state.get(StateKey.DEFAULT_SESSION_ID)
+    seed_vars = vars_from_fields(seed)
+    await gate_restored_vars(
+        ws.policies,
+        ws._session_mgr.default_id if default_sid is None else default_sid,
+        seed_vars)
+    return sessions, seed_vars
+
+
+async def _restore_sessions(ws, state: dict[str, Any],
+                            tables: list[Session]) -> None:
     default_sid = state.get(StateKey.DEFAULT_SESSION_ID)
     if default_sid is not None:
         # The snapshot's default session identity wins over the live
@@ -369,8 +411,8 @@ async def _restore_sessions(ws, state: dict[str, Any]) -> None:
         })
         ws._meta_written = True
     restored: list[Any] = []
-    for s_data in state.get(StateKey.SESSIONS, []):
-        sid = s_data[SessionKey.SESSION_ID]
+    for fields in tables:
+        sid = fields.session_id
         if sid == default_sid:
             session = ws._session_mgr.get(sid)
         else:
@@ -381,8 +423,6 @@ async def _restore_sessions(ws, state: dict[str, Any]) -> None:
                 # running workspace): the restored state wins, matching
                 # the replace_from_snapshot contract below.
                 session = ws._session_mgr.get(sid)
-        fields = Session.from_dict(s_data)
-        await gate_restored_vars(ws.policies, sid, fields.vars)
         set_cwd(session, fields.cwd)
         session.vars = fields.vars
         session.mount_modes = fields.mount_modes

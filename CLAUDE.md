@@ -659,9 +659,10 @@ Invoke the venv's `pre-commit` binary directly (not via `uv --directory python r
   `SHELL_BOOKKEEPING` in `session/state.py`) and the embedder seeding a
   session before it is handed out (`SessionManager.env`). A `for` loop's
   variable is not written back at all (bash leaves it at its last value). A
-  snapshot restore is **not** exempt: `gate_restored_vars` fires the gate for
-  every restored variable and the env template before any of them lands, and
-  a refusal aborts the load.
+  snapshot restore is **not** exempt: every session table and the env template
+  a snapshot carries clear the gate (`gate_restored_vars`) before any of it
+  lands, mount state included, so a refusal aborts the load with the workspace
+  as it was rather than half-restored.
 - **The record client is a substrate, not a session detail.** Sessions, the
   namespace node table and workspace metadata are three tables that persist the
   same way, so the keyed-record clients live in `workspace/record/`

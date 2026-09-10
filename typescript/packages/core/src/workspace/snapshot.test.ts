@@ -596,13 +596,19 @@ class DenyGate implements Policy {
   }
 }
 
-function gatedWorkspace(prefix = '/data'): Workspace {
+function gatedWorkspace(prefix = '/data', sessionId?: string): Workspace {
   const ram = new RAMResource()
   const ops = new OpsRegistry()
   ops.registerResource(ram)
   return new Workspace(
     { [prefix]: ram },
-    { mode: MountMode.WRITE, ops, shellParser: parser, policies: [new DenyGate()] },
+    {
+      mode: MountMode.WRITE,
+      ops,
+      shellParser: parser,
+      policies: [new DenyGate()],
+      ...(sessionId !== undefined ? { sessionId } : {}),
+    },
   )
 }
 
@@ -632,6 +638,55 @@ describe('applyStateDict and the deployment', () => {
     await target.close()
   })
 
+  // A snapshot holding several sessions used to land each one as its
+  // table cleared the gate, so a refusal on a later session left the
+  // earlier ones overwritten, the default identity adopted and every
+  // mount's state loaded: a workspace matching no snapshot, and one a
+  // close would then persist. Every table is vetted before anything lands.
+  it('a refused session table leaves the workspace untouched', async () => {
+    const ram = new RAMResource()
+    const ops = new OpsRegistry()
+    ops.registerResource(ram)
+    const source = new Workspace(
+      { '/data': ram },
+      { mode: MountMode.WRITE, ops, shellParser: parser, sessionId: 'src' },
+    )
+    expect((await source.execute('echo restored > /data/f.txt')).exitCode).toBe(0)
+    expect((await source.execute('export PUBLIC_A=1')).exitCode).toBe(0)
+    source.createSession('s2')
+    expect((await source.execute('export GATE_X=1', { sessionId: 's2' })).exitCode).toBe(0)
+    const state = await toStateDict(source)
+    await source.close()
+    const target = gatedWorkspace('/data', 'tgt')
+    expect((await target.execute('export KEEP=1')).exitCode).toBe(0)
+    await expect(applyStateDict(target, state)).rejects.toBeInstanceOf(PolicyDenied)
+    expect(Object.hasOwn(target.env, 'PUBLIC_A')).toBe(false)
+    expect(target.env.KEEP).toBe('1')
+    expect(target.listSessions().map((s) => s.sessionId)).toEqual(['tgt'])
+    expect((await target.execute('test -e /data/f.txt')).exitCode).toBe(1)
+    await target.close()
+  })
+
+  // The env template is vetted with the tables, so a refused template
+  // lands no session either.
+  it('a refused env template lands no session', async () => {
+    const ram = new RAMResource()
+    const ops = new OpsRegistry()
+    ops.registerResource(ram)
+    const source = new Workspace(
+      { '/data': ram },
+      { mode: MountMode.WRITE, ops, shellParser: parser, env: { GATE_X: '1' } },
+    )
+    expect((await source.execute('unset GATE_X; export PUBLIC_A=1')).exitCode).toBe(0)
+    const state = await toStateDict(source)
+    await source.close()
+    const target = gatedWorkspace()
+    await expect(applyStateDict(target, state)).rejects.toBeInstanceOf(PolicyDenied)
+    expect(Object.hasOwn(target.env, 'PUBLIC_A')).toBe(false)
+    expect(Object.hasOwn(target.env, 'GATE_X')).toBe(false)
+    await target.close()
+  })
+
   // A snapshot prefix the workspace does not mount was skipped in silence
   // (#1019); the state is still not restored (never into an ancestor
   // mount), but the load now says so.
@@ -653,6 +708,44 @@ describe('applyStateDict and the deployment', () => {
       const messages = warn.mock.calls.map((c) => String(c[0]))
       expect(messages.some((m) => m.includes('/data') && m.includes('not restored'))).toBe(true)
       expect(messages.some((m) => m.includes('/elsewhere'))).toBe(false)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // A mount that asks to be handed back live (`needs_override`, a
+  // redacted credential) skipped the prefix check along with its
+  // loadState, so a renamed remote mount, the case the report exists
+  // for, stayed silent while Python reported it. The skip itself stays:
+  // a live mount at the prefix is not loaded from the saved state.
+  it('a live-only snapshot mount with no matching prefix is reported too', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const data = new RAMResource()
+      const keep = new RAMResource()
+      const ops = new OpsRegistry()
+      ops.registerResource(data)
+      const source = new Workspace(
+        { '/data': data, '/keep': keep },
+        { mode: MountMode.WRITE, ops, shellParser: parser },
+      )
+      const state = await toStateDict(source)
+      await source.close()
+      for (const m of state.mounts) m.resource_state = { ...m.resource_state, needs_override: true }
+      const live = new RAMResource()
+      const liveOps = new OpsRegistry()
+      liveOps.registerResource(live)
+      const loadState = vi.spyOn(live, 'loadState')
+      const target = new Workspace(
+        { '/keep': live },
+        { mode: MountMode.WRITE, ops: liveOps, shellParser: parser },
+      )
+      await applyStateDict(target, state)
+      await target.close()
+      const messages = warn.mock.calls.map((c) => String(c[0]))
+      expect(messages.some((m) => m.includes('/data') && m.includes('not restored'))).toBe(true)
+      expect(messages.some((m) => m.includes('/keep'))).toBe(false)
+      expect(loadState).not.toHaveBeenCalled()
     } finally {
       warn.mockRestore()
     }

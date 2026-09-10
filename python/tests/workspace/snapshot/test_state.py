@@ -423,6 +423,67 @@ async def test_a_restore_the_gate_allows_lands_every_variable():
         await target.close()
 
 
+# A snapshot holding several sessions used to land each one as its table
+# cleared the gate, so a refusal on a later session left the earlier ones
+# overwritten, the default identity adopted and every mount's state
+# loaded: a workspace matching no snapshot, and one a close would then
+# persist. Every table is vetted before anything lands.
+@pytest.mark.asyncio
+async def test_a_refused_session_table_leaves_the_workspace_untouched():
+    source = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       session_id="src")
+    try:
+        assert (await source.execute("echo restored > /f.txt")).exit_code == 0
+        assert (await source.execute("export PUBLIC_A=1")).exit_code == 0
+        source.create_session("s2")
+        assert (await source.execute("export GATE_X=1",
+                                     session_id="s2")).exit_code == 0
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    target = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       session_id="tgt",
+                       policies=[DenyGate()])
+    try:
+        assert (await target.execute("export KEEP=1")).exit_code == 0
+        with pytest.raises(PolicyDenied):
+            await apply_state_dict(target, state)
+        assert "PUBLIC_A" not in target.env
+        assert target.env.get("KEEP") == "1"
+        assert [s.session_id for s in target.list_sessions()] == ["tgt"]
+        assert (await target.execute("test -e /f.txt")).exit_code == 1
+    finally:
+        await target.close()
+
+
+# The env template is vetted with the tables, so a refused template
+# lands no session either.
+@pytest.mark.asyncio
+async def test_a_refused_env_template_lands_no_session():
+    source = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       env={"GATE_X": "1"})
+    try:
+        assert (
+            await
+            source.execute("unset GATE_X; export PUBLIC_A=1")).exit_code == 0
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    target = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       policies=[DenyGate()])
+    try:
+        with pytest.raises(PolicyDenied):
+            await apply_state_dict(target, state)
+        assert "PUBLIC_A" not in target.env
+        assert "GATE_X" not in target.env
+    finally:
+        await target.close()
+
+
 # A snapshot prefix the workspace does not mount was skipped in silence
 # (#1019); the state is still not restored (never into an ancestor
 # mount), but the load now says so.
