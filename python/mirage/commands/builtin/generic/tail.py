@@ -50,6 +50,10 @@ class TailFlags:
     interval: float = DEFAULT_SLEEP_INTERVAL
 
 
+RETRY_IGNORED = (b"tail: warning: --retry ignored; --retry is useful only "
+                 b"when following\n")
+
+
 def _follow_flags(fl: FlagView) -> tuple[bool, bool, bool]:
     """``-f``, ``--follow[=HOW]`` and ``-F`` as (follow, by name, retry).
 
@@ -505,10 +509,16 @@ async def tail_generic(
     except ValueError as exc:
         return None, IOResult(exit_code=1, stderr=str(exc).encode())
     counts = parsed.counts
+    # GNU warns first, then tails as if --retry were not there.
+    retry_warning = (RETRY_IGNORED
+                     if parsed.retry and not parsed.follow else b"")
     if paths:
         show_headers = (parsed.verbose or len(paths) > 1) and not parsed.quiet
         readable, err = await split_readable(paths, stat, "tail")
         io = operands_io(err)
+        if retry_warning:
+            io.stderr = retry_warning + (io.stderr if isinstance(
+                io.stderr, bytes) else b"")
         if parsed.follow:
             if parsed.retry and not parsed.follow_name:
                 io.stderr = (
@@ -521,9 +531,12 @@ async def tail_generic(
                 _note(io, "tail: no files remaining\n")
                 io.exit_code = 1
                 return None, io
+            # A follow reads the backend itself, never the read-through
+            # cache: what it is polling for is exactly the change the
+            # cached body does not have yet.
             return _follow(readable,
                            pending,
-                           read=cache_aware_read(stream),
+                           read=stream,
                            read_range=read_range,
                            stat=stat,
                            counts=counts,
@@ -540,8 +553,9 @@ async def tail_generic(
                           from_byte=counts.from_byte,
                           show_headers=show_headers), io
     source = resolve_source(opts.stdin, "tail: missing operand")
-    return tail(source,
-                n=counts.lines,
-                c=counts.byte_count,
-                from_line=counts.from_line,
-                from_byte=counts.from_byte), IOResult()
+    return tail(
+        source,
+        n=counts.lines,
+        c=counts.byte_count,
+        from_line=counts.from_line,
+        from_byte=counts.from_byte), IOResult(stderr=retry_warning or None)

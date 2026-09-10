@@ -67,6 +67,10 @@ describe('strftime GNU directives', () => {
       '%+5d|%+d|%+5b|%+2q|%_+5Y|%+_5Y|%+05Y|%0+5Y|%-+5Y|%+-5Y',
       '00001|01|00Jan|01|+2026| 2026|02026|+2026|+2026|2026',
     ],
+    ['%^#B|%#^B|%#B|%^B|%#a|%^#a|%#^b', 'JANUARY|JANUARY|JANUARY|JANUARY|THU|THU|JAN'],
+    ['%^#p|%#^p|%#p|%^p|%^#Z|%#Z|%#^Z|%^Z|%#d', 'am|am|am|AM|utc|utc|utc|UTC|01'],
+    ['%^#B|%#^B|%#B|%^B|%#a|%^#a|%#^b', 'JANUARY|JANUARY|JANUARY|JANUARY|THU|THU|JAN'],
+    ['%^#p|%#^p|%#p|%^p|%^#Z|%#Z|%#^Z|%^Z|%#d', 'am|am|am|AM|utc|utc|utc|UTC|01'],
   ])('%s renders %s', (fmt, expected) => {
     expect(strftime(MOMENT, fmt, true)).toBe(expected)
   })

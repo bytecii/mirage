@@ -13,11 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import type { IOResult } from '../../../io/types.ts'
+import { type ByteSource, type IOResult, materialize } from '../../../io/types.ts'
 import { FileStat, FileType, PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
 import { mountKey } from '../../../utils/key_prefix.ts'
 import { tailGeneric } from './tail.ts'
+import { runWithCacheManager } from '../../../cache/context.ts'
+import { RAMFileCacheStore } from '../../../cache/file/ram.ts'
+import { CacheManager } from '../../../cache/manager.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
@@ -180,6 +183,55 @@ describe('tail -f', () => {
     expect(text).toBe(
       '==> /d/f <==\nl1\n\n==> /d/f <==\nl1\n\n==> /d/f <==\nl2\n\n==> /d/f <==\nl2\n',
     )
+  })
+
+  it('reads past the read-through cache while following', async () => {
+    // A warm cache holds the body the last one-shot read saw; a follow
+    // polls for exactly what that body does not have yet, so it reads
+    // the backend itself, from the first print on.
+    const fs = new Growing(new Map())
+    fs.set('/s3/a.txt', 'l1\n')
+    const cached = new PathSpec({
+      virtual: '/s3/a.txt',
+      directory: '/s3/',
+      resolved: true,
+      resourcePath: mountKey('/s3/a.txt', '/s3/'),
+    })
+    const cache = new RAMFileCacheStore()
+    await cache.set('/s3/a.txt', ENC.encode('stale\n'))
+    const manager = new CacheManager(cache, null, '/s3/', true)
+    const abort = new AbortController()
+    const [stream] = (await runWithCacheManager(manager, () =>
+      tailGeneric([cached], [], followOpts(abort), fs.stream, fs.stat),
+    )) as [AsyncIterable<Uint8Array>, IOResult]
+    const grower = (async () => {
+      await sleep(60)
+      fs.append('/s3/a.txt', 'l2\n')
+    })()
+    const text = await drainFor(stream, 200, abort)
+    await grower
+    expect(text).toBe('l1\nl2\n')
+  })
+
+  it('--retry without follow warns and tails anyway', async () => {
+    // Pinned on coreutils 9.7: the warning comes first, the tail is
+    // printed as if --retry were not there, and the status is the
+    // operands' own.
+    const fs = new Growing(new Map())
+    fs.set('/d/f', 'l1\nl2\n')
+    const [stream, io] = (await tailGeneric(
+      [spec('/d/f')],
+      [],
+      opts({ retry: true, n: '1' }),
+      fs.stream,
+      fs.stat,
+      fs.readRange,
+    )) as [ByteSource, IOResult]
+    expect(DEC.decode(await materialize(stream))).toBe('l2\n')
+    expect(DEC.decode(io.stderr as Uint8Array)).toBe(
+      'tail: warning: --retry ignored; --retry is useful only when following\n',
+    )
+    expect(io.exitCode).toBe(0)
   })
 
   it('switches headers as files take turns', async () => {

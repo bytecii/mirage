@@ -278,6 +278,8 @@ function concat(chunks: Uint8Array[]): Uint8Array {
   return out
 }
 
+const RETRY_IGNORED = 'tail: warning: --retry ignored; --retry is useful only when following\n'
+
 export async function tailGeneric(
   paths: PathSpec[],
   texts: string[],
@@ -287,6 +289,10 @@ export async function tailGeneric(
   readRange: ReadRange | null = null,
 ): Promise<CommandFnResult> {
   const fl = new FlagView(opts.flags, specOf('tail'))
+  // A follow reads the backend itself, never the read-through cache:
+  // what it is polling for is exactly the change the cached body does
+  // not have yet.
+  const backend = stream
   stream = cacheAwareStreamEager(stream)
   const nRaw = fl.asStr('n') ?? null
   const cRaw = fl.asStr('c') ?? null
@@ -298,6 +304,8 @@ export async function tailGeneric(
   const qFlag = fl.asBool('q')
   const vFlag = fl.asBool('v')
   const counts = parseCounts(nRaw, cRaw)
+  // GNU warns first, then tails as if --retry were not there.
+  const retryWarning = following.retry && !following.follow ? RETRY_IGNORED : ''
   if (paths.length > 0 && following.follow && stat !== null) {
     const showHeaders = (vFlag || paths.length > 1) && !qFlag
     const readable: PathSpec[] = []
@@ -339,7 +347,7 @@ export async function tailGeneric(
       follow(
         readable,
         pending,
-        stream,
+        backend,
         stat,
         readRange,
         counts,
@@ -380,7 +388,7 @@ export async function tailGeneric(
     const io = new IOResult({
       cache,
       exitCode: err === '' ? 0 : 1,
-      stderr: err === '' ? null : ENC.encode(err),
+      stderr: retryWarning + err === '' ? null : ENC.encode(retryWarning + err),
     })
     if (printed === 0 && err !== '') return [null, io]
     const out: ByteSource = concat(chunks)
@@ -390,5 +398,8 @@ export async function tailGeneric(
   if (raw === null) {
     return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('tail: missing operand\n') })]
   }
-  return [tailBytes(raw, counts), new IOResult()]
+  return [
+    tailBytes(raw, counts),
+    new IOResult({ stderr: retryWarning === '' ? null : ENC.encode(retryWarning) }),
+  ]
 }

@@ -111,6 +111,44 @@
       "flags": [
         "f"
       ]
+    },
+    {
+      "id": "tail_retry_without_follow_warns",
+      "seq": 960017,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'l1\\nl2\\n' > /data/tfr.txt && tail -n1 --retry /data/tfr.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "l2\n",
+        "stderr": "tail: warning: --retry ignored; --retry is useful only when following\n"
+      },
+      "flags": [
+        "n",
+        "retry"
+      ]
     }
   ]
 }

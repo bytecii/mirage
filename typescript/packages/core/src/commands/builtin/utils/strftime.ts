@@ -201,7 +201,10 @@ export function strftime(dt: Date, fmt: string, utc: boolean): string {
 // (%0_d is " 3", %_0d is "03"): `-` strips the padding and ignores the
 // width (%-3d is "3"), `_` pads with spaces, `0` with zeros, and a bare
 // width fills with zeros for a digit-led value and spaces otherwise
-// (%3d is "003", %5b is "  Jan"). `^` upcases and `#` swaps case. `+`
+// (%3d is "003", %5b is "  Jan"). `^` upcases; `#` is per directive
+// and outranks `^`: it lowers %p and %Z, uppers the day and month names,
+// and changes nothing else (%^#B and %#^B are both JANUARY, %^#p and
+// %#^p both am). `+`
 // pads like `0`, and on %Y, %G and %C also leads with a sign when the
 // value outgrows the digits the directive normally shows or the width
 // leaves room for one (%+5Y is "+2026", %+4Y is "2026", %+6Y is
@@ -257,8 +260,12 @@ function modified(base: string, code: string, flags: string, digits: string): st
   if (pad === '-') out = out.replace(/^[0 ]+(?=.)/, '')
   if (pad === '_') out = out.replace(/^0+(?=.)/, (zeros) => ' '.repeat(zeros.length))
   if (pad === '0') out = out.replace(/^ +(?=.)/, (spaces) => '0'.repeat(spaces.length))
-  if (flags.includes('^')) out = out.toUpperCase()
-  if (flags.includes('#')) out = out === out.toUpperCase() ? out.toLowerCase() : out.toUpperCase()
+  if (flags.includes('#')) {
+    if (code === 'p' || code === 'Z') out = out.toLowerCase()
+    else if ('aAbBh'.includes(code)) out = out.toUpperCase()
+  } else if (flags.includes('^')) {
+    out = out.toUpperCase()
+  }
   if (width !== null && pad !== '-') {
     const fill = pad === '_' ? ' ' : pad === '0' || /^\d/.test(out) ? '0' : ' '
     out = out.padStart(width, fill)

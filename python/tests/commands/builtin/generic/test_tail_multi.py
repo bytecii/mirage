@@ -17,6 +17,9 @@ from contextlib import suppress
 
 import pytest
 
+from mirage.cache.context import push_cache_manager
+from mirage.cache.file.ram import RAMFileCacheStore
+from mirage.cache.manager import CacheManager
 from mirage.commands.builtin.generic.tail import \
     parse_flags as tail_parse_flags
 from mirage.commands.builtin.generic.tail import tail_generic, tail_multi
@@ -201,6 +204,62 @@ async def test_follow_prints_a_repeated_operand_once_per_occurrence():
     await grower
     assert b"".join(chunks) == (b"==> /d/f <==\nl1\n\n==> /d/f <==\nl1\n"
                                 b"\n==> /d/f <==\nl2\n\n==> /d/f <==\nl2\n")
+
+
+@pytest.mark.asyncio
+async def test_follow_reads_past_the_read_through_cache():
+    # A warm cache holds the body the last one-shot read saw; a follow
+    # polls for exactly what that body does not have yet, so it reads
+    # the backend itself, from the first print on.
+    fs = _Growing({"/s3/a.txt": b"l1\n"})
+    spec = PathSpec(resource_path=mount_key("/s3/a.txt", "/s3/"),
+                    virtual="/s3/a.txt",
+                    directory="/s3/",
+                    resolved=True)
+    cache = RAMFileCacheStore()
+    await cache.set("/s3/a.txt", b"stale\n")
+    prev = push_cache_manager(CacheManager(cache, None, "/s3/", True))
+    try:
+        stream, _ = await tail_generic([spec], [], _follow_opts(), fs.stat,
+                                       fs.read)
+        assert stream is not None
+
+        async def grow() -> None:
+            await asyncio.sleep(0.06)
+            fs.data["/s3/a.txt"] += b"l2\n"
+
+        grower = asyncio.create_task(grow())
+        chunks = await _drain_for(stream, 0.2)
+        await grower
+    finally:
+        push_cache_manager(prev)
+    assert b"".join(chunks) == b"l1\nl2\n"
+
+
+@pytest.mark.asyncio
+async def test_retry_without_follow_warns_and_tails_anyway():
+    # Pinned on coreutils 9.7: the warning comes first, the tail is
+    # printed as if --retry were not there, and the status is the
+    # operands' own.
+    fs = _Growing({"/d/f": b"l1\nl2\n"})
+    stream, io = await tail_generic(
+        _paths("/d/f"), [], CommandOpts(flags={
+            "retry": True,
+            "n": "1"
+        }), fs.stat, fs.read, fs.read_range)
+    assert stream is not None
+    assert await _collect(stream) == b"l2\n"
+    assert io.stderr == (b"tail: warning: --retry ignored; --retry is useful "
+                         b"only when following\n")
+    assert io.exit_code == 0
+    stream, io = await tail_generic(_paths("/d/nope"), [],
+                                    CommandOpts(flags={"retry": True}),
+                                    fs.stat, fs.read, fs.read_range)
+    assert stream is None
+    assert io.stderr.startswith(
+        b"tail: warning: --retry ignored; --retry is useful only when "
+        b"following\ntail: ")
+    assert io.exit_code == 1
 
 
 @pytest.mark.asyncio
