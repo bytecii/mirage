@@ -487,6 +487,47 @@ async def test_a_refused_env_template_lands_no_session():
         await target.close()
 
 
+# A session the restore had to create was a bare one, under no profile,
+# while its table had cleared the gate under the default profile's
+# policy (`script_of` for an id the manager does not know); the created
+# session now runs under that profile, so what the gate judged is what
+# lands, and a restored session no longer wakes unrestricted.
+@pytest.mark.asyncio
+async def test_a_session_the_restore_creates_runs_under_the_default_profile():
+    source = Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+    try:
+        assert (await source.execute("echo kept > /f.txt")).exit_code == 0
+        source.create_session("s2")
+        assert (await source.execute("export PUBLIC_A=1",
+                                     session_id="s2")).exit_code == 0
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    target = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       profiles={"default": {
+                           "commands": {
+                               "deny": ["rm"]
+                           }
+                       }})
+    try:
+        await apply_state_dict(target, state)
+        compiled = target._session_mgr.default_profile
+        assert compiled is not None
+        restored = target.get_session("s2")
+        assert restored.profile == "default"
+        assert restored.commands is compiled.commands
+        assert restored.script is compiled.script
+        assert target._session_mgr.script_of("s2") is compiled.script
+        assert restored.env.get("PUBLIC_A") == "1"
+        refused = await target.execute("rm /f.txt", session_id="s2")
+        assert refused.exit_code == 126
+        assert refused.stderr == b"rm: Permission denied\n"
+        assert (await target.execute("test -e /f.txt")).exit_code == 0
+    finally:
+        await target.close()
+
+
 # A snapshot prefix the workspace does not mount was skipped in silence
 # (#1019); the state is still not restored (never into an ancestor
 # mount), but the load now says so.

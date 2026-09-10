@@ -687,6 +687,49 @@ describe('applyStateDict and the deployment', () => {
     await target.close()
   })
 
+  // A session the restore had to create was a bare one, under no
+  // profile, while its table had cleared the gate under the default
+  // profile's policy (`scriptOf` for an id the manager does not know);
+  // the created session now runs under that profile, so what the gate
+  // judged is what lands, and a restored session no longer wakes
+  // unrestricted.
+  it('a session the restore creates runs under the default profile', async () => {
+    const source = buildWorkspace()
+    expect((await source.execute('echo kept > /data/f.txt')).exitCode).toBe(0)
+    source.createSession('s2')
+    expect((await source.execute('export PUBLIC_A=1', { sessionId: 's2' })).exitCode).toBe(0)
+    const state = await toStateDict(source)
+    await source.close()
+    const ram = new RAMResource()
+    const ops = new OpsRegistry()
+    ops.registerResource(ram)
+    const target = new Workspace(
+      { '/data': ram },
+      {
+        mode: MountMode.WRITE,
+        ops,
+        shellParser: parser,
+        profiles: {
+          default: { commands: { deny: [{ reason: 'no removals', commands: ['rm'] }] } },
+        },
+      },
+    )
+    await applyStateDict(target, state)
+    const compiled = target.sessionManager.defaultProfile
+    expect(compiled).not.toBeNull()
+    const restored = target.getSession('s2')
+    expect(restored.profile).toBe('default')
+    expect(restored.commands).toBe(compiled?.commands)
+    expect(restored.script).toBe(compiled?.script)
+    expect(target.sessionManager.scriptOf('s2')).toBe(compiled?.script)
+    expect(restored.env.PUBLIC_A).toBe('1')
+    const refused = await target.execute('rm /data/f.txt', { sessionId: 's2' })
+    expect(refused.exitCode).toBe(126)
+    expect(new TextDecoder().decode(refused.stderr)).toContain('rm: Permission denied')
+    expect((await target.execute('test -e /data/f.txt')).exitCode).toBe(0)
+    await target.close()
+  })
+
   // A snapshot prefix the workspace does not mount was skipped in silence
   // (#1019); the state is still not restored (never into an ancestor
   // mount), but the load now says so.

@@ -36,6 +36,7 @@ from mirage.shell.variable import ShellVar
 from mirage.types import ConsistencyPolicy, JsonValue, MountMode, ResourceName
 from mirage.version import __version__
 from mirage.workspace.mount.namespace import NodeMeta
+from mirage.workspace.session.resolve import narrow
 from mirage.workspace.session.session import (Session, vars_from_fields,
                                               vars_to_fields)
 from mirage.workspace.session.shell_dirs import set_cwd
@@ -308,7 +309,10 @@ def build_mount_args(state: dict[str, Any],
     )
 
 
-async def apply_state_dict(ws, state: dict[str, Any]) -> None:
+async def apply_state_dict(ws,
+                           state: dict[str, Any],
+                           *,
+                           replace_cache: bool = False) -> None:
     """Restore post-construction state into an already-built Workspace.
 
     Restores: resource load_state (content, fresh disk root, etc.),
@@ -323,8 +327,22 @@ async def apply_state_dict(ws, state: dict[str, Any]) -> None:
     mount, session or template lands, so a refusal aborts the load with
     the workspace as it was. A snapshot mount with no mount at that
     exact prefix here is not restored and is reported at warning level.
+
+    Args:
+        ws (Workspace): the target workspace.
+        state (dict[str, Any]): the snapshot state.
+        replace_cache (bool): drop the live cache once the gate has
+            passed, ahead of the mounts' load_state, so the snapshot's
+            entries are all that is left. A checkout onto a running
+            workspace asks for this; a workspace built for the state
+            has nothing to drop. It sits behind the gate because the
+            callers used to clear before calling, and a refused
+            checkout then still sent every cached read back to an
+            origin that may have moved.
     """
     sessions, seed_vars = await _gate_restored_state(ws, state)
+    if replace_cache:
+        await ws._cache.clear()
     # load_state runs for ALL mounts (overridden too), so disk content
     # is written into the new root, redis content into the new URL, etc.
     # Cred-only resources (S3 et al.) define load_state as no-op.
@@ -375,6 +393,14 @@ async def _gate_restored_state(ws, state: dict[str, Any]) -> RestoredEnv:
     no snapshot describes, and one its close then persisted. The
     template is gated under the id the restore makes the default
     session, which is the session a live write of it would land in.
+
+    Each table is judged under the policy the target gives its
+    session, never the one the snapshot's own profile compiled, which
+    was the source deployment's and does not land: the live session's
+    for an id the target already has, and the default profile's for
+    one the restore will create, which is what ``script_of`` answers
+    for an id the manager does not know and the profile
+    ``_restore_sessions`` then puts the created session under.
 
     Args:
         ws (Workspace): the target workspace.
@@ -428,6 +454,16 @@ async def _restore_sessions(ws, state: dict[str, Any],
                 # running workspace): the restored state wins, matching
                 # the replace_from_snapshot contract below.
                 session = ws._session_mgr.get(sid)
+            else:
+                # A session the restore creates is one created without
+                # a profile name, so it runs under the document's
+                # default: the policy `_gate_restored_state` judged its
+                # table under, where a bare session ran under none.
+                # Stamped ahead of the table so the grants below stay
+                # the snapshot's, as they do for a session that exists.
+                compiled = ws._session_mgr.default_profile
+                if compiled is not None:
+                    narrow(session, compiled)
         set_cwd(session, fields.cwd)
         session.vars = fields.vars
         session.mount_modes = fields.mount_modes
