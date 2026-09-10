@@ -26,6 +26,26 @@ import { LocalRuntime } from './local.ts'
 const DEC = new TextDecoder()
 
 describe('LocalRuntime', () => {
+  it.each([null, new Uint8Array(), new Uint8Array(300_000).fill(120)])(
+    'keeps script-CLI input off the process argv',
+    async (stdin) => {
+      const rt = new LocalRuntime()
+      const result = await rt.run({
+        code: "from __future__ import annotations\nimport sys\nprint(argv)\nprint(stdin is None, len(stdin or b''), sys.stdin.buffer.read() == (stdin or b''))",
+        prog: 'pager',
+        args: ['one'],
+        scriptCli: true,
+        env: {},
+        stdin,
+      })
+      expect(result.exitCode).toBe(0)
+      expect(DEC.decode(result.stdout)).toBe(
+        `['pager', 'one']\n${stdin === null ? 'True' : 'False'} ${String(stdin?.length ?? 0)} True\n`,
+      )
+      await rt.close()
+    },
+  )
+
   it.each([MountMode.READ, MountMode.WRITE, MountMode.EXEC])(
     'uses only the host environment for the version process in %s mode',
     async (mode) => {

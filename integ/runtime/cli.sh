@@ -21,11 +21,12 @@
 # so the driver emits the case world as JSON with jq and both loaders
 # parse it; inline script sources become .py files next to the yaml.
 #
-# Usage: cli.sh "<py-cli>" "<ts-cli>"
+# Usage: cli.sh "<py-cli>" "<ts-cli>" [suite ...]
 set -uo pipefail
 
 PY_CLI="${1:?python mirage cli command}"
 TS_CLI="${2:?typescript mirage cli command}"
+ONLY_SUITES=("${@:3}")
 SUITE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STRICT="${INTEG_RUNTIME_STRICT:-0}"
 
@@ -137,18 +138,20 @@ run_case() {
   # parent first: the redirect refuses a missing directory, and it
   # refuses silently here, which reads as a file that was never
   # declared (run.py and run.ts mkdir the parent the same way).
-  local prefix name ok=0
+  local prefix name quoted_path quoted_parent ok=0
   while IFS=$'\t' read -r prefix name; do
     [ -n "$prefix" ] || continue
+    quoted_path=$(jq -nr --arg path "$prefix/$name" '$path | @sh')
     case "$name" in
       */*)
-        $cli execute -w "$wsid" -c "mkdir -p $prefix/${name%/*}" \
-          >/dev/null 2>&1 </dev/null
+        quoted_parent=$(jq -nr --arg path "$prefix/${name%/*}" '$path | @sh')
+        $cli execute -w "$wsid" -c "mkdir -p $quoted_parent" \
+          >/dev/null </dev/null || return 1
         ;;
     esac
     jq -j --arg p "$prefix" --arg n "$name" \
       '.world.mounts[$p].files[$n]' <<<"$case_json" \
-      | $cli execute -w "$wsid" -c "cat > $prefix/$name" >/dev/null 2>&1
+      | $cli execute -w "$wsid" -c "cat > $quoted_path" >/dev/null || return 1
   done < <(jq -r '(.world.mounts // {}) | to_entries[]
                   | .key as $p | (.value.files // {}) | keys[]
                   | [$p, .] | @tsv' <<<"$case_json")
@@ -248,6 +251,9 @@ run_host() {
   for file in "$SUITE_DIR"/*.json; do
     suite_json=$(cat "$file")
     suite=$(jq -r '.suite' <<<"$suite_json")
+    if [ "${#ONLY_SUITES[@]}" -gt 0 ] && [[ " ${ONLY_SUITES[*]} " != *" $suite "* ]]; then
+      continue
+    fi
     requires=$(jq -r --arg h "$host" \
       '(.requires // []) | if type == "array" then . else (.[$h] // []) end | .[]' \
       <<<"$suite_json")

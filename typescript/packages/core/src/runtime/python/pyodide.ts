@@ -39,6 +39,8 @@ import { MirageFs } from './vfs/vfs.ts'
 import { MirageFsSeed } from './vfs/seed.ts'
 import { PYTHON_EVAL_WRAPPER, PYTHON_REPL_WRAPPER, PYTHON_WRAPPER } from './wrapper.ts'
 import { unhonoredNotice, type InitFlags } from './flags.ts'
+import type { SyncVFS } from './vfs/types.ts'
+import { PyodideWorkerClient } from './worker/client.ts'
 
 function bridgeBytes(value: Uint8Array | ArrayLike<number>): Uint8Array {
   return value instanceof Uint8Array ? value : new Uint8Array(value)
@@ -301,8 +303,14 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
   // where SharedArrayBuffer/workers are unavailable (runs unbounded).
   private interrupter: PyodideInterrupter | null = null
   private interrupterTried = false
+  private worker: Promise<PyodideWorkerClient | null> | null = null
+  private readonly syncFailures: string[] = []
 
-  constructor(options: RuntimeOptions<PyodideConfig> = {}) {
+  constructor(
+    options: RuntimeOptions<PyodideConfig> = {},
+    private readonly sync?: SyncVFS,
+    private readonly interruptBuffer?: SharedArrayBuffer,
+  ) {
     super(options, PYODIDE_CONFIG_KEYS)
     const config = this.config as PyodideConfig
     this.autoLoadFromImports = config.autoLoadFromImports ?? true
@@ -359,6 +367,17 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     code: string,
     opts: { inputs?: Record<string, EvalValue>; session?: string },
   ): Promise<EvalResult> {
+    const worker = await this.ensureWorker()
+    if (worker !== null) {
+      return (await worker.execute({
+        kind: 'execute',
+        method: 'eval',
+        config: this.config as PyodideConfig,
+        prefixes: this.resolver.prefixes(),
+        code,
+        ...opts,
+      })) as EvalResult
+    }
     if (opts.session !== undefined) {
       const repl = await this.runOneRepl(code, opts.session, opts.inputs ?? {})
       return { value: null, ...repl }
@@ -368,6 +387,7 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     const inputsPy = pyodide.toPy(opts.inputs ?? {})
     pyodide.globals.set('_user_code', code)
     pyodide.globals.set('_eval_inputs', inputsPy)
+    pyodide.globals.set('_eval_result', undefined)
     const armed = this.interrupter !== null ? this.interrupter.arm(EVAL_INTERRUPT_SECONDS) : null
     try {
       pyodide.runPython(PYTHON_EVAL_WRAPPER)
@@ -433,6 +453,8 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
       // queue failures already surfaced to individual callers; safe to swallow here
     }
     this.pyodide = null
+    ;(await this.worker)?.close()
+    this.worker = null
     this.initPromise = null
     this.vfs = null
     this.mounted.clear()
@@ -443,8 +465,8 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
 
   private async wireInterruptIfNeeded(pyodide: PyodideInterface): Promise<void> {
     if (this.interrupterTried || pyodide.setInterruptBuffer === undefined) return
+    this.interrupter = await createPyodideInterrupter(this.interruptBuffer)
     this.interrupterTried = true
-    this.interrupter = await createPyodideInterrupter()
     if (this.interrupter !== null) pyodide.setInterruptBuffer(this.interrupter.view)
   }
 
@@ -489,29 +511,26 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     this.vfs = new RuntimeVFS(this.workspaceBridge, this.resolver)
   }
 
+  private async ensureWorker(): Promise<PyodideWorkerClient | null> {
+    if (this.sync !== undefined || this.workspaceBridge === null || this.pyodide !== null)
+      return null
+    this.wireBridgeIfNeeded()
+    if (this.vfs === null) return null
+    this.worker ??= PyodideWorkerClient.create(this.vfs, this.workspaceBridge)
+    return this.worker
+  }
+
   /**
-   * Rebuild the guest's mount table from the workspace's, before every
-   * run.
-   *
-   * Every prefix is re-seeded, not just a newly added one, because the
-   * filesystem's callbacks are synchronous and so this is the only place
-   * that can await the bridge at all. A stale snapshot is not merely a
-   * missed read: a file the snapshot lacks looks like a new file, so
-   * `open(path, 'a')` would start from an empty buffer and the flush
-   * would replace content the guest never saw. Re-seeding is what keeps
-   * that impossible without JSPI, which no shipping Node has and Safari
-   * does not implement.
-   *
-   * The cost is one readdir plus one read per file per run. Narrowing that
-   * to what actually changed needs a per-entry change stamp the bridge
-   * does not carry yet; until it does, correctness is the side to err on.
-   *
-   * A prefix the workspace has dropped is unmounted, so a removed mount
-   * stops being visible instead of lingering for the interpreter's life.
+   * Rebuild mount nodes before each run so cached bytes never survive a
+   * session change. Workers populate nodes on lookup/open; the fallback
+   * for hosts without shared memory collects a complete seed instead.
+   * Removed mounts disappear, and nested mounts share their parent's
+   * Emscripten mountpoint while retaining workspace routing boundaries.
    */
   private async syncMounts(pyodide: PyodideInterface): Promise<void> {
     const vfs = this.vfs
     if (vfs === null) return
+    const sync = this.sync
     const all = vfs.prefixes()
     for (const prefix of all) {
       if (servable(prefix) || this.refused.has(prefix)) continue
@@ -538,11 +557,29 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
       // leaves the previous snapshot serving rather than an empty mount,
       // and the prefix retries on the next run.
       const seed = new MirageFsSeed()
-      await preloadInto(seed, vfs, prefix)
+      if (this.sync === undefined) await preloadInto(seed, vfs, prefix)
       const mountpoint = mountpointOf(prefix)
       if (this.mounted.has(prefix)) pyodide.FS.unmount(mountpoint)
-      const fs = new MirageFs(pyodide.FS, pyodide.ERRNO_CODES, this.journal, mountpoint, (p) =>
-        vfs.mountOf(p),
+      const fs = new MirageFs(
+        pyodide.FS,
+        pyodide.ERRNO_CODES,
+        this.journal,
+        mountpoint,
+        (p) => vfs.mountOf(p),
+        sync === undefined
+          ? undefined
+          : {
+              ...sync,
+              flush: (mutations) => {
+                if (this.syncFailures.length > 0) throw new Error(this.syncFailures[0])
+                try {
+                  sync.flush(mutations)
+                } catch (error) {
+                  this.syncFailures.push(error instanceof Error ? error.message : String(error))
+                  throw error
+                }
+              },
+            },
       )
       pyodide.FS.mkdirTree(mountpoint)
       pyodide.FS.mount(fs.type, {}, mountpoint)
@@ -631,8 +668,15 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
   private async drainMutations(): Promise<string[]> {
     const vfs = this.vfs
     if (vfs === null) return []
-    const failures: string[] = []
+    const failures = this.syncFailures.splice(0)
     const pending = this.journal.takeMutations()
+    if (failures.length > 0) {
+      if (pending.length > 0)
+        failures.push(
+          `python3: skipped ${String(pending.length)} later mutation(s) after that failure`,
+        )
+      return failures
+    }
     for (let i = 0; i < pending.length; i++) {
       const mutation = pending[i]
       if (mutation === undefined) continue
@@ -669,6 +713,20 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
   }
 
   private async runOne(args: RunArgs): Promise<RunResult> {
+    const worker = await this.ensureWorker()
+    if (worker !== null) {
+      const { cwd, signal, ...rest } = args
+      return (await worker.execute(
+        {
+          kind: 'execute',
+          method: 'run',
+          config: this.config as PyodideConfig,
+          prefixes: this.resolver.prefixes(),
+          args: { ...rest, ...(cwd !== undefined ? { cwd: cwd.virtual } : {}) },
+        },
+        signal,
+      )) as RunResult
+    }
     const pyodide = await this.ensureLoaded()
     // Seeding happened inside ensureLoaded; its notices ride out on
     // this run's stderr, beside any flush failure and any init switch
@@ -684,7 +742,7 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     // sys.argv[0] is the program's own name when the caller has one (a
     // CLI install's head word), else CPython's own -c spelling.
     const argv = [args.prog ?? '-c', ...args.args]
-    const stdinBytes = args.stdin ?? new Uint8Array()
+    const stdinBytes = args.stdin ?? undefined
 
     const mergedEnvPy = pyodide.toPy(mergedEnv)
     const argvPy = pyodide.toPy(argv)
@@ -695,9 +753,11 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     pyodide.globals.set('_init_flags', initFlagsPy)
     pyodide.globals.set('_argv', argvPy)
     pyodide.globals.set('_cwd', args.cwd?.virtual ?? '')
+    pyodide.globals.set('_script_cli', args.scriptCli ?? false)
     pyodide.globals.set('_merged_env', mergedEnvPy)
     pyodide.globals.set('_stdin_bytes', stdinBytes)
     pyodide.globals.set('_user_globals', userGlobalsPy)
+    pyodide.globals.set('_result', undefined)
 
     // Deadline trip -> exit 124 via CommandTimeoutError; a kill signal
     // raises KeyboardInterrupt in the guest, whose wrapper-reported
@@ -777,6 +837,7 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
       pyodide.globals.delete?.('_init_flags')
       pyodide.globals.delete?.('_argv')
       pyodide.globals.delete?.('_cwd')
+      pyodide.globals.delete?.('_script_cli')
       pyodide.globals.delete?.('_merged_env')
       pyodide.globals.delete?.('_stdin_bytes')
       pyodide.globals.delete?.('_user_globals')
@@ -808,6 +869,7 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     pyodide.globals.set('_user_code', code)
     pyodide.globals.set('_repl_session_id', sessionId)
     pyodide.globals.set('_repl_inputs', pyodide.toPy(inputs))
+    pyodide.globals.set('_repl_result', undefined)
 
     try {
       pyodide.runPython(PYTHON_REPL_WRAPPER)

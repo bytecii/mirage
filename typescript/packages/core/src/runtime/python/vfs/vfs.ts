@@ -17,6 +17,8 @@ import { epochToIso } from '../../../utils/dates.ts'
 import type { SetAttrFields } from '../../../types.ts'
 import { BLKSIZE, LINK_MODE, SEEK_CUR, SEEK_END } from './constants.ts'
 import { errnoError } from './errors.ts'
+import { classify } from '../../../errors/index.ts'
+import type { VFSEntry, VFSStat } from '../../vfs.ts'
 import type { MutationJournal } from './journal.ts'
 import type { MirageFsSeed } from './seed.ts'
 import { NodeTree } from './tree.ts'
@@ -30,6 +32,7 @@ import type {
   NodeOps,
   SetAttr,
   StreamOps,
+  SyncVFS,
 } from './types.ts'
 
 const ENC = new TextEncoder()
@@ -121,11 +124,10 @@ export function changedAttrs(node: FSNode, attr: SetAttr): SetAttrFields | null 
  * fd-relative walk) arrives as the same callback. Nothing is patched
  * inside the interpreter.
  *
- * Callbacks are synchronous because Emscripten's are, so they never reach
- * the mounts inline: reads are served from the tree `seed` filled before
- * the run, and writes are recorded on the mutation journal for the runtime
- * to replay after it. That is the same contract the guest had before, and
- * the reason it needs no JSPI.
+ * Callbacks are synchronous. In a worker, uncached lookups and reads wait
+ * for the host through SyncVFS. Without a worker, reads use the complete
+ * seed collected before execution. Writes enter the journal and flush
+ * before a lazy backend read or after the run, preserving guest order.
  *
  * The node table lives in `NodeTree` and the flush decision in
  * `planFlush`; what is left here is one method per Emscripten callback,
@@ -161,6 +163,7 @@ export class MirageFs {
     journal: MutationJournal,
     prefix: string,
     mountOf: (path: string) => string | null,
+    private readonly sync?: SyncVFS,
   ) {
     this.host = host
     this.prefix = prefix
@@ -200,7 +203,7 @@ export class MirageFs {
     // Only when this shim is what /dev resolves to. The mount's own listing
     // is untouched: these nodes live in this tree, which is what the
     // interpreter reads, not what `ls /dev` on the mount reports.
-    if (this.prefix === '/dev') {
+    if (this.prefix === '/dev' && this.sync === undefined) {
       for (const [name, rdev] of STD_STREAM_RDEV) {
         const path = `/dev/${name}`
         // Only where the mount itself has nothing by that name. `NodeTree.seed`
@@ -268,11 +271,13 @@ export class MirageFs {
       this.journal.markSetattr(this.tree.pathOf(node), fields)
     }
     if (attr.size === undefined || isDevice) return
+    if (attr.size > 0) this.loadContents(node)
     const old = node.contents ?? new Uint8Array(0)
     const next = new Uint8Array(attr.size)
     next.set(old.subarray(0, Math.min(old.length, attr.size)))
     node.contents = next
     node.usedBytes = attr.size
+    node.loaded = true
     // A resize rewrites history, so it can only ship whole. Recording here
     // rather than at close is what makes a bare `os.truncate(path, n)`,
     // which opens no handle at all, reach the mount.
@@ -280,10 +285,30 @@ export class MirageFs {
   }
 
   private lookup(parent: FSNode, name: string): FSNode {
-    const found = this.tree.childOf(parent, name)
-    // A miss is a genuine ENOENT: the seed is everything the host could
-    // reach before the run, and a callback cannot await the mounts to go
-    // looking for more.
+    const sync = this.sync
+    let found = this.tree.childOf(parent, name)
+    if (found === undefined && sync !== undefined) {
+      found = this.readThrough(() => {
+        const path = this.tree.pathOf(parent) + '/' + name
+        let stat: VFSStat
+        try {
+          stat = sync.stat(path)
+        } catch (error) {
+          const rdev = STD_STREAM_RDEV.get(name)
+          if (
+            this.tree.pathOf(parent) === '/dev' &&
+            rdev !== undefined &&
+            classify(error) === 'ENOENT'
+          ) {
+            return this.tree.makeNode(parent, name, S_IFCHR | 0o666, rdev)
+          }
+          throw error
+        }
+        return this.placeEntry(parent, name, stat)
+      })
+    }
+    // The eager fallback has already collected every reachable entry;
+    // lazy misses have just been checked against the workspace.
     if (found === undefined) throw errnoError(this.host, this.errno, 'ENOENT')
     return found
   }
@@ -334,13 +359,57 @@ export class MirageFs {
   }
 
   private rmdir(parent: FSNode, name: string): void {
+    if (this.sync !== undefined && this.readdir(this.lookup(parent, name)).length > 2) {
+      throw errnoError(this.host, this.errno, 'ENOTEMPTY')
+    }
     const path = this.tree.pathOf(parent) + '/' + name
     this.tree.detach(parent, name)
     this.journal.markRmdir(path)
   }
 
   private readdir(node: FSNode): string[] {
+    const sync = this.sync
+    if (sync !== undefined) {
+      this.readThrough(() => {
+        for (const entry of sync.readdir(this.tree.pathOf(node) + '/')) {
+          const name = entry.path.replace(/\/$/, '').split('/').pop() ?? ''
+          if (this.tree.childOf(node, name) === undefined) this.placeEntry(node, name, entry)
+        }
+      })
+    }
     return ['.', '..', ...this.tree.childNames(node)]
+  }
+
+  private readThrough<T>(read: () => T): T {
+    try {
+      this.sync?.flush(this.journal.takeMutations())
+      return read()
+    } catch (error) {
+      throw errnoError(this.host, this.errno, classify(error) ?? 'EIO')
+    }
+  }
+
+  private placeEntry(parent: FSNode, name: string, stat: VFSStat | VFSEntry): FSNode {
+    const target =
+      stat.isLink && this.sync !== undefined
+        ? this.sync.readlink(this.tree.pathOf(parent) + '/' + name)
+        : undefined
+    const mode = stat.isLink ? LINK_MODE : (stat.mode ?? (stat.isDir ? 0o40755 : 0o100644))
+    const node = this.tree.makeNode(parent, name, mode, stat.rdev ?? 0)
+    node.usedBytes = stat.size
+    if (stat.mtimeMs !== undefined) node.atime = node.mtime = node.ctime = stat.mtimeMs
+    if (target !== undefined) node.link = target
+    else if (this.host.isFile(mode)) node.loaded = false
+    return node
+  }
+
+  private loadContents(node: FSNode): void {
+    const sync = this.sync
+    if (node.loaded !== false || sync === undefined) return
+    const bytes = this.readThrough(() => sync.read(this.tree.pathOf(node)))
+    node.contents = bytes
+    node.usedBytes = bytes.length
+    node.loaded = true
   }
 
   /**
@@ -375,6 +444,7 @@ export class MirageFs {
   }
 
   private streamOpen(stream: FSStream): void {
+    this.loadContents(stream.node)
     // The mount listed this file but would not serve it, so its real
     // length and content are unknown. Any handle at all is refused,
     // because a write through one could only guess at what it replaces.

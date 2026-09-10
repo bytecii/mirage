@@ -38,9 +38,16 @@ declare module 'node:path' {
 
 declare module 'node:worker_threads' {
   export class Worker {
-    constructor(source: string, options?: { eval?: boolean })
+    constructor(source: string | URL, options?: { eval?: boolean; execArgv?: string[] })
     postMessage(value: unknown): void
+    on<T>(event: 'message', receive: (message: T) => void): void
+    on(event: 'error', receive: (error: Error) => void): void
+    on(event: 'exit', receive: (code: number) => void): void
     terminate(): Promise<number>
     unref(): void
   }
+  export const parentPort: {
+    postMessage(value: unknown): void
+    on<T>(event: 'message', receive: (message: T) => void): void
+  } | null
 }

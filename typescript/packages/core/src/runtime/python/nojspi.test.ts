@@ -37,6 +37,7 @@ describe('PyodideRuntime without JSPI', () => {
       // have to suspend, not ride an already-resolved promise
       await new Promise((resolve) => setTimeout(resolve, 1))
       calls.push(bytes ? { op, path, bytes: new Uint8Array(bytes) } : { op, path })
+      if (op === 'stat') throw Object.assign(new Error('missing'), { code: 'ENOENT' })
       if (op === 'read') return new Uint8Array()
       if (op === 'readdir') return []
       return undefined
@@ -108,6 +109,7 @@ describe('PyodideRuntime without JSPI', () => {
     const dispatch: BridgeDispatchFn = async (op, path, _bytes, dst) => {
       await new Promise((resolve) => setTimeout(resolve, 1))
       calls.push(dst === undefined ? { op, path } : { op, path, dst })
+      if (op === 'stat') throw Object.assign(new Error('missing'), { code: 'ENOENT' })
       if (op === 'read') return new Uint8Array()
       if (op === 'readdir') return []
       return undefined
@@ -129,7 +131,7 @@ describe('PyodideRuntime without JSPI', () => {
     })
     expect(new TextDecoder().decode(result.stderr ?? new Uint8Array())).toBe('')
     expect(result.exitCode).toBe(0)
-    const mutations = calls.filter((c) => c.op !== 'read' && c.op !== 'readdir')
+    const mutations = calls.filter((c) => c.op !== 'read' && c.op !== 'readdir' && c.op !== 'stat')
     expect(mutations).toEqual([
       { op: 'mkdir', path: '/ram/box' },
       { op: 'write', path: '/ram/box/f.txt' },

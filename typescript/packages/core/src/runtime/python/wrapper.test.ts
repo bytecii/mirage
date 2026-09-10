@@ -37,6 +37,37 @@ const WRAPPERS: readonly (readonly [string, string])[] = [
 ]
 
 describe('embedded python wrappers', { timeout: 120_000 }, () => {
+  it('distinguishes absent and empty stdin for script CLIs without changing ordinary globals', async () => {
+    const rt = new PyodideRuntime()
+    try {
+      for (const [stdin, expected] of [
+        [null, 'None'],
+        [new Uint8Array(), "b''"],
+      ] as const) {
+        const result = await rt.run({
+          code: 'print(argv); print(stdin)',
+          prog: 'pager',
+          args: ['one'],
+          scriptCli: true,
+          env: {},
+          stdin,
+        })
+        expect(result.exitCode).toBe(0)
+        expect(new TextDecoder().decode(result.stdout)).toBe(`['pager', 'one']\n${expected}\n`)
+      }
+      const ordinary = await rt.run({
+        code: "print('argv' in globals(), 'stdin' in globals())",
+        prog: '/work/script.py',
+        args: [],
+        env: {},
+        stdin: null,
+      })
+      expect(new TextDecoder().decode(ordinary.stdout)).toBe('False False\n')
+    } finally {
+      await rt.close()
+    }
+  })
+
   it('every wrapper compiles on the interpreter that runs it', async () => {
     const rt = new PyodideRuntime()
     try {
@@ -53,6 +84,34 @@ describe('embedded python wrappers', { timeout: 120_000 }, () => {
 })
 
 describe('Pyodide command cwd', { timeout: 120_000 }, () => {
+  it('restores the trusted chdir when user code replaces or deletes it', async () => {
+    const rt = new PyodideRuntime()
+    try {
+      await rt.eval(
+        "import os; os.makedirs('/tmp/a', exist_ok=True); os.makedirs('/tmp/b', exist_ok=True)",
+      )
+      const before = await rt.eval('import os; os.getcwd()')
+      for (const code of [
+        'import os; os.chdir = lambda _: None',
+        "import os; del os.chdir; raise ValueError('expected')",
+      ]) {
+        await rt.run({ code, args: [], env: {}, stdin: null, cwd: PathSpec.fromStrPath('/tmp/a') })
+        expect((await rt.eval('import os; os.getcwd()')).value).toBe(before.value)
+        const next = await rt.run({
+          code: 'from pathlib import Path; print(Path.cwd())',
+          args: [],
+          env: {},
+          stdin: null,
+          cwd: PathSpec.fromStrPath('/tmp/b'),
+        })
+        expect(next.exitCode).toBe(0)
+        expect(new TextDecoder().decode(next.stdout)).toBe('/tmp/b\n')
+      }
+    } finally {
+      await rt.close()
+    }
+  })
+
   it('isolates queued runs and restores cwd after success and errors', async () => {
     const rt = new PyodideRuntime()
     try {

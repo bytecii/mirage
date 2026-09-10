@@ -22,14 +22,14 @@ open('/ram/notes.txt', 'w').write('hello')              # writes flush back to R
     open('/linear/teams/eng/team.json').read()
     open('/gdocs/owned/MyDoc.gdoc.json').read()
     ```
-    Every mounted prefix is collected before the run, so reads are sync and cost no round trip.
+    The worker fetches that file on first access. Unrelated files and mounts are not read; the per-run cache is discarded before the next command.
   </Tab>
   <Tab title="Write a file">
     ```python
     open('/ram/out.txt', 'w').write('hello')
     open('/s3/icon.png', 'wb').write(png_bytes)
     ```
-    `close()` records the write; when the script finishes, the bytes go back through the resource's `write` op, or its `append` op when the handle only extended the file.
+    `close()` records the write; before a later backend read or when the script finishes, the bytes go back through the resource's `write` op, or its `append` op when the handle only extended the file.
   </Tab>
   <Tab title="List a directory">
     ```python
@@ -41,7 +41,7 @@ open('/ram/notes.txt', 'w').write('hello')              # writes flush back to R
     for msg_dir in os.listdir('/gmail/INBOX/2026-05-03/'):
         print(msg_dir)
     ```
-    A synthesized path is materialized when the prefix is collected, before the run.
+    A synthesized path is materialized when Python lists or opens it.
   </Tab>
   <Tab title="pathlib & glob">
     ```python
@@ -78,8 +78,7 @@ open('/ram/notes.txt', 'w').write('hello')              # writes flush back to R
     ```
     A link is namespace state, so no backend has to be able to store one:
     the op reaches the name plane and a link lands on an S3 or Notion mount
-    the same way it lands on a RAM one. Links the shell made are collected
-    with the prefix, as links rather than as copies of their targets, so a
+    the same way it lands on a RAM one. Links the shell made are resolved on access, as links rather than as copies of their targets, so a
     cyclic one is safe to walk past. A `chmod` or `utime` a backend cannot
     keep is stored in the namespace overlay and reported back by `stat`, and
     an `lstat` reads the link's own row rather than its target's, so a
@@ -173,12 +172,14 @@ new Workspace({}, { python: { autoLoadFromImports: false } })
 | S3, R2, GCS, OCI, Supabase | ✅ (narrow the prefix to keep the working set small) |
 | Linear, GDocs, GSheets, GSlides, GDrive | ✅ |
 | GitHub, Redis | ✅ |
-| Gmail (including synthesized date dirs) | ✅ (materialized when the prefix is collected) |
-| Slack | ⚠️ preloads channel histories; large workspaces may be slow |
+| Gmail (including synthesized date dirs) | ✅ (materialized on access) |
+| Slack | ✅ (only accessed paths are fetched) |
 
 ## Runtime requirements
 
-None. Reads, mounts added between runs, and writes all work on any engine, with no V8 flag and no [JSPI](https://github.com/WebAssembly/js-promise-integration). That is the point of collecting the tree before the run and replaying writes after it: a filesystem callback never has to suspend, so nothing depends on stack switching, which no shipping Node enables by default and Safari does not implement.
+Lazy filesystem access runs Pyodide in a worker and requires `SharedArrayBuffer`. It works in Node without experimental flags. Browser pages must be cross-origin isolated, typically by serving `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`; their bundler must include the module worker.
+
+Without workers or `SharedArrayBuffer`, Mirage retains the eager fallback: it collects each mount before execution and replays writes afterward. This fallback preserves filesystem support but still enumerates and reads whole mounts. Neither path requires JSPI.
 
 To run the example:
 
@@ -190,7 +191,7 @@ node --import tsx/esm examples/typescript/pyodide/vfs.ts
 
 | Symptom | What it means |
 |---|---|
-| `FileNotFoundError [Errno 44]` | The path was not in the tree collected before the run. A callback cannot go looking for more, so this is a genuine absence at collection time. |
+| `FileNotFoundError [Errno 44]` | The workspace could not resolve the requested path. |
 | `python3: failed to <op> <path> on mount: ...` on stderr, exit 1 | The script finished but a recorded mutation could not be applied (auth, read-only mount, network). |
 | `python3: skipped N later mutation(s) after that failure` | The journal is a sequence, not a set, so the replay stops at the first failure rather than applying entries whose prerequisite never landed. |
 | `OSError [Errno 5]` on opening a file you can see | The mount listed the file but would not serve its bytes, so its real content is unknown and any handle is refused rather than guessing. |

@@ -214,6 +214,8 @@ class RunArgs:
             defines that slot (CPython under ``-c``) it cannot apply.
         env (dict[str, str]): extra environment merged over the
             runtime's own.
+        script_cli (bool): installed script CLI; bind bare argv and stdin
+            in the program globals as well as the interpreter's own streams.
         cwd (PathSpec | None): virtual working directory for
             filesystem-aware guest runtimes.
         stdin (bytes | None): bytes fed to the interpreter's stdin.
@@ -229,6 +231,7 @@ class RunArgs:
     stdin: bytes | None = None
     flags: dict[str, Any] = field(default_factory=dict)
     cwd: PathSpec | None = None
+    script_cli: bool = False
 
 
 @dataclass(frozen=True, slots=True)

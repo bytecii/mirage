@@ -138,6 +138,7 @@ async function scriptOutput(
     code: script.source,
     args: [...inv.argv],
     prog,
+    scriptCli: true,
     cwd,
     env,
     stdin,

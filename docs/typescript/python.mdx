@@ -62,7 +62,7 @@ If `pyodide` isn't installed, `python3` returns `exit=127` with a helpful stderr
 
 ## Limitations
 
-Pyodide runs CPython in WebAssembly on the same JS thread. That creates these divergences from Python Mirage's subprocess model:
+Pyodide runs CPython in WebAssembly, using a worker when workers and `SharedArrayBuffer` are available. That creates these divergences from Python Mirage's subprocess model:
 
 ### 1. Shared module cache (`sys.modules`)
 
@@ -78,7 +78,7 @@ This is a perf win (`import numpy` is paid once) with no correctness impact, sin
 
 ### 2. No true CPU parallelism within a workspace
 
-Pyodide is single-interpreter-per-JS-thread, so concurrent `python3` calls in one workspace serialize via a JS queue.
+Mirage keeps one Pyodide interpreter per workspace, so concurrent `python3` calls in one workspace serialize via a JS queue.
 
 ```ts
 // Runs in ~2s total, not ~1s:

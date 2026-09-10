@@ -142,7 +142,10 @@ class SandlockRuntime(PythonRuntime):
     async def run(self, args: RunArgs) -> RunResult:
         return await self._run([
             *init_argv(args.flags), "-c",
-            bootstrap(args.code, args.prog), *args.args
+            bootstrap(args.code,
+                      args.prog,
+                      script_cli=args.script_cli,
+                      stdin=args.stdin), *args.args
         ], args.env, args.stdin)
 
     async def _run(self,

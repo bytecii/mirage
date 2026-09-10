@@ -128,6 +128,8 @@ export interface RunArgs {
    * interpreter defines that slot (CPython under `-c`) it cannot apply.
    */
   prog?: string
+  /** Installed script CLI: expose bare argv and stdin in the program globals. */
+  scriptCli?: boolean
   env: Record<string, string>
   /** Virtual working directory for filesystem-aware guest runtimes. */
   cwd?: PathSpec

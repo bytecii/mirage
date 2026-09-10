@@ -125,7 +125,10 @@ class WasiRuntime(PythonRuntime):
         stdout, stderr, exit_code = await self._runtime.run(
             argv=[
                 "python", *init_argv(args.flags), "-c",
-                bootstrap(args.code, args.prog), *args.args
+                bootstrap(args.code,
+                          args.prog,
+                          script_cli=args.script_cli,
+                          stdin=args.stdin), *args.args
             ],
             stdin=args.stdin,
             env=[

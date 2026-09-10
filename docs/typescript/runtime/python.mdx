@@ -10,15 +10,15 @@ packages ship two:
 
 | Runtime | Engine | Filesystem | Default |
 | --- | --- | --- | --- |
-| `pyodide` | CPython compiled to WebAssembly ([Pyodide](https://pyodide.org)) | Workspace mounts, preloaded into the WASM filesystem and lazily backfilled | Yes |
+| `pyodide` | CPython compiled to WebAssembly ([Pyodide](https://pyodide.org)) | Workspace mounts, fetched on access in a worker | Yes |
 | `monty` | [Pydantic Monty](https://github.com/pydantic/monty), a sandboxed Python interpreter written in Rust | Workspace mounts only, bridged through Mirage | No |
 
 ## Pyodide (default)
 
 Pyodide is full CPython in WebAssembly: real stdlib, `sys.argv`, stdin,
-and auto-loaded scientific packages. Mirage mirrors the workspace mounts
-into Pyodide's in-memory filesystem, so `open()` and `os.listdir` work on
-mounted paths.
+and auto-loaded scientific packages. `open()` and `os.listdir` reach mounted paths through a worker bridge. Only accessed files are fetched, and each run sees fresh workspace state. Browsers without `SharedArrayBuffer` use the eager fallback described under [Python filesystem](/typescript/python-fs).
+
+Installed Python script CLIs receive bare `argv` (including the installed name at index 0) and `stdin` (bytes, or `None` when absent), on both Monty and Pyodide. Pyodide also keeps `sys.argv` and `sys.stdin`. Ordinary `python3` commands retain their interpreter's existing globals.
 
 ```ts
 import { MountMode, RAMResource, Workspace } from '@struktoai/mirage-node'
@@ -117,7 +117,7 @@ way. There is no python3-specific limit surface.
 The deadline stops the interpreter, not just the answer. Monty's
 worker process is SIGKILLed when its run trips the deadline (or a
 background job is killed), so a runaway loop never keeps burning.
-Pyodide shares the event loop with the workspace, so the runtime arms
+Pyodide runs in a worker when available, and the runtime arms
 its interrupt buffer from a watchdog thread: the guest gets a
 `KeyboardInterrupt` at the deadline and the run answers 124 even for
 a busy `while True` loop. The watchdog needs `SharedArrayBuffer`
