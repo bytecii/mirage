@@ -667,7 +667,10 @@ async function runParsedLine(
   // line that emitted them succeeded. Internal evals (record:false) have
   // an empty opRecords here: their ops were accounted by the line above.
   env.records.push(...opRecords)
-  if (isLine) {
+  // bash adds a line to history only when it is non-empty
+  // (`shell_input_line[0]`): a blank line is skipped, while a
+  // whitespace-only or comment-only line is kept.
+  if (isLine && command.replaceAll('\n', '') !== '') {
     io.stdout = stdoutBytes
     await env.observer.logExecution(
       command,
