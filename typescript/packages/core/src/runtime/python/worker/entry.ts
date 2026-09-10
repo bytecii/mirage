@@ -17,7 +17,7 @@ import { PrefixResolver } from '../../resolver.ts'
 import type { BridgeDispatchFn } from '../../types.ts'
 import type { VFSEntry, VFSStat } from '../../vfs.ts'
 import { PyodideRuntime } from '../pyodide.ts'
-import type { SyncVFS } from '../vfs/types.ts'
+import type { FlushFailure, SyncVFS } from '../vfs/types.ts'
 import { requestSync } from './transport.ts'
 import type { ExecuteRequest, VfsRequest, WorkerMessage } from './types.ts'
 
@@ -43,7 +43,8 @@ const sync: SyncVFS = {
   readdir: (path) => call({ op: 'readdir', path }) as VFSEntry[],
   readlink: (path) => call({ op: 'readlink', path }) as string,
   flush: (mutations) => {
-    if (mutations.length > 0) call({ op: 'flush', path: '', mutations })
+    if (mutations.length > 0)
+      return call({ op: 'flush', path: '', mutations }) as FlushFailure | undefined
   },
 }
 const dispatch: BridgeDispatchFn = (...args) =>

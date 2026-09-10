@@ -15,12 +15,18 @@
 import type { VFSEntry, VFSStat } from '../../vfs.ts'
 import type { MirageMutation } from './journal.ts'
 
+/** An inline flush stops at its first failure; skipped excludes that entry. */
+export interface FlushFailure {
+  message: string
+  skipped: number
+}
+
 export interface SyncVFS {
   read(path: string): Uint8Array
   stat(path: string): VFSStat
   readdir(path: string): VFSEntry[]
   readlink(path: string): string
-  flush(mutations: MirageMutation[]): void
+  flush(mutations: MirageMutation[]): FlushFailure | undefined
 }
 
 /**

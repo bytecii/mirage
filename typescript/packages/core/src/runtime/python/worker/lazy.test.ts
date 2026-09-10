@@ -30,6 +30,64 @@ const DEC = new TextDecoder()
 const runArgs = (code: string): RunArgs => ({ code, args: [], env: {}, stdin: null })
 
 describe('Pyodide lazy VFS', { timeout: 60_000 }, () => {
+  it.each(['first', 'bad', 'later'])(
+    'counts all writes discarded after %s fails',
+    async (rejected) => {
+      const names = ['first', 'bad', 'later', 'after', 'last']
+      const files = new Map(names.map((name) => [`/data/${name}`, ENC.encode('old')]))
+      const writes: string[] = []
+      const dispatch: BridgeDispatchFn = async (op, path, bytes) => {
+        await Promise.resolve()
+        const data = files.get(path)
+        if (data === undefined) throw Object.assign(new Error(path), { code: 'ENOENT' })
+        if (op === 'stat')
+          return new FileStat({ name: path, type: FileType.FILE, size: data.length })
+        if (op === 'read') return data
+        if (op === 'write') {
+          writes.push(path)
+          if (path === `/data/${rejected}`) throw new Error('denied')
+          files.set(path, bytes ?? new Uint8Array())
+          return
+        }
+        throw new Error(`unexpected op: ${op}`)
+      }
+      const rt = new PyodideRuntime()
+      rt.attach(dispatch, new PrefixResolver(() => ['/data/']))
+      try {
+        const result = await rt.run(
+          runArgs(`
+import os
+for name in ['first', 'bad', 'later', 'after', 'last']:
+    os.stat('/data/' + name)
+for name in ['first', 'bad', 'later']:
+    with open('/data/' + name, 'w') as f: f.write('new')
+try: os.stat('/data/missing')
+except OSError: pass
+with open('/data/after', 'w') as f: f.write('discarded inline')
+try: os.stat('/data/also_missing')
+except OSError: pass
+with open('/data/last', 'w') as f: f.write('discarded at completion')
+`),
+        )
+        const failedAt = names.indexOf(rejected)
+        expect(result.exitCode).toBe(1)
+        expect(DEC.decode(result.stderr ?? new Uint8Array())).toBe(
+          `python3: failed to write /data/${rejected} on mount: denied\n` +
+            `python3: skipped ${String(4 - failedAt)} later mutation(s) after that failure\n`,
+        )
+        expect(writes).toEqual(names.slice(0, failedAt + 1).map((name) => `/data/${name}`))
+        for (const name of names.slice(failedAt))
+          expect(DEC.decode(files.get(`/data/${name}`))).toBe('old')
+        const next = await rt.run(runArgs("with open('/data/last', 'w') as f: f.write('fresh')"))
+        expect(next.exitCode).toBe(0)
+        expect(DEC.decode(next.stderr ?? new Uint8Array())).toBe('')
+        expect(DEC.decode(files.get('/data/last'))).toBe('fresh')
+      } finally {
+        await rt.close()
+      }
+    },
+  )
+
   it.each([false, true])(
     'stops a timed-out script CLI and recovers (warm worker: %s)',
     async (warm) => {

@@ -18,6 +18,7 @@ import { CommandTimeoutError } from '../../../commands/errors.ts'
 import type { BridgeDispatchFn, EvalResult, RunResult } from '../../types.ts'
 import type { RuntimeVFS } from '../../vfs.ts'
 import { applyMutation } from '../vfs/journal.ts'
+import type { FlushFailure } from '../vfs/types.ts'
 import { respond } from './transport.ts'
 import type {
   ExecuteRequest,
@@ -222,20 +223,20 @@ export class PyodideWorkerClient {
         if (request.args === undefined) throw new Error('missing bridge arguments')
         return this.dispatch(...request.args)
       }
-      case 'flush':
-        for (const mutation of request.mutations ?? []) {
+      case 'flush': {
+        const mutations = request.mutations ?? []
+        for (const [index, mutation] of mutations.entries()) {
           try {
             await applyMutation(this.vfs, mutation)
           } catch (error) {
-            throw Object.assign(
-              new Error(
-                `python3: failed to ${mutation.kind} ${mutation.path} on mount: ${error instanceof Error ? error.message : String(error)}`,
-              ),
-              { code: 'EIO' },
-            )
+            return {
+              message: `python3: failed to ${mutation.kind} ${mutation.path} on mount: ${error instanceof Error ? error.message : String(error)}`,
+              skipped: mutations.length - index - 1,
+            } satisfies FlushFailure
           }
         }
         return undefined
+      }
     }
   }
 }

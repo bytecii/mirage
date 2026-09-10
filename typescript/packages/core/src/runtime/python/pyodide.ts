@@ -305,6 +305,7 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
   private interrupterTried = false
   private worker: Promise<PyodideWorkerClient | null> | null = null
   private readonly syncFailures: string[] = []
+  private syncSkipped = 0
 
   constructor(
     options: RuntimeOptions<PyodideConfig> = {},
@@ -571,9 +572,16 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
           : {
               ...sync,
               flush: (mutations) => {
-                if (this.syncFailures.length > 0) throw new Error(this.syncFailures[0])
+                if (this.syncFailures.length > 0) {
+                  this.syncSkipped += mutations.length
+                  throw new Error(this.syncFailures[0])
+                }
                 try {
-                  sync.flush(mutations)
+                  const failure = sync.flush(mutations)
+                  if (failure !== undefined) {
+                    this.syncSkipped += failure.skipped
+                    throw new Error(failure.message)
+                  }
                 } catch (error) {
                   this.syncFailures.push(error instanceof Error ? error.message : String(error))
                   throw error
@@ -670,11 +678,11 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     if (vfs === null) return []
     const failures = this.syncFailures.splice(0)
     const pending = this.journal.takeMutations()
+    const skipped = this.syncSkipped + pending.length
+    this.syncSkipped = 0
     if (failures.length > 0) {
-      if (pending.length > 0)
-        failures.push(
-          `python3: skipped ${String(pending.length)} later mutation(s) after that failure`,
-        )
+      if (skipped > 0)
+        failures.push(`python3: skipped ${String(skipped)} later mutation(s) after that failure`)
       return failures
     }
     for (let i = 0; i < pending.length; i++) {
