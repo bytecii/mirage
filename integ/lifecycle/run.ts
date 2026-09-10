@@ -63,6 +63,7 @@ type Step = (
   | { op: 'exec'; command: string; session?: string }
   | { op: 'set_mode'; path: string; mode: MountMode }
   | { op: 'session'; id: string; profile?: Record<string, unknown> }
+  | { op: 'close_session'; id: string }
   | { op: 'set_profile'; session?: string; profile: Record<string, unknown> | string | null }
   | {
       op: 'register_cli'
@@ -172,6 +173,9 @@ async function action(
       break
     case 'session':
       ws.createSession(step.id, { profile: profileDocument(step.profile ?? {}) })
+      break
+    case 'close_session':
+      await ws.closeSession(step.id)
       break
     case 'set_profile':
       await ws.setSessionProfile(

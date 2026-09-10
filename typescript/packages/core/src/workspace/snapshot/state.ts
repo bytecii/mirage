@@ -122,7 +122,7 @@ export async function toStateDict(ws: Workspace): Promise<WorkspaceStateDict> {
   // that have already ended.
   const jobs: JobSnapshot[] = await Promise.all(
     ws.jobTable
-      .listJobs()
+      .allJobs()
       .filter((j) => j.status !== JobStatus.RUNNING)
       .map(async (j) => ({
         id: j.id,

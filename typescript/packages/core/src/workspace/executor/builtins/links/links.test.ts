@@ -31,6 +31,15 @@ class PinLinks implements Policy {
   }
 }
 
+class SealReads implements Policy {
+  preOps(ctx: OpsContext): Action | null {
+    if (ctx.op === 'read' && ctx.path.virtual.endsWith('.sealed')) {
+      return { kind: 'deny', reason: 'sealed' }
+    }
+    return null
+  }
+}
+
 async function makeWs(policies: Policy[] = []): Promise<Workspace> {
   const parser = await getTestParser()
   return new Workspace(
@@ -46,6 +55,99 @@ async function makeWs(policies: Policy[] = []): Promise<Workspace> {
 function err(result: { stderr: Uint8Array | null }): string {
   return result.stderr === null ? '' : DEC.decode(result.stderr)
 }
+
+describe('ln -f on the same file', () => {
+  it('refuses the same file before removing it', async () => {
+    // Pinned on coreutils 9.7: `ln -sf a a` and `ln -f a a` are refused
+    // and the file survives, spelled as typed on both sides; a backup
+    // waives the check; a destination that is not there is not the same
+    // file and becomes a self-loop, as in GNU.
+    const ws = await makeWs()
+    try {
+      await ws.execute('printf hi > /data/a.txt')
+      const cases: [string, string][] = [
+        ['ln -sf /data/a.txt /data/a.txt', "'/data/a.txt' and '/data/a.txt'"],
+        ['ln -f /data/a.txt /data/a.txt', "'/data/a.txt' and '/data/a.txt'"],
+        ['cd /data && ln -sf a.txt ./a.txt', "'a.txt' and './a.txt'"],
+        ['cd /data && ln -sfT a.txt a.txt', "'a.txt' and 'a.txt'"],
+      ]
+      for (const [line, wording] of cases) {
+        const r = await ws.execute(line)
+        expect(r.exitCode).toBe(1)
+        expect(err(r)).toBe(`ln: ${wording} are the same file\n`)
+        const cat = await ws.execute('cat /data/a.txt')
+        expect(DEC.decode(cat.stdout)).toBe('hi')
+        expect(ws.namespace.isLink('/data/a.txt')).toBe(false)
+      }
+      let r = await ws.execute('ln -sfb /data/a.txt /data/a.txt')
+      expect(r.exitCode).toBe(0)
+      const kept = await ws.execute('cat /data/a.txt~')
+      expect(DEC.decode(kept.stdout)).toBe('hi')
+      expect(ws.namespace.readlink('/data/a.txt')).toBe('/data/a.txt')
+      r = await ws.execute('ln -sf /data/nope /data/nope')
+      expect(r.exitCode).toBe(0)
+      expect(ws.namespace.readlink('/data/nope')).toBe('/data/nope')
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
+describe('ln -b on a directory', () => {
+  it('refuses a directory destination instead of backing it up', async () => {
+    // Pinned on coreutils 9.7: a backup moves a file aside, never a
+    // directory, so `ln -bT a d` is refused with the directory intact
+    // where mirage used to rename the whole tree to `d~`; a symlink
+    // standing at the name is what -T names and is backed up; without
+    // -T the directory is where the link goes.
+    const ws = await makeWs()
+    try {
+      await ws.execute('mkdir -p /data/d; printf hi > /data/a.txt')
+      for (const line of [
+        'ln -sbT /data/a.txt /data/d',
+        'ln -bT /data/a.txt /data/d',
+        'ln -sfbT /data/a.txt /data/d',
+        'ln -s --backup=numbered -T /data/a.txt /data/d',
+      ]) {
+        const r = await ws.execute(line)
+        expect(r.exitCode).toBe(1)
+        expect(err(r)).toBe('ln: /data/d: cannot overwrite directory\n')
+        const ls = await ws.execute('ls /data')
+        expect(DEC.decode(ls.stdout)).toBe('a.txt\nd\n')
+        expect(ws.namespace.isLink('/data/d')).toBe(false)
+      }
+      let r = await ws.execute('ln -sb /data/a.txt /data/d')
+      expect(r.exitCode).toBe(0)
+      expect(ws.namespace.readlink('/data/d/a.txt')).toBe('/data/a.txt')
+      await ws.execute('ln -s /data/d /data/lk')
+      r = await ws.execute('ln -sbT /data/a.txt /data/lk')
+      expect(r.exitCode).toBe(0)
+      expect(ws.namespace.readlink('/data/lk')).toBe('/data/a.txt')
+      expect(ws.namespace.readlink('/data/lk~')).toBe('/data/d')
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
+describe('ln with a source it cannot read', () => {
+  it('names the source and links the rest', async () => {
+    // GNU names the source it cannot reach and links the rest, exit 1.
+    // mirage's hard link is a byte copy, so a read the stat did not
+    // foresee (a policy deny here) is that refusal, not an abort.
+    const ws = await makeWs([new SealReads()])
+    try {
+      await ws.execute('mkdir /data/d; printf a > /data/a.sealed; printf b > /data/b.txt')
+      const r = await ws.execute('ln /data/a.sealed /data/b.txt /data/d')
+      expect(r.exitCode).toBe(1)
+      expect(err(r)).toBe("ln: failed to access '/data/a.sealed': Permission denied\n")
+      const rest = await ws.execute('ls /data/d; cat /data/d/b.txt')
+      expect(DEC.decode(rest.stdout)).toBe('b.txt\nb')
+    } finally {
+      await ws.close()
+    }
+  })
+})
 
 describe('rm and unlink reach a link through the op door', () => {
   it('rm of a link goes through the door', async () => {

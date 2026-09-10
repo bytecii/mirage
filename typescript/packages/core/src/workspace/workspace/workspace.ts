@@ -733,12 +733,20 @@ export class Workspace {
     return this.sessionManager.list()
   }
 
-  closeSession(sessionId: string): Promise<void> {
-    return this.sessionManager.close(sessionId)
+  async closeSession(sessionId: string): Promise<void> {
+    // The manager refuses the default and an unknown id first; a session
+    // that did close takes its jobs with it, so a later session reusing
+    // the id inherits nothing.
+    await this.sessionManager.close(sessionId)
+    await this.jobTable.closeSession(sessionId)
   }
 
-  closeAllSessions(): Promise<void> {
-    return this.sessionManager.closeAll()
+  async closeAllSessions(): Promise<void> {
+    const closed = this.listSessions()
+      .map((s) => s.sessionId)
+      .filter((id) => id !== this.defaultSessionId)
+    await this.sessionManager.closeAll()
+    for (const id of closed) await this.jobTable.closeSession(id)
   }
 
   /**

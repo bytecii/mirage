@@ -64,6 +64,90 @@ class PinLinks(Policy):
 
 
 @pytest.mark.asyncio
+async def test_ln_f_refuses_the_same_file_before_removing_it():
+    # Pinned on coreutils 9.7: `ln -sf a a` and `ln -f a a` are refused
+    # and the file survives, spelled as typed on both sides; a backup
+    # waives the check; a destination that is not there is not the
+    # same file and becomes a self-loop, as in GNU.
+    ws = _ws()
+    await ws.execute("printf hi > /data/a.txt")
+    for line, wording in (
+        ("ln -sf /data/a.txt /data/a.txt", "'/data/a.txt' and '/data/a.txt'"),
+        ("ln -f /data/a.txt /data/a.txt", "'/data/a.txt' and '/data/a.txt'"),
+        ("cd /data && ln -sf a.txt ./a.txt", "'a.txt' and './a.txt'"),
+        ("cd /data && ln -sfT a.txt a.txt", "'a.txt' and 'a.txt'"),
+    ):
+        r = await ws.execute(line)
+        assert r.exit_code == 1
+        assert r.stderr == f"ln: {wording} are the same file\n".encode()
+        assert (await ws.execute("cat /data/a.txt")).stdout == b"hi"
+        assert not ws.namespace.is_link("/data/a.txt")
+    r = await ws.execute("ln -sfb /data/a.txt /data/a.txt")
+    assert r.exit_code == 0
+    assert (await ws.execute("cat /data/a.txt~")).stdout == b"hi"
+    assert ws.namespace.readlink("/data/a.txt") == "/data/a.txt"
+    r = await ws.execute("ln -sf /data/nope /data/nope")
+    assert r.exit_code == 0
+    assert ws.namespace.readlink("/data/nope") == "/data/nope"
+
+
+@pytest.mark.asyncio
+async def test_ln_backup_refuses_a_directory_destination():
+    # Pinned on coreutils 9.7: a backup moves a file aside, never a
+    # directory, so `ln -bT a d` is refused with the directory intact
+    # where mirage used to rename the whole tree to `d~`; a symlink
+    # standing at the name is what -T names and is backed up; without
+    # -T the directory is where the link goes.
+    ws = _ws()
+    await ws.execute("mkdir -p /data/d; printf hi > /data/a.txt")
+    for line in (
+            "ln -sbT /data/a.txt /data/d",
+            "ln -bT /data/a.txt /data/d",
+            "ln -sfbT /data/a.txt /data/d",
+            "ln -s --backup=numbered -T /data/a.txt /data/d",
+    ):
+        r = await ws.execute(line)
+        assert r.exit_code == 1
+        assert r.stderr == b"ln: /data/d: cannot overwrite directory\n"
+        assert (await ws.execute("ls /data")).stdout == b"a.txt\nd\n"
+        assert not ws.namespace.is_link("/data/d")
+    r = await ws.execute("ln -sb /data/a.txt /data/d")
+    assert r.exit_code == 0
+    assert ws.namespace.readlink("/data/d/a.txt") == "/data/a.txt"
+    await ws.execute("ln -s /data/d /data/lk")
+    r = await ws.execute("ln -sbT /data/a.txt /data/lk")
+    assert r.exit_code == 0
+    assert ws.namespace.readlink("/data/lk") == "/data/a.txt"
+    assert ws.namespace.readlink("/data/lk~") == "/data/d"
+
+
+class SealReads(Policy):
+
+    async def pre_ops(self, ctx: OpsContext) -> Action | None:
+        if ctx.op == "read" and ctx.path.virtual.endswith(".sealed"):
+            return Deny("sealed")
+        return None
+
+
+@pytest.mark.asyncio
+async def test_ln_keeps_going_after_a_source_it_cannot_read():
+    # GNU names the source it cannot reach and links the rest, exit 1.
+    # mirage's hard link is a byte copy, so a read the stat did not
+    # foresee (a policy deny here) is that refusal, not an abort.
+    ws = Workspace({"/data": (RAMResource(), MountMode.WRITE)},
+                   mode=MountMode.WRITE,
+                   policies=[SealReads()])
+    await ws.execute("mkdir /data/d; printf a > /data/a.sealed; "
+                     "printf b > /data/b.txt")
+    r = await ws.execute("ln /data/a.sealed /data/b.txt /data/d")
+    assert r.exit_code == 1
+    assert r.stderr == (b"ln: failed to access '/data/a.sealed': "
+                        b"Permission denied\n")
+    assert (await
+            ws.execute("ls /data/d; cat /data/d/b.txt")).stdout == b"b.txt\nb"
+
+
+@pytest.mark.asyncio
 async def test_rm_of_a_link_goes_through_the_door():
     # The strip used to write the node table directly, so a pre_ops
     # policy protecting a link never fired for `rm` while it fired for

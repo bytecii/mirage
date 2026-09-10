@@ -162,7 +162,7 @@ def end_options_after_program(name: str, words: list[str]) -> list[str]:
 # The mirror: flags that make a following command report the link
 # itself. GNU ls dereferences a command-line symlink to a directory, but
 # -l and -d suppress that and show the link's own row instead.
-NO_FOLLOW_FLAGS = {"ls": ("ld", ())}
+NO_FOLLOW_FLAGS = {"ls": ("ld", ("directory", ))}
 
 # Commands whose traversal descends into descendant mounts (the
 # executor's fan-out reruns them per mount), always or under a flag.

@@ -292,7 +292,7 @@ describe('Workspace.fromState — sessions and finished jobs', () => {
     const w2 = ws2.sessionManager.get('worker')
     expect(w2.cwd).toBe('/data')
     expect(w2.env).toEqual({ ROLE: 'bg', PWD: '/data' })
-    const jobs2 = ws2.jobTable.listJobs()
+    const jobs2 = ws2.jobTable.listJobs('worker')
     expect(jobs2.length).toBe(1)
     expect(jobs2[0]?.command).toBe('sleep 0')
     expect(jobs2[0]?.status).toBe('completed')
