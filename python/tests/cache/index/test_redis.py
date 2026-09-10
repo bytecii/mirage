@@ -146,7 +146,7 @@ async def test_list_dir_expired(store):
     await store.set_dir("/dir", entries, expired_at=past)
     time.sleep(1.5)
     result = await store.list_dir("/dir")
-    assert result.status in (LookupStatus.NOT_FOUND, LookupStatus.EXPIRED)
+    assert result.status == LookupStatus.EXPIRED
 
 
 @pytest.mark.asyncio

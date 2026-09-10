@@ -32,10 +32,9 @@ async function run(kind: string, flags: Record<string, boolean> = {}) {
     resourcePath: name,
     resolved: true,
   })
-  await index.put(
-    p.virtual,
-    new IndexEntry({ id: 'file1', name, resourceType: `gdrive/${kind}`, vfsName: name }),
-  )
+  await index.setDir('/drive', [
+    [name, new IndexEntry({ id: 'file1', name, resourceType: `gdrive/${kind}`, vfsName: name })],
+  ])
   const cmd = GDRIVE_COMMANDS.find((c) => c.name === 'grep')
   if (cmd === undefined) throw new Error('grep not registered')
   const result = await cmd.fn(new GDriveAccessor({ tokenManager: TM }), [p], ['needle'], {
