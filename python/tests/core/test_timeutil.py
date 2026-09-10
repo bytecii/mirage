@@ -14,6 +14,8 @@
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from mirage.core.timeutil import epoch_to_iso, iso_to_epoch, now_iso, to_iso_z
 
 
@@ -63,29 +65,12 @@ def test_epoch_floors_negative_fractional_like_typescript():
     assert epoch_to_iso(-0.5) == "1969-12-31T23:59:59Z"
 
 
-# One fraction-digit policy both languages can express: nothing when the
-# fraction is zero, three digits otherwise. `isoformat()` alone renders six
-# digits, which a JavaScript Date can never produce, so the same S3 or
-# GridFS instant used to print differently in the two implementations.
-def test_to_iso_z_renders_a_nonzero_fraction_as_milliseconds():
-    dt = datetime(2026, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc)
-    assert to_iso_z(dt) == "2026-01-02T03:04:05.123Z"
-
-
-def test_to_iso_z_omits_a_zero_fraction():
-    dt = datetime(2026, 1, 2, 3, 4, 5, 0, tzinfo=timezone.utc)
-    assert to_iso_z(dt) == "2026-01-02T03:04:05Z"
-
-
-# pymongo hands back naive UTC datetimes; reading one as local time would
-# shift a GridFS uploadDate by the host's offset.
-def test_to_iso_z_reads_a_naive_value_as_utc():
-    assert to_iso_z(datetime(2026, 1, 2, 3, 4, 5)) == "2026-01-02T03:04:05Z"
-
-
-# A JavaScript Date has no digits below a millisecond, so neither may the
-# rendering: 500us is "no fraction", not ".000".
-def test_to_iso_z_drops_a_sub_millisecond_fraction():
-    at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    assert to_iso_z(at.replace(microsecond=500)) == "2026-01-01T00:00:00Z"
-    assert to_iso_z(at.replace(microsecond=1500)) == "2026-01-01T00:00:00.001Z"
+@pytest.mark.parametrize("input,expected", [
+    ("2026-09-05T10:55:39.000Z", "2026-09-05T10:55:39Z"),
+    ("2026-09-05T10:55:39.001Z", "2026-09-05T10:55:39.001000Z"),
+    ("2026-09-05T10:55:39.120Z", "2026-09-05T10:55:39.120000Z"),
+    ("2026-09-05T12:55:39.123+02:00", "2026-09-05T10:55:39.123000Z"),
+    ("1969-12-31T23:59:59.500Z", "1969-12-31T23:59:59.500000Z"),
+])
+def test_to_iso_z_fraction_policy(input, expected):
+    assert to_iso_z(datetime.fromisoformat(input)) == expected

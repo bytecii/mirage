@@ -32,6 +32,8 @@ def modified_to_iso(value) -> str | None:
     if value is None or value == "":
         return None
     if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
         return to_iso_z(value)
     if isinstance(value, (int, float)):
         timestamp = value / 1000 if value > 10_000_000_000 else value
@@ -40,6 +42,8 @@ def modified_to_iso(value) -> str | None:
         parsed = parsedate_to_datetime(str(value))
     except (TypeError, ValueError):
         return str(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
     return to_iso_z(parsed)
 
 

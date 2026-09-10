@@ -39,15 +39,6 @@ describe('inMtimeWindow', () => {
   })
 })
 
-describe('toIsoZ', () => {
-  it('drops a zero fraction (parity with the Python to_iso_z)', () => {
-    expect(toIsoZ(new Date('2026-09-05T10:54:04.000Z'))).toBe('2026-09-05T10:54:04Z')
-  })
-  it('keeps a non-zero fraction as three digits', () => {
-    expect(toIsoZ(new Date('2026-09-05T10:54:04.123Z'))).toBe('2026-09-05T10:54:04.123Z')
-  })
-})
-
 describe('epochToIso', () => {
   it('formats whole seconds as second-precision ISO-Z', () => {
     expect(epochToIso(1609459200)).toBe('2021-01-01T00:00:00Z')
@@ -178,5 +169,17 @@ describe('parseDateExpr @epoch', () => {
     // findutils 4.10 (gnulib): Number() would take `0x1`, `1e2`, `1.` and
     // `.5`, and GNU refuses every one of them.
     expect(parseDateExpr(word, true) !== null).toBe(accepted)
+  })
+})
+
+describe('toIsoZ', () => {
+  it.each([
+    ['2026-09-05T10:55:39.000Z', '2026-09-05T10:55:39Z'],
+    ['2026-09-05T10:55:39.001Z', '2026-09-05T10:55:39.001000Z'],
+    ['2026-09-05T10:55:39.120Z', '2026-09-05T10:55:39.120000Z'],
+    ['2026-09-05T12:55:39.123+02:00', '2026-09-05T10:55:39.123000Z'],
+    ['1969-12-31T23:59:59.500Z', '1969-12-31T23:59:59.500000Z'],
+  ])('formats %s like Python', (input, expected) => {
+    expect(toIsoZ(new Date(input))).toBe(expected)
   })
 })

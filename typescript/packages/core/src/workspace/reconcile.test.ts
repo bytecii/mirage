@@ -185,11 +185,12 @@ it.each(['gate', 'shell'])('reconciles GitHub IDs before the %s reread', async (
   })
   const resource = new RAMResource()
   Object.defineProperty(resource, 'supportsSnapshot', { value: true })
-  const ws = new Workspace({ '/gh': resource })
+  // Model GitHub's snapshot lifetime; RAM's zero TTL expires each listing immediately.
+  const ws = new Workspace({ '/gh': resource }, { index: { ttl: 86_400 } })
   try {
     const path = '/gh/f.txt'
     const scope = new PathSpec({ virtual: path, resourcePath: 'f.txt', directory: '/gh/' })
-    await githubStat(accessor, scope, resource.index)
+    expect((await githubStat(accessor, scope, resource.index)).fingerprint).toBe('v1')
     await ws.cache.set(path, new TextEncoder().encode('v1'), { fingerprint: 'v1' })
     vi.spyOn(ws.ops, 'call').mockImplementation((_op, _resource, _accessor, p, _args, kwargs) =>
       githubStat(accessor, p, kwargs?.index),

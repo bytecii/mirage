@@ -50,8 +50,5 @@ export function mergeOverlayStat(meta: NodeMeta | null, stat: FileStat): FileSta
     update.modified = epochToIso(meta.observedMtime)
   }
   if (Object.keys(update).length === 0) return stat
-  // `with` is the one place the field list is repeated; a hand-written
-  // copy here dropped `content`, so `stat` after a `touch` reported
-  // `type=file` where Python (model_copy) kept `type=text`.
   return stat.with(update)
 }

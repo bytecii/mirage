@@ -12,12 +12,12 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { toIsoZ } from '../../utils/dates.ts'
 import { mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { DatabricksVolumeAccessor } from '../../accessor/databricks_volume.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { FileStat, FileType, type PathSpec } from '../../types.ts'
 import { contentTypeForPath } from '../../utils/filetype.ts'
-import { toIsoZ } from '../../utils/dates.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { dbxFetch } from './client.ts'
 import { isNotFound, notFoundError } from './errors.ts'
