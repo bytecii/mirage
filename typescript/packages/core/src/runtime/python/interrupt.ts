@@ -142,6 +142,10 @@ async function createBrowserWatchdog(): Promise<WatchdogPort | null> {
         worker.terminate()
       },
     }
+  } catch {
+    // Workers can exist in the host API while CSP rejects their startup.
+    // Preserve the same unbounded eager fallback as a worker-less host.
+    return null
   } finally {
     URL.revokeObjectURL(url)
   }

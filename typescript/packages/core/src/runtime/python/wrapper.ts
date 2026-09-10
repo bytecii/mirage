@@ -152,7 +152,8 @@ _eval_result = (_value_json, _out_bytes.getvalue(), _err_bytes.getvalue(), _ok, 
 export const PYTHON_WRAPPER = String.raw`
 import os, sys, io, traceback
 
-_saved_cwd    = os.getcwd()
+_saved_getcwd = os.getcwd
+_saved_cwd    = _saved_getcwd()
 _saved_chdir  = os.chdir
 _saved_env    = dict(os.environ)
 _saved_path   = list(sys.path)
@@ -278,6 +279,7 @@ finally:
     sys.stderr   = _saved_stderr
     sys.argv     = _saved_argv
     os.chdir = _saved_chdir
+    os.getcwd = _saved_getcwd
     _saved_chdir(_saved_cwd)
 
 _result = (_out_bytes.getvalue(), _err_bytes.getvalue(), _exit_code)

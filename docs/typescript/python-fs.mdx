@@ -187,7 +187,7 @@ export default defineConfig({
 })
 ```
 
-Without workers or `SharedArrayBuffer`, Mirage retains the eager fallback: it collects each mount before execution and replays writes afterward. This fallback preserves filesystem support but still enumerates and reads whole mounts. Neither path requires JSPI.
+Without workers or `SharedArrayBuffer`, or when a worker cannot start (for example under CSP), Mirage retains the eager fallback: it collects each mount before execution and replays writes afterward. This fallback preserves filesystem support but still enumerates and reads whole mounts. Neither path requires JSPI.
 
 To run the example:
 

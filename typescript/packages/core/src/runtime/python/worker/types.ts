@@ -40,9 +40,10 @@ export type WorkerResult =
   | { kind: 'notice'; message: string }
   | { kind: 'result'; value: RunResult | EvalResult }
   | { kind: 'error'; message: string; name: string; syntax?: boolean; seconds?: number }
+export type WorkerMessage = VfsRequest | WorkerResult | { kind: 'ready' }
 export interface WorkerPort {
   post(message: unknown): void
-  onMessage(receive: (message: VfsRequest | WorkerResult) => void): void
+  onMessage(receive: (message: WorkerMessage) => void): void
   onError(receive: (error: Error) => void): void
   terminate(): void
 }

@@ -19,7 +19,13 @@ import type { BridgeDispatchFn, EvalResult, RunResult } from '../../types.ts'
 import type { RuntimeVFS } from '../../vfs.ts'
 import { applyMutation } from '../vfs/journal.ts'
 import { respond } from './transport.ts'
-import type { ExecuteRequest, VfsRequest, WorkerPort, WorkerResult } from './types.ts'
+import type {
+  ExecuteRequest,
+  VfsRequest,
+  WorkerMessage,
+  WorkerPort,
+  WorkerResult,
+} from './types.ts'
 
 async function createPort(): Promise<WorkerPort | null> {
   if (typeof SharedArrayBuffer === 'undefined') return null
@@ -61,7 +67,7 @@ async function createPort(): Promise<WorkerPort | null> {
       worker.postMessage(m)
     },
     onMessage: (fn) => {
-      worker.onmessage = (event: MessageEvent<VfsRequest | WorkerResult>) => {
+      worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
         fn(event.data)
       }
     },
@@ -77,6 +83,10 @@ async function createPort(): Promise<WorkerPort | null> {
 }
 
 export class PyodideWorkerClient {
+  private startup: { resolve: () => void; reject: (error: Error) => void } | null = null
+  private readonly ready = new Promise<void>((resolve, reject) => {
+    this.startup = { resolve, reject }
+  })
   private readonly messages: (VfsRequest | WorkerResult)[] = []
   private waiter: {
     resolve: (message: VfsRequest | WorkerResult) => void
@@ -92,6 +102,11 @@ export class PyodideWorkerClient {
     private readonly dispatch: BridgeDispatchFn,
   ) {
     port.onMessage((message) => {
+      if (message.kind === 'ready') {
+        this.startup?.resolve()
+        this.startup = null
+        return
+      }
       if (message.kind === 'vfs') this.buffers.add(message.buffer)
       if (this.waiter === null) this.messages.push(message)
       else {
@@ -109,8 +124,19 @@ export class PyodideWorkerClient {
     vfs: RuntimeVFS,
     dispatch: BridgeDispatchFn,
   ): Promise<PyodideWorkerClient | null> {
-    const port = await createPort()
-    return port === null ? null : new PyodideWorkerClient(port, vfs, dispatch)
+    let client: PyodideWorkerClient | null = null
+    try {
+      const port = await createPort()
+      if (port === null) return null
+      client = new PyodideWorkerClient(port, vfs, dispatch)
+      // A constructed worker may still fail to load (for example under
+      // CSP). Commit to it only after its message handler is listening.
+      await client.ready
+      return client
+    } catch {
+      client?.close()
+      return null
+    }
   }
 
   async execute(request: ExecuteRequest, signal?: AbortSignal): Promise<RunResult | EvalResult> {
@@ -170,6 +196,8 @@ export class PyodideWorkerClient {
 
   private fail(error: Error): void {
     this.failure = error
+    this.startup?.reject(error)
+    this.startup = null
     this.waiter?.reject(error)
     this.waiter = null
     for (const buffer of this.buffers) {

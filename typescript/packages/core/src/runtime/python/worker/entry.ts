@@ -19,7 +19,7 @@ import type { VFSEntry, VFSStat } from '../../vfs.ts'
 import { PyodideRuntime } from '../pyodide.ts'
 import type { SyncVFS } from '../vfs/types.ts'
 import { requestSync } from './transport.ts'
-import type { ExecuteRequest, VfsRequest, WorkerResult } from './types.ts'
+import type { ExecuteRequest, VfsRequest, WorkerMessage } from './types.ts'
 
 const node = (globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node
 const port = node === undefined ? null : (await import('node:worker_threads')).parentPort
@@ -27,7 +27,7 @@ const browser = globalThis as unknown as {
   postMessage(m: unknown): void
   onmessage: ((e: MessageEvent<ExecuteRequest>) => void) | null
 }
-const post = (message: VfsRequest | WorkerResult): void => {
+const post = (message: WorkerMessage): void => {
   if (port !== null) port.postMessage(message)
   else browser.postMessage(message)
 }
@@ -92,3 +92,4 @@ else
   browser.onmessage = (event) => {
     void execute(event.data)
   }
+post({ kind: 'ready' })

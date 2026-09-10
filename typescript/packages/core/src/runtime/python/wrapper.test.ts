@@ -84,7 +84,7 @@ describe('embedded python wrappers', { timeout: 120_000 }, () => {
 })
 
 describe('Pyodide command cwd', { timeout: 120_000 }, () => {
-  it('restores the trusted chdir when user code replaces or deletes it', async () => {
+  it('restores trusted cwd functions when user code replaces or deletes them', async () => {
     const rt = new PyodideRuntime()
     try {
       await rt.eval(
@@ -94,6 +94,8 @@ describe('Pyodide command cwd', { timeout: 120_000 }, () => {
       for (const code of [
         'import os; os.chdir = lambda _: None',
         "import os; del os.chdir; raise ValueError('expected')",
+        "import os; os.getcwd = lambda: '/missing-cwd'",
+        "import os; del os.getcwd; raise ValueError('expected')",
       ]) {
         await rt.run({ code, args: [], env: {}, stdin: null, cwd: PathSpec.fromStrPath('/tmp/a') })
         expect((await rt.eval('import os; os.getcwd()')).value).toBe(before.value)

@@ -58,7 +58,8 @@ def test_local_stdin():
     assert result.stdout == b"HELLO\n"
 
 
-@pytest.mark.parametrize("stdin", [None, b"", b"x" * 300_000])
+@pytest.mark.parametrize("stdin", [None, b"", b"x" * 300_000],
+                         ids=["absent", "empty", "large"])
 def test_script_cli_stdin_is_not_embedded_in_process_argv(stdin):
     runtime = LocalRuntime()
     result = asyncio.run(
