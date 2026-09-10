@@ -19,7 +19,7 @@ import { asBool, asNum, asObj, asStr, asStrArr } from '../wire/json.ts'
 import type { JsonObj } from '../wire/json.ts'
 import { NOT_FOUND, googleError, ok } from '../wire/reply.ts'
 import type { DocBody, DocTab } from '../store/types.ts'
-import { allDocTabs, findDocTab, firstTabOf, replaceAllText } from './body.ts'
+import { allDocTabs, copyDocTabs, findDocTab, firstTabOf, replaceAllText } from './body.ts'
 
 // The tab a location-bearing request applies to. A request that names no
 // tab lands on the FIRST one, which is the API's documented default for
@@ -36,9 +36,21 @@ function tabFor(doc: DocBody, location: JsonObj): DocTab | null {
 
 const UNKNOWN_TAB = 'Invalid requests: tabId not found in the document'
 
+/**
+ * Apply a batch, all of it or none of it.
+ *
+ * "Each request is validated before being applied. If any request is not
+ * valid, then the entire request will fail and nothing will be applied."
+ * So the batch runs against a COPY of the tabs and commits only once every
+ * request has succeeded. Mutating in place and returning early on the
+ * second request left the first one applied, and the write route persists
+ * unconditionally, so a caller retrying the failed batch would have
+ * duplicated it.
+ */
 export function docsBatchUpdate(st: GwsState, id: string, requests: JsonObj[]): Reply {
-  const doc = st.docs.get(id)
-  if (doc === undefined) return NOT_FOUND
+  const live = st.docs.get(id)
+  if (live === undefined) return NOT_FOUND
+  const doc: DocBody = { title: live.title, tabs: copyDocTabs(live.tabs) }
   const replies: JsonValue[] = []
   for (const request of requests) {
     if ('insertText' in request) {
@@ -104,6 +116,8 @@ export function docsBatchUpdate(st: GwsState, id: string, requests: JsonObj[]): 
       )
     }
   }
+  // Every request succeeded, so the copy becomes the document.
+  live.tabs = doc.tabs
   touchNative(st, id)
   return ok({ documentId: id, replies })
 }

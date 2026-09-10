@@ -181,6 +181,34 @@
         "stdout": "{\"body\":null,\"tabs\":2}\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "gapp_tabs_batch_is_all_or_nothing",
+      "seq": 521013,
+      "targets": [
+        "gapps-tabs"
+      ],
+      "clear_cache": true,
+      "command": "gws docs documents batchUpdate --params '{\"documentId\": \"doc0001\"}' --json '{\"requests\": [{\"insertText\": {\"text\": \" FIRSTREQ\", \"endOfSegmentLocation\": {\"segmentId\": \"\"}}}, {\"insertText\": {\"text\": \" SECONDREQ\", \"endOfSegmentLocation\": {\"tabId\": \"t.99\"}}}]}' 2>&1 >/dev/null | grep -o 'tabId not found in the document'",
+      "expect": {
+        "exit": 0,
+        "stdout": "tabId not found in the document\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gapp_tabs_failed_batch_applied_nothing",
+      "seq": 521014,
+      "targets": [
+        "gapps-tabs"
+      ],
+      "clear_cache": true,
+      "command": "cat /docs/owned/*.gdoc.json | jq -r '[.. | .textRun? // empty | .content] | add | test(\"FIRSTREQ\")'",
+      "expect": {
+        "exit": 0,
+        "stdout": "false\n",
+        "stderr": ""
+      }
     }
   ]
 }
