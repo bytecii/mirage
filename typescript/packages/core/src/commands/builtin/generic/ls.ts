@@ -763,7 +763,8 @@ function hyperlinkFlag(fl: FlagView): boolean {
 // same columns as -l, because a mirage owner is already the id (an agent,
 // a profile) and never a name looked up from one; the last of -t, -S, -X,
 // -v, -U and --sort wins, as does the last of -c, -u and --time; and -c or
-// -u with neither -l nor a sort sorts by that time. Throws UsageError for
+// -u with neither -l nor a sort sorts by that time; and the later of -h
+// and --block-size wins. Throws UsageError for
 // a value GNU refuses, with GNU's exit status for that option.
 export function parseFlags(fl: FlagView): LsFlags {
   const [askedSort, sortedExplicitly] = sortFlag(fl)
@@ -778,6 +779,10 @@ export function parseFlags(fl: FlagView): LsFlags {
     blockSize = parseBlockSize(blockText)
     if (blockSize === null)
       throw new UsageError(`ls: invalid --block-size argument '${blockText}'`, 2)
+    // The later of -h and --block-size wins (GNU: `--block-size=1 -h`
+    // prints 1.5K, `-h --block-size=1` prints 1536); the value is still
+    // checked either way.
+    if (fl.typedOrder('human_readable', 'block_size').at(-1) === 'human_readable') blockSize = null
   }
   const columns: LsColumns = Object.freeze({
     owner: !noOwner,

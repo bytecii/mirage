@@ -1186,6 +1186,17 @@ def test_parse_flags_g_o_n_imply_long_and_shape_the_columns():
     }).columns.block_size == BlockSize(1024, "K")
     with pytest.raises(UsageError, match="invalid --block-size argument '0K'"):
         parse_flags({"block_size": "0K"})
+    # The later of -h and --block-size wins (dict order is typed order).
+    assert parse_flags({
+        "block_size": "K",
+        "human_readable": True
+    }).columns.block_size is None
+    assert parse_flags({
+        "human_readable": True,
+        "block_size": "K"
+    }).columns.block_size == BlockSize(1024, "K")
+    with pytest.raises(UsageError):
+        parse_flags({"block_size": "bogus", "human_readable": True})
     assert parse_flags({"hyperlink": "always"}).hyperlink
     assert not parse_flags({"hyperlink": "auto"}).hyperlink
     assert parse_flags({

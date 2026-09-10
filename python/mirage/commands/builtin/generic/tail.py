@@ -52,6 +52,10 @@ class TailFlags:
 
 RETRY_IGNORED = (b"tail: warning: --retry ignored; --retry is useful only "
                  b"when following\n")
+# What a waited-for name is announced as when it turns up: a missing file
+# has appeared, an untailable one (a directory) has become accessible.
+APPEARED = "has appeared;  following new file"
+ACCESSIBLE = "has become accessible"
 
 
 def _follow_flags(fl: FlagView) -> tuple[bool, bool, bool]:
@@ -326,7 +330,7 @@ async def _whole(read: Callable[..., Any], path: PathSpec) -> bytes:
 
 async def _follow(
     paths: list[PathSpec],
-    pending: list[PathSpec],
+    pending: list[tuple[PathSpec, str]],
     *,
     read: Callable[..., Any],
     read_range: ReadRangeFn | None,
@@ -369,7 +373,8 @@ async def _follow(
 
     Args:
         paths (list[PathSpec]): the operands that opened.
-        pending (list[PathSpec]): the ones ``--retry`` waits for.
+        pending (list[tuple[PathSpec, str]]): the ones ``--retry`` waits
+            for, each with the notice that announces it.
         read (Callable[..., Any]): bound whole-file reader.
         read_range (ReadRangeFn | None): bound byte-window reader.
         stat (StatFn): bound stat.
@@ -380,7 +385,7 @@ async def _follow(
     """
     positions: dict[int, int] = {}
     active = list(enumerate(paths))
-    waiting = [(len(paths) + i, p) for i, p in enumerate(pending)]
+    waiting = [(len(paths) + i, p, how) for i, (p, how) in enumerate(pending)]
     last: int | None = None
     for slot, p in active:
         if show_headers:
@@ -397,16 +402,15 @@ async def _follow(
         positions[slot] = box[0]
     while active or waiting:
         await asyncio.sleep(flags.interval)
-        for slot, p in list(waiting):
+        for slot, p, how in list(waiting):
             try:
                 found = await stat(p)
             except FS_ERRORS:
                 continue
             if found.type is FileType.DIRECTORY:
                 continue
-            _note(io,
-                  f"tail: '{p.raw_path}' has appeared;  following new file\n")
-            waiting.remove((slot, p))
+            _note(io, f"tail: '{p.raw_path}' {how}\n")
+            waiting.remove((slot, p, how))
             active.append((slot, p))
             positions[slot] = 0
         for slot, p in list(active):
@@ -422,7 +426,7 @@ async def _follow(
                         f"{fs_strerror(exc)}\n")
                     active.remove((slot, p))
                     if flags.retry:
-                        waiting.append((slot, p))
+                        waiting.append((slot, p, APPEARED))
                 continue
             size = current.size
             whole: bytes | None = None
@@ -448,33 +452,46 @@ async def _follow(
 
 
 async def _unfollowable(paths: list[PathSpec], readable: list[PathSpec],
-                        stat: StatFn, retry: bool,
-                        io: IOResult) -> list[PathSpec]:
+                        stat: StatFn, flags: TailFlags,
+                        io: IOResult) -> list[tuple[PathSpec, str]]:
     """Sort the operands that did not open into the ones ``--retry``
     waits for and the ones tail gives up on, wording the latter.
+
+    A directory cannot be followed. Without ``--retry`` that is
+    ``giving up on this name``; with it GNU drops the suffix, and under
+    ``--follow=name`` keeps polling the name until something tailable
+    replaces it, announced as ``has become accessible`` rather than the
+    ``has appeared`` a missing file gets.
 
     Args:
         paths (list[PathSpec]): every operand.
         readable (list[PathSpec]): the ones that opened.
         stat (StatFn): bound stat.
-        retry (bool): ``--retry``.
+        flags (TailFlags): the parsed flags.
         io (IOResult): the result the notices are appended to.
     """
     opened = {p.virtual for p in readable}
-    pending: list[PathSpec] = []
+    pending: list[tuple[PathSpec, str]] = []
     for p in paths:
         if p.virtual in opened:
             continue
         try:
-            found = await stat(p)
+            is_dir = (await stat(p)).type is FileType.DIRECTORY
+        except IsADirectoryError:
+            is_dir = True
         except FS_ERRORS:
-            if retry:
-                pending.append(p)
+            if flags.retry:
+                pending.append((p, APPEARED))
             continue
-        if found.type is FileType.DIRECTORY:
-            _note(
-                io, f"tail: {p.raw_path}: cannot follow end of this type of "
-                "file; giving up on this name\n")
+        if not is_dir:
+            continue
+        line = f"tail: {p.raw_path}: cannot follow end of this type of file"
+        if not flags.retry:
+            _note(io, line + "; giving up on this name\n")
+            continue
+        _note(io, line + "\n")
+        if flags.follow_name:
+            pending.append((p, ACCESSIBLE))
     return pending
 
 
@@ -525,8 +542,7 @@ async def tail_generic(
                     b"tail: warning: --retry only effective for "
                     b"the initial open\n" +
                     (io.stderr if isinstance(io.stderr, bytes) else b""))
-            pending = await _unfollowable(paths, readable, stat, parsed.retry,
-                                          io)
+            pending = await _unfollowable(paths, readable, stat, parsed, io)
             if not readable and not pending:
                 _note(io, "tail: no files remaining\n")
                 io.exit_code = 1

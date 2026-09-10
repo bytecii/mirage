@@ -196,8 +196,9 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> LsFlags:
     never a name looked up from one; the last of ``-t``, ``-S``, ``-X``,
     ``-v``, ``-U`` and ``--sort`` wins, as does the last of ``-c``, ``-u``
     and ``--time``; and ``-c`` or ``-u`` with neither ``-l`` nor a sort
-    sorts by that time. Raises ``UsageError`` for a value GNU refuses,
-    with GNU's exit status for that option.
+    sorts by that time; and the later of ``-h`` and ``--block-size``
+    wins. Raises ``UsageError`` for a value GNU refuses, with GNU's
+    exit status for that option.
 
     Args:
         flags (Mapping[str, FlagValue]): flags for the shared ls spec.
@@ -219,6 +220,12 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> LsFlags:
         if block is None:
             raise UsageError(
                 f"ls: invalid --block-size argument '{block_text}'", 2)
+        # The later of -h and --block-size wins (GNU: `--block-size=1 -h`
+        # prints 1.5K, `-h --block-size=1` prints 1536); the value is
+        # still checked either way.
+        if fl.typed_order("human_readable",
+                          "block_size")[-1] == "human_readable":
+            block = None
     columns = formatting.LsColumns(owner=not no_owner,
                                    group=not no_group,
                                    inode=fl.as_bool("inode"),

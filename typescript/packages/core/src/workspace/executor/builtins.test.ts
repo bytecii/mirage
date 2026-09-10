@@ -1595,6 +1595,36 @@ describe('handleTimeout', () => {
     expect(io.exitCode).toBe(124)
   })
 
+  it('keeps the stderr the command had produced before the deadline', async () => {
+    // `tail -F missing` has said it cannot open the file by the time the
+    // deadline kills it; that line is the command's output too.
+    const complaining = (
+      _cmd: string,
+      opts: { sessionId: string; signal?: AbortSignal },
+    ): Promise<IOResult> =>
+      Promise.resolve(
+        new IOResult({
+          stdout: (async function* () {
+            await new Promise<void>((resolve) => {
+              opts.signal?.addEventListener(
+                'abort',
+                () => {
+                  resolve()
+                },
+                { once: true },
+              )
+            })
+            yield new Uint8Array()
+          })(),
+          stderr: new TextEncoder().encode('tail: nope: No such file or directory\n'),
+        }),
+      )
+    const [stdout, io] = await handleTimeout(complaining, ['0.05', 'tail', '-F', 'nope'], session)
+    expect(io.exitCode).toBe(124)
+    expect(stdout).toBeNull()
+    expect(decode(await materialize(io.stderr))).toBe('tail: nope: No such file or directory\n')
+  })
+
   it('aborts the inner run at the deadline', async () => {
     // A followed tail polls until told to stop; the deadline has to tell
     // it, or 124 comes back while the run keeps reading in the background.

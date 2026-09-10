@@ -112,6 +112,30 @@ class StreamingShell:
         return IOResult(stdout=forever())
 
 
+class ComplainingShell:
+    """A shell whose command reports an operand on stderr, then never
+    finishes, as ``tail -F missing`` does."""
+
+    async def __call__(self, line: str, session_id: str) -> IOResult:
+
+        async def forever():
+            await asyncio.sleep(10)
+            yield b"never\n"
+
+        return IOResult(stdout=forever(),
+                        stderr=b"tail: nope: No such file or directory\n")
+
+
+@pytest.mark.asyncio
+async def test_overrun_keeps_the_stderr_the_command_had_produced():
+    stdout, io, _ = await handle_timeout(ComplainingShell(),
+                                         ["0.1", "tail", "-F", "nope"],
+                                         make_session())
+    assert io.exit_code == 124
+    assert stdout is None
+    assert io.stderr == b"tail: nope: No such file or directory\n"
+
+
 @pytest.mark.asyncio
 async def test_overrun_keeps_what_the_command_had_printed():
     stdout, io, _ = await handle_timeout(StreamingShell(),

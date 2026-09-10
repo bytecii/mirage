@@ -27,7 +27,7 @@ import {
   tailBytes,
   type TailCounts,
 } from '../tail_counts.ts'
-import { fsErrorLine, fsStrerror, isFsError } from '../../../utils/errors.ts'
+import { fsErrorLine, fsStrerror, isEisdir, isFsError } from '../../../utils/errors.ts'
 import { readStdinAsync } from '../utils/stream.ts'
 
 const ENC = new TextEncoder()
@@ -139,7 +139,7 @@ async function window(
 // f gains twice, under a header each time, as GNU does.
 async function* follow(
   paths: readonly PathSpec[],
-  pending: PathSpec[],
+  pending: readonly [PathSpec, string][],
   stream: Stream,
   stat: Stat,
   readRange: ReadRange | null,
@@ -151,7 +151,11 @@ async function* follow(
 ): AsyncGenerator<Uint8Array> {
   const positions = new Map<number, number>()
   const active: [number, PathSpec][] = paths.map((p, i) => [i, p])
-  const waiting: [number, PathSpec][] = pending.map((p, i) => [paths.length + i, p])
+  const waiting: [number, PathSpec, string][] = pending.map(([p, how], i) => [
+    paths.length + i,
+    p,
+    how,
+  ])
   let last: number | null = null
   for (const [slot, p] of active) {
     const raw = await materialize(stream(p))
@@ -166,7 +170,7 @@ async function* follow(
     await pause(flags.interval, signal)
     if (aborted(signal)) return
     for (const entry of [...waiting]) {
-      const [slot, p] = entry
+      const [slot, p, how] = entry
       let found: FileStat
       try {
         found = await stat(p)
@@ -175,9 +179,9 @@ async function* follow(
         continue
       }
       if (found.type === FileType.DIRECTORY) continue
-      note(io, `tail: '${p.rawPath}' has appeared;  following new file\n`)
+      note(io, `tail: '${p.rawPath}' ${how}\n`)
       waiting.splice(waiting.indexOf(entry), 1)
-      active.push(entry)
+      active.push([slot, p])
       positions.set(slot, 0)
     }
     for (const entry of [...active]) {
@@ -195,7 +199,7 @@ async function* follow(
             `tail: '${p.rawPath}' has become inaccessible: ${fsStrerror(err) ?? 'No such file or directory'}\n`,
           )
           active.splice(active.indexOf(entry), 1)
-          if (flags.retry) waiting.push(entry)
+          if (flags.retry) waiting.push([slot, p, APPEARED])
         }
         continue
       }
@@ -227,31 +231,40 @@ async function* follow(
 }
 
 // Sort the operands that did not open into the ones --retry waits for and
-// the ones tail gives up on, wording the latter.
+// the ones tail gives up on, wording the latter. A directory cannot be
+// followed. Without --retry that is `giving up on this name`; with it
+// GNU drops the suffix, and under --follow=name keeps polling the name
+// until something tailable replaces it, announced as `has become
+// accessible` rather than the `has appeared` a missing file gets.
 async function unfollowable(
   paths: readonly PathSpec[],
   opened: ReadonlySet<string>,
   stat: Stat,
-  retry: boolean,
+  flags: FollowFlags,
   io: IOResult,
-): Promise<PathSpec[]> {
-  const pending: PathSpec[] = []
+): Promise<[PathSpec, string][]> {
+  const pending: [PathSpec, string][] = []
   for (const p of paths) {
     if (opened.has(p.virtual)) continue
-    let found: FileStat
+    let isDir: boolean
     try {
-      found = await stat(p)
+      isDir = (await stat(p)).type === FileType.DIRECTORY
     } catch (err) {
       if (!isFsError(err)) throw err
-      if (retry) pending.push(p)
+      if (!isEisdir(err)) {
+        if (flags.retry) pending.push([p, APPEARED])
+        continue
+      }
+      isDir = true
+    }
+    if (!isDir) continue
+    const line = `tail: ${p.rawPath}: cannot follow end of this type of file`
+    if (!flags.retry) {
+      note(io, `${line}; giving up on this name\n`)
       continue
     }
-    if (found.type === FileType.DIRECTORY) {
-      note(
-        io,
-        `tail: ${p.rawPath}: cannot follow end of this type of file; giving up on this name\n`,
-      )
-    }
+    note(io, `${line}\n`)
+    if (flags.byName) pending.push([p, ACCESSIBLE])
   }
   return pending
 }
@@ -279,6 +292,10 @@ function concat(chunks: Uint8Array[]): Uint8Array {
 }
 
 const RETRY_IGNORED = 'tail: warning: --retry ignored; --retry is useful only when following\n'
+// What a waited-for name is announced as when it turns up: a missing file
+// has appeared, an untailable one (a directory) has become accessible.
+const APPEARED = 'has appeared;  following new file'
+const ACCESSIBLE = 'has become accessible'
 
 export async function tailGeneric(
   paths: PathSpec[],
@@ -314,7 +331,7 @@ export async function tailGeneric(
       try {
         const found = await stat(p)
         if (found.type === FileType.DIRECTORY) {
-          err += `tail: error reading '${p.rawPath}': Is a directory\n`
+          err += `tail: ${p.rawPath}: Is a directory\n`
           continue
         }
         readable.push(p)
@@ -335,7 +352,7 @@ export async function tailGeneric(
       paths,
       new Set(readable.map((p) => p.virtual)),
       stat,
-      following.retry,
+      following,
       io,
     )
     if (readable.length === 0 && pending.length === 0) {

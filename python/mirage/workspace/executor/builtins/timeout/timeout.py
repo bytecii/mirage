@@ -94,17 +94,24 @@ async def handle_timeout(
 
     inner = shlex.join(parse.operands[1:])
     drained: list[bytes] = []
+    held: list[IOResult] = []
     try:
         stdout, io = await asyncio.wait_for(
-            _execute_drained(execute_fn, inner, session.session_id, drained),
+            _execute_drained(execute_fn, inner, session.session_id, drained,
+                             held),
             timeout=seconds if seconds > 0 else None,
         )
     except asyncio.TimeoutError:
         # What the command printed before the deadline is its output, as
         # GNU leaves it on the terminal; only the run past it is lost.
+        # That goes for stderr too: a `tail -F missing` has already said
+        # it cannot open the file by the time the deadline kills it.
         partial = b"".join(drained)
-        return partial or None, IOResult(exit_code=124), ExecutionNode(
-            command="timeout", exit_code=124)
+        stderr = held[0].stderr if held else None
+        return partial or None, IOResult(
+            exit_code=124,
+            stderr=stderr if isinstance(stderr, bytes) else None,
+        ), ExecutionNode(command="timeout", exit_code=124)
     return stdout, io, ExecutionNode(command="timeout", exit_code=io.exit_code)
 
 
@@ -113,21 +120,26 @@ async def _execute_drained(
     inner: str,
     session_id: str,
     drained: list[bytes],
+    held: list[IOResult],
 ) -> tuple[bytes | None, IOResult]:
     """Run the inner line and drain its stdout under the same deadline.
 
     A lazy inner pipeline produces bytes only when consumed; draining
     inside the wait_for scope keeps the whole run under the limit, and
     draining chunk by chunk into ``drained`` is what lets a run that
-    overruns keep what it had printed.
+    overruns keep what it had printed. The inner result lands in
+    ``held`` as soon as it exists, so its stderr survives the deadline
+    the same way.
 
     Args:
         execute_fn (Callable): shell evaluator for the inner line.
         inner (str): the joined command line.
         session_id (str): session to run in.
         drained (list[bytes]): where each chunk lands as it arrives.
+        held (list[IOResult]): one-slot box the inner result lands in.
     """
     io = await execute_fn(inner, session_id=session_id)
+    held.append(io)
     if io.stdout is not None:
         async for chunk in ensure_stream(io.stdout):
             drained.append(chunk)

@@ -856,6 +856,14 @@ describe('lsGeneric columns and time styles', () => {
     expect(parsed.timeKind).toBe(timeKind)
   })
 
+  it('parseFlags: the later of -h and --block-size wins', () => {
+    const parse = (flags: Record<string, FlagValue>): boolean =>
+      parseFlags(new FlagView(flags, specOf('ls'))).columns.blockSize !== null
+    expect(parse({ block_size: 'K', human_readable: true })).toBe(false)
+    expect(parse({ human_readable: true, block_size: 'K' })).toBe(true)
+    expect(() => parse({ block_size: 'bogus', human_readable: true })).toThrow(UsageError)
+  })
+
   it('parseFlags: -1 never undoes the long format', () => {
     const parse = (flags: Record<string, FlagValue>): boolean =>
       parseFlags(new FlagView(flags, specOf('ls'))).long

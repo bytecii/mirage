@@ -61,9 +61,11 @@ async function executeDrained(
   inner: string,
   sessionId: string,
   drained: Uint8Array[],
+  held: IOResult[],
   signal: AbortSignal,
 ): Promise<[Uint8Array, IOResult]> {
   const io = await executeFn(inner, { sessionId, signal })
+  held.push(io)
   const source = io.stdout
   if (source instanceof Uint8Array) {
     drained.push(source)
@@ -140,12 +142,15 @@ export async function handleTimeout(
 
   const inner = shellJoin(rest)
   const drained: Uint8Array[] = []
+  // The inner result lands here as soon as it exists, so its stderr
+  // survives the deadline the way the drained stdout does.
+  const held: IOResult[] = []
   // The deadline aborts the inner run, not just the wait for it: a
   // promise cannot be cancelled, so the signal is what stops a
   // `tail -f` from polling on after 124 was already returned (python's
   // wait_for cancels the drain the same way).
   const abort = new AbortController()
-  const run = executeDrained(executeFn, inner, session.sessionId, drained, abort.signal)
+  const run = executeDrained(executeFn, inner, session.sessionId, drained, held, abort.signal)
   const result = seconds > 0 ? await raceDeadline(run, seconds) : await run
   if (result === TIMED_OUT) {
     abort.abort()
@@ -153,11 +158,14 @@ export async function handleTimeout(
     // becomes an unhandled rejection and can crash the process.
     run.catch(() => undefined)
     // What the command printed before the deadline is its output, as GNU
-    // leaves it on the terminal; only the run past it is lost.
+    // leaves it on the terminal; only the run past it is lost. That goes
+    // for stderr too: a `tail -F missing` has already said it cannot open
+    // the file by the time the deadline kills it.
     const partial = concatChunks(drained)
+    const stderr = held[0]?.stderr
     return [
       partial.byteLength > 0 ? partial : null,
-      new IOResult({ exitCode: 124 }),
+      new IOResult({ exitCode: 124, stderr: stderr instanceof Uint8Array ? stderr : null }),
       new ExecutionNode({ command: 'timeout', exitCode: 124 }),
     ]
   }

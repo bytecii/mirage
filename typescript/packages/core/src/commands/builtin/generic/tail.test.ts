@@ -45,10 +45,13 @@ function opts(flags: Record<string, string | boolean>, signal?: AbortSignal): Co
   } as unknown as CommandOpts
 }
 
+const bytesOf = (body: Uint8Array | null | undefined): Uint8Array => body ?? new Uint8Array()
+
 // A fake mount whose files the test grows between polls.
 class Growing {
+  // A null entry is a directory.
   constructor(
-    readonly data: Map<string, Uint8Array>,
+    readonly data: Map<string, Uint8Array | null>,
     readonly sized = true,
   ) {}
   stat = (p: PathSpec): Promise<FileStat> => {
@@ -57,6 +60,11 @@ class Growing {
       const err = new Error('ENOENT') as Error & { code: string }
       err.code = 'ENOENT'
       return Promise.reject(err)
+    }
+    if (data === null) {
+      return Promise.resolve(
+        new FileStat({ name: p.virtual.split('/').pop() ?? '', type: FileType.DIRECTORY }),
+      )
     }
     return Promise.resolve(
       new FileStat({
@@ -68,10 +76,10 @@ class Growing {
   }
   stream = async function* (this: Growing, p: PathSpec): AsyncIterable<Uint8Array> {
     await Promise.resolve()
-    yield this.data.get(p.virtual) ?? new Uint8Array()
+    yield bytesOf(this.data.get(p.virtual))
   }.bind(this)
   readRange = (p: PathSpec, offset: number, size: number): Promise<Uint8Array> =>
-    Promise.resolve((this.data.get(p.virtual) ?? new Uint8Array()).slice(offset, offset + size))
+    Promise.resolve(bytesOf(this.data.get(p.virtual)).slice(offset, offset + size))
   set(path: string, text: string): void {
     this.data.set(path, ENC.encode(text))
   }
@@ -211,6 +219,58 @@ describe('tail -f', () => {
     const text = await drainFor(stream, 200, abort)
     await grower
     expect(text).toBe('l1\nl2\n')
+  })
+
+  it('-F waits for a directory to be replaced by a file', async () => {
+    // Pinned on coreutils 9.7: `tail -F dir` reports the directory
+    // without giving up, keeps the name, and announces `has become
+    // accessible` once a file stands there.
+    const fs = new Growing(new Map([['/d/dir', null]]))
+    const abort = new AbortController()
+    const [stream, io] = (await tailGeneric(
+      [spec('/d/dir')],
+      [],
+      followOpts(abort, { F: true }),
+      fs.stream,
+      fs.stat,
+      fs.readRange,
+    )) as [AsyncIterable<Uint8Array>, IOResult]
+    expect(DEC.decode(io.stderr as Uint8Array)).toBe(
+      'tail: /d/dir: Is a directory\ntail: /d/dir: cannot follow end of this type of file\n',
+    )
+    const grower = (async () => {
+      await sleep(60)
+      fs.set('/d/dir', 'born\n')
+    })()
+    const text = await drainFor(stream, 200, abort)
+    await grower
+    expect(text).toBe('born\n')
+    expect(
+      DEC.decode(io.stderr as Uint8Array).endsWith("tail: '/d/dir' has become accessible\n"),
+    ).toBe(true)
+  })
+
+  const givingUp: [Record<string, string | boolean>, string][] = [
+    [{ follow: true }, '; giving up on this name'],
+    [{ follow: 'descriptor', retry: true }, ''],
+  ]
+  it.each(givingUp)('gives up on a directory without a name retry (%o)', async (flags, suffix) => {
+    const fs = new Growing(new Map([['/d/dir', null]]))
+    const [stream, io] = (await tailGeneric(
+      [spec('/d/dir')],
+      [],
+      opts({ sleep_interval: '0.02', ...flags }),
+      fs.stream,
+      fs.stat,
+      fs.readRange,
+    )) as [ByteSource | null, IOResult]
+    expect(stream).toBeNull()
+    expect(io.exitCode).toBe(1)
+    expect(
+      DEC.decode(io.stderr as Uint8Array).endsWith(
+        `tail: /d/dir: Is a directory\ntail: /d/dir: cannot follow end of this type of file${suffix}\ntail: no files remaining\n`,
+      ),
+    ).toBe(true)
   })
 
   it('--retry without follow warns and tails anyway', async () => {

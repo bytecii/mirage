@@ -149,6 +149,43 @@
         "n",
         "retry"
       ]
+    },
+    {
+      "id": "tail_f_gives_up_on_a_directory",
+      "command": "mkdir -p /data/tfd2 && printf k > /data/tfd2/k && tail -f /data/tfd2; echo code=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "code=1\n",
+        "stderr": "tail: /data/tfd2: Is a directory\ntail: /data/tfd2: cannot follow end of this type of file; giving up on this name\ntail: no files remaining\n"
+      },
+      "flags": [
+        "f"
+      ],
+      "seq": 960019,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ]
     }
   ]
 }

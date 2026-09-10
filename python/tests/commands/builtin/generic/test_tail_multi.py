@@ -91,15 +91,22 @@ async def test_tail_multi_stream_reader():
 class _Growing:
     """A fake mount whose files the test grows between polls."""
 
-    def __init__(self, data: dict[str, bytes], sized: bool = True) -> None:
+    def __init__(self,
+                 data: dict[str, bytes | None],
+                 sized: bool = True) -> None:
+        # A None entry is a directory.
         self.data = data
         self.sized = sized
 
     async def stat(self, p: PathSpec) -> FileStat:
         if p.virtual not in self.data:
             raise FileNotFoundError(p.virtual)
+        body = self.data[p.virtual]
+        if body is None:
+            return FileStat(name=p.virtual.rsplit("/", 1)[-1],
+                            type=FileType.DIRECTORY)
         return FileStat(name=p.virtual.rsplit("/", 1)[-1],
-                        size=len(self.data[p.virtual]) if self.sized else None,
+                        size=len(body) if self.sized else None,
                         type=FileType.FILE)
 
     async def read(self, p: PathSpec) -> bytes:
@@ -234,6 +241,56 @@ async def test_follow_reads_past_the_read_through_cache():
     finally:
         push_cache_manager(prev)
     assert b"".join(chunks) == b"l1\nl2\n"
+
+
+@pytest.mark.asyncio
+async def test_follow_name_with_retry_waits_for_a_directory_to_be_replaced():
+    # Pinned on coreutils 9.7: `tail -F dir` reports the directory
+    # without giving up, keeps the name, and announces `has become
+    # accessible` once a file stands there.
+    fs = _Growing({"/d/dir": None})
+    stream, io = await tail_generic(_paths("/d/dir"), [], _follow_opts(F=True),
+                                    fs.stat, fs.read, fs.read_range)
+    assert stream is not None
+    assert io.stderr == (b"tail: /d/dir: Is a directory\n"
+                         b"tail: /d/dir: cannot follow end of this type of "
+                         b"file\n")
+
+    async def replace() -> None:
+        await asyncio.sleep(0.06)
+        fs.data["/d/dir"] = b"born\n"
+
+    grower = asyncio.create_task(replace())
+    chunks = await _drain_for(stream, 0.2)
+    await grower
+    assert b"".join(chunks) == b"born\n"
+    assert io.stderr.endswith(b"tail: '/d/dir' has become accessible\n")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags,suffix", [
+    ({
+        "follow": True
+    }, b"; giving up on this name"),
+    ({
+        "follow": "descriptor",
+        "retry": True
+    }, b""),
+])
+async def test_follow_gives_up_on_a_directory_without_name_retry(
+        flags, suffix):
+    # Pinned on coreutils 9.7: without --retry the suffix says so; a
+    # descriptor follow with --retry drops the suffix but gives up too.
+    fs = _Growing({"/d/dir": None})
+    stream, io = await tail_generic(_paths("/d/dir"), [],
+                                    _follow_opts(**flags), fs.stat, fs.read,
+                                    fs.read_range)
+    assert stream is None
+    assert io.exit_code == 1
+    assert io.stderr.endswith(b"tail: /d/dir: Is a directory\n"
+                              b"tail: /d/dir: cannot follow end of this "
+                              b"type of file" + suffix +
+                              b"\ntail: no files remaining\n")
 
 
 @pytest.mark.asyncio
