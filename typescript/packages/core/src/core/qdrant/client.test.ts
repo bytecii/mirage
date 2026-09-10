@@ -17,31 +17,60 @@ import { describe, expect, it } from 'vitest'
 import {
   buildFilter,
   candidateIds,
-  coerce,
+  condition,
+  jsonScalar,
   exactNameTest,
   pointToRow,
   valuePrefixTest,
 } from './client.ts'
 
 describe('qdrant client helpers', () => {
-  it('coerces numeric strings only', () => {
-    expect(coerce('5')).toBe(5)
-    expect(coerce('-3')).toBe(-3)
-    expect(coerce('cat')).toBe('cat')
+  it('matches a plain segment as the string alone', () => {
+    expect(condition('k', 'cat')).toEqual({ key: 'k', match: { value: 'cat' } })
   })
 
-  it('keeps numeric strings that would not round-trip', () => {
-    expect(coerce('007')).toBe('007')
-    expect(coerce('05')).toBe('05')
-    expect(coerce('-0')).toBe('-0')
+  it('adds the typed scalar a segment also spells', () => {
+    // The listing renders a boolean or a number as compact JSON, so the
+    // segment matches the string and the typed payload both; a number is
+    // a closed range so integer and float payloads alike answer.
+    expect(condition('k', 'true')).toEqual({
+      should: [
+        { key: 'k', match: { value: 'true' } },
+        { key: 'k', match: { value: true } },
+      ],
+    })
+    expect(condition('k', '12')).toEqual({
+      should: [
+        { key: 'k', match: { value: '12' } },
+        { key: 'k', range: { gte: 12, lte: 12 } },
+      ],
+    })
+    expect(condition('k', '1.5')).toEqual({
+      should: [
+        { key: 'k', match: { value: '1.5' } },
+        { key: 'k', range: { gte: 1.5, lte: 1.5 } },
+      ],
+    })
   })
 
-  it('builds a match filter, undefined when empty', () => {
+  it('keeps a spelling no value renders as a string', () => {
+    for (const text of ['007', '05', '-0', '1.50', '1e5', 'NaN', 'null']) {
+      expect(jsonScalar(text)).toBeNull()
+      expect(condition('k', text)).toEqual({ key: 'k', match: { value: text } })
+    }
+  })
+
+  it('builds a must filter, undefined when empty', () => {
     expect(buildFilter({})).toBeUndefined()
     expect(buildFilter({ label: 'cat', n: '2' })).toEqual({
       must: [
         { key: 'label', match: { value: 'cat' } },
-        { key: 'n', match: { value: 2 } },
+        {
+          should: [
+            { key: 'n', match: { value: '2' } },
+            { key: 'n', range: { gte: 2, lte: 2 } },
+          ],
+        },
       ],
     })
   })

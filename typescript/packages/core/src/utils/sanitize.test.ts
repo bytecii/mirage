@@ -194,4 +194,15 @@ describe('isBlank', () => {
     }
     expect(pathSafeName('\ufeff')).toBe('\ufeff')
   })
+
+  it('is the class the unsafe-character sweep reads too', () => {
+    // `\s` kept U+FEFF here and U+001C in python, so the two runtimes
+    // spelled one label differently; both now replace what is not
+    // Unicode White_Space.
+    for (const odd of ['\ufeff', '\u001c', '\u001f']) {
+      expect(sanitizeName(`a${odd}b`)).toBe('a_b')
+      expect(sanitizeLabel(`a${odd}b`, { fallback: 'X', maxLen: 10 })).toBe('a_b')
+    }
+    expect(sanitizeName('a\u0085b')).toBe('a\u0085b')
+  })
 })

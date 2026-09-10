@@ -12,56 +12,65 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { pipeline } from '@huggingface/transformers'
 import { QdrantClient } from '@qdrant/js-client-rest'
 import { MountMode, QdrantResource, Workspace } from '@struktoai/mirage-node'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
-// The ONNX export of the sentence-transformers model Python's fastembed
-// runs, so both examples build the same vector space.
-const MODEL = 'Xenova/all-MiniLM-L6-v2'
+interface Product {
+  gender: string
+  articleType: string
+  baseColour: string
+  name: string
+}
 
-const PRODUCTS: [string, string, string, string][] = [
-  ['Men', 'Tshirts', 'Blue', 'Roadster Men Blue Casual Tshirt'],
-  ['Men', 'Tshirts', 'Black', 'HRX Men Black Sports Tshirt'],
-  ['Men', 'Shoes', 'White', 'Nike Men White Running Sneakers'],
-  ['Men', 'Shoes', 'Black', 'Puma Men Black Formal Shoes'],
-  ['Men', 'Jeans', 'Blue', 'Levis Men Blue Casual Jeans'],
-  ['Women', 'Tshirts', 'Red', 'Roadster Women Red Casual Tshirt'],
-  ['Women', 'Shoes', 'Red', 'Steve Madden Women Red Heels'],
-  ['Women', 'Shoes', 'White', 'Adidas Women White Running Sneakers'],
-  ['Women', 'Dress', 'Black', 'Zara Women Black Formal Dress'],
-  ['Women', 'Jeans', 'Blue', 'H&M Women Blue Summer Jeans'],
-]
+// LangChain-style chunks whose lineage lives in a nested `metadata`
+// payload: source document, page, text.
+interface Chunk {
+  source: string
+  page: string
+  text: string
+}
 
-// (source document, page, chunk text): LangChain-style points whose
-// lineage lives in a nested `metadata` payload.
-const CHUNKS: [string, string, string][] = [
-  [
-    's3://docs/policies/refund-2026.pdf',
-    '001',
-    'Refund policy. An order may be returned within 30 days of delivery.',
-  ],
-  [
-    's3://docs/policies/refund-2026.pdf',
-    '004',
-    'Refunds are processed within 14 days of the return reaching the warehouse.',
-  ],
-  [
-    's3://docs/hr/leave-policy.pdf',
-    '002',
-    'Employees accrue 1.5 days of paid leave per month of service.',
-  ],
-]
+// The rows both language examples seed, so the two mounts read alike.
+const DATA = JSON.parse(
+  readFileSync(fileURLToPath(new URL('../../data/qdrant.json', import.meta.url)), 'utf8'),
+) as { products: Product[]; chunks: Chunk[] }
+const PRODUCTS = DATA.products
+const CHUNKS = DATA.chunks
 
 type Embed = (texts: string[]) => Promise<number[][]>
 
-async function loadEmbedder(): Promise<Embed> {
-  const extractor = await pipeline('feature-extraction', MODEL)
-  return async (texts) => {
-    const out = await extractor(texts, { pooling: 'mean', normalize: true })
-    return out.tolist() as number[][]
-  }
+// A bag of words over the corpus vocabulary stands in for a sentence
+// model: a word's first five letters are its stem, so `refund` meets
+// `refunds`, a query word the corpus never used is dropped, and the vector
+// is unit length so cosine similarity is word overlap. A real model (the
+// Python example runs fastembed's all-MiniLM-L6-v2) plugs into the same
+// `embed` hook below.
+function stems(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word !== '')
+    .map((word) => word.slice(0, 5))
 }
+
+const VOCAB = new Map<string, number>()
+for (const text of [...PRODUCTS.map((p) => p.name), ...CHUNKS.map((c) => c.text)]) {
+  for (const stem of stems(text)) if (!VOCAB.has(stem)) VOCAB.set(stem, VOCAB.size)
+}
+
+function embed(text: string): number[] {
+  const vector = new Array<number>(VOCAB.size).fill(0)
+  for (const stem of stems(text)) {
+    const index = VOCAB.get(stem)
+    if (index !== undefined) vector[index] += 1
+  }
+  const norm = Math.sqrt(vector.reduce((sum, x) => sum + x * x, 0)) || 1
+  return vector.map((x) => x / norm)
+}
+
+const embedAll: Embed = (texts) => Promise.resolve(texts.map(embed))
 
 function client(): QdrantClient {
   const url = process.env.QDRANT_URL
@@ -78,22 +87,22 @@ async function recreate(qc: QdrantClient, collection: string, size: number): Pro
 }
 
 async function buildCollection(qc: QdrantClient, embed: Embed, collection: string): Promise<void> {
-  const vectors = await embed(PRODUCTS.map(([, , , name]) => name))
+  const vectors = await embed(PRODUCTS.map((p) => p.name))
   await recreate(qc, collection, vectors[0].length)
   const enc = new TextEncoder()
   await qc.upsert(collection, {
     wait: true,
-    points: PRODUCTS.map(([gender, articleType, baseColour, name], i) => ({
+    points: PRODUCTS.map((product, i) => ({
       id: i + 1,
       vector: vectors[i],
       payload: {
-        gender,
-        articleType,
-        baseColour,
-        productDisplayName: name,
-        image_b64: Buffer.from(new Uint8Array([0xff, 0xd8, 0xff, ...enc.encode(name)])).toString(
-          'base64',
-        ),
+        gender: product.gender,
+        articleType: product.articleType,
+        baseColour: product.baseColour,
+        productDisplayName: product.name,
+        image_b64: Buffer.from(
+          new Uint8Array([0xff, 0xd8, 0xff, ...enc.encode(product.name)]),
+        ).toString('base64'),
       },
     })),
   })
@@ -107,14 +116,17 @@ async function buildLineageCollection(
   embed: Embed,
   collection: string,
 ): Promise<void> {
-  const vectors = await embed(CHUNKS.map(([, , text]) => text))
+  const vectors = await embed(CHUNKS.map((c) => c.text))
   await recreate(qc, collection, vectors[0].length)
   await qc.upsert(collection, {
     wait: true,
-    points: CHUNKS.map(([source, page, text], i) => ({
+    points: CHUNKS.map((chunk, i) => ({
       id: 101 + i,
       vector: vectors[i],
-      payload: { page_content: text, metadata: { source, page } },
+      payload: {
+        page_content: chunk.text,
+        metadata: { source: chunk.source, page: chunk.page },
+      },
     })),
   })
   // Qdrant spells a nested payload path with a dot, in filters and in
@@ -135,10 +147,9 @@ async function show(ws: Workspace, cmd: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const embed = await loadEmbedder()
   const qc = client()
-  await buildCollection(qc, embed, 'fashion')
-  await buildLineageCollection(qc, embed, 'company_docs')
+  await buildCollection(qc, embedAll, 'fashion')
+  await buildLineageCollection(qc, embedAll, 'company_docs')
 
   const connection = {
     url: process.env.QDRANT_URL,
@@ -148,7 +159,7 @@ async function main(): Promise<void> {
     // `search` vectorizes its query through this hook, in-process, so a
     // self-hosted Qdrant with no inference works and mirage itself
     // depends on no model runtime.
-    embed: async (text: string): Promise<number[]> => (await embed([text]))[0],
+    embed: (text: string): Promise<number[]> => Promise.resolve(embed(text)),
   }
   const fashion = new QdrantResource({
     config: {

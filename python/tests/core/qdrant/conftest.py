@@ -3,6 +3,7 @@ from difflib import SequenceMatcher
 from types import SimpleNamespace
 
 import pytest
+from qdrant_client import models
 
 from mirage.core.qdrant.payload import field_value
 from mirage.resource.qdrant.config import QdrantConfig
@@ -51,14 +52,29 @@ def _points() -> list[SimpleNamespace]:
     return points
 
 
-def _match(point: SimpleNamespace, scroll_filter) -> bool:
-    if scroll_filter is None:
+def filter_holds(point: SimpleNamespace, condition) -> bool:
+    """Whether a point satisfies a Qdrant filter the way the server would.
+
+    Typed: a ``match`` compares value and type, so the string ``"1"``
+    does not satisfy an integer match, and a ``range`` reads numbers only.
+    """
+    if condition is None:
         return True
-    for condition in scroll_filter.must:
-        value = field_value(point.payload or {}, condition.key)
-        if str(value) != str(condition.match.value):
+    if isinstance(condition, models.Filter):
+        if condition.must and not all(
+                filter_holds(point, c) for c in condition.must):
             return False
-    return True
+        if condition.should and not any(
+                filter_holds(point, c) for c in condition.should):
+            return False
+        return True
+    value = field_value(point.payload or {}, condition.key)
+    if condition.range is not None:
+        return (isinstance(value,
+                           (int, float)) and not isinstance(value, bool)
+                and condition.range.gte <= value <= condition.range.lte)
+    want = condition.match.value
+    return type(value) is type(want) and value == want
 
 
 class FakeQdrantClient:
@@ -79,7 +95,7 @@ class FakeQdrantClient:
                      offset=None,
                      with_payload=True,
                      with_vectors=False):
-        matched = [p for p in self.points if _match(p, scroll_filter)]
+        matched = [p for p in self.points if filter_holds(p, scroll_filter)]
         start = offset or 0
         window = matched[start:start + limit]
         nxt = start + limit if start + limit < len(matched) else None
@@ -275,3 +291,8 @@ def basename_collision_capped() -> FakeAccessor:
                      group_by=["source"],
                      basename_fields=["source"],
                      max_rows=WIDE_CAP), client)
+
+
+@pytest.fixture
+def holds():
+    return filter_holds

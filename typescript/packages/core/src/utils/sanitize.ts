@@ -13,7 +13,6 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 // Mirrors python's re \w (unicode letters/digits/underscore), unlike JS \w.
-const UNSAFE_CHARS = /[^\p{L}\p{N}_\s\-.]/gu
 const MULTI_UNDERSCORE = /_+/g
 const MAX_LEN = 100
 // POSIX NAME_MAX on ext4 and APFS alike, and it counts BYTES. Truncating by
@@ -34,7 +33,12 @@ export const ESCAPE_LEAD = '⁄'
 // off `trim`: JavaScript's `trim` also strips U+FEFF and leaves U+0085, and
 // python's `str.strip` also strips U+001C..U+001F, so a value blank in one
 // runtime rendered a segment the other runtime spelled out.
-const WHITE_SPACE = /^[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/
+const WHITE_SPACE_CLASS =
+  '\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000'
+const WHITE_SPACE = new RegExp(`^[${WHITE_SPACE_CLASS}]*$`, 'u')
+// The same class, not `\s`: JavaScript's `\s` takes U+FEFF and python's
+// takes U+001C..U+001F, so one runtime kept a character the other replaced.
+const UNSAFE_CHARS = new RegExp(`[^\\p{L}\\p{N}_${WHITE_SPACE_CLASS}\\-.]`, 'gu')
 
 const UTF8 = new TextEncoder()
 const UTF8_DECODER = new TextDecoder('utf-8')

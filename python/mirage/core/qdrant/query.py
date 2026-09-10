@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import json
 import logging
 import uuid
 from collections.abc import Callable
@@ -30,22 +31,62 @@ logger = logging.getLogger(__name__)
 SCROLL_BATCH = 256
 
 
-def _coerce(value: str) -> Any:
-    if value.lstrip("-").isdigit():
-        as_int = int(value)
-        if str(as_int) == value:
-            return as_int
-    return value
+def _json_scalar(text: str) -> bool | int | float | None:
+    """The non-string JSON scalar a rendered group segment also spells.
+
+    A group value renders through ``value_text``, so a boolean or a number
+    lists as its compact JSON and the segment alone cannot say which type
+    the payload holds. Only a spelling ``value_text`` would produce counts:
+    ``007``, ``-0`` and ``1.50`` are strings and nothing else.
+
+    Args:
+        text (str): the decoded group segment.
+    """
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return None
+    if isinstance(parsed, bool):
+        return parsed
+    if isinstance(parsed, (int, float)) and value_text(parsed) == text:
+        return parsed
+    return None
+
+
+def _condition(column: str,
+               text: str) -> models.FieldCondition | models.Filter:
+    """What one rendered group segment matches in the payload.
+
+    The string itself always, and when the segment also spells a JSON
+    scalar, that typed value too, so descending into the ``true`` or
+    ``1.5`` directory the listing advertised finds the boolean or float
+    points behind it. A number matches as a closed range, which Qdrant
+    applies to integer and float payloads alike where ``match`` does not.
+
+    Args:
+        column (str): the payload field the group level is named from.
+        text (str): the decoded group segment.
+    """
+    as_text = models.FieldCondition(key=column,
+                                    match=models.MatchValue(value=text))
+    scalar = _json_scalar(text)
+    if scalar is None:
+        return as_text
+    if isinstance(scalar, bool):
+        typed = models.FieldCondition(key=column,
+                                      match=models.MatchValue(value=scalar))
+    else:
+        typed = models.FieldCondition(key=column,
+                                      range=models.Range(gte=scalar,
+                                                         lte=scalar))
+    return models.Filter(should=[as_text, typed])
 
 
 def _filter(filters: dict[str, str]) -> models.Filter | None:
     if not filters:
         return None
-    return models.Filter(must=[
-        models.FieldCondition(key=column,
-                              match=models.MatchValue(value=_coerce(value)))
-        for column, value in filters.items()
-    ])
+    return models.Filter(
+        must=[_condition(column, value) for column, value in filters.items()])
 
 
 def _point_to_row(point: Any, id_field: str) -> dict[str, Any]:

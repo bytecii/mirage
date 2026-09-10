@@ -24,6 +24,28 @@ interface ScrollOpts {
   filter?: unknown
 }
 
+interface Condition {
+  key?: string
+  match?: { value: unknown }
+  range?: { gte: number; lte: number }
+  must?: Condition[]
+  should?: Condition[]
+}
+
+/** The server's reading of a filter: typed matches, numeric ranges. */
+function holds(point: { payload: Record<string, unknown> }, condition: unknown): boolean {
+  if (condition === undefined) return true
+  const c = condition as Condition
+  if (c.must !== undefined && !c.must.every((child) => holds(point, child))) return false
+  if (c.should !== undefined && !c.should.some((child) => holds(point, child))) return false
+  if (c.key === undefined) return true
+  const value = point.payload[c.key]
+  if (c.range !== undefined) {
+    return typeof value === 'number' && c.range.gte <= value && value <= c.range.lte
+  }
+  return c.match !== undefined && value === c.match.value
+}
+
 function indexRequiredError(): Error {
   const e = new Error('Bad Request') as Error & { status: number; data: unknown }
   e.status = 400
@@ -44,15 +66,7 @@ function fakeClient(counts: { filtered: number; indexed: number }) {
         counts.filtered += 1
         throw indexRequiredError()
       }
-      const filter = opts.filter as
-        | { must?: { key: string; match: { value: unknown } }[] }
-        | undefined
-      const must = filter?.must
-      const pts = must
-        ? ALL_POINTS.filter((p) =>
-            must.every((c) => p.payload[c.key as keyof typeof p.payload] === String(c.match.value)),
-          )
-        : ALL_POINTS
+      const pts = ALL_POINTS.filter((p) => holds(p, opts.filter))
       return Promise.resolve({ points: pts, next_page_offset: null })
     },
     createPayloadIndex(_collection: string, _opts: object) {

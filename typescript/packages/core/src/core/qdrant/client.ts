@@ -26,20 +26,49 @@ export interface QdrantPoint {
 
 export const SCROLL_BATCH = 256
 
-export function coerce(value: string): string | number {
-  if (/^-?\d+$/.test(value)) {
-    const n = Number.parseInt(value, 10)
-    if (String(n) === value) return n
+/**
+ * The non-string JSON scalar a rendered group segment also spells, or null.
+ *
+ * A group value renders through `valueText`, so a boolean or a number lists
+ * as its compact JSON and the segment alone cannot say which type the
+ * payload holds. Only a spelling `valueText` would produce counts: `007`,
+ * `-0` and `1.50` are strings and nothing else.
+ */
+export function jsonScalar(text: string): boolean | number | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return null
   }
-  return value
+  if (typeof parsed === 'boolean') return parsed
+  if (typeof parsed === 'number' && valueText(parsed) === text) return parsed
+  return null
+}
+
+/**
+ * What one rendered group segment matches in the payload: the string itself
+ * always, and when the segment also spells a JSON scalar, that typed value
+ * too, so descending into the `true` or `1.5` directory the listing
+ * advertised finds the boolean or float points behind it. A number matches
+ * as a closed range, which Qdrant applies to integer and float payloads
+ * alike where `match` does not.
+ */
+export function condition(key: string, text: string): Record<string, unknown> {
+  const asText = { key, match: { value: text } }
+  const scalar = jsonScalar(text)
+  if (scalar === null) return asText
+  const typed =
+    typeof scalar === 'boolean'
+      ? { key, match: { value: scalar } }
+      : { key, range: { gte: scalar, lte: scalar } }
+  return { should: [asText, typed] }
 }
 
 export function buildFilter(filters: Record<string, string>): Record<string, unknown> | undefined {
   const keys = Object.keys(filters)
   if (keys.length === 0) return undefined
-  return {
-    must: keys.map((key) => ({ key, match: { value: coerce(filters[key] ?? '') } })),
-  }
+  return { must: keys.map((key) => condition(key, filters[key] ?? '')) }
 }
 
 export type PointTest = (point: QdrantPoint) => boolean

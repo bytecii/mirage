@@ -133,3 +133,13 @@ def test_is_blank_is_the_white_space_property_in_both_languages():
     for spelled in ("\x1c", "\x1f", "\ufeff", "a", " a "):
         assert not is_blank(spelled)
     assert path_safe_name("\x1c") == "\x1c"
+
+
+def test_unsafe_chars_read_the_same_white_space_class():
+    # ``\\s`` kept U+001C here and U+FEFF in TypeScript, so the two
+    # runtimes spelled one label differently; both now replace what is
+    # not Unicode White_Space.
+    for odd in ("\ufeff", "\x1c", "\x1f"):
+        assert sanitize_name(f"a{odd}b") == "a_b"
+        assert sanitize_label(f"a{odd}b", fallback="X", max_len=10) == "a_b"
+    assert sanitize_name("a\x85b") == "a\x85b"

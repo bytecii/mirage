@@ -13,6 +13,8 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import base64
+import json
+from pathlib import Path
 
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient, models
@@ -22,30 +24,13 @@ from qdrant_client import QdrantClient, models
 # brings no model dependency of its own.
 MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
-_PRODUCTS = [
-    ("Men", "Tshirts", "Blue", "Roadster Men Blue Casual Tshirt"),
-    ("Men", "Tshirts", "Black", "HRX Men Black Sports Tshirt"),
-    ("Men", "Shoes", "White", "Nike Men White Running Sneakers"),
-    ("Men", "Shoes", "Black", "Puma Men Black Formal Shoes"),
-    ("Men", "Jeans", "Blue", "Levis Men Blue Casual Jeans"),
-    ("Women", "Tshirts", "Red", "Roadster Women Red Casual Tshirt"),
-    ("Women", "Shoes", "Red", "Steve Madden Women Red Heels"),
-    ("Women", "Shoes", "White", "Adidas Women White Running Sneakers"),
-    ("Women", "Dress", "Black", "Zara Women Black Formal Dress"),
-    ("Women", "Jeans", "Blue", "H&M Women Blue Summer Jeans"),
-]
-
-# (source document, page, chunk text): LangChain-style points whose
-# lineage lives in a nested ``metadata`` payload.
-_CHUNKS = [
-    ("s3://docs/policies/refund-2026.pdf", "001",
-     "Refund policy. An order may be returned within 30 days of delivery."),
-    ("s3://docs/policies/refund-2026.pdf", "004",
-     "Refunds are processed within 14 days of the return reaching the "
-     "warehouse."),
-    ("s3://docs/hr/leave-policy.pdf", "002",
-     "Employees accrue 1.5 days of paid leave per month of service."),
-]
+# The rows both language examples seed, so the two mounts read alike.
+DATA = json.loads(
+    (Path(__file__).resolve().parents[2] / "data" / "qdrant.json").read_text())
+_PRODUCTS: list[dict[str, str]] = DATA["products"]
+# LangChain-style chunks whose lineage lives in a nested ``metadata``
+# payload: source document, page, text.
+_CHUNKS: list[dict[str, str]] = DATA["chunks"]
 
 
 def build_collection(client: QdrantClient,
@@ -57,7 +42,7 @@ def build_collection(client: QdrantClient,
         collection (str): the collection to create, replacing any old one.
     """
     embedder = TextEmbedding(MODEL)
-    names = [name for _, _, _, name in _PRODUCTS]
+    names = [product["name"] for product in _PRODUCTS]
     vectors = [list(map(float, vector)) for vector in embedder.embed(names)]
     if client.collection_exists(collection):
         client.delete_collection(collection)
@@ -67,18 +52,17 @@ def build_collection(client: QdrantClient,
                                            distance=models.Distance.COSINE),
     )
     points = []
-    for idx, ((gender, article, colour, name),
-              vector) in enumerate(zip(_PRODUCTS, vectors), start=1):
-        image = b"\xff\xd8\xff" + name.encode()
+    for idx, (product, vector) in enumerate(zip(_PRODUCTS, vectors), start=1):
+        image = b"\xff\xd8\xff" + product["name"].encode()
         points.append(
             models.PointStruct(
                 id=idx,
                 vector=vector,
                 payload={
-                    "gender": gender,
-                    "articleType": article,
-                    "baseColour": colour,
-                    "productDisplayName": name,
+                    "gender": product["gender"],
+                    "articleType": product["articleType"],
+                    "baseColour": product["baseColour"],
+                    "productDisplayName": product["name"],
                     "image_b64": base64.b64encode(image).decode(),
                 },
             ))
@@ -100,7 +84,7 @@ def build_lineage_collection(client: QdrantClient,
         collection (str): the collection to create, replacing any old one.
     """
     embedder = TextEmbedding(MODEL)
-    texts = [text for _, _, text in _CHUNKS]
+    texts = [chunk["text"] for chunk in _CHUNKS]
     vectors = [list(map(float, vector)) for vector in embedder.embed(texts)]
     if client.collection_exists(collection):
         client.delete_collection(collection)
@@ -116,13 +100,13 @@ def build_lineage_collection(client: QdrantClient,
                 id=100 + idx,
                 vector=vector,
                 payload={
-                    "page_content": text,
+                    "page_content": chunk["text"],
                     "metadata": {
-                        "source": source,
-                        "page": page
+                        "source": chunk["source"],
+                        "page": chunk["page"]
                     },
                 },
-            ) for idx, ((source, page, text),
+            ) for idx, (chunk,
                         vector) in enumerate(zip(_CHUNKS, vectors), start=1)
         ])
     # Qdrant spells a nested payload path with a dot, in filters and in

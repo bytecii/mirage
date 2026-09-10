@@ -14,7 +14,6 @@
 
 import re
 
-UNSAFE_CHARS = re.compile(r"[^\w\s\-.]")
 MULTI_UNDERSCORE = re.compile(r"_+")
 MAX_LEN = 100
 # POSIX NAME_MAX on ext4 and APFS alike, and it counts BYTES. Truncating by
@@ -35,8 +34,13 @@ ESCAPE_LEAD = "⁄"
 # read off ``str.strip``: Python also strips U+001C..U+001F, and
 # JavaScript's ``trim`` strips U+FEFF but not U+0085, so a value blank in
 # one runtime rendered a segment the other runtime spelled out.
-WHITE_SPACE = re.compile("[\t\n\x0b\x0c\r \x85\xa0\u1680\u2000-\u200a"
-                         "\u2028\u2029\u202f\u205f\u3000]*")
+WHITE_SPACE_CLASS = ("\t\n\x0b\x0c\r \x85\xa0\u1680\u2000-\u200a"
+                     "\u2028\u2029\u202f\u205f\u3000")
+WHITE_SPACE = re.compile(f"[{WHITE_SPACE_CLASS}]*")
+# The same class, not ``\s``: python's ``\s`` takes U+001C..U+001F and
+# JavaScript's takes U+FEFF, so one runtime kept a character the other
+# replaced.
+UNSAFE_CHARS = re.compile(f"[^\\w{WHITE_SPACE_CLASS}\\-.]")
 
 
 def is_blank(text: str) -> bool:
