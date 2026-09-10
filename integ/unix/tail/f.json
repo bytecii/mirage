@@ -214,7 +214,7 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "mkdir -p /data/tfd3; printf 'a\\n' > /data/tfd3/f; (sleep 0.3; rm /data/tfd3/f; mkdir /data/tfd3/f) & tail --follow=name -s 0.1 /data/tfd3/f; echo code=$?",
+      "command": "mkdir -p /data/tfd3; printf 'a\\n' > /data/tfd3/f; (sleep 1.5; rm /data/tfd3/f; mkdir /data/tfd3/f) & tail --follow=name -s 3 /data/tfd3/f; echo code=$?",
       "expect": {
         "exit": 0,
         "stdout": "a\ncode=1\n",
