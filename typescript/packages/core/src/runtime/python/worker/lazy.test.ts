@@ -180,6 +180,58 @@ with open('/data/last', 'w') as f: f.write('discarded at completion')
     }
   })
 
+  it('reads a Notion glob without touching an unrelated 47,000-file mount', async () => {
+    const catalog = Array.from({ length: 47_000 }, (_, i) => `/wandb/file-${String(i)}.json`)
+    const calls: { op: string; path: string }[] = []
+    let data = ENC.encode('{"name":"first"}')
+    const target = '/notion/databases/demo/database.json'
+    const directories = new Map([
+      ['/notion/', ['/notion/databases/']],
+      ['/notion/databases/', ['/notion/databases/demo/']],
+      ['/notion/databases/demo/', [target]],
+      ['/wandb/', catalog],
+    ])
+    const dispatch: BridgeDispatchFn = async (op, path) => {
+      await Promise.resolve()
+      calls.push({ op, path })
+      if (op === 'readdir') return directories.get(path) ?? []
+      if (op === 'stat') {
+        if (directories.has(path.replace(/\/$/, '') + '/'))
+          return new FileStat({ name: path, type: FileType.DIRECTORY })
+        if (path === target || path.startsWith('/wandb/file-'))
+          return new FileStat({ name: path, type: FileType.FILE, size: data.length })
+      }
+      if (op === 'read' && path === target) return data
+      if (op === 'read' && path.startsWith('/wandb/')) return ENC.encode('{}')
+      throw Object.assign(new Error(path), { code: 'ENOENT' })
+    }
+    const rt = new PyodideRuntime()
+    rt.attach(dispatch, new PrefixResolver(() => ['/notion/', '/wandb/']))
+    try {
+      const counts: number[] = []
+      for (const name of ['first', 'second', 'third']) {
+        data = ENC.encode(JSON.stringify({ name }))
+        calls.length = 0
+        const result = await rt.run(
+          runArgs(`
+import glob, json
+path = glob.glob('/notion/databases/*/database.json')[0]
+with open(path) as f:
+    print(json.load(f)['name'])
+`),
+        )
+        expect(result.exitCode).toBe(0)
+        expect(DEC.decode(result.stdout)).toBe(`${name}\n`)
+        expect(calls.some((call) => call.path.startsWith('/wandb'))).toBe(false)
+        expect(calls.filter((call) => call.op === 'read')).toEqual([{ op: 'read', path: target }])
+        counts.push(calls.length)
+      }
+      expect(new Set(counts).size).toBe(1)
+    } finally {
+      await rt.close()
+    }
+  })
+
   it('interrupts compute and a blocked file read, then keeps serving requests', async () => {
     let release: (() => void) | undefined
     const dispatch: BridgeDispatchFn = async (op, path) => {

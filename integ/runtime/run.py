@@ -334,7 +334,15 @@ async def _build_resource(spec: dict[str, Any], run_id: str) -> Any:
     kind = spec["resource"]
     if kind == "ram":
         from mirage.resource.ram import RAMResource
-        return RAMResource()
+        resource = RAMResource()
+        if "generated_files" in spec:
+            resource.load_state({
+                "files": {
+                    f"/file-{i}.txt": b"unused"
+                    for i in range(spec["generated_files"])
+                },
+            })
+        return resource
     if kind == "redis":
         from mirage.resource.redis import RedisResource
         return RedisResource(url=os.environ["REDIS_URL"],
@@ -440,16 +448,17 @@ def _check_ops(expect: dict[str, Any], seen: list[str]) -> list[str]:
 
     Args:
         expect (dict[str, Any]): the step's expect block; ``ops_contain``
-            and ``ops_absent`` hold ``"<op> <path>"`` strings.
+            and ``ops_absent`` hold an op name or ``"<op> <path>"``.
         seen (list[str]): the records the step appended, one
             ``"<op> <path>"`` string per record, in arrival order.
     """
+    recorded = set(seen) | {entry.partition(" ")[0] for entry in seen}
     problems = []
     for entry in expect.get("ops_contain", []):
-        if entry not in seen:
+        if entry not in recorded:
             problems.append(f"ledger missing {entry!r}: got {seen!r}")
     for entry in expect.get("ops_absent", []):
-        if entry in seen:
+        if entry in recorded:
             problems.append(f"ledger must not hold {entry!r}: got {seen!r}")
     return problems
 

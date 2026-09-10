@@ -10,8 +10,8 @@
 # Cases whose steps need the SDK surface (add_runtime, rename, s3_put,
 # read_op, facade — the last calls ws.fs directly) or a runner-local
 # test runtime (echobox, named as a string or a mapping, or registered
-# through world.register_runtimes) or runner-local code policies
-# (world.policies) or non-ram mounts are skipped as sdk-only. Expect semantics: exit and
+# through world.register_runtimes), generated file catalogs, runner-local
+# code policies (world.policies), or non-ram mounts are skipped as sdk-only. Expect semantics: exit and
 # stdout are exact, stderr is a containment check (the CLI owns its
 # stderr framing), and the SDK-side expectations (ops_contain,
 # ops_absent, value) are not checked because the op ledger has no CLI
@@ -55,6 +55,7 @@ cli_expressible() {
   jq -e '
     ((.world.mounts // {"/ram": {"resource": "ram"}})
       | to_entries | all(.value.resource == "ram"))
+    and (((.world.mounts // {}) | to_entries) | all(.value.generated_files == null))
     and (((.world.policies // []) | length) == 0)
     and (((.world.runtimes // []) | map(select((type == "object" and .name == "echobox") or . == "echobox")) | length) == 0)
     and (((.world.register_runtimes // {}) | length) == 0)
