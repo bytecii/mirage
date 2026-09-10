@@ -21,7 +21,13 @@ import { RAMResource, type RAMResourceState } from '../../resource/ram/ram.ts'
 import { type ResourceStateBase, resourceRefOf } from '../../resource/base.ts'
 import { z } from 'zod'
 
-import { narrow } from '../session/resolve.ts'
+import { MountRootPolicy } from '../../policy/builtin/mount_root.ts'
+import { OutputCapPolicy } from '../../policy/builtin/output_cap.ts'
+import { PermissionsPolicy } from '../../policy/builtin/permissions.ts'
+import { type CompiledProfile, profileFromJSON, profileToJSON } from '../../policy/profile.ts'
+import { ScriptPolicy } from '../../policy/script.ts'
+import { DEFAULT_PROFILE } from '../session/constants.ts'
+import { compileProfile, narrow, narrowRestored } from '../session/resolve.ts'
 import { setCwd } from '../session/shell_dirs.ts'
 import { gateRestoredVars } from '../session/state.ts'
 import type { CLIInstall } from '../cli/types.ts'
@@ -57,7 +63,7 @@ import {
 import { ConsistencyPolicy, MountMode } from '../../types.ts'
 import { VERSION } from '../../version.ts'
 import type { NodeMeta } from '../mount/namespace/namespace.ts'
-import { Session, varsFromFields, varsToFields } from '../session/session.ts'
+import { Session, type StoredSession, varsFromFields, varsToFields } from '../session/session.ts'
 import type { Workspace } from '../workspace/workspace.ts'
 import type { MountArgs } from './config.ts'
 import { captureFingerprints, liveOnlyMountPrefixes } from './drift.ts'
@@ -69,18 +75,34 @@ import type {
   MountSnapshot,
   NodeMetaSnapshot,
   ResourceState,
-  SessionSnapshot,
   WorkspaceStateDict,
 } from './types.ts'
 import { FORMAT_VERSION, normMountPrefix } from './utils.ts'
 
 const VALID_MODES: readonly string[] = [MountMode.READ, MountMode.WRITE, MountMode.EXEC]
+const VALID_CONSISTENCY: readonly string[] = [ConsistencyPolicy.LAZY, ConsistencyPolicy.ALWAYS]
+
+// The policies every workspace registers itself (the registry seeds the
+// first two, the workspace the other two), so they are not the
+// deployment's to name and a snapshot records only the classes beyond
+// them. A policy written as an object literal has no class name either
+// (`Object`) and is not recorded.
+const SEEDED_POLICIES: ReadonlySet<string> = new Set([
+  MountRootPolicy.name,
+  OutputCapPolicy.name,
+  PermissionsPolicy.name,
+  ScriptPolicy.name,
+  'Object',
+])
 
 export async function toStateDict(ws: Workspace): Promise<WorkspaceStateDict> {
   const skip = new Set(['/dev/', normMountPrefix(HISTORY_PREFIX)])
   const mounted = [...ws.registry.allMounts()]
   for (const mount of mounted) await mount.ensureReady()
   const mounts = mounted.filter((m) => !skip.has(m.prefix))
+  // The consistency knob is the workspace's, not a mount's: every entry
+  // records the one value the workspace runs under.
+  const consistency = ws.registry.getConsistency()
   const mountSnapshots: MountSnapshot[] = []
   for (let i = 0; i < mounts.length; i++) {
     const m = mounts[i]
@@ -94,7 +116,7 @@ export async function toStateDict(ws: Workspace): Promise<WorkspaceStateDict> {
       index: i,
       prefix: m.prefix,
       mode: m.mode,
-      consistency: ConsistencyPolicy.LAZY,
+      consistency,
       resource_class: m.resource.kind,
       resource_ref: resourceRefOf(m.resource),
       resource_state: state,
@@ -112,9 +134,7 @@ export async function toStateDict(ws: Workspace): Promise<WorkspaceStateDict> {
           size: entry.size,
         }))
       : []
-  const sessions: SessionSnapshot[] = ws.sessionManager
-    .list()
-    .map((s) => s.toJSON() as unknown as SessionSnapshot)
+  const sessions: StoredSession[] = ws.sessionManager.list().map((s) => s.toJSON() as StoredSession)
   // Output is stored per channel rather than chunk by chunk: the manifest
   // externalizes byte fields into tar entries, so keeping chunks would
   // write one entry per write a job ever made. The cost is that a restored
@@ -197,6 +217,17 @@ export async function toStateDict(ws: Workspace): Promise<WorkspaceStateDict> {
     live_only_mounts: liveOnly,
     nodes,
     clis: clisState,
+    // The document the sessions were narrowed under, so a loader without
+    // the deployment's config file lands each table under the profile of
+    // the same name. Coded policies are named, not carried: they are the
+    // loader's to register, and fromState warns about a name it does not
+    // find.
+    profiles: Object.fromEntries(
+      Object.entries(ws.profiles).map(([name, profile]) => [name, profileToJSON(profile)]),
+    ),
+    profile: ws.defaultProfileName,
+    policies: ws.policies.names().filter((name) => !SEEDED_POLICIES.has(name)),
+    consistency,
   }
 }
 
@@ -306,12 +337,24 @@ export function buildMountArgs(
     }
   }
 
+  // The document keys are read with a default each, so a state written
+  // before they existed restores as it always did.
+  const profiles = Object.fromEntries(
+    Object.entries(state.profiles ?? {}).map(([name, doc]) => [name, profileFromJSON(doc)]),
+  )
+  const saved = state.consistency
+  if (saved !== undefined && !VALID_CONSISTENCY.includes(saved)) {
+    throw new Error(`Workspace.fromState: invalid consistency '${saved}'`)
+  }
   return {
     mountArgs,
-    consistency: ConsistencyPolicy.LAZY,
+    consistency: saved === undefined ? ConsistencyPolicy.LAZY : (saved as ConsistencyPolicy),
     defaultSessionId: state.default_session_id,
     defaultAgentId: state.default_agent_id,
     ...(cliEntries.length > 0 ? { clis: cliArgs } : {}),
+    ...(Object.keys(profiles).length > 0 ? { profiles } : {}),
+    profile: state.profile ?? null,
+    policies: state.policies ?? [],
   }
 }
 
@@ -405,8 +448,11 @@ export async function withRebuiltResources(
  * Every session table and the env template clear the target's
  * `preSession` gate first (`gateRestoredState`), before any mount,
  * session or template lands, so a refusal aborts the load with the
- * workspace as it was. A snapshot mount with no mount at that exact
- * prefix here is not restored and is reported. `replaceCache` drops
+ * workspace as it was; the same phase refuses a table whose profile the
+ * target does not define. Each table then lands under the target's
+ * profile of that name and never wider than it or than the live
+ * session (`narrowRestored`). A snapshot mount with no mount at that
+ * exact prefix here is not restored and is reported. `replaceCache` drops
  * the live cache once the gate has passed, ahead of the mounts'
  * loadState, so the snapshot's entries are all that is left: a
  * checkout onto a running workspace asks for it, a workspace built for
@@ -471,42 +517,107 @@ async function restoreNodes(ws: Workspace, state: WorkspaceStateDict): Promise<v
 }
 
 /**
- * Vet every env input the snapshot carries before any of it lands.
+ * The profile the target gives a restored session's table.
  *
- * Each session table and the env template fire the `preSession` gate
- * (`gateRestoredVars`) here, ahead of the mounts' loadState and the
- * session writes: a refusal that arrived once an earlier session had
- * already been overwritten left the workspace in a state no snapshot
- * describes, and one its close then persisted. The template is gated
- * under the id the restore makes the default session, which is the
- * session a live write of it would land in. Each table is judged under
- * the policy the target gives its session, never the one the snapshot's
- * own profile compiled, which was the source deployment's and does not
- * land: the live session's for an id the target already has, and the
- * default profile's for one the restore will create, which is what
- * `scriptOf` answers for an id the manager does not know and the
- * profile `restoreSessions` then puts the created session under.
- * Returns the parsed session tables and the template, null when the
- * snapshot carries none. Mirrors Python `_gate_restored_state`.
+ * The target's default for a table naming none, and for one naming
+ * `default` on a target with no profile of that name (a source with an
+ * implicit default stamps that name, and an ordinary snapshot must not
+ * be refused over it); the manager's own compiled object in both cases,
+ * so a table taken from the same document leaves the session on the
+ * very objects the default session shares. Any other name is compiled
+ * as `createSession` would compile it, and an unknown one is refused
+ * with the same PolicyError, before anything lands. `checkCliVerbs` is
+ * not run: a recorded rule naming a verb the target's CLIs lack
+ * restricts nothing and is no reason to refuse a load. Mirrors the
+ * Python `_target_profile`.
+ */
+function targetProfile(ws: Workspace, name: string | null): CompiledProfile {
+  const effective =
+    ws.defaultProfileName ?? (DEFAULT_PROFILE in ws.profiles ? DEFAULT_PROFILE : null)
+  if (
+    name === null ||
+    name === effective ||
+    (name === DEFAULT_PROFILE && !(DEFAULT_PROFILE in ws.profiles))
+  ) {
+    return ws.sessionManager.defaultProfile ?? compileProfile(null)
+  }
+  return ws.compiledProfile(name)
+}
+
+/**
+ * Vet every session table and the env template before any of it lands.
+ *
+ * Three steps, and nothing lands in any of them. Each table's profile
+ * name is resolved against the target's document (`targetProfile`), so
+ * a name the target does not define refuses the load before a mount, a
+ * session or the template has moved, the same loud rule a redacted
+ * mount gets. A table whose id the target lacks then gets its session
+ * created and narrowed under that profile here, because
+ * `ScriptPolicy.preSession` reads `scriptOf(sessionId)` off the manager
+ * and answers the default profile for an id it does not know; the
+ * snapshot's default id is the one exception, since `adoptDefault`
+ * re-keys the live default onto it and would delete a session created
+ * under that id instead. Then every table and the template fire the
+ * `preSession` gate (`gateRestoredVars`): a refusal that arrived once an
+ * earlier session had already been overwritten left the workspace in a
+ * state no snapshot describes, and one its close then persisted. A
+ * refusal anywhere discards the sessions created here, so the store
+ * never sees a half-made table. The template is gated under the id the
+ * restore makes the default session, which is the session a live write
+ * of it would land in. Returns the parsed session tables and the
+ * template, null when the snapshot carries none. Mirrors the Python
+ * `_gate_restored_state`.
  */
 async function gateRestoredState(
   ws: Workspace,
   state: WorkspaceStateDict,
 ): Promise<[Session[], Record<string, ShellVar> | null]> {
-  const sessions = state.sessions.map((s) => Session.fromJSON(s))
-  for (const fields of sessions) {
-    await gateRestoredVars(ws.registry.policies, fields.sessionId, fields.vars)
+  const tables = state.sessions.map((s) => Session.fromJSON(s))
+  const defaultSid = state.default_session_id ?? null
+  const compiled = tables.map((fields): [Session, CompiledProfile] => [
+    fields,
+    targetProfile(ws, fields.profile),
+  ])
+  const live = new Set(ws.sessionManager.list().map((s) => s.sessionId))
+  const created: string[] = []
+  let seed: Record<string, ShellVar> | null = null
+  let vetted = false
+  try {
+    for (const [fields, profile] of compiled) {
+      const sid = fields.sessionId
+      if (sid !== defaultSid && !live.has(sid)) {
+        created.push(sid)
+        narrow(ws.sessionManager.create(sid), profile)
+      }
+    }
+    for (const fields of tables) {
+      await gateRestoredVars(ws.registry.policies, fields.sessionId, fields.vars)
+    }
+    if (state.env !== undefined && Object.keys(state.env).length > 0) {
+      seed = varsFromFields(state.env)
+      await gateRestoredVars(ws.registry.policies, defaultSid ?? ws.defaultSessionId, seed)
+    }
+    vetted = true
+  } finally {
+    if (!vetted) for (const sid of created) ws.sessionManager.discard(sid)
   }
-  if (state.env === undefined || Object.keys(state.env).length === 0) return [sessions, null]
-  const seed = varsFromFields(state.env)
-  await gateRestoredVars(
-    ws.registry.policies,
-    state.default_session_id ?? ws.defaultSessionId,
-    seed,
-  )
-  return [sessions, seed]
+  return [tables, seed]
 }
 
+/**
+ * Land the vetted tables: each on the session that carries its id,
+ * never wider than that session already is.
+ *
+ * Every table's session exists by now: the gate created the missing
+ * ones under the target's profile of the table's name, a checkout on a
+ * running workspace finds the live one, and the snapshot's default id
+ * is re-keyed onto the live default here. `narrowRestored` then joins
+ * the table's narrowing with the session's (restrictions union, grants
+ * intersect, the program stays the target's), and the scratch state the
+ * table carries (cwd, variables, the host's standing answers) is the
+ * snapshot's, matching the `replaceFromSnapshot` contract below.
+ * Mirrors the Python `_restore_sessions`.
+ */
 async function restoreSessions(
   ws: Workspace,
   state: WorkspaceStateDict,
@@ -521,22 +632,11 @@ async function restoreSessions(
   }
   const restored: Session[] = []
   for (const fields of tables) {
-    const exists = ws.sessionManager.list().some((x) => x.sessionId === fields.sessionId)
-    const session = exists
-      ? ws.sessionManager.get(fields.sessionId)
-      : ws.sessionManager.create(fields.sessionId)
-    if (!exists) {
-      // A session the restore creates is one created without a profile
-      // name, so it runs under the document's default: the policy
-      // `gateRestoredState` judged its table under, where a bare session
-      // ran under none. Stamped ahead of the table so the grants below
-      // stay the snapshot's, as they do for a session that exists.
-      const compiled = ws.sessionManager.defaultProfile
-      if (compiled !== null) narrow(session, compiled)
-    }
+    const session = ws.sessionManager.get(fields.sessionId)
+    narrowRestored(session, fields)
     setCwd(session, fields.cwd)
     session.vars = fields.vars
-    session.mountModes = fields.mountModes
+    session.decisions = fields.decisions
     restored.push(session)
   }
   // The snapshot's session table wins over prior store contents,

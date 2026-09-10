@@ -70,9 +70,13 @@ async def restore(
     ``categories`` picks a subset of files/sessions/namespace/history and
     leaves the live state of the others untouched; ``paths`` restores
     only the matching files (a path selects itself or its subtree) and
-    implies the files category alone. Restoring sessions re-applies
-    their mount grants exactly like any other state; compare two
-    versions with :func:`state_diff` to see grant changes up front.
+    implies the files category alone. Restoring sessions lands each
+    table under the live document's profile of the same name and never
+    wider than the live session already is (``narrow_restored``): a
+    checkout can add a version's restrictions to a live session, never
+    lift the live ones, and ``set_session_profile`` is the host's
+    reset. Compare two versions with :func:`state_diff` to see the
+    narrowing changes up front.
     """
     if paths is not None and categories is not None:
         raise ValueError("restore takes paths= or categories=, not both")

@@ -22,6 +22,7 @@ import { toStateDict } from '@struktoai/mirage-core/workspace/snapshot/state'
 import { seedVar } from '@struktoai/mirage-core/workspace/session/state'
 import { RAMResource } from '@struktoai/mirage-core/resource/ram/ram'
 import { MountMode } from '@struktoai/mirage-core/types'
+import { parseSessionProfile } from '@struktoai/mirage-core/policy/profile'
 import { Workspace } from '@struktoai/mirage-node'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { commitState } from './api.ts'
@@ -106,12 +107,17 @@ describe('stateDiff + restore', () => {
     expect(report.paths).toEqual(['/m/a.txt'])
   })
 
-  it('restores the sessions category only, keeping live files', async () => {
-    const session = ws.createSession('narrow', { mounts: { '/m': 'write' } })
+  // A checkout used to re-apply a version's grants like any other state,
+  // so a session the host had narrowed since the commit woke wider than
+  // the host left it. A restored table now lands under the live session
+  // and never wider than it: the version's restrictions join the live
+  // ones, and `setSessionProfile` is the host's reset.
+  it('restores the sessions category only, keeping live files, never widening', async () => {
+    ws.createSession('narrow', { mounts: { '/m': 'write' } })
     await ws.execute('echo one > /m/a.txt')
     await ws.flushSessions()
     const v1 = await commitState(store, await toStateDict(ws), 'main', 'v1')
-    session.mountModes = new Map([...(session.mountModes ?? []), ['/m', MountMode.READ]])
+    await ws.setSessionProfile('narrow', parseSessionProfile({ mounts: { '/m': 'read' } }))
     await ws.execute('echo two > /m/a.txt')
     await ws.flushSessions()
 
@@ -119,8 +125,31 @@ describe('stateDiff + restore', () => {
 
     const a = await ws.execute('cat /m/a.txt')
     expect(new TextDecoder().decode(a.stdout)).toBe('two\n')
-    expect(ws.getSession('narrow').mountModes?.get('/m')).toBe(MountMode.WRITE)
+    expect(ws.getSession('narrow').mountModes?.get('/m')).toBe(MountMode.READ)
     expect(report.categories).toEqual(['sessions'])
+    const refused = await ws.execute('echo three > /m/a.txt', { sessionId: 'narrow' })
+    expect(refused.exitCode).not.toBe(0)
+    await ws.setSessionProfile('narrow', parseSessionProfile({ mounts: { '/m': 'write' } }))
+    const allowed = await ws.execute('echo three > /m/a.txt', { sessionId: 'narrow' })
+    expect(allowed.exitCode).toBe(0)
+  })
+
+  // The version's own narrowing does land: a session narrower at the
+  // commit than it is live comes back narrower.
+  it("lands a version's restrictions on a live session", async () => {
+    ws.createSession('narrow', { mounts: { '/m': 'read' } })
+    await ws.flushSessions()
+    const v1 = await commitState(store, await toStateDict(ws), 'main', 'v1')
+    await ws.setSessionProfile('narrow', parseSessionProfile({ mounts: { '/m': 'write' } }))
+    expect((await ws.execute('echo two > /m/a.txt', { sessionId: 'narrow' })).exitCode).toBe(0)
+    await ws.flushSessions()
+
+    await restore(store, ws, v1)
+
+    expect(ws.getSession('narrow').mountModes?.get('/m')).toBe(MountMode.READ)
+    expect((await ws.execute('echo three > /m/a.txt', { sessionId: 'narrow' })).exitCode).not.toBe(
+      0,
+    )
   })
 
   it('rejects bad scopes', async () => {

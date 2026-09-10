@@ -22,6 +22,11 @@ from pydantic import BaseModel
 from mirage.cache.file.ram import RAMFileCacheStore
 from mirage.commands.cli.types import CLISpec
 from mirage.observe.log_entry import EVENT_CLEAR, EVENT_COMMAND, EVENT_DELETE
+from mirage.policy.builtin import (MountRootPolicy, OutputCapPolicy,
+                                   PermissionsPolicy)
+from mirage.policy.profile import (CompiledProfile, profile_from_dict,
+                                   profile_to_dict)
+from mirage.policy.script import ScriptPolicy
 from mirage.resource.history import HISTORY_PREFIX
 from mirage.resource.loader import SCRIPT_MODULE_NAME
 from mirage.resource.registry import (ResourceEntry, resolve_class,
@@ -36,7 +41,9 @@ from mirage.shell.variable import ShellVar
 from mirage.types import ConsistencyPolicy, JsonValue, MountMode, ResourceName
 from mirage.version import __version__
 from mirage.workspace.mount.namespace import NodeMeta
-from mirage.workspace.session.resolve import narrow
+from mirage.workspace.session.constants import DEFAULT_PROFILE
+from mirage.workspace.session.resolve import (compile_profile, narrow,
+                                              narrow_restored)
 from mirage.workspace.session.session import (Session, vars_from_fields,
                                               vars_to_fields)
 from mirage.workspace.session.shell_dirs import set_cwd
@@ -62,6 +69,14 @@ CLIOverrides = dict[str, dict[str, Any]
 # it: the parsed session tables and the env template (None when the
 # snapshot carries none).
 RestoredEnv = tuple[list[Session], dict[str, ShellVar] | None]
+
+# The policies every workspace registers itself (the registry seeds the
+# first two, the workspace the other two), so they are not the
+# deployment's to name and a snapshot records only the classes beyond
+# them.
+SEEDED_POLICIES = frozenset(cls.__name__
+                            for cls in (MountRootPolicy, OutputCapPolicy,
+                                        PermissionsPolicy, ScriptPolicy))
 
 
 def cli_config_dump(config: BaseModel | dict[str, JsonValue] | None,
@@ -155,6 +170,10 @@ async def to_state_dict(ws) -> dict[str, Any]:
     mounted = ws._registry.mounts()
     for mount in mounted:
         await mount.ensure_ready()
+    # The consistency knob is the workspace's, not a mount's: every
+    # entry's own field holds the mount() default, so each mount
+    # records the one value the workspace runs under.
+    consistency: ConsistencyPolicy = ws._consistency
     mounts_state = []
     for idx, m in enumerate(mt for mt in mounted
                             if mt.prefix not in auto_prefixes):
@@ -164,7 +183,7 @@ async def to_state_dict(ws) -> dict[str, Any]:
             MountKey.INDEX: idx,
             MountKey.PREFIX: m.prefix,
             MountKey.MODE: m.mode.value,
-            MountKey.CONSISTENCY: m.consistency.value,
+            MountKey.CONSISTENCY: consistency.value,
             MountKey.RESOURCE_CLASS:
             f"{type(m.resource).__module__}.{type(m.resource).__name__}",
             MountKey.RESOURCE_REF: m.resource.resource_ref,
@@ -206,28 +225,55 @@ async def to_state_dict(ws) -> dict[str, Any]:
     live_only_mounts = live_only_mount_prefixes(ws)
 
     return {
-        StateKey.VERSION: FORMAT_VERSION,
-        StateKey.MIRAGE_VERSION: __version__,
-        StateKey.MOUNTS: mounts_state,
+        StateKey.VERSION:
+        FORMAT_VERSION,
+        StateKey.MIRAGE_VERSION:
+        __version__,
+        StateKey.MOUNTS:
+        mounts_state,
         StateKey.SESSIONS: [s.to_dict() for s in ws._session_mgr.list()],
-        StateKey.ENV: vars_to_fields(ws._session_mgr.seed_vars),
-        StateKey.DEFAULT_SESSION_ID: ws._session_mgr.default_id,
-        StateKey.DEFAULT_AGENT_ID: ws._default_agent_id,
-        StateKey.CURRENT_AGENT_ID: ws._default_agent_id,
+        StateKey.ENV:
+        vars_to_fields(ws._session_mgr.seed_vars),
+        StateKey.DEFAULT_SESSION_ID:
+        ws._session_mgr.default_id,
+        StateKey.DEFAULT_AGENT_ID:
+        ws._default_agent_id,
+        StateKey.CURRENT_AGENT_ID:
+        ws._default_agent_id,
         StateKey.CACHE: {
             CacheKey.LIMIT: cache.cache_limit,
             CacheKey.MAX_DRAIN_BYTES: cache.max_drain_bytes,
             CacheKey.ENTRIES: cache_entries,
         },
-        StateKey.HISTORY: history_events,
-        StateKey.CLIS: clis_state,
-        StateKey.JOBS: finished_jobs,
-        StateKey.FINGERPRINTS: fingerprints,
-        StateKey.LIVE_ONLY_MOUNTS: live_only_mounts,
+        StateKey.HISTORY:
+        history_events,
+        StateKey.CLIS:
+        clis_state,
+        StateKey.JOBS:
+        finished_jobs,
+        StateKey.FINGERPRINTS:
+        fingerprints,
+        StateKey.LIVE_ONLY_MOUNTS:
+        live_only_mounts,
         StateKey.NODES: {
             path: meta.to_fields()
             for path, meta in ws._namespace.nodes.items()
         },
+        # The document the sessions were narrowed under, so a loader
+        # without the deployment's config file lands each table under
+        # the profile of the same name. Coded policies are named, not
+        # carried: they are the loader's to register, and from_state
+        # warns about a name it does not find.
+        StateKey.PROFILES: {
+            name: profile_to_dict(profile)
+            for name, profile in ws._profiles.items()
+        },
+        StateKey.PROFILE:
+        ws._default_profile_name,
+        StateKey.POLICIES:
+        [name for name in ws.policies.names() if name not in SEEDED_POLICIES],
+        StateKey.CONSISTENCY:
+        consistency.value,
     }
 
 
@@ -238,12 +284,16 @@ def build_mount_args(state: dict[str, Any],
 
     Validates that every mount with redacted secrets has a resource
     override, and every CLI installed with a redacted config has a
-    fresh config override.
+    fresh config override. The document keys (profiles, the default
+    profile's name, the policy names, the consistency knob) are read
+    with a default each, so a state written before they existed
+    restores as it always did.
     Does NOT construct a Workspace — that's the caller's job.
 
     Raises:
-        ValueError: if any redacted mount or CLI lacks an override, or
-            if the snapshot is from an unsupported format version.
+        ValueError: if any redacted mount or CLI lacks an override, if
+            the snapshot is from an unsupported format version, or if a
+            carried profile document does not validate.
     """
     saved_version = state.get(StateKey.VERSION)
     if saved_version is not None and saved_version < FORMAT_VERSION:
@@ -300,12 +350,21 @@ def build_mount_args(state: dict[str, Any],
             cli_args[e[CLIKey.NAME]] = (cli_spec_from_entry(e),
                                         e[CLIKey.CONFIG])
 
+    profiles = {
+        name: profile_from_dict(doc)
+        for name, doc in (state.get(StateKey.PROFILES) or {}).items()
+    }
+    saved_consistency = state.get(StateKey.CONSISTENCY)
     return MountArgs(
         mount_args=mount_args,
-        consistency=ConsistencyPolicy.LAZY,
+        consistency=(ConsistencyPolicy(saved_consistency)
+                     if saved_consistency else ConsistencyPolicy.LAZY),
         default_session_id=state[StateKey.DEFAULT_SESSION_ID],
         default_agent_id=state.get(StateKey.DEFAULT_AGENT_ID),
         clis=cli_args or None,
+        profiles=profiles or None,
+        profile=state.get(StateKey.PROFILE),
+        policies=tuple(state.get(StateKey.POLICIES) or ()),
     )
 
 
@@ -325,8 +384,12 @@ async def apply_state_dict(ws,
     Every session table and the env template clear the target's
     ``pre_session`` gate first (``_gate_restored_state``), before any
     mount, session or template lands, so a refusal aborts the load with
-    the workspace as it was. A snapshot mount with no mount at that
-    exact prefix here is not restored and is reported at warning level.
+    the workspace as it was; the same phase refuses a table whose
+    profile the target does not define. Each table then lands under
+    the target's profile of that name and never wider than it or than
+    the live session (``narrow_restored``). A snapshot mount with no
+    mount at that exact prefix here is not restored and is reported at
+    warning level.
 
     Args:
         ws (Workspace): the target workspace.
@@ -383,24 +446,57 @@ async def _restore_nodes(ws, state: dict[str, Any]) -> None:
     await ws._namespace.replace_nodes(entries)
 
 
+def _target_profile(ws, name: str | None) -> CompiledProfile:
+    """The profile the target gives a restored session's table.
+
+    The target's default for a table naming none, and for one naming
+    ``default`` on a target with no profile of that name (a source
+    with an implicit default stamps that name, and an ordinary snapshot
+    must not be refused over it); the manager's own compiled object in
+    both cases, so a table taken from the same document leaves the
+    session on the very objects the default session shares. Any other
+    name is compiled as ``create_session`` would compile it, and an
+    unknown one is refused with the same PolicyError, before anything
+    lands. ``check_cli_verbs`` is not run: a recorded rule naming a
+    verb the target's CLIs lack restricts nothing and is no reason to
+    refuse a load.
+
+    Args:
+        ws (Workspace): the target workspace.
+        name (str | None): the table's ``profile``.
+
+    Raises:
+        PolicyError: a name the target's document does not define.
+    """
+    if (name is None or name == ws._profile_name(None) or
+        (name == DEFAULT_PROFILE and DEFAULT_PROFILE not in ws._profiles)):
+        compiled = ws._session_mgr.default_profile
+        return compiled if compiled is not None else compile_profile(None)
+    return ws.compiled_profile(name)
+
+
 async def _gate_restored_state(ws, state: dict[str, Any]) -> RestoredEnv:
-    """Vet every env input the snapshot carries before any of it lands.
+    """Vet every session table and the env template before any of it lands.
 
-    Each session table and the env template fire the ``pre_session``
-    gate (``gate_restored_vars``) here, ahead of the mounts' load_state
-    and the session writes: a refusal that arrived once an earlier
+    Three steps, and nothing lands in any of them. Each table's profile
+    name is resolved against the target's document
+    (``_target_profile``), so a name the target does not define refuses
+    the load before a mount, a session or the template has moved, the
+    same loud rule a redacted mount gets. A table whose id the target
+    lacks then gets its session created and narrowed under that profile
+    here, because ``ScriptPolicy.pre_session`` reads
+    ``script_of(session_id)`` off the manager and answers the default
+    profile for an id it does not know; the snapshot's default id is the
+    one exception, since ``adopt_default`` re-keys the live default onto
+    it and would delete a session created under that id instead. Then
+    every table and the template fire the ``pre_session`` gate
+    (``gate_restored_vars``): a refusal that arrived once an earlier
     session had already been overwritten left the workspace in a state
-    no snapshot describes, and one its close then persisted. The
-    template is gated under the id the restore makes the default
-    session, which is the session a live write of it would land in.
-
-    Each table is judged under the policy the target gives its
-    session, never the one the snapshot's own profile compiled, which
-    was the source deployment's and does not land: the live session's
-    for an id the target already has, and the default profile's for
-    one the restore will create, which is what ``script_of`` answers
-    for an id the manager does not know and the profile
-    ``_restore_sessions`` then puts the created session under.
+    no snapshot describes, and one its close then persisted. A refusal
+    anywhere discards the sessions created here, so the store never
+    sees a half-made table. The template is gated under the id the
+    restore makes the default session, which is the session a live
+    write of it would land in.
 
     Args:
         ws (Workspace): the target workspace.
@@ -410,26 +506,59 @@ async def _gate_restored_state(ws, state: dict[str, Any]) -> RestoredEnv:
         The parsed session tables, and the env template or None when
         the snapshot carries none.
     """
-    sessions = [
+    tables = [
         Session.from_dict(s_data)
         for s_data in state.get(StateKey.SESSIONS, [])
     ]
-    for fields in sessions:
-        await gate_restored_vars(ws.policies, fields.session_id, fields.vars)
-    seed = state.get(StateKey.ENV)
-    if not seed:
-        return sessions, None
     default_sid = state.get(StateKey.DEFAULT_SESSION_ID)
-    seed_vars = vars_from_fields(seed)
-    await gate_restored_vars(
-        ws.policies,
-        ws._session_mgr.default_id if default_sid is None else default_sid,
-        seed_vars)
-    return sessions, seed_vars
+    compiled = [_target_profile(ws, fields.profile) for fields in tables]
+    live = {session.session_id for session in ws._session_mgr.list()}
+    created: list[str] = []
+    seed_vars: dict[str, ShellVar] | None = None
+    vetted = False
+    try:
+        for fields, profile in zip(tables, compiled):
+            sid = fields.session_id
+            if sid != default_sid and sid not in live:
+                created.append(sid)
+                narrow(ws._session_mgr.create(sid), profile)
+        for fields in tables:
+            await gate_restored_vars(ws.policies, fields.session_id,
+                                     fields.vars)
+        seed = state.get(StateKey.ENV)
+        if seed:
+            seed_vars = vars_from_fields(seed)
+            await gate_restored_vars(
+                ws.policies, ws._session_mgr.default_id
+                if default_sid is None else default_sid, seed_vars)
+        vetted = True
+    finally:
+        if not vetted:
+            for sid in created:
+                ws._session_mgr.discard(sid)
+    return tables, seed_vars
 
 
 async def _restore_sessions(ws, state: dict[str, Any],
                             tables: list[Session]) -> None:
+    """Land the vetted tables: each on the session that carries its id,
+    never wider than that session already is.
+
+    Every table's session exists by now: the gate created the missing
+    ones under the target's profile of the table's name, a checkout on
+    a running workspace finds the live one, and the snapshot's default
+    id is re-keyed onto the live default here. ``narrow_restored`` then
+    joins the table's narrowing with the session's (restrictions union,
+    grants intersect, the program stays the target's), and the scratch
+    state the table carries (cwd, variables, the host's standing
+    answers) is the snapshot's, matching the ``replace_from_snapshot``
+    contract below.
+
+    Args:
+        ws (Workspace): the target workspace.
+        state (dict[str, Any]): the snapshot state.
+        tables (list[Session]): the tables the gate passed.
+    """
     default_sid = state.get(StateKey.DEFAULT_SESSION_ID)
     if default_sid is not None:
         # The snapshot's default session identity wins over the live
@@ -443,30 +572,11 @@ async def _restore_sessions(ws, state: dict[str, Any],
         ws._meta_written = True
     restored: list[Any] = []
     for fields in tables:
-        sid = fields.session_id
-        if sid == default_sid:
-            session = ws._session_mgr.get(sid)
-        else:
-            try:
-                session = ws._session_mgr.create(sid)
-            except ValueError:
-                # The session already exists live (checkout on a
-                # running workspace): the restored state wins, matching
-                # the replace_from_snapshot contract below.
-                session = ws._session_mgr.get(sid)
-            else:
-                # A session the restore creates is one created without
-                # a profile name, so it runs under the document's
-                # default: the policy `_gate_restored_state` judged its
-                # table under, where a bare session ran under none.
-                # Stamped ahead of the table so the grants below stay
-                # the snapshot's, as they do for a session that exists.
-                compiled = ws._session_mgr.default_profile
-                if compiled is not None:
-                    narrow(session, compiled)
+        session = ws._session_mgr.get(fields.session_id)
+        narrow_restored(session, fields)
         set_cwd(session, fields.cwd)
         session.vars = fields.vars
-        session.mount_modes = fields.mount_modes
+        session.decisions = fields.decisions
         restored.append(session)
     # The snapshot's session table wins over prior store contents,
     # mirroring Namespace.replace_nodes.

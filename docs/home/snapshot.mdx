@@ -95,20 +95,41 @@ See the [CLI versioning reference](/home/cli#versioning) for `log`, `diff`, `bra
 
 ## What Is And Isn't Captured
 
+A snapshot is the workspace **document** (what the deployment declared: mounts, profiles, the default profile's name, the consistency policy, installed CLIs, the env template) plus the workspace **state** (what happened: sessions, namespace nodes, history, finished jobs, cache, fingerprints). Secrets are redacted from the document wherever a schema declares them; the deployment's wiring (secret stores, cache and index backends, runtimes, coded policies) is the loader's to supply.
+
 <Columns cols={2}>
   <Card title="Captured" icon="check">
     - Mount configs (creds redacted; restore via `resources=` override)
-    - Sessions, history, finished jobs
+    - Profiles as documents, and which one is the default
+    - The workspace consistency policy
+    - Sessions in full: cwd, variables, per-mount modes, hides and shows, hidden variables, admission rules, pending and answered asks
+    - History, finished jobs, namespace nodes (symlinks, attribute overlay)
     - Cache bytes for touched paths
     - One fingerprint per remote read (ETag-equivalent)
     - Optional per-path `revision` when the backend exposes one
+    - The class names of coded policies (named, not carried)
   </Card>
   <Card title="Not captured" icon="xmark">
     - Live state of mounts with `SUPPORTS_SNAPSHOT=False` (Gmail, Slack, Linear, Notion, …)
     - Files the agent never touched
     - Raw bytes of remote objects (recoverable only via revision pin)
+    - Coded policies, secret stores, runtimes: code the loader registers
+    - Shell functions, aliases, `shopt` and `set -o` state
   </Card>
 </Columns>
+
+### How a restore lands sessions
+
+A restore replays the document first, then lands the state, and **never widens** what the target's document allows. Every session table is landed under the target's profile of the same name (`profiles` from the snapshot unless the loader passes its own), and what the table carries is joined with what that profile compiles to: restrictions union, grants intersect, the policy program is the target's. So a session created with `profile="restricted"` comes back restricted, an inline `permissions` document survives, and a pending ask is still pending.
+
+Four rules follow, in both languages:
+
+- **An unknown profile name refuses the load** with the same `PolicyError` `create_session` raises, before any mount or session state has moved. A table naming no profile, or `default` on a target without a profile of that name, lands under the target's default.
+- **A restored session is never wider** than the target's document or than the live session it lands on. On a running workspace a `checkout` can add a version's restrictions to a live session, never lift the live ones; `set_session_profile` is the host's reset.
+- **Every restored variable clears the session gate** (`pre_session`), tables and env template alike, before anything lands; a refusal aborts the load with the workspace as it was.
+- **Coded policies are named, not restored.** `load` warns about a recorded class no registered policy answers to; pass them as `policies=`. A profile whose policy names a runtime the target lacks fails closed on every line under it, as it does live; `profiles=` on the loader is the escape hatch.
+
+Profile `env` literals travel verbatim, like the workspace `env:` block does: a credential in this model is a managed pointer (`from:`), and a snapshot carries the pointer, never a value.
 
 ## Drift Detection
 

@@ -12,14 +12,16 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 from mirage.policy.errors import PolicyError
+from mirage.policy.match.pattern import intersect_patterns
 from mirage.policy.types import (AdmissionRules, CommandRule, HideReason,
                                  ProfileScript)
-from mirage.types import (HiddenPaths, MountMode, ShowEntry, ShownPaths,
-                          weaker_mode)
-from mirage.utils.hidden import classify_paths, classify_shows, classify_vars
+from mirage.types import (HiddenPaths, HiddenVars, MountMode, ShowEntry,
+                          ShownPaths, weaker_mode)
+from mirage.utils.hidden import (anchor_depth, classify_paths, classify_shows,
+                                 classify_vars, hide_depth, is_glob)
 from mirage.workspace.session.constants import DEFAULT_PROFILE
 from mirage.workspace.session.session import Session, vars_from_env
 from mirage.workspace.session.shell_dirs import set_cwd
@@ -530,3 +532,300 @@ def apply_profile(session: Session, compiled: CompiledProfile) -> None:
         session.vars.update(vars_from_env(compiled.env))
     if compiled.cwd is not None:
         set_cwd(session, compiled.cwd)
+
+
+def _dedupe(entries: Iterable[str]) -> tuple[str, ...]:
+    """The entries in order, each spelling once.
+
+    Args:
+        entries (Iterable[str]): document entries, both sides' in turn.
+    """
+    out: list[str] = []
+    for entry in entries:
+        if entry not in out:
+            out.append(entry)
+    return tuple(out)
+
+
+def _merge_modes(
+        base: dict[str, MountMode] | None,
+        table: dict[str, MountMode] | None) -> dict[str, MountMode] | None:
+    """The weaker mode per prefix over both maps, prefixes normalized;
+    the base map itself when the table narrows nothing.
+
+    Args:
+        base (dict[str, MountMode] | None): the session's caps.
+        table (dict[str, MountMode] | None): the stored table's caps.
+    """
+    if table is None:
+        return base
+    merged = {_root_of(p): m for p, m in (base or {}).items()}
+    for prefix, mode in table.items():
+        root = _root_of(prefix)
+        have = merged.get(root)
+        merged[root] = mode if have is None else weaker_mode(have, mode)
+    return base if base is not None and merged == base else merged
+
+
+def _merge_hidden_paths(base: HiddenPaths | None,
+                        table: HiddenPaths | None) -> HiddenPaths | None:
+    """Both hide sets in one, the session's entries first; the
+    session's own object when the table hides nothing new.
+
+    Args:
+        base (HiddenPaths | None): the session's spec.
+        table (HiddenPaths | None): the stored table's spec.
+    """
+    if table is None:
+        return base
+    if base is None:
+        return table
+    merged = classify_paths(
+        _dedupe((*base.paths, *base.patterns, *table.paths, *table.patterns)))
+    return base if merged == base else merged
+
+
+def _merge_hidden_vars(base: HiddenVars | None,
+                       table: HiddenVars | None) -> HiddenVars | None:
+    """Both hidden-variable sets in one, the session's first; the
+    session's own object when the table hides nothing new.
+
+    Args:
+        base (HiddenVars | None): the session's spec.
+        table (HiddenVars | None): the stored table's spec.
+    """
+    if table is None:
+        return base
+    if base is None:
+        return table
+    merged = classify_vars(
+        _dedupe((*base.names, *base.patterns, *table.names, *table.patterns)))
+    return base if merged == base else merged
+
+
+def _merge_groups(base: tuple[HideReason, ...],
+                  table: tuple[HideReason, ...]) -> tuple[HideReason, ...]:
+    """The session's reason groups, then the table's it lacks.
+
+    Args:
+        base (tuple[HideReason, ...]): the session's groups.
+        table (tuple[HideReason, ...]): the stored table's groups.
+    """
+    out = list(base)
+    out.extend(group for group in table if group not in out)
+    return base if len(out) == len(base) else tuple(out)
+
+
+def _append_rules(base: tuple[CommandRule, ...],
+                  table: tuple[CommandRule, ...]) -> tuple[CommandRule, ...]:
+    """The session's rules, then the table's it lacks.
+
+    Args:
+        base (tuple[CommandRule, ...]): the session's rules of one verb.
+        table (tuple[CommandRule, ...]): the stored table's.
+    """
+    out = list(base)
+    out.extend(rule for rule in table if rule not in out)
+    return base if len(out) == len(base) else tuple(out)
+
+
+def _merge_allow(base: tuple[str, ...] | None,
+                 table: tuple[str, ...] | None) -> tuple[str, ...] | None:
+    """The allow list both sides grant.
+
+    One side stating a list installs only what it lists, so that list
+    stands when the other states none; two lists intersect pattern by
+    pattern (``intersect_patterns``), which can only remove. The
+    session's own list stands when the table spells the same set, so a
+    table that adds nothing changes nothing.
+
+    Args:
+        base (tuple[str, ...] | None): the session's list.
+        table (tuple[str, ...] | None): the stored table's list.
+    """
+    if table is None:
+        return base
+    if base is None or set(base) == set(table):
+        return table if base is None else base
+    return intersect_patterns(base, table)
+
+
+def _merge_commands(base: AdmissionRules | None,
+                    table: AdmissionRules | None) -> AdmissionRules | None:
+    """Both rule sets as one: ask and deny rules union, the allow list
+    intersects; the session's own object when the table adds nothing.
+
+    Args:
+        base (AdmissionRules | None): the session's rules.
+        table (AdmissionRules | None): the stored table's rules.
+    """
+    if table is None:
+        return base
+    if base is None:
+        return table
+    merged = AdmissionRules(allow=_merge_allow(base.allow, table.allow),
+                            ask=_append_rules(base.ask, table.ask),
+                            deny=_append_rules(base.deny, table.deny))
+    return base if merged == base else merged
+
+
+def _cap_of(modes: dict[str, MountMode] | None, head: str) -> MountMode | None:
+    """The per-mount cap in force at a path: the mode of the longest
+    prefix covering it, None when none does.
+
+    Args:
+        modes (dict[str, MountMode] | None): one side's caps.
+        head (str): the place a show entry anchors to.
+    """
+    best: tuple[int, MountMode] | None = None
+    for prefix, mode in (modes or {}).items():
+        root = _root_of(prefix)
+        if root == "/" or head == root or head.startswith(root + "/"):
+            depth = anchor_depth(root)
+            if best is None or depth > best[0]:
+                best = (depth, mode)
+    return None if best is None else best[1]
+
+
+def _capped(mode: MountMode, caps: dict[str, MountMode] | None,
+            head: str) -> MountMode:
+    """A show mode one side states, held under the other side's cap at
+    that anchor: a show scores deeper than the cap and would otherwise
+    lift what the other side capped.
+
+    Args:
+        mode (MountMode): the stated mode.
+        caps (dict[str, MountMode] | None): the other side's caps.
+        head (str): the show's anchor.
+    """
+    cap = _cap_of(caps, head)
+    return mode if cap is None else weaker_mode(mode, cap)
+
+
+def _merge_show(mine: ShowEntry, other: ShowEntry | None,
+                my_caps: dict[str, MountMode] | None,
+                other_caps: dict[str, MountMode] | None,
+                hidden: HiddenPaths | None) -> ShowEntry | None:
+    """One show entry as both sides allow it, or None to drop it.
+
+    A show does two things, and each side has to have said it. It
+    re-opens whatever the other side hides at its anchor, so an entry
+    only one side states survives only where the merged hide set covers
+    nothing (a pattern re-opens by name and is dropped outright). It
+    states the mode below its anchor, and a show scores deeper than a
+    per-mount cap, so a mode only one side states is held under the
+    other side's cap there; two stated modes take the weaker; two
+    list-form entries stay list-form, since the merged caps already
+    hold the weaker mode below them. The entry itself is returned when
+    nothing changed, so an identical table leaves the session's objects
+    in place.
+
+    Args:
+        mine (ShowEntry): the entry on the side being walked.
+        other (ShowEntry | None): the other side's entry at the same
+            path, None when it states none.
+        my_caps (dict[str, MountMode] | None): this side's caps.
+        other_caps (dict[str, MountMode] | None): the other side's.
+        hidden (HiddenPaths | None): the merged hide set.
+    """
+    if other is None:
+        if is_glob(mine.path) or hide_depth(hidden, mine.path) is not None:
+            return None
+        if mine.mode is None:
+            return mine
+        mode = _capped(mine.mode, other_caps, mine.path)
+    elif mine.mode is not None and other.mode is not None:
+        mode = weaker_mode(mine.mode, other.mode)
+    elif mine.mode is not None:
+        mode = _capped(mine.mode, other_caps, mine.path)
+    elif other.mode is not None:
+        mode = _capped(other.mode, my_caps, mine.path)
+    else:
+        return mine
+    return mine if mode == mine.mode else ShowEntry(path=mine.path, mode=mode)
+
+
+def _merge_shown(base: ShownPaths | None, table: ShownPaths | None,
+                 base_caps: dict[str, MountMode] | None,
+                 table_caps: dict[str, MountMode] | None,
+                 hidden: HiddenPaths | None) -> ShownPaths | None:
+    """Both sides' show entries as both allow them (:func:`_merge_show`),
+    the session's first; the session's own object when nothing changed.
+
+    Args:
+        base (ShownPaths | None): the session's entries.
+        table (ShownPaths | None): the stored table's entries.
+        base_caps (dict[str, MountMode] | None): the session's caps.
+        table_caps (dict[str, MountMode] | None): the table's caps.
+        hidden (HiddenPaths | None): the merged hide set.
+    """
+    if base is None and table is None:
+        return None
+    base_entries = base.entries if base is not None else ()
+    table_entries = table.entries if table is not None else ()
+    by_table = {entry.path: entry for entry in table_entries}
+    by_base = {entry.path: entry for entry in base_entries}
+    out: list[ShowEntry] = []
+    for entry in base_entries:
+        merged = _merge_show(entry, by_table.get(entry.path), base_caps,
+                             table_caps, hidden)
+        if merged is not None:
+            out.append(merged)
+    for entry in table_entries:
+        if entry.path in by_base:
+            continue
+        merged = _merge_show(entry, None, table_caps, base_caps, hidden)
+        if merged is not None:
+            out.append(merged)
+    if base is not None and tuple(out) == base.entries:
+        return base
+    return classify_shows(out)
+
+
+def narrow_restored(session: Session, table: Session) -> None:
+    """Land a stored session table on a session, never wider than either.
+
+    The restore's counterpart of :func:`narrow`. A snapshot carries a
+    session's narrowing as it stood in the source deployment; the
+    session it lands on already runs under the target's document (the
+    profile of the same name, or the live session's on a checkout). One
+    rule joins the two: restrictions union, grants intersect, the
+    program is the target's. Caps take the weaker mode per prefix,
+    hides and hidden variables union, hide reasons and ask and deny
+    rules append what the session lacks, the allow list is what both
+    grant, a show survives only as both sides allow it
+    (:func:`_merge_show`), and ``script`` and ``profile`` stay the
+    session's, since a policy program is deployment code and the gate
+    judged the table under the target's. Every field keeps the
+    session's own object when the table adds nothing, so a table taken
+    from the same document is the identity, and running this twice is
+    running it once, which a checkout that lands live tables back on
+    themselves relies on.
+
+    Two consequences worth stating. On a running workspace a checkout
+    can only add restrictions to a live session, never lift one: a hide
+    from one version survives checking out another, and
+    ``set_session_profile`` is the host's reset. And a show only one
+    side states is dropped where a hide covers its anchor, mode and
+    all, so a mode it restricted there reverts to the target's
+    allowance; the show grammar has no spelling for a mode without a
+    re-open.
+
+    Args:
+        session (Session): the session the table lands on, already
+            narrowed under the target's document.
+        table (Session): the stored table, as ``Session.from_dict``
+            read it.
+    """
+    modes = _merge_modes(session.mount_modes, table.mount_modes)
+    hidden = _merge_hidden_paths(session.hidden_paths, table.hidden_paths)
+    shown = _merge_shown(session.shown_paths, table.shown_paths,
+                         session.mount_modes, table.mount_modes, hidden)
+    session.hidden_vars = _merge_hidden_vars(session.hidden_vars,
+                                             table.hidden_vars)
+    session.hide_reasons = _merge_groups(session.hide_reasons,
+                                         table.hide_reasons)
+    session.commands = _merge_commands(session.commands, table.commands)
+    session.mount_modes = modes
+    session.hidden_paths = hidden
+    session.shown_paths = shown

@@ -662,7 +662,13 @@ Invoke the venv's `pre-commit` binary directly (not via `uv --directory python r
   snapshot restore is **not** exempt: every session table and the env template
   a snapshot carries clear the gate (`gate_restored_vars`) before any of it
   lands, mount state included, so a refusal aborts the load with the workspace
-  as it was rather than half-restored.
+  as it was rather than half-restored. The same restore lands each table under
+  the target's profile of the table's name (the snapshot carries the profile
+  documents, `StateKey.PROFILES`; an unknown name refuses the load) and joins
+  the table's narrowing with that profile's through `narrow_restored`, which
+  never widens: restrictions union, grants intersect, the program is the
+  target's, so a checkout can only add restrictions to a live session and
+  `set_session_profile` is the host's reset.
 - **The record client is a substrate, not a session detail.** Sessions, the
   namespace node table and workspace metadata are three tables that persist the
   same way, so the keyed-record clients live in `workspace/record/`

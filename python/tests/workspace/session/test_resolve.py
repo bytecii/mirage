@@ -14,8 +14,8 @@ from mirage.policy.profile import (  # isort: skip
     CommandsBlock, MountCommandsBlock, PathsBlock, ProfileMount,
     SessionProfile, VarsBlock)
 from mirage.workspace.session.resolve import (  # isort: skip
-    apply_profile, compile_commands, compile_profile, narrow, resolve_profile,
-    with_inline)
+    apply_profile, compile_commands, compile_profile, narrow, narrow_restored,
+    resolve_profile, with_inline)
 
 PROFILES = {
     "default":
@@ -409,3 +409,156 @@ def test_compile_profile_carries_the_name_and_narrow_stamps_it():
     assert compile_profile(None).profile is None
     narrow(session, compile_profile(None))
     assert session.profile is None
+
+
+def _restored(**fields) -> Session:
+    return Session(session_id="table", **fields)
+
+
+def test_narrow_restored_takes_the_weaker_mode_over_both_key_sets():
+    session = Session(session_id="s", mount_modes={"/a": MountMode.WRITE})
+    narrow_restored(
+        session,
+        _restored(mount_modes={
+            "/a/": MountMode.READ,
+            "b": MountMode.EXEC
+        }))
+    assert session.mount_modes == {"/a": MountMode.READ, "/b": MountMode.EXEC}
+    # A table narrowing nothing leaves the session's own map in place.
+    modes = session.mount_modes
+    narrow_restored(session, _restored(mount_modes={"/a": MountMode.EXEC}))
+    assert session.mount_modes is modes
+
+
+def test_narrow_restored_unions_hides_in_order_without_repeats():
+    session = Session(session_id="s",
+                      hidden_paths=HiddenPaths(paths=("/x", ),
+                                               patterns=("*.pem", )),
+                      hidden_vars=HiddenVars(names=("A", )),
+                      hide_reasons=(HideReason(patterns=("/x", ),
+                                               reason="sealed"), ))
+    narrow_restored(
+        session,
+        _restored(hidden_paths=HiddenPaths(paths=("/y", "/x"),
+                                           patterns=("*.key", "*.pem")),
+                  hidden_vars=HiddenVars(names=("A", "B"),
+                                         patterns=("AWS_*", )),
+                  hide_reasons=(HideReason(patterns=("/x", ), reason="sealed"),
+                                HideReason(patterns=("/y", ),
+                                           reason="private"))))
+    assert session.hidden_paths == HiddenPaths(paths=("/x", "/y"),
+                                               patterns=("*.pem", "*.key"))
+    assert session.hidden_vars == HiddenVars(names=("A", "B"),
+                                             patterns=("AWS_*", ))
+    assert session.hide_reasons == (HideReason(patterns=("/x", ),
+                                               reason="sealed"),
+                                    HideReason(patterns=("/y", ),
+                                               reason="private"))
+    # One side stating nothing takes the other's spec as it is.
+    bare = Session(session_id="bare")
+    narrow_restored(bare, _restored(hidden_vars=HiddenVars(names=("T", ))))
+    assert bare.hidden_vars == HiddenVars(names=("T", ))
+    assert bare.hidden_paths is None
+
+
+def test_narrow_restored_intersects_allow_lists_and_appends_rules():
+    deny_rm = CommandRule(reason="no", commands=("rm", ))
+    deny_mv = CommandRule(reason="no", commands=("mv", ))
+    session = Session(session_id="s",
+                      commands=AdmissionRules(allow=("git *", "cat"),
+                                              deny=(deny_rm, )))
+    narrow_restored(
+        session,
+        _restored(commands=AdmissionRules(
+            allow=("git push", "cat", "ls"),
+            ask=(CommandRule(reason="ask", commands=("git", )), ),
+            deny=(deny_rm, deny_mv))))
+    assert session.commands == AdmissionRules(allow=("git push", "cat"),
+                                              ask=(CommandRule(
+                                                  reason="ask",
+                                                  commands=("git", )), ),
+                                              deny=(deny_rm, deny_mv))
+    # A list only one side states stands: it installs only what it lists.
+    one = Session(session_id="one")
+    narrow_restored(one, _restored(commands=AdmissionRules(allow=("ls", ))))
+    assert one.commands == AdmissionRules(allow=("ls", ))
+    other = Session(session_id="other",
+                    commands=AdmissionRules(allow=("ls", )))
+    narrow_restored(other,
+                    _restored(commands=AdmissionRules(deny=(deny_rm, ))))
+    assert other.commands == AdmissionRules(allow=("ls", ), deny=(deny_rm, ))
+
+
+def test_narrow_restored_keeps_a_show_only_as_both_sides_allow_it():
+    session = Session(
+        session_id="s",
+        mount_modes={"/repo": MountMode.READ},
+        hidden_paths=HiddenPaths(paths=("/repo/sealed", )),
+        shown_paths=ShownPaths(entries=(
+            ShowEntry(path="/repo/sealed/public", mode=None),
+            ShowEntry(path="/repo/sealed/docs", mode=MountMode.WRITE),
+            ShowEntry(path="/repo/build", mode=None),
+        )))
+    narrow_restored(
+        session,
+        _restored(shown_paths=ShownPaths(entries=(
+            ShowEntry(path="/repo/sealed/public", mode=None),
+            ShowEntry(path="/repo/sealed/docs", mode=MountMode.READ),
+            ShowEntry(path="/repo/sealed/other", mode=None),
+            ShowEntry(path="/repo/out", mode=MountMode.EXEC),
+        ))))
+    assert session.shown_paths == ShownPaths(entries=(
+        # Both state it, neither with a mode: list-form on both sides.
+        ShowEntry(path="/repo/sealed/public", mode=None),
+        # Both state a mode: the weaker.
+        ShowEntry(path="/repo/sealed/docs", mode=MountMode.READ),
+        # Only the session states it and nothing hides it: kept.
+        ShowEntry(path="/repo/build", mode=None),
+        # Only the table states it, nothing hides it, and its mode is
+        # held under the session's cap at /repo.
+        ShowEntry(path="/repo/out", mode=MountMode.READ),
+        # /repo/sealed/other, only the table's, re-opens a hidden
+        # subtree and is dropped.
+    ))
+
+
+def test_narrow_restored_is_the_identity_for_a_table_from_the_same_document():
+    compiled = compile_profile(
+        SessionProfile(mounts={
+            "/repo":
+            ProfileMount(mode=MountMode.WRITE,
+                         paths=PathsBlock(hide=("/repo/sealed", ),
+                                          show={"/repo/sealed/public": "r"},
+                                          reasons=(HideReason(
+                                              patterns=("/repo/sealed", ),
+                                              reason="sealed"), )),
+                         commands=MountCommandsBlock(ask=("git push", )))
+        },
+                       vars=VarsBlock(hide=("AWS_*", )),
+                       commands=CommandsBlock(allow=("git *", "ls", "rm"),
+                                              deny=("rm", ))), "named")
+    session = Session(session_id="s")
+    narrow(session, compiled)
+    table = Session.from_dict(session.to_dict())
+    narrow_restored(session, table)
+    assert session.commands is compiled.commands
+    assert session.hidden_paths is compiled.hidden_paths
+    assert session.hidden_vars is compiled.hidden_vars
+    assert session.shown_paths is compiled.shown_paths
+    assert session.hide_reasons is compiled.hide_reasons
+    assert session.mount_modes == compiled.mount_modes
+    assert session.to_dict() == table.to_dict()
+
+
+def test_narrow_restored_keeps_the_sessions_program_and_name():
+    target = compile_profile(SessionProfile(cwd="/x"), "target")
+    session = Session(session_id="s")
+    narrow(session, target)
+    table = Session(session_id="s",
+                    profile="other",
+                    commands=AdmissionRules(
+                        deny=(CommandRule(reason="no", commands=("rm", )), )))
+    narrow_restored(session, table)
+    assert session.profile == "target"
+    assert session.script is target.script
+    assert session.commands == table.commands

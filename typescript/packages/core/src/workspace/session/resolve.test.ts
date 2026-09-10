@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_ASK_REASON } from '../../policy/constants.ts'
 import { PolicyError } from '../../policy/errors.ts'
 import { matchOp, ruleScope } from '../../policy/match/rule.ts'
-import type { OpsContext } from '../../policy/types.ts'
+import type { AdmissionRules, CommandRule, OpsContext } from '../../policy/types.ts'
 import { MountMode, PathSpec } from '../../types.ts'
 import { pathHidden, pathVisible } from '../../utils/hidden.ts'
 import { parseSessionProfile, type SessionProfile } from '../../policy/profile.ts'
@@ -26,6 +26,7 @@ import {
   compileCommands,
   compileProfile,
   narrow,
+  narrowRestored,
   resolveProfile,
   withInline,
 } from './resolve.ts'
@@ -442,5 +443,199 @@ describe('the path axis through resolve', () => {
     const empty = compileProfile(null)
     expect(empty.shownPaths).toBeNull()
     expect(empty.hideReasons).toEqual([])
+  })
+})
+
+describe('narrowRestored', () => {
+  const table = (init: ConstructorParameters<typeof Session>[0]): Session =>
+    new Session({ ...init, sessionId: 'table' })
+
+  it('takes the weaker mode over both key sets', () => {
+    const session = new Session({
+      sessionId: 's',
+      mountModes: new Map([['/a', MountMode.WRITE]]),
+    })
+    narrowRestored(
+      session,
+      table({
+        sessionId: 'table',
+        mountModes: new Map([
+          ['/a/', MountMode.READ],
+          ['b', MountMode.EXEC],
+        ]),
+      }),
+    )
+    expect(session.mountModes).toEqual(
+      new Map([
+        ['/a', MountMode.READ],
+        ['/b', MountMode.EXEC],
+      ]),
+    )
+    // A table narrowing nothing leaves the session's own map in place.
+    const modes = session.mountModes
+    narrowRestored(
+      session,
+      table({ sessionId: 'table', mountModes: new Map([['/a', MountMode.EXEC]]) }),
+    )
+    expect(session.mountModes).toBe(modes)
+  })
+
+  it('unions hides in order without repeats', () => {
+    const session = new Session({
+      sessionId: 's',
+      hiddenPaths: { paths: ['/x'], patterns: ['*.pem'] },
+      hiddenVars: { names: ['A'], patterns: [] },
+      hideReasons: [{ patterns: ['/x'], reason: 'sealed' }],
+    })
+    narrowRestored(
+      session,
+      table({
+        sessionId: 'table',
+        hiddenPaths: { paths: ['/y', '/x'], patterns: ['*.key', '*.pem'] },
+        hiddenVars: { names: ['A', 'B'], patterns: ['AWS_*'] },
+        hideReasons: [
+          { patterns: ['/x'], reason: 'sealed' },
+          { patterns: ['/y'], reason: 'private' },
+        ],
+      }),
+    )
+    expect(session.hiddenPaths).toEqual({ paths: ['/x', '/y'], patterns: ['*.pem', '*.key'] })
+    expect(session.hiddenVars).toEqual({ names: ['A', 'B'], patterns: ['AWS_*'] })
+    expect(session.hideReasons).toEqual([
+      { patterns: ['/x'], reason: 'sealed' },
+      { patterns: ['/y'], reason: 'private' },
+    ])
+    // One side stating nothing takes the other's spec as it is.
+    const bare = new Session({ sessionId: 'bare' })
+    narrowRestored(bare, table({ sessionId: 'table', hiddenVars: { names: ['T'], patterns: [] } }))
+    expect(bare.hiddenVars).toEqual({ names: ['T'], patterns: [] })
+    expect(bare.hiddenPaths).toBeNull()
+  })
+
+  it('intersects allow lists and appends rules', () => {
+    const denyRm: CommandRule = { reason: 'no', commands: ['rm'], paths: [], mount: '' }
+    const denyMv: CommandRule = { reason: 'no', commands: ['mv'], paths: [], mount: '' }
+    const askGit: CommandRule = { reason: 'ask', commands: ['git'], paths: [], mount: '' }
+    const session = new Session({
+      sessionId: 's',
+      commands: { allow: ['git *', 'cat'], ask: [], deny: [denyRm] },
+    })
+    narrowRestored(
+      session,
+      table({
+        sessionId: 'table',
+        commands: { allow: ['git push', 'cat', 'ls'], ask: [askGit], deny: [denyRm, denyMv] },
+      }),
+    )
+    expect(session.commands).toEqual({
+      allow: ['git push', 'cat'],
+      ask: [askGit],
+      deny: [denyRm, denyMv],
+    })
+    // A list only one side states stands: it installs only what it lists.
+    const one = new Session({ sessionId: 'one' })
+    narrowRestored(
+      one,
+      table({ sessionId: 'table', commands: { allow: ['ls'], ask: [], deny: [] } }),
+    )
+    expect(one.commands).toEqual({ allow: ['ls'], ask: [], deny: [] })
+    const other = new Session({
+      sessionId: 'other',
+      commands: { allow: ['ls'], ask: [], deny: [] },
+    })
+    narrowRestored(
+      other,
+      table({ sessionId: 'table', commands: { allow: null, ask: [], deny: [denyRm] } }),
+    )
+    expect(other.commands).toEqual({ allow: ['ls'], ask: [], deny: [denyRm] })
+  })
+
+  it('keeps a show only as both sides allow it', () => {
+    const session = new Session({
+      sessionId: 's',
+      mountModes: new Map([['/repo', MountMode.READ]]),
+      hiddenPaths: { paths: ['/repo/sealed'], patterns: [] },
+      shownPaths: {
+        entries: [
+          { path: '/repo/sealed/public', mode: null },
+          { path: '/repo/sealed/docs', mode: MountMode.WRITE },
+          { path: '/repo/build', mode: null },
+        ],
+      },
+    })
+    narrowRestored(
+      session,
+      table({
+        sessionId: 'table',
+        shownPaths: {
+          entries: [
+            { path: '/repo/sealed/public', mode: null },
+            { path: '/repo/sealed/docs', mode: MountMode.READ },
+            { path: '/repo/sealed/other', mode: null },
+            { path: '/repo/out', mode: MountMode.EXEC },
+          ],
+        },
+      }),
+    )
+    expect(session.shownPaths).toEqual({
+      entries: [
+        // Both state it, neither with a mode: list-form on both sides.
+        { path: '/repo/sealed/public', mode: null },
+        // Both state a mode: the weaker.
+        { path: '/repo/sealed/docs', mode: MountMode.READ },
+        // Only the session states it and nothing hides it: kept.
+        { path: '/repo/build', mode: null },
+        // Only the table states it, nothing hides it, and its mode is
+        // held under the session's cap at /repo. /repo/sealed/other,
+        // only the table's, re-opens a hidden subtree and is dropped.
+        { path: '/repo/out', mode: MountMode.READ },
+      ],
+    })
+  })
+
+  it('is the identity for a table from the same document', () => {
+    const compiled = compileProfile(
+      parseSessionProfile({
+        mounts: {
+          '/repo': {
+            mode: 'rw',
+            paths: {
+              hide: [{ patterns: ['/repo/sealed'], reason: 'sealed' }],
+              show: { '/repo/sealed/public': 'r' },
+            },
+            commands: { ask: ['git push'] },
+          },
+        },
+        vars: { hide: ['AWS_*'] },
+        commands: { allow: ['git *', 'ls', 'rm'], deny: ['rm'] },
+      }),
+      'named',
+    )
+    const session = new Session({ sessionId: 's' })
+    narrow(session, compiled)
+    const stored = Session.fromJSON(session.toJSON() as Parameters<typeof Session.fromJSON>[0])
+    narrowRestored(session, stored)
+    expect(session.commands).toBe(compiled.commands)
+    expect(session.hiddenPaths).toBe(compiled.hiddenPaths)
+    expect(session.hiddenVars).toBe(compiled.hiddenVars)
+    expect(session.shownPaths).toBe(compiled.shownPaths)
+    expect(session.hideReasons).toBe(compiled.hideReasons)
+    expect(session.mountModes).toEqual(compiled.mountModes)
+    expect(session.toJSON()).toEqual(stored.toJSON())
+  })
+
+  it("keeps the session's program and name", () => {
+    const target = compileProfile(parseSessionProfile({ cwd: '/x' }), 'target')
+    const session = new Session({ sessionId: 's' })
+    narrow(session, target)
+    const rules: AdmissionRules = {
+      allow: null,
+      ask: [],
+      deny: [{ reason: 'no', commands: ['rm'], paths: [], mount: '' }],
+    }
+    narrowRestored(session, table({ sessionId: 'table', profile: 'other', commands: rules }))
+    expect(session.profile).toBe('target')
+    expect(session.script).toBe(target.script)
+    expect(session.commands).toEqual(rules)
   })
 })

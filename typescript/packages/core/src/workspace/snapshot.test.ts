@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { ruleToJSON } from './session/serialize.ts'
 import { setCwd } from './session/shell_dirs.ts'
 import { seedVar } from './session/state.ts'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -33,8 +34,10 @@ import { OpsRegistry } from '../ops/registry.ts'
 import { RAMResource } from '../resource/ram/ram.ts'
 import { type JobResult } from '../shell/job_table/index.ts'
 import { createShellParser, type ShellParser } from '../shell/parse/index.ts'
-import { MountMode } from '../types.ts'
+import { ConsistencyPolicy, MountMode } from '../types.ts'
 import { VERSION } from '../version.ts'
+import { parseSessionProfile, profileFromJSON, type SessionProfile } from '../policy/profile.ts'
+import type { WorkspaceOptions } from './workspace/types.ts'
 import { splitManifestAndBlobs } from './snapshot/manifest.ts'
 import {
   applyStateDict,
@@ -789,6 +792,280 @@ describe('applyStateDict and the deployment', () => {
       expect(messages.some((m) => m.includes('/data') && m.includes('not restored'))).toBe(true)
       expect(messages.some((m) => m.includes('/keep'))).toBe(false)
       expect(loadState).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})
+
+const RESTRICTED = {
+  env: { SLACK_TOKEN: 'xoxb-secret' },
+  vars: { hide: ['SLACK_TOKEN'] },
+  commands: { deny: ['rm'], ask: [{ reason: 'creates files', commands: ['touch'] }] },
+}
+
+function profiled(
+  profiles: Record<string, unknown>,
+  options: Partial<WorkspaceOptions> = {},
+  mode: MountMode = MountMode.WRITE,
+): Workspace {
+  const ram = new RAMResource()
+  const ops = new OpsRegistry()
+  ops.registerResource(ram)
+  const parsed: Record<string, SessionProfile> = Object.fromEntries(
+    Object.entries(profiles).map(([name, doc]) => [name, parseSessionProfile(doc)]),
+  )
+  return new Workspace(
+    { '/data': [ram, mode] },
+    { mode: MountMode.WRITE, ops, shellParser: parser, profiles: parsed, ...options },
+  )
+}
+
+const loadOptions = (): WorkspaceOptions => ({
+  mode: MountMode.WRITE,
+  ops: new OpsRegistry(),
+  shellParser: parser,
+})
+
+async function line(ws: Workspace, command: string, sessionId: string) {
+  const result = await ws.execute(command, { sessionId })
+  return {
+    exit: result.exitCode,
+    out: new TextDecoder().decode(result.stdout),
+    err: new TextDecoder().decode(result.stderr),
+  }
+}
+
+describe('the document rides the state and the restore never widens', () => {
+  // A session created under a named profile came back under the target's
+  // default: the snapshot carried no document, so `Workspace.load` had
+  // nothing to narrow it under, and the restore copied cwd, vars and
+  // modes off the table and dropped the rest. The state now carries the
+  // document and the restore lands the whole table under the profile of
+  // its name.
+  it('a session under a named profile survives fromState', async () => {
+    const source = profiled({ default: {}, restricted: RESTRICTED })
+    source.createSession('agent', {
+      profile: 'restricted',
+      permissions: parseSessionProfile({ commands: { deny: ['mv'] } }),
+    })
+    expect((await line(source, 'touch /data/made', 'agent')).exit).toBe(126)
+    const pending = source.decisions.pending('agent')
+    expect(pending).toHaveLength(1)
+    const state = await toStateDict(source)
+    await source.close()
+    expect(state.profile).toBeNull()
+    expect(profileFromJSON(state.profiles?.restricted ?? {})).toEqual(
+      parseSessionProfile(RESTRICTED),
+    )
+    const target = await Workspace.fromState(state, loadOptions())
+    const restored = target.getSession('agent')
+    expect(restored.profile).toBe('restricted')
+    expect(restored.hiddenVars).not.toBeNull()
+    expect(await line(target, 'echo tok=[$SLACK_TOKEN]', 'agent')).toEqual({
+      exit: 0,
+      out: 'tok=[]\n',
+      err: '',
+    })
+    const refused = await line(target, 'rm -f /data/x', 'agent')
+    expect(refused.exit).toBe(126)
+    expect(refused.err).toContain('rm: Permission denied')
+    expect((await line(target, 'mv /data/a /data/b', 'agent')).exit).toBe(126)
+    expect((await line(target, 'export SLACK_TOKEN=evil', 'agent')).exit).not.toBe(0)
+    expect(target.decisions.pending('agent').map((d) => d.id)).toEqual(pending.map((d) => d.id))
+    // The record spells a rule with every key, the compiled document only
+    // the stated ones; the ledger compares them structurally.
+    expect(target.decisions.pending('agent').map((d) => ruleToJSON(d.rule))).toEqual(
+      pending.map((d) => ruleToJSON(d.rule)),
+    )
+    await target.close()
+  })
+
+  // A restored table is a fact about the source session, never a grant:
+  // a wider cap and a wider allow list than the target's document states
+  // land as the target's, and what the table adds on top is kept.
+  it('a restored table never widens the target document', async () => {
+    const source = profiled({ default: { commands: { allow: ['cat', 'echo', 'touch', 'ls'] } } })
+    source.createSession('agent', { mounts: { '/data': 'write' } })
+    expect((await line(source, 'touch /data/made', 'agent')).exit).toBe(0)
+    const state = await toStateDict(source)
+    await source.close()
+    const target = profiled({
+      default: {
+        mounts: { '/data': 'r' },
+        commands: { allow: ['echo', 'ls', 'rm'], deny: ['rm'] },
+      },
+    })
+    await applyStateDict(target, state)
+    const restored = target.getSession('agent')
+    expect(restored.mountModes).toEqual(new Map([['/data', MountMode.READ]]))
+    expect(new Set(restored.commands?.allow ?? [])).toEqual(new Set(['echo', 'ls']))
+    expect((await line(target, 'echo ok', 'agent')).exit).toBe(0)
+    expect((await line(target, 'touch /data/x', 'agent')).exit).toBe(127)
+    expect((await line(target, 'rm /data/made', 'agent')).exit).not.toBe(0)
+    const listed = await line(target, 'ls /data', 'agent')
+    expect(listed.exit).toBe(0)
+    expect(listed.out).toContain('made')
+    await target.close()
+  })
+
+  // The other direction: a table narrower than the target's document
+  // lands with its own hides, denies and answers, under a target that
+  // states nothing at all (its `default` name resolves to the target
+  // default).
+  it("a table's own narrowing lands under a permissive target", async () => {
+    const source = profiled({ default: RESTRICTED })
+    expect((await source.execute('echo kept > /data/f.txt')).exitCode).toBe(0)
+    source.createSession('agent')
+    expect((await line(source, 'touch /data/made', 'agent')).exit).toBe(126)
+    const state = await toStateDict(source)
+    await source.close()
+    const target = buildWorkspace()
+    await applyStateDict(target, state)
+    for (const sid of ['agent', target.defaultSessionId]) {
+      expect(await line(target, 'echo tok=[$SLACK_TOKEN]', sid)).toEqual({
+        exit: 0,
+        out: 'tok=[]\n',
+        err: '',
+      })
+      expect((await line(target, 'rm /data/f.txt', sid)).exit).toBe(126)
+    }
+    expect((await target.execute('test -e /data/f.txt')).exitCode).toBe(0)
+    expect(target.decisions.pending('agent')).toHaveLength(1)
+    // Nothing the target document never said arrives as a program.
+    expect(target.getSession('agent').profile).toBeNull()
+    expect(target.getSession('agent').script).toBeNull()
+    await target.close()
+  })
+
+  // A name the target does not define is refused with the PolicyError an
+  // unknown profile gets everywhere, before a mount or a session has
+  // moved.
+  it('an unknown profile name refuses the load before it lands', async () => {
+    const source = profiled({ restricted: RESTRICTED }, { sessionId: 'src' })
+    expect((await source.execute('echo restored > /data/f.txt')).exitCode).toBe(0)
+    source.createSession('agent', { profile: 'restricted' })
+    const state = await toStateDict(source)
+    await source.close()
+    const target = profiled({}, { sessionId: 'tgt' })
+    expect((await target.execute('export KEEP=1')).exitCode).toBe(0)
+    await expect(applyStateDict(target, state)).rejects.toThrow(/unknown profile "restricted"/)
+    expect(target.env.KEEP).toBe('1')
+    expect(target.listSessions().map((s) => s.sessionId)).toEqual(['tgt'])
+    expect((await target.execute('test -e /data/f.txt')).exitCode).toBe(1)
+    // The gate created a candidate for the table and dropped it, so the
+    // id is free again.
+    expect(target.createSession('agent').sessionId).toBe('agent')
+    await target.close()
+    // The loader's own document has the same rule: one that omits the
+    // snapshot's default profile fails at construction.
+    await expect(
+      Workspace.fromState(
+        { ...state, profile: 'restricted' },
+        { ...loadOptions(), profiles: { default: parseSessionProfile({}) } },
+      ),
+    ).rejects.toThrow(/unknown profile "restricted"/)
+  })
+
+  // The loader's document outranks the snapshot's, the way the document
+  // outranks a stored record at hydration.
+  it("a loader-supplied document wins over the snapshot's", async () => {
+    const source = profiled({ restricted: RESTRICTED })
+    source.createSession('agent', { profile: 'restricted' })
+    const state = await toStateDict(source)
+    await source.close()
+    const target = await Workspace.fromState(state, {
+      ...loadOptions(),
+      profiles: { restricted: parseSessionProfile({ commands: { deny: ['touch'] } }) },
+    })
+    const restored = target.getSession('agent')
+    expect(restored.profile).toBe('restricted')
+    // The table's hides and rules still land (never wider), the loader's
+    // rule beside them.
+    expect(restored.hiddenVars).not.toBeNull()
+    expect((await line(target, 'touch /data/x', 'agent')).exit).toBe(126)
+    expect((await line(target, 'rm -f /data/x', 'agent')).exit).toBe(126)
+    expect(target.createSession('fresh', { profile: 'restricted' }).hiddenVars).toBeNull()
+    await target.close()
+  })
+
+  // Landing a workspace's own state on itself changes nothing, which a
+  // checkout that hands live tables back through the restore relies on.
+  it("re-applying a workspace's own state is a no-op", async () => {
+    const ws = profiled(
+      {
+        default: {
+          mounts: {
+            '/data': {
+              mode: 'rw',
+              paths: { hide: ['/data/sealed', '*.pem'], show: { '/data/sealed/public': 'r' } },
+              commands: { ask: ['git push'] },
+            },
+          },
+          vars: { hide: ['AWS_*'] },
+          commands: { allow: ['ls', 'cat', 'echo', 'git *', 'rm'], deny: ['rm'] },
+        },
+        restricted: RESTRICTED,
+      },
+      {},
+      MountMode.EXEC,
+    )
+    ws.createSession('agent', {
+      profile: 'restricted',
+      permissions: parseSessionProfile({ paths: { hide: ['/data/.env'] } }),
+    })
+    expect((await ws.execute('echo a > /data/a.txt')).exitCode).toBe(0)
+    expect((await line(ws, 'touch /data/b', 'agent')).exit).toBe(126)
+    const before = ws.listSessions().map((s) => s.toJSON())
+    const compiled = ws.sessionManager.defaultProfile
+    expect(compiled).not.toBeNull()
+    await applyStateDict(ws, await toStateDict(ws))
+    expect(ws.listSessions().map((s) => s.toJSON())).toEqual(before)
+    const dflt = ws.getSession(ws.defaultSessionId)
+    expect(dflt.commands).toBe(compiled?.commands)
+    expect(dflt.hiddenPaths).toBe(compiled?.hiddenPaths)
+    expect(dflt.shownPaths).toBe(compiled?.shownPaths)
+    expect(dflt.hiddenVars).toBe(compiled?.hiddenVars)
+    expect(dflt.hideReasons).toBe(compiled?.hideReasons)
+    await ws.close()
+  })
+
+  // The consistency knob is the workspace's; every mount used to record
+  // the mount() default and the loader restored LAZY regardless.
+  it('the consistency knob round-trips', async () => {
+    const source = profiled({}, { consistency: ConsistencyPolicy.ALWAYS })
+    const state = await toStateDict(source)
+    await source.close()
+    expect(state.consistency).toBe('always')
+    expect(state.mounts.every((m) => m.consistency === 'always')).toBe(true)
+    expect(buildMountArgs(state).consistency).toBe(ConsistencyPolicy.ALWAYS)
+    const target = await Workspace.fromState(state, loadOptions())
+    expect(target.registry.getConsistency()).toBe(ConsistencyPolicy.ALWAYS)
+    await target.close()
+    const { consistency: _dropped, ...older } = state
+    void _dropped
+    expect(buildMountArgs(older as typeof state).consistency).toBe(ConsistencyPolicy.LAZY)
+  })
+
+  // A coded policy is named, never carried: the loader registers it, and
+  // a name nothing answers to is reported rather than silently dropped.
+  it('a recorded policy class the target lacks is reported', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const source = profiled({}, { policies: [new DenyGate()] })
+      const state = await toStateDict(source)
+      await source.close()
+      expect(state.policies).toEqual(['DenyGate'])
+      const target = await Workspace.fromState(state, loadOptions())
+      await target.close()
+      expect(warn.mock.calls.some((c) => String(c[0]).includes('DenyGate'))).toBe(true)
+      warn.mockClear()
+      const supplied = await Workspace.fromState(state, {
+        ...loadOptions(),
+        policies: [new DenyGate()],
+      })
+      await supplied.close()
+      expect(warn.mock.calls.some((c) => String(c[0]).includes('policy class'))).toBe(false)
     } finally {
       warn.mockRestore()
     }

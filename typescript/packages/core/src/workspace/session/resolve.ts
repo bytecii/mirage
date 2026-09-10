@@ -14,10 +14,18 @@
 
 import { checkRules } from './validate.ts'
 import { PolicyError } from '../../policy/errors.ts'
+import { intersectPatterns } from '../../policy/match/pattern.ts'
 import type { CommandRule, AdmissionRules, HideReason, ProfileScript } from '../../policy/types.ts'
-import type { HiddenPaths, MountMode, ShowEntry, ShownPaths } from '../../types.ts'
+import type { HiddenPaths, HiddenVars, MountMode, ShowEntry, ShownPaths } from '../../types.ts'
 import { weakerMode } from '../../types.ts'
-import { classifyPaths, classifyShows, classifyVars } from '../../utils/hidden.ts'
+import {
+  anchorDepth,
+  classifyPaths,
+  classifyShows,
+  classifyVars,
+  hideDepth,
+  isGlob,
+} from '../../utils/hidden.ts'
 import { stripSlash } from '../../utils/slash.ts'
 import {
   type CommandsBlock,
@@ -436,4 +444,308 @@ export function applyProfile(session: Session, compiled: CompiledProfile): void 
   narrow(session, compiled)
   if (compiled.env != null) Object.assign(session.vars, varsFromEnv(compiled.env))
   if (compiled.cwd !== null) setCwd(session, compiled.cwd)
+}
+
+/** The entries in order, each spelling once. */
+function dedupe(entries: readonly string[]): string[] {
+  const out: string[] = []
+  for (const entry of entries) if (!out.includes(entry)) out.push(entry)
+  return out
+}
+
+function sameStrings(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, i) => value === b[i])
+}
+
+function sameModes(a: ReadonlyMap<string, MountMode>, b: ReadonlyMap<string, MountMode>): boolean {
+  if (a.size !== b.size) return false
+  for (const [prefix, mode] of a) if (b.get(prefix) !== mode) return false
+  return true
+}
+
+/**
+ * The weaker mode per prefix over both maps, prefixes normalized; the
+ * base map itself when the table narrows nothing.
+ */
+function mergeModes(
+  base: ReadonlyMap<string, MountMode> | null,
+  table: ReadonlyMap<string, MountMode> | null,
+): ReadonlyMap<string, MountMode> | null {
+  if (table === null) return base
+  const merged = new Map<string, MountMode>()
+  for (const [prefix, mode] of base ?? []) merged.set(rootOf(prefix), mode)
+  for (const [prefix, mode] of table) {
+    const root = rootOf(prefix)
+    const have = merged.get(root)
+    merged.set(root, have === undefined ? mode : weakerMode(have, mode))
+  }
+  return base !== null && sameModes(merged, base) ? base : merged
+}
+
+/**
+ * Both hide sets in one, the session's entries first; the session's own
+ * object when the table hides nothing new.
+ */
+function mergeHiddenPaths(base: HiddenPaths | null, table: HiddenPaths | null): HiddenPaths | null {
+  if (table === null) return base
+  if (base === null) return table
+  const merged = classifyPaths(
+    dedupe([
+      ...(base.paths ?? []),
+      ...(base.patterns ?? []),
+      ...(table.paths ?? []),
+      ...(table.patterns ?? []),
+    ]),
+  )
+  if (
+    merged !== null &&
+    sameStrings(merged.paths ?? [], base.paths ?? []) &&
+    sameStrings(merged.patterns ?? [], base.patterns ?? [])
+  ) {
+    return base
+  }
+  return merged
+}
+
+/**
+ * Both hidden-variable sets in one, the session's first; the session's
+ * own object when the table hides nothing new.
+ */
+function mergeHiddenVars(base: HiddenVars | null, table: HiddenVars | null): HiddenVars | null {
+  if (table === null) return base
+  if (base === null) return table
+  const merged = classifyVars(
+    dedupe([
+      ...(base.names ?? []),
+      ...(base.patterns ?? []),
+      ...(table.names ?? []),
+      ...(table.patterns ?? []),
+    ]),
+  )
+  if (
+    merged !== null &&
+    sameStrings(merged.names ?? [], base.names ?? []) &&
+    sameStrings(merged.patterns ?? [], base.patterns ?? [])
+  ) {
+    return base
+  }
+  return merged
+}
+
+function sameGroup(a: HideReason, b: HideReason): boolean {
+  return a.reason === b.reason && sameStrings(a.patterns, b.patterns)
+}
+
+/** The session's reason groups, then the table's it lacks. */
+function mergeGroups(
+  base: readonly HideReason[],
+  table: readonly HideReason[],
+): readonly HideReason[] {
+  const out = [...base]
+  for (const group of table) if (!out.some((have) => sameGroup(have, group))) out.push(group)
+  return out.length === base.length ? base : out
+}
+
+function sameRule(a: CommandRule, b: CommandRule): boolean {
+  return (
+    a.reason === b.reason &&
+    sameStrings(a.commands ?? [], b.commands ?? []) &&
+    sameStrings(a.paths ?? [], b.paths ?? []) &&
+    (a.mount ?? '') === (b.mount ?? '')
+  )
+}
+
+/** The session's rules, then the table's it lacks. */
+function appendRules(
+  base: readonly CommandRule[],
+  table: readonly CommandRule[],
+): readonly CommandRule[] {
+  const out = [...base]
+  for (const rule of table) if (!out.some((have) => sameRule(have, rule))) out.push(rule)
+  return out.length === base.length ? base : out
+}
+
+/**
+ * The allow list both sides grant. One side stating a list installs
+ * only what it lists, so that list stands when the other states none;
+ * two lists intersect pattern by pattern (`intersectPatterns`), which
+ * can only remove. The session's own list stands when the table spells
+ * the same set, so a table that adds nothing changes nothing.
+ */
+function mergeAllow(
+  base: readonly string[] | null,
+  table: readonly string[] | null,
+): readonly string[] | null {
+  if (table === null) return base
+  if (base === null) return table
+  const have = new Set(base)
+  const want = new Set(table)
+  if (have.size === want.size && [...have].every((pattern) => want.has(pattern))) return base
+  return intersectPatterns(base, table)
+}
+
+/**
+ * Both rule sets as one: ask and deny rules union, the allow list
+ * intersects; the session's own object when the table adds nothing.
+ */
+function mergeCommands(
+  base: AdmissionRules | null,
+  table: AdmissionRules | null,
+): AdmissionRules | null {
+  if (table === null) return base
+  if (base === null) return table
+  const allow = mergeAllow(base.allow, table.allow)
+  const ask = appendRules(base.ask, table.ask)
+  const deny = appendRules(base.deny, table.deny)
+  if (allow === base.allow && ask === base.ask && deny === base.deny) return base
+  return { allow, ask, deny }
+}
+
+/**
+ * The per-mount cap in force at a path: the mode of the longest prefix
+ * covering it, null when none does.
+ */
+function capOf(modes: ReadonlyMap<string, MountMode> | null, head: string): MountMode | null {
+  let best: [number, MountMode] | null = null
+  for (const [prefix, mode] of modes ?? []) {
+    const root = rootOf(prefix)
+    if (root === '/' || head === root || head.startsWith(`${root}/`)) {
+      const depth = anchorDepth(root)
+      if (best === null || depth > best[0]) best = [depth, mode]
+    }
+  }
+  return best === null ? null : best[1]
+}
+
+/**
+ * A show mode one side states, held under the other side's cap at that
+ * anchor: a show scores deeper than the cap and would otherwise lift
+ * what the other side capped.
+ */
+function capped(
+  mode: MountMode,
+  caps: ReadonlyMap<string, MountMode> | null,
+  head: string,
+): MountMode {
+  const cap = capOf(caps, head)
+  return cap === null ? mode : weakerMode(mode, cap)
+}
+
+/**
+ * One show entry as both sides allow it, or null to drop it.
+ *
+ * A show does two things, and each side has to have said it. It
+ * re-opens whatever the other side hides at its anchor, so an entry
+ * only one side states survives only where the merged hide set covers
+ * nothing (a pattern re-opens by name and is dropped outright). It
+ * states the mode below its anchor, and a show scores deeper than a
+ * per-mount cap, so a mode only one side states is held under the other
+ * side's cap there; two stated modes take the weaker; two list-form
+ * entries stay list-form, since the merged caps already hold the weaker
+ * mode below them. The entry itself is returned when nothing changed,
+ * so an identical table leaves the session's objects in place.
+ */
+function mergeShow(
+  mine: ShowEntry,
+  other: ShowEntry | null,
+  myCaps: ReadonlyMap<string, MountMode> | null,
+  otherCaps: ReadonlyMap<string, MountMode> | null,
+  hidden: HiddenPaths | null,
+): ShowEntry | null {
+  let mode: MountMode | null
+  if (other === null) {
+    if (isGlob(mine.path) || hideDepth(hidden, mine.path) !== null) return null
+    if (mine.mode === null) return mine
+    mode = capped(mine.mode, otherCaps, mine.path)
+  } else if (mine.mode === null && other.mode === null) {
+    return mine
+  } else if (mine.mode !== null && other.mode !== null) {
+    mode = weakerMode(mine.mode, other.mode)
+  } else if (mine.mode !== null) {
+    mode = capped(mine.mode, otherCaps, mine.path)
+  } else {
+    mode = other.mode === null ? null : capped(other.mode, myCaps, mine.path)
+  }
+  return mode === mine.mode ? mine : { path: mine.path, mode }
+}
+
+/**
+ * Both sides' show entries as both allow them (`mergeShow`), the
+ * session's first; the session's own object when nothing changed.
+ */
+function mergeShown(
+  base: ShownPaths | null,
+  table: ShownPaths | null,
+  baseCaps: ReadonlyMap<string, MountMode> | null,
+  tableCaps: ReadonlyMap<string, MountMode> | null,
+  hidden: HiddenPaths | null,
+): ShownPaths | null {
+  if (base === null && table === null) return null
+  const baseEntries = base?.entries ?? []
+  const tableEntries = table?.entries ?? []
+  const byTable = new Map(tableEntries.map((entry) => [entry.path, entry]))
+  const byBase = new Set(baseEntries.map((entry) => entry.path))
+  const out: ShowEntry[] = []
+  for (const entry of baseEntries) {
+    const merged = mergeShow(entry, byTable.get(entry.path) ?? null, baseCaps, tableCaps, hidden)
+    if (merged !== null) out.push(merged)
+  }
+  for (const entry of tableEntries) {
+    if (byBase.has(entry.path)) continue
+    const merged = mergeShow(entry, null, tableCaps, baseCaps, hidden)
+    if (merged !== null) out.push(merged)
+  }
+  if (
+    base !== null &&
+    out.length === base.entries.length &&
+    out.every((entry, i) => entry === base.entries[i])
+  ) {
+    return base
+  }
+  return classifyShows(out)
+}
+
+/**
+ * Land a stored session table on a session, never wider than either.
+ *
+ * The restore's counterpart of `narrow`. A snapshot carries a session's
+ * narrowing as it stood in the source deployment; the session it lands
+ * on already runs under the target's document (the profile of the same
+ * name, or the live session's on a checkout). One rule joins the two:
+ * restrictions union, grants intersect, the program is the target's.
+ * Caps take the weaker mode per prefix, hides and hidden variables
+ * union, hide reasons and ask and deny rules append what the session
+ * lacks, the allow list is what both grant, a show survives only as
+ * both sides allow it (`mergeShow`), and `script` and `profile` stay
+ * the session's, since a policy program is deployment code and the gate
+ * judged the table under the target's. Every field keeps the session's
+ * own object when the table adds nothing, so a table taken from the
+ * same document is the identity, and running this twice is running it
+ * once, which a checkout that lands live tables back on themselves
+ * relies on.
+ *
+ * Two consequences worth stating. On a running workspace a checkout can
+ * only add restrictions to a live session, never lift one: a hide from
+ * one version survives checking out another, and `setSessionProfile` is
+ * the host's reset. And a show only one side states is dropped where a
+ * hide covers its anchor, mode and all, so a mode it restricted there
+ * reverts to the target's allowance; the show grammar has no spelling
+ * for a mode without a re-open. Mirrors the Python `narrow_restored`.
+ */
+export function narrowRestored(session: Session, table: Session): void {
+  const modes = mergeModes(session.mountModes, table.mountModes)
+  const hidden = mergeHiddenPaths(session.hiddenPaths, table.hiddenPaths)
+  const shown = mergeShown(
+    session.shownPaths,
+    table.shownPaths,
+    session.mountModes,
+    table.mountModes,
+    hidden,
+  )
+  session.hiddenVars = mergeHiddenVars(session.hiddenVars, table.hiddenVars)
+  session.hideReasons = mergeGroups(session.hideReasons, table.hideReasons)
+  session.commands = mergeCommands(session.commands, table.commands)
+  session.mountModes = modes
+  session.hiddenPaths = hidden
+  session.shownPaths = shown
 }

@@ -24,7 +24,8 @@ from mirage import (NULL_INDEX, Accessor, CommandIO, FileStat, GenericResource,
                     IndexCacheStore, MountMode, PathSpec, Workspace,
                     stream_from_bytes)
 from mirage.cache.file.config import RedisCacheConfig
-from mirage.policy import Action, Deny, Policy, PolicyDenied
+from mirage.policy import Action, Deny, Policy, PolicyDenied, PolicyError
+from mirage.policy.profile import profile_from_dict
 from mirage.policy.types import SessionContext
 from mirage.resource import registry as resource_registry
 from mirage.resource.loader import SCRIPT_MODULE_NAME, load_backend_class
@@ -34,7 +35,7 @@ from mirage.resource.registry import build_resource, register_resource
 from mirage.secrets import registry
 from mirage.secrets.registry import register_secrets
 from mirage.secrets.types import ResolvedSecret
-from mirage.types import ContentType, FileType
+from mirage.types import ConsistencyPolicy, ContentType, FileType
 from mirage.workspace.snapshot.keys import (CacheKey, MountKey,
                                             ResourceStateKey, StateKey)
 from mirage.workspace.snapshot.state import (apply_state_dict,
@@ -457,6 +458,11 @@ async def test_a_refused_session_table_leaves_the_workspace_untouched():
         assert target.env.get("KEEP") == "1"
         assert [s.session_id for s in target.list_sessions()] == ["tgt"]
         assert (await target.execute("test -e /f.txt")).exit_code == 1
+        # The gate created a candidate for s2 and dropped it with its
+        # lock, so the id is free again.
+        with pytest.raises(KeyError):
+            target._session_mgr.lock_for("s2")
+        assert target.create_session("s2").session_id == "s2"
     finally:
         await target.close()
 
@@ -589,3 +595,329 @@ async def test_to_state_dict_carries_no_entries_for_a_redis_cache():
         assert state[StateKey.CACHE][CacheKey.ENTRIES] == []
     finally:
         await ws.close()
+
+
+RESTRICTED = {
+    "env": {
+        "SLACK_TOKEN": "xoxb-secret"
+    },
+    "vars": {
+        "hide": ["SLACK_TOKEN"]
+    },
+    "commands": {
+        "deny": ["rm"],
+        "ask": [{
+            "reason": "creates files",
+            "commands": ["touch"]
+        }],
+    },
+}
+
+
+# A session created under a named profile came back under the target's
+# default: the snapshot carried no document, so `Workspace.load` had
+# nothing to narrow it under, and the restore copied cwd, vars and modes
+# off the table and dropped the rest. The state now carries the document
+# and the restore lands the whole table under the profile of its name.
+@pytest.mark.asyncio
+async def test_a_session_under_a_named_profile_survives_from_state():
+    source = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       profiles={
+                           "default": {},
+                           "restricted": RESTRICTED
+                       })
+    try:
+        source.create_session("agent",
+                              profile="restricted",
+                              permissions={"commands": {
+                                  "deny": ["mv"]
+                              }})
+        asked = await source.execute("touch /made", session_id="agent")
+        assert asked.exit_code == 126
+        pending = source.decisions.pending("agent")
+        assert len(pending) == 1
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    assert state[StateKey.PROFILE] is None
+    assert (profile_from_dict(state[StateKey.PROFILES]["restricted"]) ==
+            profile_from_dict(RESTRICTED))
+    target = await Workspace.from_state(state)
+    try:
+        restored = target.get_session("agent")
+        assert restored.profile == "restricted"
+        assert restored.hidden_vars is not None
+        shown = await target.execute("echo tok=[$SLACK_TOKEN]",
+                                     session_id="agent")
+        assert (shown.exit_code, shown.stdout) == (0, b"tok=[]\n")
+        out = await target.execute("rm -f /x", session_id="agent")
+        assert out.exit_code == 126
+        assert out.stderr == b"rm: Permission denied\n"
+        moved = await target.execute("mv /a /b", session_id="agent")
+        assert moved.exit_code == 126
+        write = await target.execute("export SLACK_TOKEN=evil",
+                                     session_id="agent")
+        assert write.exit_code != 0
+        assert [d.id for d in target.decisions.pending("agent")
+                ] == [d.id for d in pending]
+        assert target.decisions.pending("agent")[0].rule == pending[0].rule
+    finally:
+        await target.close()
+
+
+# A restored table is a fact about the source session, never a grant: a
+# wider cap and a wider allow list than the target's document states
+# land as the target's, and what the table adds on top is kept.
+@pytest.mark.asyncio
+async def test_a_restored_table_never_widens_the_target_document():
+    source = Workspace({"/data": (RAMResource(), MountMode.WRITE)},
+                       mode=MountMode.WRITE,
+                       profiles={
+                           "default": {
+                               "commands": {
+                                   "allow": ["cat", "echo", "touch", "ls"]
+                               }
+                           }
+                       })
+    try:
+        source.create_session("agent", mounts={"/data": "write"})
+        assert (await source.execute("touch /data/made",
+                                     session_id="agent")).exit_code == 0
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    target = Workspace({"/data": (RAMResource(), MountMode.WRITE)},
+                       mode=MountMode.WRITE,
+                       profiles={
+                           "default": {
+                               "mounts": {
+                                   "/data": "r"
+                               },
+                               "commands": {
+                                   "allow": ["echo", "ls", "rm"],
+                                   "deny": ["rm"],
+                               },
+                           }
+                       })
+    try:
+        await apply_state_dict(target, state)
+        restored = target.get_session("agent")
+        assert restored.mount_modes == {"/data": MountMode.READ}
+        assert restored.commands is not None
+        assert set(restored.commands.allow or ()) == {"echo", "ls"}
+        assert (await target.execute("echo ok",
+                                     session_id="agent")).exit_code == 0
+        assert (await target.execute("touch /data/x",
+                                     session_id="agent")).exit_code == 127
+        assert (await target.execute("rm /data/made",
+                                     session_id="agent")).exit_code != 0
+        listed = await target.execute("ls /data", session_id="agent")
+        assert listed.exit_code == 0 and b"made" in listed.stdout
+    finally:
+        await target.close()
+
+
+# The other direction: a table narrower than the target's document lands
+# with its own hides, denies and answers, under a target that states
+# nothing at all (its `default` name resolves to the target default).
+@pytest.mark.asyncio
+async def test_a_tables_own_narrowing_lands_under_a_permissive_target():
+    source = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       profiles={"default": RESTRICTED})
+    try:
+        assert (await source.execute("echo kept > /f.txt")).exit_code == 0
+        source.create_session("agent")
+        asked = await source.execute("touch /made", session_id="agent")
+        assert asked.exit_code == 126
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    target = Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+    try:
+        await apply_state_dict(target, state)
+        for sid in ("agent", target.default_session_id):
+            shown = await target.execute("echo tok=[$SLACK_TOKEN]",
+                                         session_id=sid)
+            assert (shown.exit_code, shown.stdout) == (0, b"tok=[]\n")
+            assert (await target.execute("rm /f.txt",
+                                         session_id=sid)).exit_code == 126
+        assert (await target.execute("test -e /f.txt")).exit_code == 0
+        assert len(target.decisions.pending("agent")) == 1
+        # Nothing the target document never said arrives as a program.
+        assert target.get_session("agent").profile is None
+        assert target.get_session("agent").script is None
+    finally:
+        await target.close()
+
+
+# A name the target does not define is refused with the PolicyError an
+# unknown profile gets everywhere, before a mount or a session has moved.
+@pytest.mark.asyncio
+async def test_an_unknown_profile_name_refuses_the_load_before_it_lands():
+    source = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       session_id="src",
+                       profiles={"restricted": RESTRICTED})
+    try:
+        assert (await source.execute("echo restored > /f.txt")).exit_code == 0
+        source.create_session("agent", profile="restricted")
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    target = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       session_id="tgt")
+    try:
+        assert (await target.execute("export KEEP=1")).exit_code == 0
+        with pytest.raises(PolicyError, match="unknown profile 'restricted'"):
+            await apply_state_dict(target, state)
+        assert target.env.get("KEEP") == "1"
+        assert [s.session_id for s in target.list_sessions()] == ["tgt"]
+        assert (await target.execute("test -e /f.txt")).exit_code == 1
+    finally:
+        await target.close()
+    # The loader's own document has the same rule: one that omits the
+    # snapshot's default profile fails at construction.
+    state[StateKey.PROFILE] = "restricted"
+    with pytest.raises(PolicyError, match="unknown profile 'restricted'"):
+        await Workspace.from_state(state, profiles={"default": {}})
+
+
+# The loader's document outranks the snapshot's, the way the document
+# outranks a stored record at hydration.
+@pytest.mark.asyncio
+async def test_a_loader_supplied_document_wins_over_the_snapshots():
+    source = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       profiles={"restricted": RESTRICTED})
+    try:
+        source.create_session("agent", profile="restricted")
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    target = await Workspace.from_state(
+        state, profiles={"restricted": {
+            "commands": {
+                "deny": ["touch"]
+            }
+        }})
+    try:
+        restored = target.get_session("agent")
+        assert restored.profile == "restricted"
+        # The table's hides and rules still land (never wider), the
+        # loader's rule beside them.
+        assert restored.hidden_vars is not None
+        assert (await target.execute("touch /x",
+                                     session_id="agent")).exit_code == 126
+        assert (await target.execute("rm -f /x",
+                                     session_id="agent")).exit_code == 126
+        assert target.create_session("fresh",
+                                     profile="restricted").hidden_vars is None
+    finally:
+        await target.close()
+
+
+# Landing a workspace's own state on itself changes nothing, which a
+# checkout that hands live tables back through the restore relies on.
+@pytest.mark.asyncio
+async def test_re_applying_a_workspaces_own_state_is_a_no_op():
+    ws = Workspace({"/repo": (RAMResource(), MountMode.EXEC)},
+                   mode=MountMode.EXEC,
+                   profiles={
+                       "default": {
+                           "mounts": {
+                               "/repo": {
+                                   "mode": "rw",
+                                   "paths": {
+                                       "hide": ["/repo/sealed", "*.pem"],
+                                       "show": {
+                                           "/repo/sealed/public": "r"
+                                       },
+                                   },
+                                   "commands": {
+                                       "ask": ["git push"]
+                                   },
+                               }
+                           },
+                           "vars": {
+                               "hide": ["AWS_*"]
+                           },
+                           "commands": {
+                               "allow": ["ls", "cat", "echo", "git *", "rm"],
+                               "deny": ["rm"],
+                           },
+                       },
+                       "restricted": RESTRICTED,
+                   })
+    try:
+        ws.create_session("agent",
+                          profile="restricted",
+                          permissions={"paths": {
+                              "hide": ["/repo/.env"]
+                          }})
+        assert (await ws.execute("echo a > /repo/a.txt")).exit_code == 0
+        assert (await ws.execute("touch /repo/b",
+                                 session_id="agent")).exit_code == 126
+        before = {s.session_id: s.to_dict() for s in ws.list_sessions()}
+        compiled = ws._session_mgr.default_profile
+        assert compiled is not None
+        await apply_state_dict(ws, await to_state_dict(ws))
+        after = {s.session_id: s.to_dict() for s in ws.list_sessions()}
+        assert after == before
+        default = ws.get_session(ws.default_session_id)
+        assert default.commands is compiled.commands
+        assert default.hidden_paths is compiled.hidden_paths
+        assert default.shown_paths is compiled.shown_paths
+        assert default.hidden_vars is compiled.hidden_vars
+        assert default.hide_reasons is compiled.hide_reasons
+    finally:
+        await ws.close()
+
+
+# The consistency knob is the workspace's; every mount used to record the
+# mount() default and the loader restored LAZY regardless.
+@pytest.mark.asyncio
+async def test_the_consistency_knob_round_trips():
+    source = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       consistency=ConsistencyPolicy.ALWAYS)
+    try:
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    assert state[StateKey.CONSISTENCY] == "always"
+    assert all(m[MountKey.CONSISTENCY] == "always"
+               for m in state[StateKey.MOUNTS])
+    assert build_mount_args(state).consistency is ConsistencyPolicy.ALWAYS
+    target = await Workspace.from_state(state)
+    try:
+        assert target._consistency is ConsistencyPolicy.ALWAYS
+    finally:
+        await target.close()
+    del state[StateKey.CONSISTENCY]
+    assert build_mount_args(state).consistency is ConsistencyPolicy.LAZY
+
+
+# A coded policy is named, never carried: the loader registers it, and a
+# name nothing answers to is reported rather than silently dropped.
+@pytest.mark.asyncio
+async def test_a_recorded_policy_class_the_target_lacks_is_reported(caplog):
+    source = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       policies=[DenyGate()])
+    try:
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    assert state[StateKey.POLICIES] == ["DenyGate"]
+    with caplog.at_level(logging.WARNING):
+        target = await Workspace.from_state(state)
+        await target.close()
+    assert any("DenyGate" in r.getMessage() for r in caplog.records)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        target = await Workspace.from_state(state, policies=[DenyGate()])
+        await target.close()
+    assert not any("policy class" in r.getMessage() for r in caplog.records)
