@@ -339,8 +339,18 @@ async function sourceBytes(
     }
     return [null, `ln: ${typed}: hard link not allowed for directory\n`]
   }
-  const [data] = await dispatch('read', PathSpec.fromStrPath(resolved))
-  return [data instanceof Uint8Array ? data : await materialize(data as ByteSource), null]
+  // A source whose stat passes but whose read fails (a policy deny, a
+  // backend that answers stat but not read) is refused the way GNU
+  // refuses a source it cannot reach at all, so the remaining operands
+  // still link.
+  try {
+    const [data] = await dispatch('read', PathSpec.fromStrPath(resolved))
+    return [data instanceof Uint8Array ? data : await materialize(data as ByteSource), null]
+  } catch (err) {
+    const why = fsStrerror(err)
+    if (why === null) throw err
+    return [null, `ln: failed to access '${typed}': ${why}\n`]
+  }
 }
 
 // Make one link, appending GNU's line to `errors` or `out`. A symlink

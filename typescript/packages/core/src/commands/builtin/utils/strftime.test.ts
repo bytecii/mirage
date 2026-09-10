@@ -73,7 +73,22 @@ describe('strftime GNU directives', () => {
     ['%^#p|%#^p|%#p|%^p|%^#Z|%#Z|%#^Z|%^Z|%#d', 'am|am|am|AM|utc|utc|utc|UTC|01'],
     [
       '%:z|%::z|%:::z|%z|%_:z|%-:z|%5:z|%8:z|%_8:z|%_z|%-z|%6z|%_6z|%8::z|%5:::z',
-      '+00:00|+00:00:00|+00|+0000| +0:00|+0:00|+0:00|+0000:00|   +0:00| +000|+000|+00000|  +000|+0:00:00|+0000',
+      '+00:00|+00:00:00|+00|+0000| +0:00|+0:00|+0:00|+0000:00|   +0:00|   +0|+0|+00000|    +0|+0:00:00|+0000',
+    ],
+    // Without a colon the offset is one hhmm number, so `-` drops every
+    // leading zero and `_` spaces the whole field.
+    ['%0z|%+z|%-6z|%_8z|%08z|%3z|%-:::z', '+0000|+0000|+0|      +0|+0000000|+00|+0'],
+    // A width on a name pads with spaces, or zeros under `0` and `+`,
+    // and `-` drops it; `#` lowers %p and %Z and uppers a name.
+    [
+      '%-5a|%_5a|%05a|%^5a|%+5a|%#5a|%2a|%-5b|%-5h|%-5A|%-8p|%-5Z|%_5Z|%05Z|%5n|%-5n|%-3q',
+      'Thu|  Thu|00Thu|  THU|00Thu|  THU|Thu|Jan|Jan|Thursday|AM|UTC|  UTC|00UTC|    \n|\n|1',
+    ],
+    // `+` signs %y and %g as it signs %Y, %G and %C, which for a
+    // two-digit year means whenever the width leaves room.
+    [
+      '%+y|%+3y|%+5y|%+2y|%+1y|%+0y|%+3g|%+5g|%_3y|%-3y|%03y|%^+3y|%+^3y|%+3C|%+3Y|%+3G|%+5j|%+3d',
+      '26|+26|+0026|26|26|26|+26|+0026| 26|26|026|+26|+26|+20|2026|2026|00001|001',
     ],
     ['%:q|%:%z|%::', '%:q|%:+0000|%::'],
   ])('%s renders %s', (fmt, expected) => {
@@ -129,8 +144,12 @@ describe('strftime GNU directives', () => {
     const prior = process.env.TZ
     process.env.TZ = 'Asia/Kolkata'
     try {
-      expect(strftime(new Date(0), '%:z|%::z|%:::z|%_:z|%8:z|%-z', false)).toBe(
-        '+05:30|+05:30:00|+05:30| +5:30|+0005:30|+530',
+      expect(strftime(new Date(0), '%:z|%::z|%:::z|%_:z|%8:z|%-z|%_z|%3z|%08z', false)).toBe(
+        '+05:30|+05:30:00|+05:30| +5:30|+0005:30|+530| +530|+530|+0000530',
+      )
+      process.env.TZ = 'Etc/GMT-1'
+      expect(strftime(new Date(0), '%z|%-z|%_z|%6z|%_8z|%3z|%-:z|%_:::z', false)).toBe(
+        '+0100|+100| +100|+00100|    +100|+100|+1:00| +1',
       )
     } finally {
       if (prior === undefined) delete process.env.TZ

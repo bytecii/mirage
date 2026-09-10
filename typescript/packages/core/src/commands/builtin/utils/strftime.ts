@@ -212,17 +212,20 @@ export function strftime(dt: Date, fmt: string, utc: boolean): string {
 // and outranks `^`: it lowers %p and %Z, uppers the day and month names,
 // and changes nothing else (%^#B and %#^B are both JANUARY, %^#p and
 // %#^p both am). `+`
-// pads like `0`, and on %Y, %G and %C also leads with a sign when the
-// value outgrows the digits the directive normally shows or the width
-// leaves room for one (%+5Y is "+2026", %+4Y is "2026", %+6Y is
-// "+02026", %+3C is "+20"). A negative number pads after its sign
-// (%3s of -1 is "-01", %_3s is " -1"), and %z with its colon forms
-// %:z, %::z and %:::z pads the hours field with the width covering the
-// whole (%_:z is " +5:30", %8:z is "+0005:30"); a colon before any other
-// directive stays literal.
+// pads like `0`, and on the year directives %Y, %G, %C, %y and %g also
+// leads with a sign when the value outgrows the digits the directive
+// normally shows or the width leaves room for one (%+5Y is "+2026",
+// %+4Y is "2026", %+6Y is "+02026", %+3C is "+20", %+3y is "+26"). A
+// negative number pads after its sign (%3s of -1 is "-01", %_3s is
+// " -1"). %z with a colon (%:z, %::z, %:::z) pads the hours field with
+// the width covering the whole (%_:z is " +5:30", %8:z is "+0005:30"),
+// while plain %z is one hhmm number, so `-` and `_` reach its minutes
+// (%-z is "+530", and "+0" in UTC; %_z is " +530" and "   +0"); a colon
+// before any other directive stays literal.
 // The directives GNU's `+` flag signs, with the digits each shows
-// before the sign becomes necessary.
-const YEARISH_DIGITS: Record<string, number> = { Y: 4, G: 4, C: 2 }
+// before the sign becomes necessary; the two-digit years never outgrow
+// theirs, so only a width signs them.
+const YEARISH_DIGITS: Record<string, number> = { Y: 4, G: 4, C: 2, y: 2, g: 2 }
 
 // The numeric directives, with the digits each shows by default; a width
 // typed on one replaces that default rather than adding to it.
@@ -303,9 +306,12 @@ function zoneOffset(
   const sign = offsetMin < 0 ? '-' : '+'
   const hours = Math.floor(Math.abs(offsetMin) / 60)
   const minutes = Math.abs(offsetMin) % 60
+  if (colons === 0) {
+    const digits = width === null ? 4 : width - 1
+    return padSigned(sign, String(hours * 100 + minutes), winningPad(flags), digits)
+  }
   let tail: string
-  if (colons === 0) tail = pad2(minutes)
-  else if (colons === 1 || (colons === 3 && minutes !== 0)) tail = `:${pad2(minutes)}`
+  if (colons === 1 || (colons === 3 && minutes !== 0)) tail = `:${pad2(minutes)}`
   else if (colons === 2) tail = `:${pad2(minutes)}:00`
   else tail = ''
   const digits = width === null ? 2 : width - tail.length - 1

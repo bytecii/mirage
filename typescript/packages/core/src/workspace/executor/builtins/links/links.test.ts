@@ -31,6 +31,15 @@ class PinLinks implements Policy {
   }
 }
 
+class SealReads implements Policy {
+  preOps(ctx: OpsContext): Action | null {
+    if (ctx.op === 'read' && ctx.path.virtual.endsWith('.sealed')) {
+      return { kind: 'deny', reason: 'sealed' }
+    }
+    return null
+  }
+}
+
 async function makeWs(policies: Policy[] = []): Promise<Workspace> {
   const parser = await getTestParser()
   return new Workspace(
@@ -115,6 +124,25 @@ describe('ln -b on a directory', () => {
       expect(r.exitCode).toBe(0)
       expect(ws.namespace.readlink('/data/lk')).toBe('/data/a.txt')
       expect(ws.namespace.readlink('/data/lk~')).toBe('/data/d')
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
+describe('ln with a source it cannot read', () => {
+  it('names the source and links the rest', async () => {
+    // GNU names the source it cannot reach and links the rest, exit 1.
+    // mirage's hard link is a byte copy, so a read the stat did not
+    // foresee (a policy deny here) is that refusal, not an abort.
+    const ws = await makeWs([new SealReads()])
+    try {
+      await ws.execute('mkdir /data/d; printf a > /data/a.sealed; printf b > /data/b.txt')
+      const r = await ws.execute('ln /data/a.sealed /data/b.txt /data/d')
+      expect(r.exitCode).toBe(1)
+      expect(err(r)).toBe("ln: failed to access '/data/a.sealed': Permission denied\n")
+      const rest = await ws.execute('ls /data/d; cat /data/d/b.txt')
+      expect(DEC.decode(rest.stdout)).toBe('b.txt\nb')
     } finally {
       await ws.close()
     }

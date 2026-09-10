@@ -18,8 +18,9 @@ from datetime import datetime
 GNU_FLAG_CHARS = "-_0^#+"
 GNU_PAD_FLAGS = "-_0+"
 # The directives GNU's `+` flag signs, with the digits each shows before
-# the sign becomes necessary.
-YEARISH_DIGITS = {"Y": 4, "G": 4, "C": 2}
+# the sign becomes necessary; the two-digit years never outgrow theirs,
+# so only a width signs them (%+3y is +26).
+YEARISH_DIGITS = {"Y": 4, "G": 4, "C": 2, "y": 2, "g": 2}
 # The numeric directives, with the digits each shows by default; a width
 # typed on one replaces that default rather than adding to it.
 NUMERIC_DIGITS = {
@@ -49,6 +50,10 @@ SPACE_PADDED = "ekl"
 # The directives that stand for several parts (%F is %+4Y-%m-%d, %D is
 # %m/%d/%y, %T is %H:%M:%S), which GNU pads as a whole.
 COMPOSITES = "cDFrRTxX"
+# The directives that render text (names, AM/PM, the zone abbreviation)
+# or a blank, whose width GNU fills with spaces unless `0` or `+` says
+# zeros and whose `-` drops it; glibc pads them under `-` anyway.
+TEXTUAL = "aAbBhnpPtZ"
 
 
 def winning_pad(flags: str) -> str | None:
@@ -90,10 +95,13 @@ def zone_offset(dt: datetime, colons: int, flags: str,
                 width: int | None) -> str:
     """Render ``%z`` and its colon forms as GNU date does: ``%:z`` is
     ``+05:30``, ``%::z`` adds seconds, ``%:::z`` keeps only the parts
-    that are not zero (``+05``, ``+05:30``). The flags and width pad the
-    hours field with the width covering the whole (``%_:z`` is
-    ``" +5:30"``, ``%8:z`` is ``+0005:30``, ``%-z`` is ``+530``). A naive
-    moment is taken as local time, as ``%s`` takes it.
+    that are not zero (``+05``, ``+05:30``). Under a colon the flags and
+    width pad the hours field with the width covering the whole
+    (``%_:z`` is ``" +5:30"``, ``%8:z`` is ``+0005:30``, ``%-:z`` is
+    ``+5:30``); the plain form is one ``hhmm`` number, so ``-`` and
+    ``_`` reach its minutes too (``%-z`` is ``+530``, and ``+0`` in
+    UTC; ``%_z`` is ``" +530"`` and ``"   +0"``). A naive moment is
+    taken as local time, as ``%s`` takes it.
 
     Args:
         dt (datetime): the moment being rendered.
@@ -110,8 +118,10 @@ def zone_offset(dt: datetime, colons: int, flags: str,
     hours, rest = divmod(abs(total), 3600)
     minutes, seconds = divmod(rest, 60)
     if colons == 0:
-        tail = f"{minutes:02d}"
-    elif colons == 1 or (colons == 3 and minutes and not seconds):
+        digits = 4 if width is None else width - 1
+        return pad_signed(sign, str(hours * 100 + minutes), winning_pad(flags),
+                          digits)
+    if colons == 1 or (colons == 3 and minutes and not seconds):
         tail = f":{minutes:02d}"
     elif colons == 2 or seconds:
         tail = f":{minutes:02d}:{seconds:02d}"
@@ -214,27 +224,59 @@ def pad_composite(dt: datetime, directive: str, flags: str,
 
 
 def plus_year(dt: datetime, directive: str, width: int | None) -> str:
-    """Render ``%+Y``, ``%+G`` or ``%+C`` as GNU date does: zero-padded
-    to the width, and led by ``+`` when the value outgrows the digits
-    the directive normally shows or the width leaves room for a sign
-    (``%+5Y`` is ``+2026``, ``%+4Y`` is ``2026``, ``%+6Y`` is ``+02026``,
-    ``%+3C`` is ``+20``).
+    """Render ``%+Y``, ``%+G``, ``%+C``, ``%+y`` or ``%+g`` as GNU date
+    does: zero-padded to the width, and led by ``+`` when the value
+    outgrows the digits the directive normally shows or the width
+    leaves room for a sign (``%+5Y`` is ``+2026``, ``%+4Y`` is ``2026``,
+    ``%+6Y`` is ``+02026``, ``%+3C`` is ``+20``, ``%+3y`` is ``+26``,
+    ``%+5y`` is ``+0026``).
 
     Args:
         dt (datetime): the moment being rendered.
-        directive (str): ``Y``, ``G`` or ``C``.
+        directive (str): a key of YEARISH_DIGITS.
         width (int | None): the minimum field width, if typed.
     """
     if directive == "Y":
         value = dt.year
     elif directive == "G":
         value = dt.isocalendar()[0]
-    else:
+    elif directive == "C":
         value = dt.year // 100
+    elif directive == "y":
+        value = dt.year % 100
+    else:
+        value = dt.isocalendar()[0] % 100
     digits = YEARISH_DIGITS[directive]
     signed = value > 10**digits - 1 or (width is not None and width > digits)
     sign = "+" if signed else ""
     return sign + str(value).rjust((width or 0) - len(sign), "0")
+
+
+def pad_text(dt: datetime, directive: str, flags: str,
+             width: int | None) -> str:
+    """Render a textual directive (one of ``TEXTUAL``) under GNU's flags
+    and width: ``#`` lowers ``%p`` and ``%Z`` and uppers the day and
+    month names, outranking ``^``, which uppers anything; a width pads
+    on the left with spaces under a bare width or ``_`` and with zeros
+    under ``0`` or ``+`` (``%5a`` is ``"  Thu"``, ``%05a`` is ``00Thu``),
+    and ``-`` drops it (``%-5a`` is ``Thu``, where glibc pads anyway).
+
+    Args:
+        dt (datetime): the moment being rendered.
+        directive (str): one of ``TEXTUAL``.
+        flags (str): the flag characters typed between ``%`` and the
+            width.
+        width (int | None): the minimum field width, if typed.
+    """
+    text = dt.strftime("%" + directive)
+    if "#" in flags:
+        text = text.lower() if directive in "pZ" else text.upper()
+    elif "^" in flags:
+        text = text.upper()
+    pad = winning_pad(flags)
+    if width is None or pad == "-":
+        return text
+    return text.rjust(width, "0" if pad in ("0", "+") else " ")
 
 
 def gnu_strftime(dt: datetime, fmt: str) -> str:
@@ -250,23 +292,26 @@ def gnu_strftime(dt: datetime, fmt: str) -> str:
     zeros) and its flags change nothing, while a width on ``q`` pads on
     the left under the padding flags (``%_2q`` is ``" 3"``, ``%-2q`` is
     ``3``). GNU's ``+`` flag is expanded here too, since the C library
-    does not know it: on ``Y``, ``G`` and ``C`` it signs the value
-    (``plus_year``), and anywhere else it is ``0``, so ``%+5d`` reaches
-    strftime as ``%05d``; a ``+`` that a later padding flag outranks is
-    dropped. A composite directive (``%F``, ``%D``, ``%T``, ``%c`` and
-    friends) that carries any flag or width is padded here as a whole
-    (``pad_composite``), since the C libraries disagree with GNU and
-    with each other about it (``%12F`` is ``002026-09-03``, which glibc
-    space-pads and macOS mangles). ``%z`` and its colon forms ``%:z``,
+    does not know it: on the year directives ``Y``, ``G``, ``C``, ``y``
+    and ``g`` it signs the value (``plus_year``), and anywhere else it
+    is ``0``, so ``%+5d`` reaches strftime as ``%05d``; a ``+`` that a
+    later padding flag outranks is dropped. A composite directive
+    (``%F``, ``%D``, ``%T``, ``%c`` and friends) that carries any flag
+    or width is padded here as a whole (``pad_composite``), since the C
+    libraries disagree with GNU and with each other about it (``%12F``
+    is ``002026-09-03``, which glibc space-pads and macOS mangles).
+    ``%z`` and its colon forms ``%:z``,
     ``%::z`` and ``%:::z`` are rendered here too (``zone_offset``), as
     is ``%s`` (``epoch_seconds``), since neither C library pads a
     negative number or an offset the way GNU does. A colon before any
     other directive stays literal, as in GNU. A numeric directive that
     carries a width or a padding flag is rendered here as well
     (``pad_number``), because GNU's width replaces the default digits
-    where the C library's adds to them (``%1d`` is ``3``, not ``03``).
-    Every other directive passes to strftime with its prefix intact;
-    ``%%`` pairs are stepped over, keeping ``%%q`` literal.
+    where the C library's adds to them (``%1d`` is ``3``, not ``03``),
+    and so is a textual one (``pad_text``), because glibc pads a name
+    under ``-`` where GNU drops the width (``%-5a`` is ``Thu``). Every
+    other directive passes to strftime with its prefix intact; ``%%``
+    pairs are stepped over, keeping ``%%q`` literal.
 
     Args:
         dt (datetime): the moment being rendered.
@@ -314,6 +359,8 @@ def gnu_strftime(dt: datetime, fmt: str) -> str:
         elif directive in NUMERIC_DIGITS and (width is not None
                                               or pad is not None):
             out.append(pad_number(dt, directive, flags, width))
+        elif directive in TEXTUAL and (flags or width is not None):
+            out.append(pad_text(dt, directive, flags, width))
         elif "+" in flags:
             zero = "0" if pad == "+" else ""
             out.append("%" + flags.replace("+", zero) + fmt[j:k + 1])

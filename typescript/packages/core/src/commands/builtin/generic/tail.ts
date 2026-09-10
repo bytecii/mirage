@@ -358,7 +358,7 @@ export async function tailGeneric(
   texts: string[],
   opts: CommandOpts,
   stream: Stream,
-  stat: Stat | null = null,
+  stat: Stat,
   readRange: ReadRange | null = null,
 ): Promise<CommandFnResult> {
   const fl = new FlagView(opts.flags, specOf('tail'))
@@ -379,7 +379,7 @@ export async function tailGeneric(
   const counts = parseCounts(nRaw, cRaw)
   // GNU warns first, then tails as if --retry were not there.
   const retryWarning = following.retry && !following.follow ? RETRY_IGNORED : ''
-  if (paths.length > 0 && following.follow && stat !== null) {
+  if (paths.length > 0 && following.follow) {
     const showHeaders = (vFlag || paths.length > 1) && !qFlag
     const readable: PathSpec[] = []
     let err = ''

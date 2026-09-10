@@ -29,7 +29,7 @@ from mirage.context import path_allowed
 from mirage.io.stream import materialize
 from mirage.runtime.types import DispatchFn
 from mirage.types import FileStat, FileType, PathSpec, word_text
-from mirage.utils.errors import ReadOnlyError, fs_strerror
+from mirage.utils.errors import FS_ERRORS, ReadOnlyError, fs_strerror
 from mirage.utils.path import CycleError
 from mirage.workspace.executor.builtins.links.probe import (path_readdir,
                                                             path_stat)
@@ -373,6 +373,11 @@ async def _source_bytes(
 ) -> tuple[bytes | None, str | None]:
     """The bytes a hard link copies, or the refusal in ln's words.
 
+    A source whose stat passes but whose read fails (a policy deny, a
+    backend that answers stat but not read) is refused the way GNU
+    refuses a source it cannot reach at all, ``failed to access``, so
+    the remaining operands still link.
+
     Args:
         namespace (Namespace): the link table.
         dispatch (DispatchFn): op dispatcher.
@@ -396,9 +401,12 @@ async def _source_bytes(
             return None, (f"ln: failed to create hard link '{link_typed}' "
                           f"=> '{typed}': Operation not permitted\n")
         return None, f"ln: {typed}: hard link not allowed for directory\n"
-    data, _ = await dispatch("read", PathSpec.from_str_path(src_abs))
-    if not isinstance(data, bytes):
-        data = await materialize(data)
+    try:
+        data, _ = await dispatch("read", PathSpec.from_str_path(src_abs))
+        if not isinstance(data, bytes):
+            data = await materialize(data)
+    except FS_ERRORS as exc:
+        return None, f"ln: failed to access '{typed}': {fs_strerror(exc)}\n"
     return data, None
 
 

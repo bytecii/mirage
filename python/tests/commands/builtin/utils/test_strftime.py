@@ -23,6 +23,8 @@ ZONED = datetime(1970, 1, 1, tzinfo=timezone(timedelta(hours=5, minutes=30)))
 BEFORE_EPOCH = datetime.fromtimestamp(-1, timezone.utc)
 NARROW = datetime(2026, 1, 3, 5, 7, 9, tzinfo=timezone.utc)
 SEPTEMBER = datetime(2026, 9, 3, 5, 7, 9, tzinfo=timezone.utc)
+HALF_WEST = datetime(2026, 9, 3, tzinfo=timezone(timedelta(minutes=-30)))
+ONE_EAST = datetime(2026, 9, 3, tzinfo=timezone(timedelta(hours=1)))
 
 
 @pytest.mark.parametrize("fmt,expected", [
@@ -97,6 +99,111 @@ def test_zone_offsets_follow_date(fmt: str, expected: str):
     # width pad the hours with the width covering the whole field; a
     # colon before any other directive stays literal.
     assert gnu_strftime(ZONED, fmt) == expected
+
+
+@pytest.mark.parametrize("dt,fmt,expected", [
+    (SEPTEMBER, "%z", "+0000"),
+    (SEPTEMBER, "%-z", "+0"),
+    (SEPTEMBER, "%_z", "   +0"),
+    (SEPTEMBER, "%0z", "+0000"),
+    (SEPTEMBER, "%+z", "+0000"),
+    (SEPTEMBER, "%6z", "+00000"),
+    (SEPTEMBER, "%-6z", "+0"),
+    (SEPTEMBER, "%_6z", "    +0"),
+    (SEPTEMBER, "%_8z", "      +0"),
+    (SEPTEMBER, "%08z", "+0000000"),
+    (SEPTEMBER, "%3z", "+00"),
+    (SEPTEMBER, "%-:z", "+0:00"),
+    (SEPTEMBER, "%_:z", " +0:00"),
+    (SEPTEMBER, "%-:::z", "+0"),
+    (HALF_WEST, "%z", "-0030"),
+    (HALF_WEST, "%-z", "-30"),
+    (HALF_WEST, "%_z", "  -30"),
+    (HALF_WEST, "%6z", "-00030"),
+    (HALF_WEST, "%_6z", "   -30"),
+    (HALF_WEST, "%_8z", "     -30"),
+    (HALF_WEST, "%3z", "-30"),
+    (HALF_WEST, "%-:z", "-0:30"),
+    (HALF_WEST, "%_:::z", " -0:30"),
+    (ONE_EAST, "%-z", "+100"),
+    (ONE_EAST, "%_z", " +100"),
+    (ONE_EAST, "%6z", "+00100"),
+    (ONE_EAST, "%_8z", "    +100"),
+    (ONE_EAST, "%3z", "+100"),
+    (ONE_EAST, "%-:z", "+1:00"),
+    (ONE_EAST, "%_:::z", " +1"),
+    (ZONED, "%3z", "+530"),
+    (ZONED, "%08z", "+0000530"),
+])
+def test_plain_offset_pads_as_one_number(dt: datetime, fmt: str,
+                                         expected: str):
+    # Pinned against date 9.7: without a colon the offset is one hhmm
+    # number, so `-` drops every leading zero (+0 in UTC, -30 for half
+    # an hour west) and `_` spaces the whole field; the colon forms keep
+    # padding the hours alone.
+    assert gnu_strftime(dt, fmt) == expected
+
+
+@pytest.mark.parametrize("fmt,expected", [
+    ("%-5a", "Thu"),
+    ("%_5a", "  Thu"),
+    ("%05a", "00Thu"),
+    ("%^5a", "  THU"),
+    ("%+5a", "00Thu"),
+    ("%#5a", "  THU"),
+    ("%5a", "  Thu"),
+    ("%2a", "Thu"),
+    ("%-2a", "Thu"),
+    ("%-5b", "Sep"),
+    ("%-5h", "Sep"),
+    ("%-5A", "Thursday"),
+    ("%-8p", "AM"),
+    ("%#p", "am"),
+    ("%^#p", "am"),
+    ("%^p", "AM"),
+    ("%-5Z", "UTC"),
+    ("%_5Z", "  UTC"),
+    ("%05Z", "00UTC"),
+    ("%#Z", "utc"),
+    ("%#^Z", "utc"),
+    ("%5n", "    \n"),
+    ("%-5n", "\n"),
+    ("%-3q", "3"),
+])
+def test_flags_reach_a_textual_directive(fmt: str, expected: str):
+    # Pinned against date 9.7: a width on a name pads with spaces, or
+    # zeros under `0` and `+`, and `-` drops it, where glibc pads
+    # anyway; `#` lowers %p and %Z and uppers a name, outranking `^`.
+    assert gnu_strftime(SEPTEMBER, fmt) == expected
+
+
+@pytest.mark.parametrize("fmt,expected", [
+    ("%+y", "26"),
+    ("%+3y", "+26"),
+    ("%+5y", "+0026"),
+    ("%+2y", "26"),
+    ("%+1y", "26"),
+    ("%+0y", "26"),
+    ("%+3g", "+26"),
+    ("%+5g", "+0026"),
+    ("%_3y", " 26"),
+    ("%-3y", "26"),
+    ("%03y", "026"),
+    ("%^+3y", "+26"),
+    ("%+^3y", "+26"),
+    ("%+3C", "+20"),
+    ("%+3Y", "2026"),
+    ("%+3G", "2026"),
+    ("%+5j", "00246"),
+    ("%+3d", "003"),
+])
+def test_plus_signs_a_two_digit_year(fmt: str, expected: str):
+    # Pinned against date 9.7: `+` signs %y and %g as it signs %Y, %G
+    # and %C, which for a two-digit year means whenever the width
+    # leaves room; on any other number it is `0`.
+    assert gnu_strftime(SEPTEMBER, fmt) == expected
+    assert gnu_strftime(datetime(2006, 3, 1, tzinfo=timezone.utc),
+                        "%+3y|%-3y|%_3y") == "+06|6|  6"
 
 
 @pytest.mark.parametrize("fmt,expected", [

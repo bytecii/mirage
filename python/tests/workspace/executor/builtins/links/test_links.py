@@ -121,6 +121,32 @@ async def test_ln_backup_refuses_a_directory_destination():
     assert ws.namespace.readlink("/data/lk~") == "/data/d"
 
 
+class SealReads(Policy):
+
+    async def pre_ops(self, ctx: OpsContext) -> Action | None:
+        if ctx.op == "read" and ctx.path.virtual.endswith(".sealed"):
+            return Deny("sealed")
+        return None
+
+
+@pytest.mark.asyncio
+async def test_ln_keeps_going_after_a_source_it_cannot_read():
+    # GNU names the source it cannot reach and links the rest, exit 1.
+    # mirage's hard link is a byte copy, so a read the stat did not
+    # foresee (a policy deny here) is that refusal, not an abort.
+    ws = Workspace({"/data": (RAMResource(), MountMode.WRITE)},
+                   mode=MountMode.WRITE,
+                   policies=[SealReads()])
+    await ws.execute("mkdir /data/d; printf a > /data/a.sealed; "
+                     "printf b > /data/b.txt")
+    r = await ws.execute("ln /data/a.sealed /data/b.txt /data/d")
+    assert r.exit_code == 1
+    assert r.stderr == (b"ln: failed to access '/data/a.sealed': "
+                        b"Permission denied\n")
+    assert (await
+            ws.execute("ls /data/d; cat /data/d/b.txt")).stdout == b"b.txt\nb"
+
+
 @pytest.mark.asyncio
 async def test_rm_of_a_link_goes_through_the_door():
     # The strip used to write the node table directly, so a pre_ops

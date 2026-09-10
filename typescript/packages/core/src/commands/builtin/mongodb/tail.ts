@@ -90,8 +90,12 @@ async function tailCommand(
   const nRaw = fl.asStr('n') ?? null
   const [lines, plusMode] = parseN(nRaw)
   const pushdown = fl.asStr('c') === undefined && !plusMode && lines > 0
-  return tailGeneric(resolved, texts, opts, (p) =>
-    tailSource(accessor, p, opts.index ?? undefined, lines, pushdown),
+  return tailGeneric(
+    resolved,
+    texts,
+    opts,
+    (p) => tailSource(accessor, p, opts.index ?? undefined, lines, pushdown),
+    (p) => MONGODB_IO.stat(accessor, p, opts.index ?? undefined),
   )
 }
 
