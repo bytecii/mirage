@@ -937,4 +937,3 @@ async def test_runtime_entries_reads_the_world_it_was_built_with():
         assert [r.name for r in ws.runtime_entries] == [*before, added.name]
     finally:
         await ws.close()
-

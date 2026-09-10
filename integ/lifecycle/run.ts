@@ -180,9 +180,6 @@ async function action(
     case 'close_session':
       await ws.closeSession(step.id)
       break
-    case 'close_session':
-      await ws.closeSession(step.id)
-      break
     case 'set_profile':
       await ws.setSessionProfile(
         step.session ?? ws.defaultSessionId,

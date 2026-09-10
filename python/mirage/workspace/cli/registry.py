@@ -48,11 +48,12 @@ class CLIRegistry:
     def __init__(self) -> None:
         self._installs: dict[str, CLIInstall] = {}
 
-    def install(self,
-                name: str,
-                spec: CLISpec,
-                config: BaseModel | dict[str, JsonValue]
-                | None = None) -> CLIInstall:
+    def install(
+            self,
+            name: str,
+            spec: CLISpec,
+            config: BaseModel | dict[str, JsonValue]
+        | None = None) -> CLIInstall:
         """Install a CLI under a head word.
 
         Args:
