@@ -21,7 +21,7 @@ describe('RedisIndexCacheStore default keyPrefix', () => {
   it('namespaces keys under mirage:index: by default', () => {
     const store = new RedisIndexCacheStore()
     const prefix = (store as unknown as { entryPrefix: string }).entryPrefix
-    expect(prefix).toBe('mirage:index:mirage:idx:entry:v2:')
+    expect(prefix).toBe('mirage:index:mirage:idx:entry:v3:')
   })
 })
 
@@ -317,7 +317,7 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
         for (const path of paths) {
           await store.setDir(path, [])
           originals.set(path, await client.get(`${globalKey}:${path}`))
-          const payload = await client.get(`${prefix}mirage:idx:directory:v2:${path}`)
+          const payload = await client.get(`${prefix}mirage:idx:directory:v3:${path}`)
           expect(payload).not.toBeNull()
           const foreignKey = `${prefix}future-index-format:${path}`
           foreignKeys.push(foreignKey)
@@ -353,17 +353,17 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
     },
   )
 
-  for (const writerFormat of ['v2', 'v3'] as const) {
+  for (const writerFormat of ['v3', 'v4'] as const) {
     it.each(['invalidate', 'invalidateDir', 'invalidatePrefix', 'clear'] as const)(
       `${writerFormat} %s invalidates a peer using another payload format`,
       async (method) => {
         const peer = new RedisIndexCacheStore({ client: await redis(), keyPrefix: prefix })
         Object.defineProperties(peer, {
-          entryPrefix: { value: `${prefix}mirage:idx:entry:v3:` },
-          childrenPrefix: { value: `${prefix}mirage:idx:directory:v3:` },
+          entryPrefix: { value: `${prefix}mirage:idx:entry:v4:` },
+          childrenPrefix: { value: `${prefix}mirage:idx:directory:v4:` },
         })
-        const writer = writerFormat === 'v2' ? store : peer
-        const reader = writerFormat === 'v2' ? peer : store
+        const writer = writerFormat === 'v3' ? store : peer
+        const reader = writerFormat === 'v3' ? peer : store
         const paths = ['/repo', '/repo/sub', '/repository']
         try {
           for (const cache of [store, peer]) {
@@ -489,6 +489,35 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
     )
   }
 
+  // The TypeScript releases before v3 wrote camelCase entry rows under v2
+  // and Python wrote snake_case ones; a v3 worker opens neither (#1020). It
+  // starts cold, refills under v3, and leaves the v2 rows in place for the
+  // operator to delete, as it does with the unversioned format above.
+  it('keeps the v2 rows the previous release wrote cold and in place', async () => {
+    const client = await redis()
+    const key = '/folder/f.txt'
+    const entryKey = `${prefix}mirage:idx:entry:v2:${key}`
+    const directoryKey = `${prefix}mirage:idx:directory:v2:/folder`
+    const camel =
+      '{"id":"old","name":"f.txt","resourceType":"file","remoteTime":"","indexTime":"","vfsName":"","size":null,"extra":{}}'
+    const listing = JSON.stringify({ entries: [key], expires_at: 4102444800, generation: 'g:d' })
+    const warm = vi.fn(() => store.setDir('/folder', [['f.txt', entry('new', 'f.txt')]]))
+    try {
+      await client.set(entryKey, camel)
+      await client.set(directoryKey, listing)
+      expect((await store.listDir('/folder')).status).toBe(LookupStatus.NOT_FOUND)
+      expect((await store.get(key)).status).toBe(LookupStatus.NOT_FOUND)
+      expect(await store.entries()).toEqual(new Map())
+      expect((await entryOrWarm(store, key, warm))?.id).toBe('new')
+      expect(warm).toHaveBeenCalledTimes(1)
+      await store.clear()
+      expect(await client.get(entryKey)).toBe(camel)
+      expect(await client.get(directoryKey)).toBe(listing)
+    } finally {
+      await client.del([entryKey, directoryKey])
+    }
+  })
+
   // The one wire format: what pydantic writes for the Python IndexEntry,
   // snake_case and every field. `test_redis.py` pins the same literal, so an
   // entry either language writes is one the other reads (#1020).
@@ -505,7 +534,7 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
       }),
     )
     const c = await redis()
-    expect(await c.get(`${prefix}mirage:idx:entry:v2:/a.txt`)).toBe(
+    expect(await c.get(`${prefix}mirage:idx:entry:v3:/a.txt`)).toBe(
       '{"id":"/a.txt","name":"a.txt","resource_type":"file","remote_time":"2026-01-01T00:00:00Z","index_time":"2026-01-01T00:00:00Z","vfs_name":"","size":6,"extra":{}}',
     )
   })
@@ -513,7 +542,7 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
   it('reads the entry JSON Python writes', async () => {
     const c = await redis()
     await c.set(
-      `${prefix}mirage:idx:entry:v2:/b.txt`,
+      `${prefix}mirage:idx:entry:v3:/b.txt`,
       '{"id":"/b.txt","name":"b.txt","resource_type":"file","remote_time":"","index_time":"2026-01-01T00:00:00Z","vfs_name":"","size":null,"extra":{"size_bytes":9}}',
     )
     const r = await store.get('/b.txt')
@@ -722,7 +751,7 @@ describe('deferred Redis seeds', () => {
     expect((await store.listDir('/')).entries).toEqual([])
     expect(value.mGet).toHaveBeenCalledTimes(1)
     expect(value.mGet).toHaveBeenCalledWith([
-      'mirage:index:mirage:idx:directory:v2:/',
+      'mirage:index:mirage:idx:directory:v3:/',
       'mirage:index:mirage:idx:children:!generation',
       'mirage:index:mirage:idx:children:!generation:/',
     ])

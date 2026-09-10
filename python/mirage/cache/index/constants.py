@@ -13,8 +13,11 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 # Entries and listings must go cold together when the cache format changes.
-ENTRY_PREFIX = "mirage:idx:entry:v2:"
-CHILDREN_PREFIX = "mirage:idx:directory:v2:"
+# v3: the entry payload is the one snake_case document both languages write;
+# the TypeScript releases before it wrote camelCase under v2, and a v3 reader
+# never opens a v2 row, so no worker has to decode two formats.
+ENTRY_PREFIX = "mirage:idx:entry:v3:"
+CHILDREN_PREFIX = "mirage:idx:directory:v3:"
 
 # Invalidation tokens are shared across payload formats. Keep this key stable.
 GENERATION_KEY = "mirage:idx:children:!generation"

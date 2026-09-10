@@ -67,8 +67,8 @@ class RedisIndexCacheStore(IndexCacheStore):
     Multiple stores can share one Redis server by using distinct key_prefix
     values (e.g. "gdrive:", "s3:"). The full key layout is::
 
-        {key_prefix}mirage:idx:entry:v2:{resource_path} -> JSON string
-        {key_prefix}mirage:idx:directory:v2:{resource_path} -> JSON listing
+        {key_prefix}mirage:idx:entry:v3:{resource_path} -> JSON string
+        {key_prefix}mirage:idx:directory:v3:{resource_path} -> JSON listing
 
     Args:
         ttl (float): Default time-to-live in seconds for directory listings.

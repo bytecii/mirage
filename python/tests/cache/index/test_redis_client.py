@@ -37,7 +37,7 @@ def client():
     value = MagicMock()
     value.scan = AsyncMock(return_value=(
         0,
-        [b"test:mirage:idx:entry:v2:/folder/a.txt"],
+        [b"test:mirage:idx:entry:v3:/folder/a.txt"],
     ))
     value.mget = AsyncMock(return_value=[
         b'{"entries":["/folder/a.txt"],"expires_at":4102444800,"generation":"g:d"}',
@@ -59,7 +59,7 @@ async def test_list_dir_decodes_injected_client_values(client):
     result = await store.list_dir("/folder")
     assert result.entries == ["/folder/a.txt"]
     client.mget.assert_awaited_once_with(
-        "mirage:idx:directory:v2:/folder", "mirage:idx:children:!generation",
+        "mirage:idx:directory:v3:/folder", "mirage:idx:children:!generation",
         "mirage:idx:children:!generation:/folder")
 
 
@@ -72,8 +72,8 @@ async def test_invalidate_dir_decodes_child_paths(client):
     await store.invalidate_dir("/folder")
     pipe = client.pipeline.return_value
     assert pipe.delete.call_args_list == [
-        call("mirage:idx:entry:v2:/folder/a.txt"),
-        call("mirage:idx:directory:v2:/folder"),
+        call("mirage:idx:entry:v3:/folder/a.txt"),
+        call("mirage:idx:directory:v3:/folder"),
         call("mirage:idx:children:!generation:/folder"),
     ]
 
@@ -276,9 +276,9 @@ async def test_invalidation_signals_cross_payload_versions(
     ]
     # A future payload format still uses the same invalidation protocol.
     monkeypatch.setattr(stores[1], "_entry_prefix",
-                        f"{prefix}mirage:idx:entry:v3:")
+                        f"{prefix}mirage:idx:entry:v4:")
     monkeypatch.setattr(stores[1], "_children_prefix",
-                        f"{prefix}mirage:idx:directory:v3:")
+                        f"{prefix}mirage:idx:directory:v4:")
     writer, reader = stores[writer_version], stores[1 - writer_version]
     row = IndexEntry(id="old", name="a.txt", resource_type="file")
     deadline = datetime.now(timezone.utc) + timedelta(days=365)
@@ -320,7 +320,7 @@ async def test_evicted_directory_token_cannot_revive_other_format(
     store = RedisIndexCacheStore(client=client, key_prefix=prefix)
     try:
         await store.set_dir("/repo", [])
-        payload_key = f"{prefix}mirage:idx:directory:v2:/repo"
+        payload_key = f"{prefix}mirage:idx:directory:v3:/repo"
         original = await client.get(payload_key)
         await client.delete(f"{prefix}mirage:idx:children:!generation:/repo")
         assert (await store.list_dir("/repo")).status == LookupStatus.EXPIRED
@@ -590,6 +590,46 @@ async def test_previous_format_entries_and_listings_are_cold_before_warming(
         assert set(await
                    store.entries()) == {f"/folder/{name}"
                                         for name, _ in rows}
+    finally:
+        await store.close()
+        await client.aclose()
+
+
+# The TypeScript releases before v3 wrote camelCase entry rows under v2 and
+# Python wrote snake_case ones; a v3 worker opens neither (#1020). It starts
+# cold, refills under v3, and leaves the v2 rows in place for the operator to
+# delete, as it does with the unversioned format above.
+@pytest.mark.asyncio
+async def test_v2_rows_are_cold_and_left_in_place():
+    client = FakeRedis(decode_responses=True)
+    store = RedisIndexCacheStore(client=client, key_prefix="upgrade:")
+    key = "/folder/f.txt"
+    entry_key = f"upgrade:mirage:idx:entry:v2:{key}"
+    directory_key = "upgrade:mirage:idx:directory:v2:/folder"
+    camel = ('{"id":"old","name":"f.txt","resourceType":"file",'
+             '"remoteTime":"","indexTime":"","vfsName":"","size":null,'
+             '"extra":{}}')
+    listing = ('{"entries":["/folder/f.txt"],"expires_at":4102444800,'
+               '"generation":"g:d"}')
+    fresh = IndexEntry(id="new", name="f.txt", resource_type="file")
+
+    async def refresh():
+        await store.set_dir("/folder", [("f.txt", fresh)])
+
+    warm = AsyncMock(side_effect=refresh)
+    try:
+        await client.set(entry_key, camel)
+        await client.set(directory_key, listing)
+        assert (await
+                store.list_dir("/folder")).status == LookupStatus.NOT_FOUND
+        assert (await store.get(key)).status == LookupStatus.NOT_FOUND
+        assert await store.entries() == {}
+        result = await entry_or_warm(store, key, warm)
+        assert result is not None and result.id == "new"
+        warm.assert_awaited_once()
+        await store.clear()
+        assert await client.get(entry_key) == camel
+        assert await client.get(directory_key) == listing
     finally:
         await store.close()
         await client.aclose()
