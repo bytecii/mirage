@@ -19,12 +19,14 @@ from datetime import datetime, timezone
 def to_iso_z(dt: datetime) -> str:
     """Render a datetime as UTC ISO-8601 with a ``Z`` suffix.
 
-    The fraction is omitted when it is zero and rendered as exactly
-    three digits (milliseconds) otherwise. That is the one policy both
-    languages can express byte for byte: JavaScript's ``Date`` carries
-    milliseconds and never more, and ``isoformat()`` would otherwise
-    render six digits for the same instant. The TypeScript twin is
-    ``toIsoZ`` (``utils/dates.ts``).
+    The fraction is rendered as exactly three digits (milliseconds)
+    when the instant has any, and omitted otherwise; digits below a
+    millisecond are dropped before that decision, so an instant 500
+    microseconds past the second renders with no fraction rather than
+    as ``.000``. That is the one policy both languages can express byte
+    for byte: JavaScript's ``Date`` carries milliseconds and never
+    more, and ``isoformat()`` would otherwise render six digits for the
+    same instant. The TypeScript twin is ``toIsoZ`` (``utils/dates.ts``).
 
     Args:
         dt (datetime): the instant; a naive value is taken as UTC.
@@ -32,7 +34,7 @@ def to_iso_z(dt: datetime) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     dt = dt.astimezone(timezone.utc)
-    spec = "milliseconds" if dt.microsecond else "seconds"
+    spec = "milliseconds" if dt.microsecond // 1000 else "seconds"
     return dt.isoformat(timespec=spec).replace("+00:00", "Z")
 
 

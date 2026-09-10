@@ -81,3 +81,11 @@ def test_to_iso_z_omits_a_zero_fraction():
 # shift a GridFS uploadDate by the host's offset.
 def test_to_iso_z_reads_a_naive_value_as_utc():
     assert to_iso_z(datetime(2026, 1, 2, 3, 4, 5)) == "2026-01-02T03:04:05Z"
+
+
+# A JavaScript Date has no digits below a millisecond, so neither may the
+# rendering: 500us is "no fraction", not ".000".
+def test_to_iso_z_drops_a_sub_millisecond_fraction():
+    at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert to_iso_z(at.replace(microsecond=500)) == "2026-01-01T00:00:00Z"
+    assert to_iso_z(at.replace(microsecond=1500)) == "2026-01-01T00:00:00.001Z"
