@@ -25,7 +25,7 @@ import { readdir } from './readdir.ts'
 import { detectScope } from './scope.ts'
 
 export async function readDoc(tm: TokenManager, docId: string): Promise<Uint8Array> {
-  const url = `${docsBase(tm)}/documents/${docId}`
+  const url = `${docsBase(tm)}/documents/${docId}?includeTabsContent=true`
   const data = await googleGet(tm, url)
   return compactJsonBytes(data)
 }

@@ -27,7 +27,9 @@ from mirage.utils.errors import enoent
 
 async def read_doc(token_manager: TokenManager, doc_id: str) -> bytes:
     url = f"{docs_base(token_manager)}/documents/{doc_id}"
-    data = await google_get(token_manager, url)
+    data = await google_get(
+        token_manager, url, params={"includeTabsContent": "true"}
+    )
     return compact_json_bytes(data)
 
 
