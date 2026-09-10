@@ -53,6 +53,22 @@ function buildWorkspace(): Workspace {
 const dec = (b: Uint8Array | null): string => (b === null ? '' : new TextDecoder().decode(b))
 
 describe('symlinks (namespace-backed)', () => {
+  it.each([
+    ['stat -c %F', '/data/virtual'],
+    ['stat -c %F', '/data/virtual/deep'],
+    ['stat -L -c %F', '/data/virtual'],
+    ['stat -L -c %F', '/data/virtual/deep'],
+    ['file -b', '/data/virtual'],
+    ['file -b', '/data/virtual/deep'],
+  ])('%s reports link-only namespace directory %s', async (command, path) => {
+    const ws = buildWorkspace()
+    await ws.namespace.symlink('/data/virtual/deep/link', '/data/target', 0)
+    const result = await ws.execute(`${command} ${path}`)
+    expect(result.exitCode).toBe(0)
+    expect(dec(result.stdout)).toBe('directory\n')
+    await ws.close()
+  })
+
   it('ln -s then readlink returns the target verbatim', async () => {
     const ws = buildWorkspace()
     await ws.execute('echo hi > /data/a.txt')

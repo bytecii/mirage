@@ -29,6 +29,18 @@ def _ws():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["stat -c %F", "stat -L -c %F", "file -b"])
+@pytest.mark.parametrize("path", ["/data/virtual", "/data/virtual/deep"])
+async def test_report_link_only_namespace_directory(command, path):
+    ws = _ws()
+    await ws.namespace.symlink("/data/virtual/deep/link", "/data/target", 0)
+    result = await ws.execute(f"{command} {path}")
+    assert result.exit_code == 0
+    assert result.stdout.decode() == "directory\n"
+    await ws.close()
+
+
+@pytest.mark.asyncio
 async def test_ln_readlink_verbatim():
     ws = _ws()
     await ws.execute("echo hi > /data/a.txt")

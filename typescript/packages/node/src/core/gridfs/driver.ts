@@ -129,7 +129,12 @@ async function* listChildren(conn: GridFSAccessor, pfx: string): AsyncIterable<C
     const relative = fname.slice(pfx.length)
     const slash = relative.indexOf('/')
     if (slash === -1) {
-      yield { key: fname, kind: 'f', size: doc.length, modified: doc.uploadDate.toISOString() }
+      yield {
+        key: fname,
+        kind: 'f',
+        size: doc.length,
+        modified: doc.uploadDate.toISOString(),
+      }
     } else {
       // A deeper filename or a "seg/" directory marker both imply an
       // immediate child directory (S3 CommonPrefixes equivalent).
@@ -140,13 +145,13 @@ async function* listChildren(conn: GridFSAccessor, pfx: string): AsyncIterable<C
 
 async function* listTree(conn: GridFSAccessor, pfx: string): AsyncIterable<TreeEntry> {
   for await (const doc of iterLatest(conn, prefixQuery(pfx))) {
-    yield { key: doc.filename, size: doc.length }
+    yield { key: doc.filename, size: doc.length, modified: doc.uploadDate.toISOString() }
   }
 }
 
 async function* listSubtree(conn: GridFSAccessor, stem: string): AsyncIterable<TreeEntry> {
   for await (const doc of iterLatest(conn, subtreeQuery(stem))) {
-    yield { key: doc.filename, size: doc.length }
+    yield { key: doc.filename, size: doc.length, modified: doc.uploadDate.toISOString() }
   }
 }
 
@@ -155,7 +160,7 @@ async function* iterQuery(
   query: Record<string, unknown>,
 ): AsyncIterable<TreeEntry> {
   for await (const doc of iterLatest(conn, query)) {
-    yield { key: doc.filename, size: doc.length }
+    yield { key: doc.filename, size: doc.length, modified: doc.uploadDate.toISOString() }
   }
 }
 

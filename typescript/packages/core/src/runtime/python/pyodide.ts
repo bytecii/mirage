@@ -24,7 +24,11 @@ import type {
   RunResult,
   RuntimeOptions,
 } from '../types.ts'
-import { createPyodideInterrupter, type PyodideInterrupter } from './interrupt.ts'
+import {
+  createPyodideInterrupter,
+  type ArmedInterrupt,
+  type PyodideInterrupter,
+} from './interrupt.ts'
 import { loadPyodideRuntime, type PyodideInterface } from './loader.ts'
 import { PrefixResolver, type MountResolver } from '../resolver.ts'
 import type { BridgeDispatchFn } from '../types.ts'
@@ -257,6 +261,7 @@ const EVAL_INTERRUPT_SECONDS = 10
 
 export class PyodideRuntime extends PythonRuntime implements Evaluator {
   readonly name = 'pyodide'
+  protected override readonly versionSuffix = ' (pyodide)'
   // The WASM guest's filesystem is the workspace-backed Emscripten FS,
   // so file effects pass the workspace gate, and loader.ts seals the
   // `js` module (null-prototype jsglobals) so guest code cannot reach
@@ -365,7 +370,7 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     pyodide.globals.set('_eval_inputs', inputsPy)
     const armed = this.interrupter !== null ? this.interrupter.arm(EVAL_INTERRUPT_SECONDS) : null
     try {
-      await pyodide.runPythonAsync(PYTHON_EVAL_WRAPPER)
+      pyodide.runPython(PYTHON_EVAL_WRAPPER)
       if (armed?.disarm() === 'deadline') {
         throw new EvalError(`pyodide eval timed out after ${String(EVAL_INTERRUPT_SECONDS)}s`)
       }
@@ -696,13 +701,30 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     // Deadline trip -> exit 124 via CommandTimeoutError; a kill signal
     // raises KeyboardInterrupt in the guest, whose wrapper-reported
     // exit code (1) stands, like the local runtime's killed child.
-    const armed =
-      this.interrupter !== null
-        ? this.interrupter.arm(args.timeoutSeconds ?? null, args.signal)
-        : null
+    // The wrapper arms right before the user code and disarms right
+    // after it, so a trip can only land inside the wrapper's own
+    // handlers, never in its preamble or epilogue where it would escape
+    // as a KeyboardInterrupt nothing catches and the deadline is lost.
+    const slot: { armed: ArmedInterrupt | null } = { armed: null }
+    pyodide.globals.set('_arm_interrupt', () => {
+      if (this.interrupter !== null && slot.armed === null) {
+        slot.armed = this.interrupter.arm(args.timeoutSeconds ?? null, args.signal)
+      }
+    })
+    pyodide.globals.set('_disarm_interrupt', () => {
+      slot.armed?.disarm()
+    })
     try {
-      await pyodide.runPythonAsync(PYTHON_WRAPPER)
-      if (armed?.disarm() === 'deadline' && args.timeoutSeconds !== undefined) {
+      // The wrapper runs through the synchronous entry point on purpose.
+      // Every wrapper is straight-line Python with no top-level await,
+      // and the interrupt buffer is only honored reliably on that path:
+      // under runPythonAsync the trip is consumed by the eval loop but the
+      // KeyboardInterrupt does not reach the running code often enough,
+      // so a busy loop past its deadline ran unbounded and wedged the
+      // host's event loop (observed on Node 24.20 in CI, reproducible on
+      // 24.15 with bare pyodide, with or without JSPI).
+      pyodide.runPython(PYTHON_WRAPPER)
+      if (slot.armed?.disarm() === 'deadline' && args.timeoutSeconds !== undefined) {
         throw new CommandTimeoutError(this.name, args.timeoutSeconds)
       }
       const flushFailures = await this.drainMutations()
@@ -740,14 +762,16 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
       // KeyboardInterrupt escapes as a rejection instead of a result.
       // Files closed before the failure are complete in MEMFS, so their
       // marks still flush; failures can only be warned here.
-      const deadline = armed?.disarm() === 'deadline'
+      const deadline = slot.armed?.disarm() === 'deadline'
       for (const notice of [...seedNotices, ...(await this.drainMutations())]) console.warn(notice)
       if (deadline && args.timeoutSeconds !== undefined) {
         throw new CommandTimeoutError(this.name, args.timeoutSeconds)
       }
       throw err
     } finally {
-      armed?.disarm()
+      slot.armed?.disarm()
+      pyodide.globals.delete?.('_arm_interrupt')
+      pyodide.globals.delete?.('_disarm_interrupt')
       pyodide.globals.delete?.('_user_code')
       pyodide.globals.delete?.('_init_flags')
       pyodide.globals.delete?.('_argv')
@@ -784,7 +808,7 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     pyodide.globals.set('_repl_inputs', pyodide.toPy(inputs))
 
     try {
-      await pyodide.runPythonAsync(PYTHON_REPL_WRAPPER)
+      pyodide.runPython(PYTHON_REPL_WRAPPER)
       const flushFailures = await this.drainMutations()
       const resultProxy = pyodide.globals.get('_repl_result') as
         | {

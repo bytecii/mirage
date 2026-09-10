@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { FileStat, FileType } from '../../../types.ts'
+import { ContentType, FileStat, FileType } from '../../../types.ts'
 import { mergeOverlayStat } from './overlay.ts'
 
 const base = new FileStat({
@@ -67,4 +67,25 @@ describe('mergeOverlayStat', () => {
     const merged = mergeOverlayStat({ mtime: 1767312000, observedMtime: 1767398400 }, bare)
     expect(merged.modified).toBe('2026-01-02T00:00:00Z')
   })
+})
+
+it.each([
+  { mode: 0o640 },
+  { uid: 7 },
+  { gid: 8 },
+  { atime: '2026-01-01T00:00:00Z' },
+  { mtime: 1767312000 },
+])('preserves content and unrelated fields with overlay %j', (meta) => {
+  const stat = base.with({
+    content: ContentType.TEXT,
+    fingerprint: 'hash',
+    revision: 'v1',
+    extra: { tag: 'kept' },
+  })
+  const merged = mergeOverlayStat(meta, stat)
+  expect(merged.content).toBe(ContentType.TEXT)
+  expect(merged.fingerprint).toBe('hash')
+  expect(merged.revision).toBe('v1')
+  expect(merged.extra).toEqual({ tag: 'kept' })
+  expect(stat.modified).toBe('2026-01-01T00:00:00Z')
 })

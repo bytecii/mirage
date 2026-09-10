@@ -230,6 +230,10 @@ try:
     sys.stderr = _err_text
     sys.argv   = list(_argv)
     try:
+        # The host's deadline is armed here and disarmed in the finally
+        # below, so a trip can only ever land inside this try, where the
+        # handlers below own it.
+        _arm_interrupt()
         exec(compile(_user_code, '<string>', 'exec', optimize=_optimize),
              dict(_user_globals))
     except SystemExit as _e:
@@ -246,6 +250,8 @@ try:
     except BaseException:
         traceback.print_exc(file=_err_text)
         _exit_code = 1
+    finally:
+        _disarm_interrupt()
 finally:
     _out_text.flush()
     _err_text.flush()

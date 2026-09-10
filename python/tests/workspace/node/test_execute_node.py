@@ -22,6 +22,7 @@ from mirage.io.stream import materialize
 from mirage.policy import Policies
 from mirage.shell import parse
 from mirage.shell.barrier import BarrierPolicy, apply_barrier
+from mirage.shell.errors import ReturnSignal
 from mirage.shell.job_table import JobTable
 from mirage.types import MountMode, PathSpec
 from mirage.workspace.cli.registry import CLIRegistry
@@ -79,6 +80,7 @@ async def _no_match_resolve_glob(scopes, prefix=""):
 def _mock_registry():
     mount = MagicMock()
     mount.prefix = "/data/"
+    mount.ensure_ready = AsyncMock()
     mount.mode = MountMode.EXEC
     mount.execute_cmd = AsyncMock(return_value=(b"ok\n", IOResult()))
     mount.resource = MagicMock()
@@ -86,6 +88,7 @@ def _mock_registry():
     mount.spec_for = MagicMock(return_value=None)
 
     reg = MagicMock()
+    reg.file_cache = None
     reg.mount_for = MagicMock(return_value=mount)
     reg.try_mount_for = MagicMock(return_value=mount)
     reg.resolve_mount = AsyncMock(return_value=mount)
@@ -501,8 +504,10 @@ def test_read_from_bytes():
 
 
 def test_shift():
+    # bash: shifting past `$#` (here, with no positionals at all) is a
+    # silent exit 1.
     _, io, _, _, _, _ = _exec("shift")
-    assert io.exit_code == 0
+    assert io.exit_code == 1
 
 
 # ── trap ────────────────────────────────────────
@@ -518,7 +523,6 @@ def test_trap():
 
 def test_return_raises_inside_function_frame():
     from mirage.shell.call_stack import CallStack
-    from mirage.workspace.executor.control import ReturnSignal
 
     dispatch = _mock_dispatch()
     reg, _ = _mock_registry()
@@ -2777,9 +2781,10 @@ def test_printf_in_function():
 
 def test_sort_in_while_read():
     stdout, _, _, session, _, _ = _exec_with_stdin(
-        "sort | while read LINE; do export LAST=$LINE; done",
+        "sort | while read LINE; do export LAST=$LINE; echo $LAST; done",
         stdin=b"banana\napple\n")
-    assert session.env.get("LAST") is not None
+    assert stdout == b"ok\n"
+    assert session.env.get("LAST") is None
 
 
 def test_echo_redirect_then_cat():

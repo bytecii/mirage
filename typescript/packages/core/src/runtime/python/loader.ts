@@ -43,6 +43,7 @@ export interface PyodideInterface {
     get: (key: string) => unknown
     delete?: (key: string) => void
   }
+  runPython: (code: string, options?: { globals?: unknown }) => unknown
   runPythonAsync: (code: string, options?: { globals?: unknown }) => Promise<unknown>
   toPy: (obj: unknown) => unknown
   isPyProxy?: (obj: unknown) => boolean

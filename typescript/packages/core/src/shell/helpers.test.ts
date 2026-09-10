@@ -14,6 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { getTestParser } from '../workspace/fixtures/workspace_fixture.ts'
+import type { ShellParser } from './parse/index.ts'
 import type { TSNodeLike } from './types.ts'
 import {
   braceExpands,
@@ -21,6 +22,9 @@ import {
   getCommandName,
   getDeclarationAssignments,
   getDeclarationKeyword,
+  getCaseItems,
+  getCforParts,
+  getForParts,
   getFunctionBody,
   getFunctionName,
   getIfBranches,
@@ -34,6 +38,7 @@ import {
   getText,
   getTestArgv,
   getWhileParts,
+  isBackgrounded,
   literalWord,
   splitEnvPrefix,
 } from './helpers.ts'
@@ -435,5 +440,58 @@ describe('literalWord', () => {
     expect(braceExpands('{abc}')).toBe(false)
     expect(braceExpands('a,b')).toBe(false)
     expect(braceExpands('{a,b')).toBe(false)
+  })
+})
+
+describe('isBackgrounded', () => {
+  async function firstOf(line: string): Promise<TSNodeLike> {
+    const parser = await getTestParser()
+    return parser.parse(line).children[0] as TSNodeLike
+  }
+
+  it("reads the statement's own terminator", async () => {
+    const [, , body] = getForParts(await firstOf('for i in 1; do a & b; c && d; done'))
+    expect(body.map(getText)).toEqual(['a', 'b', 'c && d'])
+    expect(body.map(isBackgrounded)).toEqual([true, false, false])
+  })
+
+  it.each<[string, (n: TSNodeLike) => TSNodeLike[]]>([
+    ['if true; then a & fi', (n) => getIfBranches(n)[0][0]?.[1] ?? []],
+    ['if false; then :; elif true; then a & fi', (n) => getIfBranches(n)[0][1]?.[1] ?? []],
+    ['if false; then :; else a & fi', (n) => getIfBranches(n)[1] ?? []],
+    ['while false; do a & done', (n) => getWhileParts(n)[1]],
+    ['until true; do a & done', (n) => getWhileParts(n)[1]],
+    ['for ((;;)); do a & done', (n) => getCforParts(n)[1]],
+    ['case x in x) a & ;; esac', (n) => getCaseItems(n)[0]?.[1] ?? []],
+    ['f() { a & }', (n) => getFunctionBody(n) ?? []],
+    ['{ a & }', (n) => [...n.namedChildren]],
+  ])('sees the ampersand in %s', async (line, extract) => {
+    const body = extract(await firstOf(line))
+    expect(body.map(getText)).toEqual(['a'])
+    expect(body.map(isBackgrounded)).toEqual([true])
+  })
+})
+
+describe('claimedDescriptor', () => {
+  function statement(parser: ShellParser, line: string): [TSNodeLike, TSNodeLike] {
+    const stmt = parser.parse(line).children[0]
+    const command = stmt?.namedChildren[0]
+    if (stmt === undefined || command === undefined) throw new Error(`no statement in ${line}`)
+    return [stmt, command]
+  }
+
+  it('reads a bare 0 touching the operator as the descriptor', async () => {
+    const parser = await getTestParser()
+    const [stmt, command] = statement(parser, 'cat a 0>&-')
+    expect(getParts(command).map((c) => c.text)).toEqual(['cat', 'a'])
+    expect(getRedirects(stmt)[1].map((r) => [r.fd, r.target])).toEqual([[0, -1]])
+    const [spaced, spacedCommand] = statement(parser, 'cat a 0 >&-')
+    expect(getParts(spacedCommand).map((c) => c.text)).toEqual(['cat', 'a', '0'])
+    expect(getRedirects(spaced)[1].map((r) => r.fd)).toEqual([1])
+    const [chained] = statement(parser, 'cat 0<a >b')
+    expect(getRedirects(chained)[1].map((r) => [r.fd, r.target])).toEqual([
+      [0, 'a'],
+      [1, 'b'],
+    ])
   })
 })
