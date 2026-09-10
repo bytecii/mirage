@@ -91,6 +91,8 @@ describe('execute router', () => {
         await rm(root, { recursive: true, force: true })
       }
     },
+    // Includes real filesystem IO and multi-megabyte command output on CI.
+    30_000,
   )
 
   it('preserves empty multipart stdin and rejects missing request metadata', async () => {

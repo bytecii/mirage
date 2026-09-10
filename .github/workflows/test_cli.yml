@@ -9,6 +9,7 @@ permissions:
     paths:
       - python/**
       - typescript/**
+      - integ/execute_stdin.py
       - .github/workflows/test_cli.yml
       - .github/actions/setup-node-pnpm/action.yml
   pull_request:
@@ -44,6 +45,7 @@ jobs:
               - 'integ/cross.sh'
               - 'integ/cross.yaml'
               - 'integ/parity.sh'
+              - 'integ/execute_stdin.py'
               - 'integ/fuse/cli_fuse.sh'
               - 'integ/cli_config.sh'
               - 'integ/cli_env.sh'
@@ -727,6 +729,9 @@ jobs:
           /tmp/mc alias set local http://localhost:9000 minio minio123
           /tmp/mc mb local/mirage-cross || true
           /tmp/mc mb local/mirage-state || true
+
+      - name: Run daemon large-stdin and grep round trips (both languages)
+        run: ./python/.venv/bin/python integ/execute_stdin.py
 
       - name: Run cross-language snapshot interop (both directions)
         run: |

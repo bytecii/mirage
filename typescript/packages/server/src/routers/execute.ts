@@ -100,7 +100,8 @@ export function registerExecuteRoutes(app: FastifyInstance, deps: ExecuteRoutesD
           ...(body.runtime !== undefined ? { runtime: body.runtime } : {}),
           ...(body.record !== undefined ? { record: body.record } : {}),
           ...(body.provision === true ? { provision: true as const } : {}),
-          ...(stdin !== undefined ? { stdin } : {}),
+          // Pyodide rejects Node Buffer even though it subclasses Uint8Array.
+          ...(stdin !== undefined ? { stdin: new Uint8Array(stdin) } : {}),
           signal,
         }),
       )
