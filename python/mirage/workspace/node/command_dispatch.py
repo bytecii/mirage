@@ -57,7 +57,7 @@ from mirage.shell.types import ProcessSubDirection  # isort: skip
 from mirage.workspace.executor.builtins import (  # isort: skip
     accepts_line, follow_paths, handle_chgrp, handle_exec_path, handle_chmod,
     handle_chown, handle_df, handle_ln, handle_readlink, handle_touch,
-    link_flags, prepare_mv, strip_link_operands)
+    prepare_mv, strip_link_operands)
 
 
 async def execute_command(
@@ -563,7 +563,7 @@ async def _route_argv(
 
     # ── symlinks (namespace-backed; not bash builtins, not mount
     #    commands: they mutate the addressing layer) ──
-    if name == "ln" and "s" in link_flags(operands, "sfnvrT"):
+    if name == "ln":
         return await handle_ln(namespace, dispatch, session, operands)
 
     if name == "readlink":

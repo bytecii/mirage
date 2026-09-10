@@ -20,8 +20,8 @@ from typing import Any
 
 from mirage.commands.spec.shell import SHELL_SPECS, parse_shell_options
 from mirage.io import IOResult
-from mirage.io.stream import materialize
 from mirage.io.types import ByteSource
+from mirage.utils.stream import ensure_stream
 from mirage.workspace.executor.builtins.types import BuiltinCall, Result
 from mirage.workspace.session import Session
 from mirage.workspace.types import ExecutionNode
@@ -93,14 +93,18 @@ async def handle_timeout(
         return _usage_error(f"invalid time interval '{raw}'")
 
     inner = shlex.join(parse.operands[1:])
+    drained: list[bytes] = []
     try:
         stdout, io = await asyncio.wait_for(
-            _execute_drained(execute_fn, inner, session.session_id),
+            _execute_drained(execute_fn, inner, session.session_id, drained),
             timeout=seconds if seconds > 0 else None,
         )
     except asyncio.TimeoutError:
-        return None, IOResult(exit_code=124), ExecutionNode(command="timeout",
-                                                            exit_code=124)
+        # What the command printed before the deadline is its output, as
+        # GNU leaves it on the terminal; only the run past it is lost.
+        partial = b"".join(drained)
+        return partial or None, IOResult(exit_code=124), ExecutionNode(
+            command="timeout", exit_code=124)
     return stdout, io, ExecutionNode(command="timeout", exit_code=io.exit_code)
 
 
@@ -108,20 +112,26 @@ async def _execute_drained(
     execute_fn: Callable[..., Any],
     inner: str,
     session_id: str,
+    drained: list[bytes],
 ) -> tuple[bytes | None, IOResult]:
     """Run the inner line and drain its stdout under the same deadline.
 
     A lazy inner pipeline produces bytes only when consumed; draining
-    inside the wait_for scope keeps the whole run under the limit.
+    inside the wait_for scope keeps the whole run under the limit, and
+    draining chunk by chunk into ``drained`` is what lets a run that
+    overruns keep what it had printed.
 
     Args:
         execute_fn (Callable): shell evaluator for the inner line.
         inner (str): the joined command line.
         session_id (str): session to run in.
+        drained (list[bytes]): where each chunk lands as it arrives.
     """
     io = await execute_fn(inner, session_id=session_id)
-    stdout = await materialize(io.stdout)
-    return stdout, io
+    if io.stdout is not None:
+        async for chunk in ensure_stream(io.stdout):
+            drained.append(chunk)
+    return b"".join(drained) if drained or io.stdout is not None else None, io
 
 
 async def timeout_builtin(call: BuiltinCall) -> Result:

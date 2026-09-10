@@ -383,12 +383,12 @@ async def test_if_body_ampersand_launches_a_job_and_answers_the_launch_status(
     assert ran == ["c"]
     assert io.exit_code == 0
     assert sess.last_exit_code == 0
-    job = table.get(1)
+    job = table.get(1, sess.session_id)
     assert job is not None
     assert job.command == "slow"
     assert job.status == JobStatus.RUNNING
     gate.set()
-    await table.wait(1)
+    await table.wait(1, sess.session_id)
     assert ran == ["c", "slow"]
     assert job.exit_code == 3
 
@@ -408,11 +408,11 @@ async def test_case_arm_ampersand_launches_a_job():
                                       timeout=2)
     assert ran == []
     assert io.exit_code == 0
-    job = table.get(1)
+    job = table.get(1, "test")
     assert job is not None
     assert job.command == "slow"
     gate.set()
-    await table.wait(1)
+    await table.wait(1, "test")
     assert job.exit_code == 3
 
 
@@ -429,9 +429,9 @@ async def test_for_body_ampersand_launches_one_job_per_iteration():
                                       timeout=2)
     assert ran == []
     assert io.exit_code == 0
-    assert [j.command for j in table.list_jobs()] == ["slow", "slow"]
+    assert [j.command for j in table.list_jobs("test")] == ["slow", "slow"]
     gate.set()
-    await table.wait_all()
+    await table.wait_all("test")
     assert ran == ["slow", "slow"]
 
 

@@ -16,10 +16,20 @@ import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/types.ts'
 import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
-import { FileStat, FileType, PathSpec } from '../../../types.ts'
+import { FileStat, FileType, PathSpec, type LsSortBy, type LsTimeKind } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import type { ChildMounts, LinkView, MountView, StatPath } from '../../../ops/types.ts'
-import { formatLsLong } from '../utils/formatting.ts'
+import {
+  LS_TIME_STYLES,
+  type LsColumns,
+  formatLsLong,
+  lsName,
+  lsPrefix,
+  parseBlockSize,
+  timeOf,
+} from '../utils/formatting.ts'
+import { UsageError } from '../../errors.ts'
+import { invalidArgumentError, usageHint } from '../../spec/usage.ts'
 import { identityOf, type Identity } from '../utils/identity.ts'
 import { gnuStrerror, isEacces, isWalkError } from '../../../utils/errors.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
@@ -29,7 +39,7 @@ import { compareCodePoints } from '../../../utils/sort.ts'
 
 type Readdir = (p: PathSpec) => Promise<string[]>
 type Stat = (p: PathSpec) => Promise<FileStat>
-type SortBy = 'time' | 'size' | 'name'
+type SortBy = LsSortBy
 
 export const LS_OK = 0
 export const LS_MINOR_PROBLEM = 1
@@ -47,6 +57,9 @@ interface WalkOpts {
   all: boolean
   sortBy: SortBy
   reverse: boolean
+  // Which timestamp -t compares, and --group-directories-first.
+  timeKind: LsTimeKind
+  groupDirsFirst: boolean
   recursive: boolean
   // Links have no backend inode, so readdir never names them. Merging
   // them in means every caller (plain, -R, -F, -l, sorting) sees them
@@ -115,38 +128,152 @@ const CLASSIFY_SUFFIX: Partial<Record<FileType, string>> = {
   [FileType.SYMLINK]: '@',
 }
 
-function formatShort(s: FileStat, classify: boolean): string {
+// Short rows: the name, -F's mark, and -i/-Z's lead.
+function formatShort(s: FileStat, classify: boolean, columns: LsColumns, name?: string): string {
   const suffix = (classify ? CLASSIFY_SUFFIX[s.type] : undefined) ?? ''
-  return `${s.name}${suffix}`
+  return `${lsPrefix(columns)}${name ?? s.name}${suffix}`
+}
+
+// A name wrapped in the OSC 8 hyperlink GNU emits under --hyperlink,
+// pointing at the entry's virtual path.
+function hyperlinked(name: string, virtual: string): string {
+  return `\x1b]8;;file://${virtual}\x07${name}\x1b]8;;\x07`
+}
+
+interface RenderOpts {
+  long: boolean
+  human: boolean
+  classify: boolean
+  identity: Identity
+  columns: LsColumns
 }
 
 function appendListing(
   stats: readonly FileStat[],
-  long: boolean,
-  human: boolean,
-  classify: boolean,
-  identity: Identity,
+  render: RenderOpts,
   lines: string[],
+  hrefs: readonly string[] | null = null,
 ): void {
-  if (long) {
-    for (const line of formatLsLong(stats, { human, identity })) lines.push(line)
+  const names =
+    hrefs === null
+      ? null
+      : stats.map((s, i) => {
+          const linked = hyperlinked(s.name, hrefs[i] ?? '')
+          return render.long ? lsName(s.with({ name: linked })) : linked
+        })
+  if (render.long) {
+    const opts = {
+      human: render.human,
+      identity: render.identity,
+      columns: render.columns,
+      ...(names !== null ? { names } : {}),
+    }
+    for (const line of formatLsLong(stats, opts)) lines.push(line)
     return
   }
-  for (const s of stats) lines.push(formatShort(s, classify))
+  stats.forEach((s, i) => lines.push(formatShort(s, render.classify, render.columns, names?.[i])))
 }
 
-function primaryValue(entry: FileStat, sortBy: SortBy): string | number {
-  return sortBy === 'time' ? (entry.modified ?? '') : (entry.size ?? 0)
+// gnulib filevercmp's character order: a tilde sorts before the end of
+// the string, letters by code, and everything else after the letters.
+function versionOrder(c: string): number {
+  if (/[0-9]/.test(c)) return 0
+  if (/[A-Za-z]/.test(c)) return c.charCodeAt(0)
+  if (c === '~') return -1
+  return c.charCodeAt(0) + 256
+}
+
+const isDigit = (c: string | undefined): boolean => c !== undefined && /[0-9]/.test(c)
+
+// Debian's version comparison as gnulib's verrevcmp runs it: alternating
+// non-digit and digit runs, the digit runs compared as numbers.
+function verrevcmp(a: string, b: string): number {
+  let i = 0
+  let j = 0
+  while (i < a.length || j < b.length) {
+    while ((i < a.length && !isDigit(a[i])) || (j < b.length && !isDigit(b[j]))) {
+      const ac = i < a.length ? versionOrder(a[i] ?? '') : 0
+      const bc = j < b.length ? versionOrder(b[j] ?? '') : 0
+      if (ac !== bc) return ac - bc
+      i += 1
+      j += 1
+    }
+    while (a[i] === '0') i += 1
+    while (b[j] === '0') j += 1
+    let firstDiff = 0
+    while (isDigit(a[i]) && isDigit(b[j])) {
+      if (firstDiff === 0) firstDiff = (a[i] ?? '').charCodeAt(0) - (b[j] ?? '').charCodeAt(0)
+      i += 1
+      j += 1
+    }
+    if (isDigit(a[i])) return 1
+    if (isDigit(b[j])) return -1
+    if (firstDiff !== 0) return firstDiff
+  }
+  return 0
+}
+
+// How much of a name filevercmp compares first: everything but a
+// trailing run of suffixes (.txt, .tar.gz, ~).
+function versionPrefixLen(s: string): number {
+  const n = s.length
+  let i = 0
+  let prefix = 0
+  for (;;) {
+    if (i === n) return prefix
+    i += 1
+    prefix = i
+    while (i + 1 < n && s[i] === '.' && (/[A-Za-z]/.test(s[i + 1] ?? '') || s[i + 1] === '~')) {
+      i += 2
+      while (i < n && (/[A-Za-z0-9]/.test(s[i] ?? '') || s[i] === '~')) i += 1
+    }
+  }
+}
+
+// gnulib's filevercmp, the order behind `ls -v`: the empty name, `.` and
+// `..` first, then hidden names, then the names compared as versions with
+// their suffixes set aside, the suffixes breaking a tie.
+export function filevercmp(a: string, b: string): number {
+  if (a === b) return 0
+  for (const special of ['', '.', '..']) {
+    if (a === special) return -1
+    if (b === special) return 1
+  }
+  const aHidden = a.startsWith('.')
+  const bHidden = b.startsWith('.')
+  if (aHidden !== bHidden) return aHidden ? -1 : 1
+  let result = verrevcmp(a.slice(0, versionPrefixLen(a)), b.slice(0, versionPrefixLen(b)))
+  if (result === 0) result = verrevcmp(a, b)
+  if (result === 0) result = a > b ? 1 : -1
+  return result
+}
+
+// The key `ls -X` compares first: the name from its last dot, empty for
+// a name without one.
+function extensionOf(name: string): string {
+  const dot = name.lastIndexOf('.')
+  return dot >= 0 ? name.slice(dot) : ''
+}
+
+function primaryValue(entry: FileStat, sortBy: SortBy, timeKind: LsTimeKind): string | number {
+  return sortBy === 'time' ? (timeOf(entry, timeKind) ?? '') : (entry.size ?? 0)
 }
 
 // GNU's -t/-S comparators fall back to the name when the timestamps or sizes
 // tie, so the order is total. `-r` negates the whole comparison, tie-break
 // included, which is why callers fold the sign into this comparator instead of
-// reversing the finished array.
-function compareStats(a: FileStat, b: FileStat, sortBy: SortBy): number {
-  if (sortBy !== 'name') {
-    const av = primaryValue(a, sortBy)
-    const bv = primaryValue(b, sortBy)
+// reversing the finished array. -X and --sort=width are stable sorts over
+// the name order too; -v is gnulib's version order.
+function compareStats(a: FileStat, b: FileStat, sortBy: SortBy, timeKind: LsTimeKind): number {
+  if (sortBy === 'version') return filevercmp(a.name, b.name)
+  if (sortBy === 'extension') {
+    const byExt = compareCodePoints(extensionOf(a.name), extensionOf(b.name))
+    if (byExt !== 0) return byExt
+  } else if (sortBy === 'width') {
+    if (a.name.length !== b.name.length) return a.name.length - b.name.length
+  } else if (sortBy !== 'name' && sortBy !== 'none') {
+    const av = primaryValue(a, sortBy, timeKind)
+    const bv = primaryValue(b, sortBy, timeKind)
     // -t and -S list newest/largest first.
     if (av < bv) return 1
     if (av > bv) return -1
@@ -154,9 +281,30 @@ function compareStats(a: FileStat, b: FileStat, sortBy: SortBy): number {
   return compareCodePoints(a.name, b.name)
 }
 
-function sortStats(stats: readonly FileStat[], sortBy: SortBy, reverse: boolean): FileStat[] {
-  const sign = reverse ? -1 : 1
-  return [...stats].sort((a, b) => sign * compareStats(a, b, sortBy))
+// -U keeps the listing order, which -r still reverses;
+// --group-directories-first partitions the finished order, so the
+// directories come first in every sort but -U, where GNU ignores it.
+export function sortStats(
+  stats: readonly FileStat[],
+  sortBy: SortBy,
+  reverse: boolean,
+  timeKind: LsTimeKind = 'mtime',
+  groupDirsFirst = false,
+): FileStat[] {
+  let ordered: FileStat[]
+  if (sortBy === 'none') {
+    ordered = reverse ? [...stats].reverse() : [...stats]
+  } else {
+    const sign = reverse ? -1 : 1
+    ordered = [...stats].sort((a, b) => sign * compareStats(a, b, sortBy, timeKind))
+  }
+  if (groupDirsFirst && sortBy !== 'none') {
+    ordered = [
+      ...ordered.filter((s) => s.type === FileType.DIRECTORY),
+      ...ordered.filter((s) => s.type !== FileType.DIRECTORY),
+    ]
+  }
+  return ordered
 }
 
 // A file operand whose readdir came back empty: backends without real
@@ -365,7 +513,7 @@ async function probeOperand(
     const link = linkRow(path, opts.links)
     if (link !== null) return { path, row: link, groups: [] }
   }
-  const entries = sortStats(stats, opts.sortBy, opts.reverse)
+  const entries = sortStats(stats, opts.sortBy, opts.reverse, opts.timeKind, opts.groupDirsFirst)
   const groups: [PathSpec, FileStat[]][] = [[path, entries]]
   if (opts.recursive) {
     for (const s of entries) {
@@ -416,14 +564,194 @@ async function sortOperands(
   sortBy: SortBy,
   reverse: boolean,
   stat: Stat,
+  timeKind: LsTimeKind,
 ): Promise<Operand[]> {
   const keyed: { key: FileStat; operand: Operand }[] = []
   for (const operand of operands) {
     keyed.push({ key: await operandKey(operand, sortBy, stat), operand })
   }
+  if (sortBy === 'none') return (reverse ? keyed.reverse() : keyed).map((k) => k.operand)
   const sign = reverse ? -1 : 1
-  keyed.sort((a, b) => sign * compareStats(a.key, b.key, sortBy))
+  keyed.sort((a, b) => sign * compareStats(a.key, b.key, sortBy, timeKind))
   return keyed.map((k) => k.operand)
+}
+
+/** The ls flag bag, parsed once. */
+export interface LsFlags {
+  readonly long: boolean
+  readonly all: boolean
+  readonly human: boolean
+  readonly reverse: boolean
+  readonly classify: boolean
+  readonly recursive: boolean
+  readonly listDir: boolean
+  readonly deref: boolean
+  readonly sortBy: SortBy
+  readonly timeKind: LsTimeKind
+  readonly groupDirsFirst: boolean
+  readonly columns: LsColumns
+  readonly hyperlink: boolean
+}
+
+const SORT_WORDS: Readonly<Record<string, LsSortBy>> = {
+  none: 'none',
+  size: 'size',
+  time: 'time',
+  version: 'version',
+  extension: 'extension',
+  name: 'name',
+  width: 'width',
+}
+const SORT_FLAGS: Readonly<Record<string, LsSortBy>> = {
+  t: 'time',
+  S: 'size',
+  X: 'extension',
+  v: 'version',
+  U: 'none',
+}
+const TIME_GROUPS: readonly (readonly string[])[] = [
+  ['atime', 'access', 'use'],
+  ['ctime', 'status'],
+  ['mtime', 'modification'],
+  ['birth', 'creation'],
+]
+const TIME_KINDS: Readonly<Record<string, LsTimeKind>> = {
+  atime: 'atime',
+  ctime: 'ctime',
+  mtime: 'mtime',
+  birth: 'birth',
+}
+const HYPERLINK_GROUPS: readonly (readonly string[])[] = [
+  ['always', 'yes', 'force'],
+  ['never', 'no', 'none'],
+  ['auto', 'tty', 'if-tty'],
+]
+
+// GNU's ARGMATCH refusal for an option whose values have aliases, listed
+// one group per line (--time, --hyperlink); exit 1, as ls answers it.
+function groupedArgumentError(
+  option: string,
+  value: string,
+  groups: readonly (readonly string[])[],
+): UsageError {
+  const valid = groups.map((g) => `  - ${g.map((w) => `'${w}'`).join(', ')}`).join('\n')
+  return new UsageError(
+    `ls: invalid argument '${value}' for '${option}'\nValid arguments are:\n${valid}\n${usageHint('ls')}`,
+    1,
+  )
+}
+
+// The sort key the line asked for, last spelling winning, and whether it
+// asked at all.
+function sortFlag(fl: FlagView): [SortBy, boolean] {
+  const typed = fl.typedOrder('t', 'S', 'X', 'v', 'U', 'sort')
+  const last = typed[typed.length - 1]
+  if (last === undefined) return ['name', false]
+  if (last !== 'sort') return [SORT_FLAGS[last] ?? 'name', true]
+  const word = fl.asStr('sort') ?? ''
+  const key = SORT_WORDS[word]
+  if (key === undefined) {
+    const [msg] = invalidArgumentError('ls', '--sort', word, Object.keys(SORT_WORDS))
+    throw new UsageError(new TextDecoder().decode(msg).replace(/\n$/, ''), 1)
+  }
+  return [key, true]
+}
+
+// Which timestamp -c, -u or --time asked for, last one winning.
+function timeFlag(fl: FlagView): LsTimeKind {
+  const typed = fl.typedOrder('c', 'u', 'time')
+  const last = typed[typed.length - 1]
+  if (last === undefined) return 'mtime'
+  if (last === 'c') return 'ctime'
+  if (last === 'u') return 'atime'
+  const word = fl.asStr('time') ?? ''
+  for (const group of TIME_GROUPS) {
+    if (group.includes(word)) return TIME_KINDS[group[0] ?? 'mtime'] ?? 'mtime'
+  }
+  throw groupedArgumentError('--time', word, TIME_GROUPS)
+}
+
+// --time-style, its posix- prefix stripped (the C locale makes the two
+// spellings one), validated the way GNU words it (exit 2).
+function timeStyleFlag(fl: FlagView): string {
+  const style = fl.asStr('time_style')
+  if (style === undefined) return 'locale'
+  const bare = style.startsWith('posix-') ? style.slice(6) : style
+  if (LS_TIME_STYLES.includes(bare) || bare.startsWith('+')) return bare
+  throw new UsageError(
+    `ls: invalid argument '${style}' for 'time style'\n` +
+      'Valid arguments are:\n' +
+      '  - [posix-]full-iso\n' +
+      '  - [posix-]long-iso\n' +
+      '  - [posix-]iso\n' +
+      '  - [posix-]locale\n' +
+      "  - +FORMAT (e.g., +%H:%M) for a 'date'-style format\n" +
+      usageHint('ls'),
+    2,
+  )
+}
+
+// Whether --hyperlink asked for OSC 8 links: always does, never does
+// not, and auto does not either, since command output here is never a
+// terminal.
+function hyperlinkFlag(fl: FlagView): boolean {
+  const raw: unknown = fl.raw('hyperlink')
+  if (raw === undefined || raw === null || raw === false) return false
+  if (raw === true) return true
+  const word = typeof raw === 'string' ? raw : ''
+  for (const group of HYPERLINK_GROUPS) {
+    if (group.includes(word)) return group[0] === 'always'
+  }
+  throw groupedArgumentError('--hyperlink', word, HYPERLINK_GROUPS)
+}
+
+// Parse the ls flag bag once into a frozen struct. GNU's rules that are
+// easy to get wrong: -g, -o and -n imply the long format; -n prints the
+// same columns as -l, because a mirage owner is already the id (an agent,
+// a profile) and never a name looked up from one; the last of -t, -S, -X,
+// -v, -U and --sort wins, as does the last of -c, -u and --time; and -c or
+// -u with neither -l nor a sort sorts by that time. Throws UsageError for
+// a value GNU refuses, with GNU's exit status for that option.
+export function parseFlags(fl: FlagView): LsFlags {
+  const [askedSort, sortedExplicitly] = sortFlag(fl)
+  const timeKind = timeFlag(fl)
+  const noOwner = fl.asBool('g')
+  const noGroup = fl.asBool('o')
+  const long =
+    (fl.asBool('args_l') || noOwner || noGroup || fl.asBool('numeric_uid_gid')) &&
+    !fl.asBool('args_1')
+  const sortBy: SortBy = !sortedExplicitly && timeKind !== 'mtime' && !long ? 'time' : askedSort
+  const blockText = fl.asStr('block_size')
+  let blockSize = null
+  if (blockText !== undefined) {
+    blockSize = parseBlockSize(blockText)
+    if (blockSize === null)
+      throw new UsageError(`ls: invalid --block-size argument '${blockText}'`, 2)
+  }
+  const columns: LsColumns = Object.freeze({
+    owner: !noOwner,
+    group: !noGroup,
+    inode: fl.asBool('inode'),
+    context: fl.asBool('context'),
+    timeKind,
+    timeStyle: timeStyleFlag(fl),
+    blockSize,
+  })
+  return Object.freeze({
+    long,
+    all: fl.asBool('all') || fl.asBool('almost_all'),
+    human: fl.asBool('human_readable'),
+    reverse: fl.asBool('reverse'),
+    classify: fl.asBool('classify'),
+    recursive: fl.asBool('recursive'),
+    listDir: fl.asBool('directory'),
+    deref: fl.asBool('dereference'),
+    sortBy,
+    timeKind,
+    groupDirsFirst: fl.asBool('group_directories_first'),
+    columns,
+    hyperlink: hyperlinkFlag(fl),
+  })
 }
 
 function finish(lines: string[], warnings: readonly LsWarning[]): CommandFnResult {
@@ -454,40 +782,49 @@ export async function lsGeneric(
             resourcePath: mountKey(opts.cwd, opts.mountPrefix ?? ''),
           }),
         ]
-  const long = fl.asBool('args_l') && !fl.asBool('args_1')
-  const all = fl.asBool('a') || fl.asBool('A')
-  const human = fl.asBool('h')
-  const reverse = fl.asBool('r')
-  const classify = fl.asBool('F')
-  const recursive = fl.asBool('R')
-  const listDirItself = fl.asBool('d')
-  const sortBy: SortBy = fl.asBool('t') ? 'time' : fl.asBool('S') ? 'size' : 'name'
+  const flags = parseFlags(fl)
+  const {
+    long,
+    all,
+    human,
+    reverse,
+    classify,
+    recursive,
+    sortBy,
+    timeKind,
+    groupDirsFirst,
+    deref,
+  } = flags
+  const listDirItself = flags.listDir
   const links = opts.ns?.links ?? null
-  const deref = fl.asBool('L')
   const identity = identityOf(opts)
+  const render: RenderOpts = { long, human, classify, identity, columns: flags.columns }
   const warnings: LsWarning[] = []
   const lines: string[] = []
 
   if (listDirItself) {
     // -d turns every operand into a plain row, sorted together and printed
     // with no headers.
-    const collected: FileStat[] = []
+    const collected: { row: FileStat; href: string }[] = []
     for (const p of targets) {
       const link = linkRow(p, links)
       if (link !== null) {
-        collected.push(link)
+        collected.push({ row: link, href: p.virtual })
         continue
       }
       try {
         // GNU ls -d prints the operand as given.
-        collected.push(asOperand(await stat(p), p))
+        collected.push({ row: asOperand(await stat(p), p), href: p.virtual })
       } catch (err) {
         if (!isWalkError(err)) throw err
         if ((opts.ns?.childMounts?.(p.virtual) ?? []).length > 0) {
           // No backend serves it, but the namespace owes it children,
           // so the door stats it as a directory and -d must print the
           // same row.
-          collected.push(new FileStat({ name: p.rawPath, type: FileType.DIRECTORY }))
+          collected.push({
+            row: new FileStat({ name: p.rawPath, type: FileType.DIRECTORY }),
+            href: p.virtual,
+          })
           continue
         }
         warnings.push({
@@ -496,8 +833,18 @@ export async function lsGeneric(
         })
       }
     }
-    const rows = collected.length > 1 ? sortStats(collected, sortBy, reverse) : collected
-    appendListing(rows, long, human, classify, identity, lines)
+    const byRow = new Map(collected.map((c) => [c.row, c.href]))
+    const rows =
+      collected.length > 1
+        ? sortStats(
+            collected.map((c) => c.row),
+            sortBy,
+            reverse,
+            timeKind,
+            groupDirsFirst,
+          )
+        : collected.map((c) => c.row)
+    appendListing(rows, render, lines, flags.hyperlink ? rows.map((r) => byRow.get(r) ?? '') : null)
     return finish(lines, warnings)
   }
 
@@ -505,6 +852,8 @@ export async function lsGeneric(
     all,
     sortBy,
     reverse,
+    timeKind,
+    groupDirsFirst,
     recursive,
     links,
     deref,
@@ -516,13 +865,15 @@ export async function lsGeneric(
   for (const p of targets) {
     probed.push(await probeOperand(readdir, stat, p, walkOpts, warnings, true))
   }
-  const operands = probed.length > 1 ? await sortOperands(probed, sortBy, reverse, stat) : probed
+  const operands =
+    probed.length > 1 ? await sortOperands(probed, sortBy, reverse, stat, timeKind) : probed
 
   // GNU names every listed directory once there is more than one operand
   // (or under -R); a lone directory operand is listed bare.
   const headed = recursive || targets.length > 1
-  const rows = operands.flatMap((o) => (o.row !== null ? [o.row] : []))
-  appendListing(rows, long, human, classify, identity, lines)
+  const rowed = operands.filter((o) => o.row !== null)
+  const rows = rowed.flatMap((o) => (o.row !== null ? [o.row] : []))
+  appendListing(rows, render, lines, flags.hyperlink ? rowed.map((o) => o.path.virtual) : null)
   let printed = rows.length > 0
   for (const operand of operands) {
     for (const [dirSpec, entries] of operand.groups) {
@@ -530,7 +881,12 @@ export async function lsGeneric(
         if (printed) lines.push('')
         lines.push(`${respellOne(dirSpec.virtual, operand.path.virtual, operand.path.rawPath)}:`)
       }
-      appendListing(entries, long, human, classify, identity, lines)
+      appendListing(
+        entries,
+        render,
+        lines,
+        flags.hyperlink ? entries.map((e) => `${rstripSlash(dirSpec.virtual)}/${e.name}`) : null,
+      )
       printed = true
     }
   }

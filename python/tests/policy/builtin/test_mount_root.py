@@ -60,7 +60,11 @@ def _ctx(command: str,
 ])
 @pytest.mark.asyncio
 async def test_mount_root_refuses(cmd, needle):
-    deny = await MountRootPolicy().pre_command(_ctx(cmd, [_path("/data")]))
+    # ln refuses a mount root only as the link NAME, which -T pins;
+    # without it a directory operand is the directory to link into.
+    argv = ["-T"] if cmd == "ln" else []
+    deny = await MountRootPolicy().pre_command(
+        _ctx(cmd, [_path("/data")], argv))
     assert deny is not None
     assert needle in deny.reason
     # Every mount-root refusal is about one operand and speaks in the
@@ -102,15 +106,16 @@ async def test_rm_r_on_a_mount_root_is_refused_never_an_unmount():
 @pytest.mark.asyncio
 async def test_ln_wording_follows_the_link_kind():
     # GNU words the refusal by link kind: ln -s says "symbolic link",
-    # plain ln says "link" (pinned by integ guard_root_ln_is_eexist).
+    # plain ln says "link" (pinned by integ guard_root_ln_is_eexist). A
+    # mount root is only refused as the link NAME, which -T pins.
     policy = MountRootPolicy()
     deny = await policy.pre_command(
-        _ctx("ln", [_path("/data/k.txt"), _path("/data")], ["-s"]))
+        _ctx("ln", [_path("/data/k.txt"), _path("/data")], ["-sT"]))
     assert deny is not None
     assert deny.reason == ("failed to create symbolic link "
                            "'/data': File exists")
     deny = await policy.pre_command(
-        _ctx("ln", [_path("/data/k.txt"), _path("/data")]))
+        _ctx("ln", [_path("/data/k.txt"), _path("/data")], ["-T"]))
     assert deny is not None
     assert deny.reason == "failed to create link '/data': File exists"
 

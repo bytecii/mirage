@@ -12,10 +12,16 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
+from contextlib import suppress
+
 import pytest
 
-from mirage.commands.builtin.generic.tail import tail_multi
-from mirage.types import PathSpec
+from mirage.commands.builtin.generic.tail import \
+    parse_flags as tail_parse_flags
+from mirage.commands.builtin.generic.tail import tail_generic, tail_multi
+from mirage.commands.config import CommandOpts
+from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.key_prefix import mount_key
 
 
@@ -74,3 +80,183 @@ async def test_tail_multi_stream_reader():
     out = await _collect(
         tail_multi(_paths("/a", "/b"), read=read, n=5, show_headers=True))
     assert out == b"==> /a <==\na1\na2\n\n==> /b <==\nb1\n"
+
+
+# ── tail -f: the poll loop, its notices, and its refusals ──────────
+
+
+class _Growing:
+    """A fake mount whose files the test grows between polls."""
+
+    def __init__(self, data: dict[str, bytes]) -> None:
+        self.data = data
+
+    async def stat(self, p: PathSpec) -> FileStat:
+        if p.virtual not in self.data:
+            raise FileNotFoundError(p.virtual)
+        return FileStat(name=p.virtual.rsplit("/", 1)[-1],
+                        size=len(self.data[p.virtual]),
+                        type=FileType.FILE)
+
+    async def read(self, p: PathSpec) -> bytes:
+        return self.data[p.virtual]
+
+    async def read_range(self, p: PathSpec, offset: int, size: int) -> bytes:
+        return self.data[p.virtual][offset:offset + size]
+
+
+async def _drain_for(gen, seconds: float) -> list[bytes]:
+    chunks: list[bytes] = []
+
+    async def drain() -> None:
+        async for chunk in gen:
+            chunks.append(chunk)
+
+    task = asyncio.create_task(drain())
+    await asyncio.sleep(seconds)
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+    return chunks
+
+
+def _follow_opts(**flags) -> CommandOpts:
+    return CommandOpts(flags={
+        "follow": True,
+        "sleep_interval": "0.02",
+        **flags
+    })
+
+
+@pytest.mark.asyncio
+async def test_follow_prints_what_a_file_gains_and_notes_truncation():
+    fs = _Growing({"/d/log": b"l1\nl2\n"})
+    stream, io = await tail_generic(_paths("/d/log"), [], _follow_opts(),
+                                    fs.stat, fs.read, fs.read_range)
+
+    async def grow() -> None:
+        await asyncio.sleep(0.06)
+        fs.data["/d/log"] += b"l3\n"
+        await asyncio.sleep(0.06)
+        fs.data["/d/log"] = b"z\n"
+        await asyncio.sleep(0.06)
+        fs.data["/d/log"] += b"y\n"
+
+    grower = asyncio.create_task(grow())
+    chunks = await _drain_for(stream, 0.35)
+    await grower
+    assert b"".join(chunks) == b"l1\nl2\nl3\nz\ny\n"
+    assert io.stderr == b"tail: /d/log: file truncated\n"
+    assert io.exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_follow_reads_whole_when_the_backend_has_no_range():
+    fs = _Growing({"/d/log": b"a\n"})
+    stream, _ = await tail_generic(_paths("/d/log"), [], _follow_opts(),
+                                   fs.stat, fs.read)
+
+    async def grow() -> None:
+        await asyncio.sleep(0.06)
+        fs.data["/d/log"] += b"b\n"
+
+    grower = asyncio.create_task(grow())
+    chunks = await _drain_for(stream, 0.2)
+    await grower
+    assert b"".join(chunks) == b"a\nb\n"
+
+
+@pytest.mark.asyncio
+async def test_follow_switches_headers_as_files_take_turns():
+    fs = _Growing({"/d/p": b"p\n", "/d/q": b"q\n"})
+    stream, _ = await tail_generic(_paths("/d/p", "/d/q"), [], _follow_opts(),
+                                   fs.stat, fs.read, fs.read_range)
+
+    async def grow() -> None:
+        await asyncio.sleep(0.06)
+        fs.data["/d/p"] += b"p2\n"
+        await asyncio.sleep(0.06)
+        fs.data["/d/q"] += b"q2\n"
+        await asyncio.sleep(0.06)
+        fs.data["/d/q"] += b"q3\n"
+
+    grower = asyncio.create_task(grow())
+    chunks = await _drain_for(stream, 0.35)
+    await grower
+    assert b"".join(chunks) == (
+        b"==> /d/p <==\np\n\n==> /d/q <==\nq\n"
+        b"\n==> /d/p <==\np2\n\n==> /d/q <==\nq2\nq3\n")
+
+
+@pytest.mark.asyncio
+async def test_follow_with_nothing_to_follow_says_so():
+    fs = _Growing({})
+    stream, io = await tail_generic(_paths("/d/nope"), [], _follow_opts(),
+                                    fs.stat, fs.read, fs.read_range)
+    assert stream is None
+    assert io.exit_code == 1
+    assert io.stderr.endswith(b"tail: no files remaining\n")
+
+
+@pytest.mark.asyncio
+async def test_retry_waits_for_a_file_to_appear():
+    fs = _Growing({})
+    stream, io = await tail_generic(
+        _paths("/d/later"), [],
+        CommandOpts(flags={
+            "F": True,
+            "sleep_interval": "0.02"
+        }), fs.stat, fs.read, fs.read_range)
+    assert stream is not None
+
+    async def appear() -> None:
+        await asyncio.sleep(0.06)
+        fs.data["/d/later"] = b"born\n"
+
+    grower = asyncio.create_task(appear())
+    chunks = await _drain_for(stream, 0.25)
+    await grower
+    assert b"".join(chunks) == b"born\n"
+    assert b"tail: '/d/later' has appeared;  following new file\n" in io.stderr
+
+
+@pytest.mark.asyncio
+async def test_follow_by_name_reports_a_file_that_vanishes():
+    fs = _Growing({"/d/gone": b"x\n"})
+    stream, io = await tail_generic(_paths("/d/gone"), [],
+                                    _follow_opts(follow="name"), fs.stat,
+                                    fs.read, fs.read_range)
+
+    async def vanish() -> None:
+        await asyncio.sleep(0.06)
+        del fs.data["/d/gone"]
+
+    grower = asyncio.create_task(vanish())
+    chunks = await _drain_for(stream, 0.25)
+    await grower
+    assert b"".join(chunks) == b"x\n"
+    assert io.stderr == (b"tail: '/d/gone' has become inaccessible: "
+                         b"No such file or directory\n"
+                         b"tail: no files remaining\n")
+    assert io.exit_code == 1
+
+
+def test_follow_flags_parse_gnu_spellings():
+    parsed = tail_parse_flags({"F": True})
+    assert parsed.follow and parsed.follow_name and parsed.retry
+    assert tail_parse_flags({"follow": "name"}).follow_name
+    assert not tail_parse_flags({"follow": True}).follow_name
+    assert tail_parse_flags({
+        "follow": True,
+        "sleep_interval": "0.5"
+    }).interval == 0.5
+    with pytest.raises(ValueError) as bad_follow:
+        tail_parse_flags({"follow": "bogus"})
+    assert str(bad_follow.value) == (
+        "tail: invalid argument 'bogus' for '--follow'\n"
+        "Valid arguments are:\n  - 'descriptor'\n  - 'name'\n"
+        "Try 'tail --help' for more information.\n")
+    with pytest.raises(ValueError) as bad_seconds:
+        tail_parse_flags({"follow": True, "sleep_interval": "bogus"})
+    assert str(
+        bad_seconds.value) == "tail: invalid number of seconds: 'bogus'\n"

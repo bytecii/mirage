@@ -97,3 +97,24 @@ async def test_quoting_survives_rejoin():
     shell = FakeShell()
     await handle_timeout(shell, ["1", "grep", "a b", "f.txt"], make_session())
     assert shell.lines == ["grep 'a b' f.txt"]
+
+
+class StreamingShell:
+    """A shell whose command prints a line, then never finishes."""
+
+    async def __call__(self, line: str, session_id: str) -> IOResult:
+
+        async def forever():
+            yield b"first\n"
+            await asyncio.sleep(10)
+            yield b"never\n"
+
+        return IOResult(stdout=forever())
+
+
+@pytest.mark.asyncio
+async def test_overrun_keeps_what_the_command_had_printed():
+    stdout, io, _ = await handle_timeout(StreamingShell(),
+                                         ["0.1", "tail", "-f"], make_session())
+    assert io.exit_code == 124
+    assert stdout == b"first\n"

@@ -23,6 +23,14 @@ import type { PathSpec } from '../../types.ts'
  * the refusal by link kind ("failed to create symbolic link" vs
  * "failed to create link").
  */
+function hasNoTargetFlag(argv: readonly string[]): boolean {
+  for (const tok of argv) {
+    if (tok === '--no-target-directory') return true
+    if (tok.startsWith('-') && !tok.startsWith('--') && tok.includes('T')) return true
+  }
+  return false
+}
+
 function hasSymlinkFlag(argv: readonly string[]): boolean {
   for (const tok of argv) {
     if (tok === '--symbolic') return true
@@ -138,8 +146,11 @@ export class MountRootPolicy implements Policy {
     }
 
     if (cmd === 'ln') {
+      // A mount root is refused only as the link NAME. Without -T a
+      // directory operand is the directory to link into, GNU's rule, and
+      // creating inside a mount is ordinary.
       const last = ctx.paths[ctx.paths.length - 1]
-      if (last !== undefined && isRoot(last.virtual)) {
+      if (last !== undefined && hasNoTargetFlag(ctx.argv) && isRoot(last.virtual)) {
         const kind = hasSymlinkFlag(ctx.argv) ? 'symbolic link' : 'link'
         return deny(`failed to create ${kind} '${last.virtual}': File exists`)
       }

@@ -39,6 +39,20 @@ def has_symlink_flag(argv: tuple[str, ...]) -> bool:
     return False
 
 
+def has_no_target_flag(argv: tuple[str, ...]) -> bool:
+    """Spot ln's -T/--no-target-directory by raw token scan.
+
+    Args:
+        argv (tuple[str, ...]): raw argv after the command name.
+    """
+    for tok in argv:
+        if isinstance(tok, str) and (tok == "--no-target-directory" or
+                                     (tok.startswith("-") and "T" in tok[1:]
+                                      and not tok.startswith("--"))):
+            return True
+    return False
+
+
 def has_parents_flag(argv: tuple[str, ...]) -> bool:
     """Spot mkdir's -p/--parents by raw token scan.
 
@@ -136,7 +150,11 @@ class MountRootPolicy(Policy):
                     return Deny(f"cannot touch '{p.virtual}': Is a directory",
                                 DenyScope.OPERAND)
         elif cmd == "ln":
-            if ctx.registry.is_mount_root(ctx.paths[-1].virtual):
+            # A mount root is refused only as the link NAME. Without -T
+            # a directory operand is the directory to link into, GNU's
+            # rule, and creating inside a mount is ordinary.
+            if has_no_target_flag(ctx.argv) and ctx.registry.is_mount_root(
+                    ctx.paths[-1].virtual):
                 kind = ("symbolic link"
                         if has_symlink_flag(ctx.argv) else "link")
                 return Deny(

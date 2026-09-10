@@ -12,9 +12,14 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.commands.builtin.utils.formatting import (format_find_ls,
+import pytest
+
+from mirage.commands.builtin.utils.formatting import (BlockSize,
+                                                      format_find_ls,
                                                       format_ls_long,
-                                                      format_number, to_number)
+                                                      format_number,
+                                                      parse_block_size,
+                                                      scaled_size, to_number)
 from mirage.types import FileStat, FileType
 
 
@@ -47,3 +52,31 @@ def test_find_ls_and_ls_show_the_year_for_an_old_or_future_time():
                    type=FileType.FILE)
     assert format_find_ls(far, None).endswith(" Sep  6  2999 far")
     assert format_ls_long([far])[0].endswith(" Sep  6  2999 far")
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("K", BlockSize(1024, "K")),
+    ("KiB", BlockSize(1024, "K")),
+    ("KB", BlockSize(1000, "kB")),
+    ("M", BlockSize(1024 * 1024, "M")),
+    ("4", BlockSize(4, "")),
+    ("2K", BlockSize(2048, "")),
+    ("human-readable", BlockSize(1024, "", 1024)),
+    ("si", BlockSize(1000, "", 1000)),
+    ("bogus", None),
+    ("0", None),
+    ("KiX", None),
+])
+def test_parse_block_size_reads_gnu_units(text, expected):
+    assert parse_block_size(text) == expected
+
+
+def test_scaled_size_rounds_up_like_gnu():
+    # `ls -l --block-size=K` on 6 bytes prints 1K; =4 on 10 bytes prints 3.
+    assert scaled_size(6, BlockSize(1024, "K"), False) == "1K"
+    assert scaled_size(10, BlockSize(4, ""), False) == "3"
+    assert scaled_size(10, BlockSize(1000, "kB"), False) == "1kB"
+    assert scaled_size(1500, BlockSize(1000, "", 1000), False) == "1.5k"
+    assert scaled_size(1500, BlockSize(1024, "", 1024), False) == "1.5K"
+    assert scaled_size(1500, None, True) == "1.5K"
+    assert scaled_size(1500, None, False) == "1500"

@@ -43,8 +43,8 @@ async def _run_bg(cmd: str, job_id: int = 1) -> tuple[bytes, bytes]:
     """
     ws = _workspace()
     await ws.execute(cmd)
-    await ws.job_table.wait(job_id)
-    job = ws.job_table.get(job_id)
+    await ws.job_table.wait(job_id, ws.default_session_id)
+    job = ws.job_table.get(job_id, ws.default_session_id)
     assert job is not None
     return (await job.console.snapshot(Channel.STDOUT), await
             job.console.snapshot(Channel.STDERR))
@@ -63,11 +63,11 @@ def test_loop_body_streams_each_iteration_instead_of_batching():
     async def _do():
         ws = _workspace()
         await ws.execute("for i in 1 2 3; do echo $i; sleep 0.25; done &")
-        job = ws.job_table.get(1)
+        job = ws.job_table.get(1, ws.default_session_id)
         assert job is not None
         await asyncio.sleep(0.35)
         mid = await job.console.snapshot(Channel.STDOUT)
-        await ws.job_table.wait(1)
+        await ws.job_table.wait(1, ws.default_session_id)
         return mid, await job.console.snapshot(Channel.STDOUT)
 
     mid, end = asyncio.run(_do())
@@ -117,8 +117,8 @@ def test_redirected_output_goes_to_the_file_not_the_console():
     async def _do():
         ws = _workspace()
         await ws.execute("echo hi > /m/f.txt &")
-        await ws.job_table.wait(1)
-        job = ws.job_table.get(1)
+        await ws.job_table.wait(1, ws.default_session_id)
+        job = ws.job_table.get(1, ws.default_session_id)
         assert job is not None
         written = await (await ws.execute("cat /m/f.txt")).stdout_str()
         return await job.console.snapshot(Channel.STDOUT), written
@@ -468,10 +468,10 @@ async def test_ampersand_inside_a_body_launches_a_job_with_status_zero(line):
     ws = _workspace()
     res = await ws.execute(f"{line}; echo rc=$?")
     assert res.stdout == b"rc=0\n"
-    job = ws.job_table.get(1)
+    job = ws.job_table.get(1, ws.default_session_id)
     assert job is not None
     assert job.command == "false"
-    await ws.job_table.wait(1)
+    await ws.job_table.wait(1, ws.default_session_id)
     assert job.exit_code == 1
 
 
@@ -536,5 +536,61 @@ async def test_background_condition_and_function_scope(line, expected, code):
         assert await result.stdout_str() == expected
         assert await result.stderr_str() == ""
         assert result.exit_code == code
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_jobs_are_scoped_to_the_session_that_launched_them():
+    ws = _workspace()
+    ws.create_session("a")
+    ws.create_session("b")
+    try:
+        await ws.execute("sleep 30 &", session_id="a")
+        assert (await ws.execute("jobs", session_id="b")).stdout == b""
+        assert b"[1]" in (await ws.execute("jobs", session_id="a")).stdout
+        io = await ws.execute("wait %1", session_id="b")
+        assert io.exit_code == 127
+        assert b"no such job" in (io.stderr or b"")
+        assert (await ws.execute("ps", session_id="b")).stdout == b""
+        assert (await ws.execute("kill %1", session_id="a")).exit_code == 0
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_each_session_numbers_its_jobs_from_one():
+    ws = _workspace()
+    ws.create_session("a")
+    ws.create_session("b")
+    try:
+        first_a = await ws.execute("sleep 30 & echo $!", session_id="a")
+        first_b = await ws.execute("sleep 30 & echo $!", session_id="b")
+        second_a = await ws.execute("sleep 30 & echo $!", session_id="a")
+        assert (first_a.stdout, first_b.stdout,
+                second_a.stdout) == (b"1\n", b"1\n", b"2\n")
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_followed_tail_streams_to_its_job_console_until_killed():
+    # `timeout N tail -f` cannot show partial output: the line barrier
+    # materializes stdout before `timeout` drains it. A job is the shape
+    # that works, and the one an agent reaches for: the console shows
+    # each line as the file gains it, and `kill` ends the follow.
+    ws = _workspace()
+    ws.create_session("writer")
+    try:
+        await ws.execute("printf 'l1\\n' > /m/log")
+        await ws.execute("tail -f -s 0.05 /m/log &")
+        await asyncio.sleep(0.15)
+        await ws.execute("printf 'l2\\n' >> /m/log", session_id="writer")
+        await asyncio.sleep(0.25)
+        job = ws.job_table.get(1, ws.default_session_id)
+        assert job is not None
+        assert job.status is JobStatus.RUNNING
+        assert await job.console.snapshot(Channel.STDOUT) == b"l1\nl2\n"
+        assert (await ws.execute("kill %1")).exit_code == 0
     finally:
         await ws.close()

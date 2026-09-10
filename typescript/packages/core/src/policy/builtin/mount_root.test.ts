@@ -54,7 +54,10 @@ describe('MountRootPolicy', () => {
     ['touch', 'Is a directory'],
     ['ln', 'File exists'],
   ])('refuses %s on a mount root', (cmd, needle) => {
-    const deny = new MountRootPolicy().preCommand(ctx(cmd, [path('/data')]))
+    // ln refuses a mount root only as the link NAME, which -T pins;
+    // without it a directory operand is the directory to link into.
+    const argv = cmd === 'ln' ? ['-T'] : []
+    const deny = new MountRootPolicy().preCommand(ctx(cmd, [path('/data')], argv))
     expect(deny).not.toBeNull()
     expect(deny?.kind).toBe('deny')
     expect(deny && 'reason' in deny ? deny.reason : '').toContain(needle)
@@ -92,13 +95,15 @@ describe('MountRootPolicy', () => {
 
   it('ln wording follows the link kind', () => {
     // GNU words the refusal by link kind: ln -s says "symbolic link",
-    // plain ln says "link" (pinned by integ guard_root_ln_is_eexist).
+    // plain ln says "link" (pinned by integ guard_root_ln_is_eexist). A
+    // mount root is only refused as the link NAME, which -T pins; without
+    // it a directory operand is the directory to link into.
     const policy = new MountRootPolicy()
-    const symbolic = policy.preCommand(ctx('ln', [path('/data/k.txt'), path('/data')], ['-s']))
+    const symbolic = policy.preCommand(ctx('ln', [path('/data/k.txt'), path('/data')], ['-sT']))
     expect(symbolic && 'reason' in symbolic ? symbolic.reason : '').toBe(
       "failed to create symbolic link '/data': File exists",
     )
-    const hard = policy.preCommand(ctx('ln', [path('/data/k.txt'), path('/data')]))
+    const hard = policy.preCommand(ctx('ln', [path('/data/k.txt'), path('/data')], ['-T']))
     expect(hard && 'reason' in hard ? hard.reason : '').toBe(
       "failed to create link '/data': File exists",
     )

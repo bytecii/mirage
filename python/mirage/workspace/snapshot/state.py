@@ -183,7 +183,7 @@ async def to_state_dict(ws) -> dict[str, Any]:
     ]
 
     finished_jobs = [
-        await _job_to_dict(j) for j in ws.job_table.list_jobs()
+        await _job_to_dict(j) for j in ws.job_table.all_jobs()
         if j.status != JobStatus.RUNNING
     ]
 
@@ -404,11 +404,8 @@ async def _restore_history(ws, state: dict[str, Any]) -> None:
 
 
 def _restore_jobs(ws, state: dict[str, Any]) -> None:
-    max_id = 0
     for job_d in state.get(StateKey.JOBS, []):
-        max_id = max(max_id, job_d.get(JobKey.ID, 0))
-        ws.job_table._jobs[job_d[JobKey.ID]] = _job_from_dict(job_d)
-    ws.job_table._next_id = max_id + 1
+        ws.job_table.load(_job_from_dict(job_d))
 
 
 async def _job_to_dict(job) -> dict[str, Any]:

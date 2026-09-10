@@ -1,6 +1,8 @@
+import asyncio
 import inspect
+import math
 from collections import deque
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Mapping
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -12,17 +14,82 @@ from mirage.commands.builtin.utils.stream import resolve_source
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.types import FlagValue, FlagView
+from mirage.commands.spec.usage import usage_hint
 from mirage.io.types import ByteSource, IOResult
-from mirage.types import PathSpec, PolymorphicReadFn, StatFn
+from mirage.types import FileType, PathSpec, PolymorphicReadFn, StatFn
+from mirage.utils.errors import FS_ERRORS, fs_strerror
 from mirage.utils.stream import ensure_stream
+
+DEFAULT_SLEEP_INTERVAL = 1.0
+# A bound byte-window reader, called as ``read_range(path, offset=, size=)``.
+ReadRangeFn = Callable[..., Awaitable[bytes]]
 
 
 @dataclass(frozen=True, slots=True)
 class TailFlags:
+    """The tail flag bag, parsed once.
+
+    Args:
+        counts (TailCounts): ``-n``/``-c`` and their ``+N`` forms.
+        quiet (bool): ``-q``; never print headers.
+        verbose (bool): ``-v``; always print headers.
+        follow (bool): ``-f``/``--follow``; keep reading as the file
+            grows.
+        follow_name (bool): ``--follow=name``/``-F``; a file that goes
+            away is reported, and picked up again under ``--retry``.
+        retry (bool): ``--retry``/``-F``; keep trying a file that is
+            missing or vanishes.
+        interval (float): ``-s``; seconds between polls.
+    """
     counts: TailCounts
     quiet: bool = False
     verbose: bool = False
     follow: bool = False
+    follow_name: bool = False
+    retry: bool = False
+    interval: float = DEFAULT_SLEEP_INTERVAL
+
+
+def _follow_flags(fl: FlagView) -> tuple[bool, bool, bool]:
+    """``-f``, ``--follow[=HOW]`` and ``-F`` as (follow, by name, retry).
+
+    Args:
+        fl (FlagView): the tail flag view.
+    """
+    raw = fl.raw("follow")
+    follow = raw is not None and raw is not False
+    by_name = False
+    if isinstance(raw, str):
+        if raw == "name":
+            by_name = True
+        elif raw != "descriptor":
+            raise ValueError(f"tail: invalid argument '{raw}' for '--follow'\n"
+                             "Valid arguments are:\n"
+                             "  - 'descriptor'\n"
+                             "  - 'name'\n"
+                             f"{usage_hint('tail')}\n")
+    retry = fl.as_bool("retry")
+    if fl.as_bool("F"):
+        follow = by_name = retry = True
+    return follow, by_name, retry
+
+
+def _interval_flag(fl: FlagView) -> float:
+    """``-s``/``--sleep-interval`` as seconds, GNU's refusal otherwise.
+
+    Args:
+        fl (FlagView): the tail flag view.
+    """
+    raw = fl.as_str("sleep_interval")
+    if raw is None:
+        return DEFAULT_SLEEP_INTERVAL
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = math.nan
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError(f"tail: invalid number of seconds: '{raw}'\n")
+    return seconds
 
 
 def parse_flags(flags: Mapping[str, FlagValue]) -> TailFlags:
@@ -32,11 +99,15 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> TailFlags:
     error = number_flag_error("tail", n_raw, c_raw)
     if error is not None:
         raise ValueError(error)
+    follow, by_name, retry = _follow_flags(fl)
     return TailFlags(
         counts=parse_counts(n_raw, c_raw),
         quiet=fl.as_bool("q"),
         verbose=fl.as_bool("v"),
-        follow=fl.as_bool("follow"),
+        follow=follow,
+        follow_name=by_name,
+        retry=retry,
+        interval=_interval_flag(fl),
     )
 
 
@@ -186,12 +257,195 @@ async def _tail_multi(
             yield chunk
 
 
+def _note(io: IOResult, message: str) -> None:
+    """Append a follow-time diagnostic to the result's stderr.
+
+    A following tail's stdout is a stream the caller drains as the
+    file grows, and its stderr is the bytes on the result, which the
+    caller reads once the stream ends; a notice raised mid-follow
+    lands there.
+
+    Args:
+        io (IOResult): the result handed back with the stream.
+        message (str): the ``tail: ...`` line, newline included.
+    """
+    prior = io.stderr if isinstance(io.stderr, bytes) else b""
+    io.stderr = prior + message.encode()
+
+
+async def _counted(source: Any, box: list[int]) -> AsyncIterator[bytes]:
+    """Pass a source through, adding up the bytes it yields.
+
+    Args:
+        source (Any): bytes, an awaitable of bytes, or an async iterator.
+        box (list[int]): one-slot counter the total lands in.
+    """
+    if inspect.isawaitable(source):
+        source = await source
+    async for chunk in ensure_stream(source):
+        box[0] += len(chunk)
+        yield chunk
+
+
+async def _window(read: Callable[..., Any], read_range: ReadRangeFn | None,
+                  path: PathSpec, offset: int, size: int) -> bytes:
+    """The bytes a file gained past ``offset``.
+
+    Args:
+        read (Callable[..., Any]): whole-file reader, the fallback.
+        read_range (ReadRangeFn | None): the backend's byte window, if
+            it has one.
+        path (PathSpec): the file.
+        offset (int): where the last poll ended.
+        size (int): how many bytes appeared.
+    """
+    if read_range is not None:
+        # The bound op takes its window by keyword: the accessor and index
+        # are already bound, and the protocol names the rest.
+        data = await read_range(path, offset=offset, size=size)
+        return bytes(data)
+    box = [0]
+    parts = [chunk async for chunk in _counted(read(path), box)]
+    return b"".join(parts)[offset:offset + size]
+
+
+async def _follow(
+    paths: list[PathSpec],
+    pending: list[PathSpec],
+    *,
+    read: Callable[..., Any],
+    read_range: ReadRangeFn | None,
+    stat: StatFn,
+    counts: TailCounts,
+    show_headers: bool,
+    flags: TailFlags,
+    io: IOResult,
+) -> AsyncIterator[bytes]:
+    """Print each operand's tail, then keep printing what it gains.
+
+    GNU tail -f is a poll: every ``-s`` seconds each followed file is
+    stat'ed, bytes past the last position are printed under that file's
+    header when the previous output was another file's, and a size that
+    shrank is ``file truncated`` and a restart from the top. A file that
+    goes away is dropped with ``has become inaccessible`` under
+    ``--follow=name``; ``--retry`` keeps polling for it (and for one
+    that was never there) and announces ``has appeared`` when it turns
+    up, reading it from the start as GNU does after a rotation. The
+    loop ends only when nothing is left to follow (``no files
+    remaining``, exit 1) or the caller stops draining, which is how
+    ``timeout`` and a killed job end it.
+
+    Args:
+        paths (list[PathSpec]): the operands that opened.
+        pending (list[PathSpec]): the ones ``--retry`` waits for.
+        read (Callable[..., Any]): bound whole-file reader.
+        read_range (ReadRangeFn | None): bound byte-window reader.
+        stat (StatFn): bound stat.
+        counts (TailCounts): what the first print shows.
+        show_headers (bool): the ``==> name <==`` rule.
+        flags (TailFlags): the parsed flags.
+        io (IOResult): the result the notices are appended to.
+    """
+    positions: dict[str, int] = {}
+    active = list(paths)
+    last: str | None = None
+    for p in active:
+        if show_headers:
+            header = f"==> {p.raw_path} <==\n"
+            yield (("\n" if last is not None else "") + header).encode()
+        last = p.virtual
+        box = [0]
+        async for chunk in tail(_counted(read(p), box),
+                                n=counts.lines,
+                                c=counts.byte_count,
+                                from_line=counts.from_line,
+                                from_byte=counts.from_byte):
+            yield chunk
+        positions[p.virtual] = box[0]
+    while active or pending:
+        await asyncio.sleep(flags.interval)
+        for p in list(pending):
+            try:
+                found = await stat(p)
+            except FS_ERRORS:
+                continue
+            if found.type is FileType.DIRECTORY:
+                continue
+            _note(io,
+                  f"tail: '{p.raw_path}' has appeared;  following new file\n")
+            pending.remove(p)
+            active.append(p)
+            positions[p.virtual] = 0
+        for p in list(active):
+            try:
+                current = await stat(p)
+            except FS_ERRORS as exc:
+                if flags.follow_name or flags.retry:
+                    _note(
+                        io, f"tail: '{p.raw_path}' has become inaccessible: "
+                        f"{fs_strerror(exc)}\n")
+                    active.remove(p)
+                    if flags.retry:
+                        pending.append(p)
+                continue
+            size = current.size
+            if size is None:
+                continue
+            pos = positions[p.virtual]
+            if size < pos:
+                _note(io, f"tail: {p.raw_path}: file truncated\n")
+                pos = 0
+            if size > pos:
+                data = await _window(read, read_range, p, pos, size - pos)
+                if show_headers and last != p.virtual:
+                    yield f"\n==> {p.raw_path} <==\n".encode()
+                last = p.virtual
+                if data:
+                    yield data
+                pos += len(data)
+            positions[p.virtual] = pos
+    _note(io, "tail: no files remaining\n")
+    io.exit_code = 1
+
+
+async def _unfollowable(paths: list[PathSpec], readable: list[PathSpec],
+                        stat: StatFn, retry: bool,
+                        io: IOResult) -> list[PathSpec]:
+    """Sort the operands that did not open into the ones ``--retry``
+    waits for and the ones tail gives up on, wording the latter.
+
+    Args:
+        paths (list[PathSpec]): every operand.
+        readable (list[PathSpec]): the ones that opened.
+        stat (StatFn): bound stat.
+        retry (bool): ``--retry``.
+        io (IOResult): the result the notices are appended to.
+    """
+    opened = {p.virtual for p in readable}
+    pending: list[PathSpec] = []
+    for p in paths:
+        if p.virtual in opened:
+            continue
+        try:
+            found = await stat(p)
+        except FS_ERRORS:
+            if retry:
+                pending.append(p)
+            continue
+        if found.type is FileType.DIRECTORY:
+            _note(
+                io, f"tail: {p.raw_path}: cannot follow end of this type of "
+                "file; giving up on this name\n")
+    return pending
+
+
 async def tail_generic(
     paths: list[PathSpec],
     texts: list[str],
     opts: CommandOpts,
     stat: StatFn,
     stream: PolymorphicReadFn,
+    read_range: ReadRangeFn | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     """Run tail over resolved operands, GNU semantics; mirrors tailGeneric.
 
@@ -207,6 +461,9 @@ async def tail_generic(
         stat (StatFn): Bound stat called as ``stat(path)``.
         stream (PolymorphicReadFn): Bound reader called as
             ``stream(path)``.
+        read_range (ReadRangeFn | None): Bound byte-window reader
+            called as ``read_range(path, offset, size)``, for a follow
+            that only wants what the file gained; None reads whole.
     """
     try:
         parsed = parse_flags(opts.flags)
@@ -217,6 +474,22 @@ async def tail_generic(
         show_headers = (parsed.verbose or len(paths) > 1) and not parsed.quiet
         readable, err = await split_readable(paths, stat, "tail")
         io = operands_io(err)
+        if parsed.follow:
+            pending = await _unfollowable(paths, readable, stat, parsed.retry,
+                                          io)
+            if not readable and not pending:
+                _note(io, "tail: no files remaining\n")
+                io.exit_code = 1
+                return None, io
+            return _follow(readable,
+                           pending,
+                           read=cache_aware_read(stream),
+                           read_range=read_range,
+                           stat=stat,
+                           counts=counts,
+                           show_headers=show_headers,
+                           flags=parsed,
+                           io=io), io
         if not readable:
             return None, io
         return tail_multi(readable,

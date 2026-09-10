@@ -248,7 +248,7 @@ async def test_job_table_reports_completed_bg_without_wait(restore_defaults):
     ws = _ws()
     await ws.execute("sleep 5 &")
     await asyncio.sleep(0.2)
-    jobs = ws.job_table.list_jobs()
+    jobs = ws.job_table.list_jobs(ws.default_session_id)
     assert len(jobs) == 1
     assert jobs[0].status.value == "completed"
     assert jobs[0].exit_code == 124

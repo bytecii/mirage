@@ -63,7 +63,6 @@ import {
   handleLn,
   handleReadlink,
   handleTouch,
-  linkFlags,
   prepareMv,
   stripLinkOperands,
 } from '../executor/builtins/index.ts'
@@ -713,7 +712,7 @@ async function routeArgv(
   // Symlinks are namespace-backed: not bash builtins, not mount commands.
   // They mutate the addressing layer. `readlink -f/-e/-m` is canonicalization,
   // which falls through to the mount command.
-  if (name === 'ln' && linkFlags(operands, 'sfnvrT').has('s')) {
+  if (name === 'ln') {
     return await handleLn(namespace, dispatch, session, operands)
   }
   if (name === 'readlink') {
