@@ -490,7 +490,14 @@ export async function applyStateDict(
       )
       continue
     }
-    if (resourceStateRequiresOverride(m.resource_state)) continue
+    // loadState runs for every mount, an overridden one included, so
+    // disk content is written into the new root and redis content into
+    // the new URL; a cred-only resource (the S3 family) implements it
+    // as a no-op, which is why skipping the overridden ones here read
+    // as harmless and was not. A redacted config is exactly what a
+    // content resource behind a credential has, so the skip dropped
+    // every byte a redis or disk mount carried while python restored
+    // them. Mirrors the python loop, which has never skipped.
     // No cast, for the same reason as toStateDict above.
     await Promise.resolve(mount.resource.loadState(m.resource_state as RAMResourceState))
   }
@@ -579,10 +586,18 @@ function targetProfile(ws: Workspace, name: string | null): CompiledProfile {
  * snapshot describes, and one its close then persisted. A refusal
  * anywhere discards the sessions created here and puts the joined ones
  * back as they were (`narrowingOf`), so the store never sees a
- * half-made table. The template is gated under the id the restore makes
- * the default session, which is the session a live write of it would
- * land in. Returns the parsed session tables and the template, null
- * when the snapshot carries none. Mirrors the Python
+ * half-made table.
+ *
+ * Every gate call names the id the table *lands* on, not the one the
+ * snapshot recorded. A hook reads its program off the manager by
+ * session id (`ScriptPolicy.preSession` -> `scriptOf`), and the manager
+ * cannot answer for the snapshot's default id until `adoptDefault`
+ * re-keys the live default onto it, so a checkout whose recorded
+ * default id differs from the live one vetted that table under the
+ * target's default program rather than the one the join had just
+ * installed. The env template is gated the same way, since it lands in
+ * that same session. Returns the parsed session tables and the
+ * template, null when the snapshot carries none. Mirrors the Python
  * `_gate_restored_state`.
  */
 async function gateRestoredState(
@@ -598,6 +613,13 @@ async function gateRestoredState(
   const live = new Set(ws.sessionManager.list().map((s) => s.sessionId))
   const created: string[] = []
   const joined = new Map<string, [Session, CompiledProfile]>()
+  // Where each table lands, which is the id the gate has to name: a
+  // policy hook reads its program off the manager by session id
+  // (`scriptOf`), and the manager does not know the snapshot's default
+  // id until `adoptDefault` re-keys the live default onto it, so gating
+  // a remapped default table under the recorded id fell back to the
+  // target's default program instead of the one the join just installed.
+  const landings: [string, Record<string, ShellVar>][] = []
   let seed: Record<string, ShellVar> | null = null
   let vetted = false
   try {
@@ -606,6 +628,7 @@ async function gateRestoredState(
       if (sid !== defaultSid && !live.has(sid)) {
         created.push(sid)
         narrow(ws.sessionManager.create(sid), profile)
+        landings.push([sid, fields.vars])
         continue
       }
       // A session already here keeps everything it restricts, so the
@@ -619,13 +642,20 @@ async function gateRestoredState(
       const session = ws.sessionManager.get(landing)
       if (!joined.has(landing)) joined.set(landing, [session, narrowingOf(session)])
       narrowProfile(session, profile)
+      landings.push([landing, fields.vars])
     }
-    for (const fields of tables) {
-      await gateRestoredVars(ws.registry.policies, fields.sessionId, fields.vars)
+    for (const [landing, tableVars] of landings) {
+      await gateRestoredVars(ws.registry.policies, landing, tableVars)
     }
     if (state.env !== undefined && Object.keys(state.env).length > 0) {
       seed = varsFromFields(state.env)
-      await gateRestoredVars(ws.registry.policies, defaultSid ?? ws.defaultSessionId, seed)
+      // The template lands in the default session, whose id here is the
+      // live one for the same reason.
+      await gateRestoredVars(
+        ws.registry.policies,
+        defaultSid !== null && live.has(defaultSid) ? defaultSid : ws.defaultSessionId,
+        seed,
+      )
     }
     vetted = true
   } finally {

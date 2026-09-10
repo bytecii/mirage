@@ -35,6 +35,7 @@ from mirage.resource.registry import build_resource, register_resource
 from mirage.secrets import registry
 from mirage.secrets.registry import register_secrets
 from mirage.secrets.types import ResolvedSecret
+from mirage.shell.variable import ShellVar
 from mirage.types import ConsistencyPolicy, ContentType, FileType
 from mirage.workspace.snapshot.keys import (CacheKey, MountKey,
                                             ResourceStateKey, StateKey)
@@ -1096,3 +1097,113 @@ async def test_an_explicit_none_profile_clears_the_recorded_default():
         assert cleared._default_profile_name is None
     finally:
         await cleared.close()
+
+
+MONTY_GUARD = {
+    "commands": {
+        "allow": ["echo", "cat", "ls"]
+    },
+    "policy": {
+        "script": {
+            "source":
+            "def pre_command(ctx):\n"
+            "    if ctx['command']['name'] == 'cat':\n"
+            "        return {'deny': 'monty says no'}\n"
+            "    return None\n",
+            "language":
+            "python",
+        },
+        "runtime": "monty",
+    },
+}
+
+
+# A runtime world is deployment wiring the snapshot never carries, and a
+# restored profile policy names the runtime it needs, so the loader has
+# to be able to state one. TypeScript took `runtimes` through its
+# options from the start; Python had no way to say it.
+@pytest.mark.asyncio
+async def test_the_loader_states_the_runtime_world_a_profile_policy_needs():
+    source = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       profiles={"guard": MONTY_GUARD},
+                       profile="guard",
+                       runtimes=["monty"])
+    try:
+        assert (await source.execute("echo hi > /f.txt")).exit_code == 0
+        refused = await source.execute("cat /f.txt")
+        assert refused.exit_code == 126
+        assert refused.refusal is not None
+        assert refused.refusal.reason == "monty says no"
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    target = await Workspace.from_state(state, runtimes=["monty"])
+    try:
+        out = await target.execute("cat /f.txt")
+        assert out.exit_code == 126
+        assert out.refusal is not None
+        assert out.refusal.reason == "monty says no"
+        assert (await target.execute("echo ok")).exit_code == 0
+    finally:
+        await target.close()
+
+
+# A profile whose policy program refuses one variable name. The gate
+# fires it per restored variable, so which program answers is decided
+# by the session id the gate names.
+SEALS_A_VAR = {
+    "commands": {
+        "allow": ["echo", "cat", "export"]
+    },
+    "policy": {
+        "script": {
+            "source":
+            "def pre_session(ctx):\n"
+            "    if ctx['write']['key'] == 'SEALED':\n"
+            "        return {'deny': 'sealed is refused'}\n"
+            "    return None\n",
+            "language":
+            "python",
+        },
+        "runtime": "monty",
+    },
+}
+
+
+# A policy hook reads its program off the manager by session id, and the
+# manager cannot answer for the snapshot's default id until
+# `adopt_default` re-keys the live default onto it. So a checkout whose
+# recorded default id differs from the live one gated that table under
+# the target's default program instead of the one the join had just
+# installed, and a `pre_session` rule the named profile carries never
+# saw the restored variables.
+@pytest.mark.asyncio
+async def test_a_remapped_default_table_is_gated_under_its_landing_id():
+    source = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       session_id="src",
+                       profiles={"sealed": SEALS_A_VAR})
+    try:
+        await source.set_session_profile("src", "sealed")
+        # The gate the target will fire is the profile's, so the source
+        # writes the name through a door the profile does not refuse.
+        source._session_mgr.get("src").vars["SEALED"] = ShellVar(value="1")
+        state = await to_state_dict(source)
+    finally:
+        await source.close()
+    assert state[StateKey.DEFAULT_SESSION_ID] == "src"
+    target = Workspace({"/": RAMResource()},
+                       mode=MountMode.WRITE,
+                       session_id="tgt",
+                       profiles={"sealed": SEALS_A_VAR},
+                       runtimes=["monty"])
+    try:
+        with pytest.raises(PolicyDenied, match="sealed is refused"):
+            await apply_state_dict(target, state)
+        # Refused before anything landed: the live default keeps its id
+        # and the variable never arrived.
+        assert target.default_session_id == "tgt"
+        assert "SEALED" not in target.get_session("tgt").vars
+    finally:
+        await target.close()

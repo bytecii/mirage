@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 
 from mirage.policy.errors import PolicyError
 from mirage.policy.match.pattern import intersect_patterns
@@ -21,7 +22,8 @@ from mirage.policy.types import (AdmissionRules, CommandRule, HideReason,
 from mirage.types import (HiddenPaths, HiddenVars, MountMode, ShowEntry,
                           ShownPaths, weaker_mode)
 from mirage.utils.hidden import (anchor_depth, classify_paths, classify_shows,
-                                 classify_vars, hide_depth, is_glob)
+                                 classify_vars, hide_depth, is_glob,
+                                 show_depth, shown_mode)
 from mirage.workspace.session.constants import DEFAULT_PROFILE
 from mirage.workspace.session.session import Session, vars_from_env
 from mirage.workspace.session.shell_dirs import set_cwd
@@ -565,9 +567,10 @@ def narrow_profile(session: Session, compiled: CompiledProfile) -> None:
     """
     modes = _merge_modes(session.mount_modes, compiled.mount_modes)
     hidden = _merge_hidden_paths(session.hidden_paths, compiled.hidden_paths)
-    shown = _merge_shown(session.shown_paths, compiled.shown_paths,
-                         session.mount_modes, compiled.mount_modes,
-                         session.hidden_paths, compiled.hidden_paths)
+    shown = _merge_shown(
+        _Side(session.mount_modes, session.hidden_paths, session.shown_paths),
+        _Side(compiled.mount_modes, compiled.hidden_paths,
+              compiled.shown_paths))
     session.hidden_vars = _merge_hidden_vars(session.hidden_vars,
                                              compiled.hidden_vars)
     session.hide_reasons = _merge_groups(session.hide_reasons,
@@ -757,125 +760,164 @@ def _cap_of(modes: dict[str, MountMode] | None, head: str) -> MountMode | None:
     return None if best is None else best[1]
 
 
-def _capped(mode: MountMode, caps: dict[str, MountMode] | None,
-            head: str) -> MountMode:
-    """A show mode one side states, held under the other side's cap at
-    that anchor: a show scores deeper than the cap and would otherwise
-    lift what the other side capped.
+@dataclass(frozen=True, slots=True)
+class _Side:
+    """One side of a show merge: its caps, its hides and its shows.
 
     Args:
-        mode (MountMode): the stated mode.
-        caps (dict[str, MountMode] | None): the other side's caps.
-        head (str): the show's anchor.
+        caps (dict[str, MountMode] | None): the per-mount modes.
+        hidden (HiddenPaths | None): the hide entries.
+        shown (ShownPaths | None): the show entries.
     """
-    cap = _cap_of(caps, head)
-    return mode if cap is None else weaker_mode(mode, cap)
+
+    caps: dict[str, MountMode] | None
+    hidden: HiddenPaths | None
+    shown: ShownPaths | None
 
 
-def _hides_show(hidden: HiddenPaths | None, path: str) -> bool:
-    """Whether one side's hides cover a show entry the other side states.
+def _hides_anything(hidden: HiddenPaths | None) -> bool:
+    """Whether a hide set names anything at all.
+
+    Args:
+        hidden (HiddenPaths | None): one side's hide entries.
+    """
+    return hidden is not None and bool(hidden.paths or hidden.patterns)
+
+
+def _grants(side: _Side, path: str) -> bool:
+    """Whether one side leaves a path the other side shows accessible.
 
     The question a one-sided show turns on, and it is asked of the
-    *other* side's hides, never of the merged set: a show exists to
-    re-open what a hide covers, so the side that states the show has a
-    hide over it by construction, and testing the union would drop
-    every show against its own hide. An exact entry is tested against
-    those hides; a pattern re-opens by name and no comparison proves
-    which names a hide leaves open, so it counts as covered wherever
-    the other side hides at all.
+    *other* side, never of the merged hide set: a show exists to
+    re-open what a hide covers, so the side that states it has a hide
+    over it by construction, and testing the union would drop every
+    show against its own hide.
+
+    It is the composition law's own rule (:func:`path_visible` without
+    its road clause, which only makes a hidden ancestor listable): the
+    path is granted when no hide covers it, or when a show covers it
+    more deeply than the deepest hide that does. Asking the shows and
+    not only the hides is what keeps a *nested* carve-out: one side's
+    ``show /vault/public`` grants the other side's narrower
+    ``show /vault/public/docs``, and the narrower one is the
+    intersection of the two grants.
+
+    A pattern that anchors nothing (``*.key``, no separator) re-opens
+    by name anywhere and no depth comparison bounds it, so it is
+    granted only where the other side hides nothing at all.
 
     Args:
-        hidden (HiddenPaths | None): the other side's hide set, None
-            when that side hides nothing.
+        side (_Side): the other side.
         path (str): the show entry's path.
     """
-    if hidden is None or (not hidden.paths and not hidden.patterns):
-        return False
-    return is_glob(path) or hide_depth(hidden, path) is not None
+    if is_glob(path) and "/" not in path:
+        return not _hides_anything(side.hidden)
+    hide = hide_depth(side.hidden, path)
+    if hide is None:
+        return True
+    show = show_depth(side.shown, path)
+    return show is not None and show > hide
 
 
-def _merge_show(mine: ShowEntry, other: ShowEntry | None,
-                my_caps: dict[str, MountMode] | None,
-                other_caps: dict[str, MountMode] | None,
-                other_hidden: HiddenPaths | None) -> ShowEntry | None:
+def _allowance(side: _Side, path: str) -> MountMode | None:
+    """The mode one side allows below a path, None when it states none.
+
+    A show scores deeper than a per-mount cap, so a show mode covering
+    the path is the answer where there is one and the cap is the
+    answer otherwise -- the same order :func:`path_mode` reads them in.
+
+    Args:
+        side (_Side): the side to ask.
+        path (str): the show entry's path.
+    """
+    stated = shown_mode(side.shown, path)
+    return stated[1] if stated is not None else _cap_of(side.caps, path)
+
+
+def _merge_show(mine: ShowEntry, other: ShowEntry | None, my_side: _Side,
+                other_side: _Side) -> ShowEntry | None:
     """One show entry as both sides allow it, or None to drop it.
 
-    A show does two things, and each side has to have said it. It
-    re-opens what a hide covers, so an entry only one side states
-    survives exactly where the other side hides nothing over it
-    (:func:`_hides_show`) — that side left the path open, so both
-    allow it. It states the mode below its anchor, and a show scores
-    deeper than a per-mount cap, so a mode only one side states is
-    held under the other side's cap there; two stated modes take the
-    weaker; two list-form entries stay list-form, since the merged
-    caps already hold the weaker mode below them. The entry itself is
-    returned when nothing changed, so an identical table leaves the
-    session's objects in place.
+    A show does two things. It re-opens what a hide covers, so an entry
+    only one side states survives exactly where the other side grants
+    that path (:func:`_grants`) -- which keeps a nested carve-out both
+    sides reach and drops a broad one only one side reaches. And it
+    states the mode below its anchor, so a mode only one side states is
+    held under whatever the other side allows there
+    (:func:`_allowance`, a show mode where there is one and the mount
+    cap otherwise); two stated modes take the weaker; two list-form
+    entries stay list-form, since the merged caps already hold the
+    weaker mode below them. The entry itself is returned when nothing
+    changed, so an identical table leaves the session's objects in
+    place.
 
     Args:
         mine (ShowEntry): the entry on the side being walked.
         other (ShowEntry | None): the other side's entry at the same
             path, None when it states none.
-        my_caps (dict[str, MountMode] | None): this side's caps.
-        other_caps (dict[str, MountMode] | None): the other side's.
-        other_hidden (HiddenPaths | None): the other side's hide set.
+        my_side (_Side): the side being walked.
+        other_side (_Side): the other one.
     """
     if other is None:
-        if _hides_show(other_hidden, mine.path):
+        if not _grants(other_side, mine.path):
             return None
         if mine.mode is None:
             return mine
-        mode = _capped(mine.mode, other_caps, mine.path)
+        mode = _held(mine.mode, _allowance(other_side, mine.path))
     elif mine.mode is not None and other.mode is not None:
         mode = weaker_mode(mine.mode, other.mode)
     elif mine.mode is not None:
-        mode = _capped(mine.mode, other_caps, mine.path)
+        mode = _held(mine.mode, _allowance(other_side, mine.path))
     elif other.mode is not None:
-        mode = _capped(other.mode, my_caps, mine.path)
+        mode = _held(other.mode, _allowance(my_side, mine.path))
     else:
         return mine
     return mine if mode == mine.mode else ShowEntry(path=mine.path, mode=mode)
 
 
-def _merge_shown(base: ShownPaths | None, table: ShownPaths | None,
-                 base_caps: dict[str, MountMode] | None,
-                 table_caps: dict[str, MountMode] | None,
-                 base_hidden: HiddenPaths | None,
-                 table_hidden: HiddenPaths | None) -> ShownPaths | None:
+def _held(mode: MountMode, allowed: MountMode | None) -> MountMode:
+    """A mode one side states, held under what the other side allows.
+
+    Args:
+        mode (MountMode): the stated mode.
+        allowed (MountMode | None): the other side's allowance, None
+            when it states none.
+    """
+    return mode if allowed is None else weaker_mode(mode, allowed)
+
+
+def _merge_shown(base: _Side, table: _Side) -> ShownPaths | None:
     """Both sides' show entries as both allow them (:func:`_merge_show`),
     the session's first; the session's own object when nothing changed.
 
-    Each side is walked against the *other* side's hides, which is why
-    both sets are passed rather than their union.
+    Each side is walked against the *other* side whole -- its caps, its
+    hides and its shows -- which is why the sides are passed rather
+    than the merged hide set: a show is stated against a hide, so the
+    union always covers it.
 
     Args:
-        base (ShownPaths | None): the session's entries.
-        table (ShownPaths | None): the stored table's entries.
-        base_caps (dict[str, MountMode] | None): the session's caps.
-        table_caps (dict[str, MountMode] | None): the table's caps.
-        base_hidden (HiddenPaths | None): the session's hide set.
-        table_hidden (HiddenPaths | None): the table's hide set.
+        base (_Side): the session's side.
+        table (_Side): the stored table's side.
     """
-    if base is None and table is None:
+    if base.shown is None and table.shown is None:
         return None
-    base_entries = base.entries if base is not None else ()
-    table_entries = table.entries if table is not None else ()
+    base_entries = base.shown.entries if base.shown is not None else ()
+    table_entries = table.shown.entries if table.shown is not None else ()
     by_table = {entry.path: entry for entry in table_entries}
     by_base = {entry.path: entry for entry in base_entries}
     out: list[ShowEntry] = []
     for entry in base_entries:
-        merged = _merge_show(entry, by_table.get(entry.path), base_caps,
-                             table_caps, table_hidden)
+        merged = _merge_show(entry, by_table.get(entry.path), base, table)
         if merged is not None:
             out.append(merged)
     for entry in table_entries:
         if entry.path in by_base:
             continue
-        merged = _merge_show(entry, None, table_caps, base_caps, base_hidden)
+        merged = _merge_show(entry, None, table, base)
         if merged is not None:
             out.append(merged)
-    if base is not None and tuple(out) == base.entries:
-        return base
+    if base.shown is not None and tuple(out) == base.shown.entries:
+        return base.shown
     return classify_shows(out)
 
 
@@ -918,9 +960,9 @@ def narrow_restored(session: Session, table: Session) -> None:
     """
     modes = _merge_modes(session.mount_modes, table.mount_modes)
     hidden = _merge_hidden_paths(session.hidden_paths, table.hidden_paths)
-    shown = _merge_shown(session.shown_paths, table.shown_paths,
-                         session.mount_modes, table.mount_modes,
-                         session.hidden_paths, table.hidden_paths)
+    shown = _merge_shown(
+        _Side(session.mount_modes, session.hidden_paths, session.shown_paths),
+        _Side(table.mount_modes, table.hidden_paths, table.shown_paths))
     session.hidden_vars = _merge_hidden_vars(session.hidden_vars,
                                              table.hidden_vars)
     session.hide_reasons = _merge_groups(session.hide_reasons,

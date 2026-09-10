@@ -32,7 +32,9 @@ from mirage.resource.ram import RAMResource
 from mirage.runtime.base import Runtime
 from mirage.runtime.mixin import LineExecutorMixin
 from mirage.runtime.types import RunResult, ScriptSource
-from mirage.types import HiddenPaths, HiddenVars, MountMode, ShowEntry
+from mirage.types import (HiddenPaths, HiddenVars, MountMode, ShowEntry,
+                          ShownPaths)
+from mirage.utils.hidden import classify_shows, shown_mode
 from mirage.workspace import Workspace
 from mirage.workspace.abort import MirageAbortError
 from mirage.workspace.session.state import seed_var
@@ -2305,3 +2307,39 @@ def test_profile_to_dict_spells_what_only_a_typed_caller_can_build():
         deny=(CommandRule(reason="r", commands=("rm", ), mount="/repo"), )))
     with pytest.raises(ValueError, match="carries no mount"):
         profile_to_dict(stamped)
+
+
+# The document keys a show by path, so two entries for one path have one
+# slot -- and the last one written is not the one that governs.
+# `shown_mode` takes the weaker of two entries at a depth, failing
+# toward refusal, so serializing the last handed the subtree back
+# executable after a reload while the source session was read-only.
+def test_a_duplicate_show_path_serializes_its_weakest_mode():
+    block = PathsBlock.model_construct(hide=("/vault", ),
+                                       show=(ShowEntry(path="/vault/public",
+                                                       mode=MountMode.READ),
+                                             ShowEntry(path="/vault/public",
+                                                       mode=MountMode.EXEC)),
+                                       reasons=())
+    profile = SessionProfile.model_construct(paths=block)
+    doc = profile_to_dict(profile)
+    assert doc["paths"]["show"] == {"/vault/public": "read"}
+    # What is in force before the round trip is what comes back.
+    assert shown_mode(ShownPaths(entries=block.show),
+                      "/vault/public/f") == (2, MountMode.READ)
+    assert shown_mode(classify_shows(profile_from_dict(doc).paths.show),
+                      "/vault/public/f") == (2, MountMode.READ)
+
+
+# A list-form entry states visibility only and answers no mode
+# question, so a stated mode beside it takes the slot rather than being
+# erased by it.
+def test_a_list_form_duplicate_does_not_erase_a_stated_mode():
+    for pair in ((None, MountMode.READ), (MountMode.READ, None)):
+        block = PathsBlock.model_construct(
+            hide=("/vault", ),
+            show=tuple(
+                ShowEntry(path="/vault/public", mode=mode) for mode in pair),
+            reasons=())
+        doc = profile_to_dict(SessionProfile.model_construct(paths=block))
+        assert doc["paths"]["show"] == {"/vault/public": "read"}

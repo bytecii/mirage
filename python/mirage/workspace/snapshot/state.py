@@ -506,9 +506,17 @@ async def _gate_restored_state(ws, state: dict[str, Any]) -> RestoredEnv:
     no snapshot describes, and one its close then persisted. A refusal
     anywhere discards the sessions created here and puts the joined
     ones back as they were (``narrowing_of``), so the store never sees
-    a half-made table. The template is gated under the id the restore
-    makes the default session, which is the session a live write of it
-    would land in.
+    a half-made table.
+
+    Every gate call names the id the table *lands* on, not the one the
+    snapshot recorded. A hook reads its program off the manager by
+    session id (``ScriptPolicy.pre_session`` -> ``script_of``), and the
+    manager cannot answer for the snapshot's default id until
+    ``adopt_default`` re-keys the live default onto it, so a checkout
+    whose recorded default id differs from the live one vetted that
+    table under the target's default program rather than the one the
+    join had just installed. The env template is gated the same way,
+    since it lands in that same session.
 
     Args:
         ws (Workspace): the target workspace.
@@ -527,6 +535,14 @@ async def _gate_restored_state(ws, state: dict[str, Any]) -> RestoredEnv:
     live = {session.session_id for session in ws._session_mgr.list()}
     created: list[str] = []
     joined: dict[str, tuple[Session, CompiledProfile]] = {}
+    # Where each table lands, which is the id the gate has to name: a
+    # policy hook reads its program off the manager by session id
+    # (``script_of``), and the manager does not know the snapshot's
+    # default id until ``adopt_default`` re-keys the live default onto
+    # it, so gating a remapped default table under the recorded id fell
+    # back to the target's default program instead of the one the join
+    # just installed.
+    landings: list[tuple[str, dict[str, ShellVar]]] = []
     seed_vars: dict[str, ShellVar] | None = None
     vetted = False
     try:
@@ -535,6 +551,7 @@ async def _gate_restored_state(ws, state: dict[str, Any]) -> RestoredEnv:
             if sid != default_sid and sid not in live:
                 created.append(sid)
                 narrow(ws._session_mgr.create(sid), profile)
+                landings.append((sid, fields.vars))
                 continue
             # A session already here keeps everything it restricts, so
             # the profile joins onto it instead of stamping over it
@@ -548,15 +565,18 @@ async def _gate_restored_state(ws, state: dict[str, Any]) -> RestoredEnv:
             if landing not in joined:
                 joined[landing] = (session, narrowing_of(session))
             narrow_profile(session, profile)
-        for fields in tables:
-            await gate_restored_vars(ws.policies, fields.session_id,
-                                     fields.vars)
+            landings.append((landing, fields.vars))
+        for landing, table_vars in landings:
+            await gate_restored_vars(ws.policies, landing, table_vars)
         seed = state.get(StateKey.ENV)
         if seed:
             seed_vars = vars_from_fields(seed)
-            await gate_restored_vars(
-                ws.policies, ws._session_mgr.default_id
-                if default_sid is None else default_sid, seed_vars)
+            # The template lands in the default session, whose id here
+            # is the live one for the same reason.
+            seed_sid = ws._session_mgr.default_id
+            if isinstance(default_sid, str) and default_sid in live:
+                seed_sid = default_sid
+            await gate_restored_vars(ws.policies, seed_sid, seed_vars)
         vetted = True
     finally:
         if not vetted:

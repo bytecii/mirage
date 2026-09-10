@@ -683,3 +683,49 @@ def test_narrowing_of_round_trips_through_narrow():
     assert session.to_dict() != before
     narrow(session, saved)
     assert session.to_dict() == before
+
+
+# Both sides hide /vault and both reach /vault/public/docs, one through
+# a broad carve-out and one through a narrow one. An exact-path lookup
+# found no counterpart for either entry, so each was judged one-sided
+# and dropped against the other side's /vault hide, and the subtree both
+# sides permit came back inaccessible. A grant is a depth comparison,
+# not a string match: the narrower carve-out is the intersection.
+def test_narrow_restored_keeps_a_nested_show_both_sides_reach():
+    session = Session(
+        session_id="s",
+        hidden_paths=HiddenPaths(paths=("/vault", )),
+        shown_paths=ShownPaths(
+            entries=(ShowEntry(path="/vault/public", mode=None), )))
+    narrow_restored(
+        session,
+        _restored(
+            hidden_paths=HiddenPaths(paths=("/vault", )),
+            shown_paths=ShownPaths(
+                entries=(ShowEntry(path="/vault/public/docs", mode=None), ))))
+    assert session.shown_paths == ShownPaths(
+        entries=(ShowEntry(path="/vault/public/docs", mode=None), ))
+    assert path_visible(session.hidden_paths, session.shown_paths,
+                        "/vault/public/docs")
+    # Only the narrower grant survives: the broad one is not the
+    # table's, and its siblings stay sealed.
+    assert not path_visible(session.hidden_paths, session.shown_paths,
+                            "/vault/public/other")
+
+
+# The mode travels with the nesting: a narrow carve-out is held under
+# what the broad one allows above it, since a show scores deeper than a
+# per-mount cap and would otherwise lift it.
+def test_narrow_restored_holds_a_nested_show_under_the_broader_mode():
+    session = Session(
+        session_id="s",
+        hidden_paths=HiddenPaths(paths=("/vault", )),
+        shown_paths=ShownPaths(
+            entries=(ShowEntry(path="/vault/public", mode=MountMode.READ), )))
+    narrow_restored(
+        session,
+        _restored(hidden_paths=HiddenPaths(paths=("/vault", )),
+                  shown_paths=ShownPaths(entries=(ShowEntry(
+                      path="/vault/public/docs", mode=MountMode.WRITE), ))))
+    assert session.shown_paths == ShownPaths(
+        entries=(ShowEntry(path="/vault/public/docs", mode=MountMode.READ), ))

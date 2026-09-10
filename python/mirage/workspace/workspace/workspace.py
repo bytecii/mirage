@@ -647,6 +647,17 @@ class Workspace:
             prefixes.append(entry.prefix)
         return prefixes
 
+    @property
+    def runtime_entries(self) -> tuple[Runtime, ...]:
+        """The ordered runtime world, as a read-only view of the live list.
+
+        The twin of TypeScript's ``runtimeEntries``. A snapshot carries
+        no runtimes -- they are deployment wiring, like the stores --
+        so a program that has to know which world it restored under
+        reads it here.
+        """
+        return tuple(self._runtimes.entries)
+
     def runtime_context(self, session_id: str | None = None) -> RuntimeContext:
         """Capture local workspace doors for an adapter, scoped to one session.
 
@@ -839,6 +850,7 @@ class Workspace:
         | None = None,
             profile: str | None | _Omitted = _OMITTED,
             policies: list[Policy] | None = None,
+            runtimes: list[Runtime | str] | None = None,
             drift_policy: DriftPolicy = DriftPolicy.STRICT) -> "Workspace":
         """Reconstruct a Workspace from a tar.
 
@@ -887,6 +899,12 @@ class Workspace:
                 the source's policy classes and cannot carry them;
                 `from_state` warns about a recorded name no registered
                 policy answers to.
+            runtimes: the runtime world to build, as the constructor
+                takes it. A snapshot carries no runtimes (they are
+                deployment wiring, like the stores), so a profile
+                policy or a CLI script naming one the default world
+                lacks needs it named here; the TypeScript loader takes
+                the same knob through its options.
             drift_policy: STRICT (default) raises on mismatch. OFF
                 disables drift checking and drops the restored RAM
                 cache entries for fingerprinted paths; a Redis cache is
@@ -900,6 +918,7 @@ class Workspace:
                                     profiles=profiles,
                                     profile=profile,
                                     policies=policies,
+                                    runtimes=runtimes,
                                     drift_policy=drift_policy)
 
     @classmethod
@@ -915,6 +934,7 @@ class Workspace:
         | None = None,
             profile: str | None | _Omitted = _OMITTED,
             policies: list[Policy] | None = None,
+            runtimes: list[Runtime | str] | None = None,
             drift_policy: DriftPolicy = DriftPolicy.STRICT) -> "Workspace":
         """Reconstruct a Workspace directly from a state dict (no tar).
 
@@ -942,6 +962,8 @@ class Workspace:
                 the argument out keeps the snapshot's.
             policies: the coded policies to register; a recorded name
                 none of them answers to is reported at warning level.
+            runtimes: the runtime world to build, as the constructor
+                takes it (see `load`).
             drift_policy: STRICT (default) raises on mismatch. OFF
                 disables drift checking and drops the restored RAM
                 cache entries for fingerprinted paths; a Redis cache is
@@ -954,7 +976,8 @@ class Workspace:
                                    secrets=secrets,
                                    profiles=profiles,
                                    profile=profile,
-                                   policies=policies)
+                                   policies=policies,
+                                   runtimes=runtimes)
         install_fingerprints(ws,
                              state.get(StateKey.FINGERPRINTS) or [],
                              drift_policy)
@@ -1009,6 +1032,7 @@ class Workspace:
         | None = None,
         profile: str | None | _Omitted = _OMITTED,
         policies: list[Policy] | None = None,
+        runtimes: list[Runtime | str] | None = None,
     ) -> "Workspace":
         args = build_mount_args(state, resources, clis)
         # The snapshot's document, unless the loader states its own: a
@@ -1022,7 +1046,8 @@ class Workspace:
                  secrets=secrets,
                  profiles=args.profiles if profiles is None else profiles,
                  profile=args.profile if profile is _OMITTED else profile,
-                 policies=policies)
+                 policies=policies,
+                 runtimes=runtimes)
         if resources:
             ws._shared_resources = {id(r) for r in resources.values()}
         await apply_state_dict(ws, state)

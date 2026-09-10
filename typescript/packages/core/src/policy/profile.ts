@@ -16,6 +16,7 @@ import { DEFAULT_ASK_REASON, DEFAULT_DENY_REASON, WILDCARD } from './constants.t
 import type { CommandRule, AdmissionRules, ProfileScript } from './types.ts'
 import { ScriptSource } from '../runtime/routing/types.ts'
 import type { HiddenPaths, HiddenVars, ShowEntry, ShownPaths } from '../types.ts'
+import { weakerMode } from '../types.ts'
 import { type MountMode, parseMountMode } from '../types.ts'
 import type { HideReason } from './types.ts'
 import { isGlob } from '../utils/hidden.ts'
@@ -657,7 +658,7 @@ function pathsToDoc(block: PathsBlock): Record<string, unknown> {
   const doc: Record<string, unknown> = {}
   if (block.hide.length > 0) doc.hide = [...block.hide]
   const show = block.show ?? []
-  if (show.length > 0) doc.show = Object.fromEntries(show.map((entry) => [entry.path, entry.mode]))
+  if (show.length > 0) doc.show = showToJSON(show)
   const reasons = block.reasons ?? []
   if (reasons.length > 0) {
     doc.reasons = reasons.map((group) => ({ patterns: [...group.patterns], reason: group.reason }))
@@ -693,6 +694,32 @@ function mountToDoc(entry: ProfileMount): Record<string, unknown> {
  * per command, which the doors judge the same way. Mirrors the Python
  * `profile_to_dict`.
  */
+/**
+ * A show list as the document's mapping, weakest mode per path.
+ *
+ * The grammar keys a show by path, so two entries for one path have one
+ * slot -- and the last one written is not the one that governs:
+ * `shownMode` takes the weaker of two entries at a depth, failing
+ * toward refusal, so keeping the last could serialize an `rwx` over the
+ * `r` that was actually in force and hand the subtree back executable
+ * after a reload. A list-form entry (no mode) states visibility only
+ * and never answers a mode question, so a stated mode beside it wins
+ * the slot rather than being erased by it.
+ */
+function showToJSON(show: readonly ShowEntry[]): Record<string, MountMode | null> {
+  const doc: Record<string, MountMode | null> = {}
+  for (const entry of show) {
+    if (!(entry.path in doc)) {
+      doc[entry.path] = entry.mode
+      continue
+    }
+    if (entry.mode === null) continue
+    const held = doc[entry.path]
+    doc[entry.path] = held == null ? entry.mode : weakerMode(held, entry.mode)
+  }
+  return doc
+}
+
 export function profileToJSON(profile: SessionProfile): Record<string, unknown> {
   const doc: Record<string, unknown> = {}
   if (profile.cwd != null) doc.cwd = profile.cwd

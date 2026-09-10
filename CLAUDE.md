@@ -673,9 +673,15 @@ Invoke the venv's `pre-commit` binary directly (not via `uv --directory python r
   is the profile's only when the session runs none, so a checkout can only add
   restrictions to a live session and `set_session_profile` is the host's reset.
   A refusal rolls the joined sessions back (`narrowing_of`) beside the created
-  ones. One trap in the join: a show is always stated against a hide, so
-  whether a one-sided show survives is asked of the **other** side's hides,
-  never of the merged set — reading the union erases every show exception the
+  ones. Every gate call names the id the table *lands* on, never the one the
+  snapshot recorded: a hook resolves its program from that id, and the manager
+  cannot answer for a re-keyed default until `adopt_default` runs.
+  One trap in the join: a show is always stated against a hide, so whether a
+  one-sided show survives is asked of the **other side**, never of the merged
+  hide set — and of its shows as well as its hides, since a grant is a depth
+  comparison and not a string match (one side's `show /vault/public` grants the
+  other's narrower `show /vault/public/docs`, and the narrower one is the
+  intersection). Reading the union instead erases every show exception the
   other side simply never mentioned.
 - **The record client is a substrate, not a session detail.** Sessions, the
   namespace node table and workspace metadata are three tables that persist the

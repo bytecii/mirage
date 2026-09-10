@@ -31,7 +31,8 @@ import type { Policy } from '../policy/index.ts'
 import type { Action, SessionContext } from '../policy/types.ts'
 import { secretStr } from '../resource/secrets.ts'
 import { OpsRegistry } from '../ops/registry.ts'
-import { RAMResource } from '../resource/ram/ram.ts'
+import { RAMResource, type RAMResourceState } from '../resource/ram/ram.ts'
+import { REDACTED_SECRET, resourceStateRequiresOverride } from '../resource/secrets.ts'
 import { type JobResult } from '../shell/job_table/index.ts'
 import { createShellParser, type ShellParser } from '../shell/parse/index.ts'
 import { ConsistencyPolicy, MountMode } from '../types.ts'
@@ -762,8 +763,14 @@ describe('applyStateDict and the deployment', () => {
   // A mount that asks to be handed back live (`needs_override`, a
   // redacted credential) skipped the prefix check along with its
   // loadState, so a renamed remote mount, the case the report exists
-  // for, stayed silent while Python reported it. The skip itself stays:
-  // a live mount at the prefix is not loaded from the saved state.
+  // for, stayed silent while Python reported it. The loadState skip is
+  // gone too, and for the same reason it was wrong in the first place:
+  // a snapshot's content is the snapshot's, and the resources that ask
+  // to be handed back live are exactly the ones behind a credential --
+  // redis and disk carry their bytes in that state, so skipping them
+  // dropped every one while python restored them. A cred-only resource
+  // (the S3 family) implements loadState as a no-op, which is what made
+  // the skip look harmless.
   it('a live-only snapshot mount with no matching prefix is reported too', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     try {
@@ -791,7 +798,7 @@ describe('applyStateDict and the deployment', () => {
       const messages = warn.mock.calls.map((c) => String(c[0]))
       expect(messages.some((m) => m.includes('/data') && m.includes('not restored'))).toBe(true)
       expect(messages.some((m) => m.includes('/keep'))).toBe(false)
-      expect(loadState).not.toHaveBeenCalled()
+      expect(loadState).toHaveBeenCalledTimes(1)
     } finally {
       warn.mockRestore()
     }
@@ -1079,6 +1086,51 @@ describe('the document rides the state and the restore never widens', () => {
     }
   })
 
+  // Content behind a credential: the restore skipped loadState for
+  // every mount whose recorded config carried a redaction marker,
+  // which is exactly what a content resource behind a credential has,
+  // so a redis or disk mount's bytes were dropped on this host while
+  // python restored them. Found by the cross-language snapshot
+  // battery (integ/snapshot), where TypeScript could not read back a
+  // redis mount either arm had written.
+  it('loads the state of a mount whose config is redacted', async () => {
+    const loaded: RAMResourceState[] = []
+    class CredentialedRAM extends RAMResource {
+      override getState(): RAMResourceState {
+        // What a store behind a credential records: its content, and a
+        // config whose secret is a marker rather than the secret. The
+        // config rides beside the declared fields, as every
+        // credentialed resource's state does.
+        return { ...super.getState(), config: { url: REDACTED_SECRET } } as RAMResourceState
+      }
+
+      override loadState(state: RAMResourceState): void {
+        loaded.push(state)
+        super.loadState(state)
+      }
+    }
+    const source = new CredentialedRAM()
+    const ops = new OpsRegistry()
+    ops.registerResource(source)
+    const ws = new Workspace(
+      { '/data': source },
+      { mode: MountMode.WRITE, ops, shellParser: parser },
+    )
+    expect((await ws.execute('echo kept > /data/f.txt')).exitCode).toBe(0)
+    const state = await toStateDict(ws)
+    await ws.close()
+    const mount = state.mounts.find((m) => m.prefix.replace(/\/$/, '') === '/data')
+    expect(mount).toBeDefined()
+    expect(resourceStateRequiresOverride(mount?.resource_state)).toBe(true)
+    // A redacted config cannot be rebuilt, so the loader is handed a
+    // live resource -- and its state has to land in it.
+    const target = new CredentialedRAM()
+    const restored = await Workspace.fromState(state, loadOptions(), { '/data': target })
+    expect(loaded).toHaveLength(1)
+    expect(new TextDecoder().decode(await restored.fs.readFile('/data/f.txt'))).toBe('kept\n')
+    await restored.close()
+  })
+
   // The gate created and narrowed the sessions it had to make, but left
   // the default session and every live one on whatever profile they
   // already ran under, so the target's document of the name a table
@@ -1141,6 +1193,44 @@ describe('the document rides the state and the restore never widens', () => {
     const before = target.getSession(target.defaultSessionId).toJSON()
     await expect(applyStateDict(target, state)).rejects.toThrow()
     expect(target.getSession(target.defaultSessionId).toJSON()).toEqual(before)
+    await target.close()
+  })
+
+  // A policy hook reads its program off the manager by session id, and
+  // the manager cannot answer for the snapshot's default id until
+  // `adoptDefault` re-keys the live default onto it. So a checkout
+  // whose recorded default id differs from the live one gated that
+  // table under the target's default program instead of the one the
+  // join had just installed, and a `preSession` rule the named profile
+  // carries never saw the restored variables.
+  it('gates a remapped default table under its landing id', async () => {
+    // The rule keys on the session id the gate names, which is the one
+    // thing the fix changes: a hook is handed `sessionId` and, in
+    // `ScriptPolicy`'s case, resolves its program from it. The live
+    // default is where the table lands; the recorded `src` is an id the
+    // manager cannot answer for until `adoptDefault` re-keys it.
+    const gated: string[] = []
+    const sealed: Policy = {
+      preSession: (ctx) => {
+        gated.push(ctx.sessionId)
+        return ctx.sessionId === 'tgt' && ctx.key === 'SEALED'
+          ? { kind: 'deny', reason: 'sealed is refused' }
+          : null
+      },
+    }
+    const source = profiled({}, { sessionId: 'src' })
+    expect((await source.execute('export SEALED=1')).exitCode).toBe(0)
+    const state = await toStateDict(source)
+    await source.close()
+    expect(state.default_session_id).toBe('src')
+    const target = profiled({}, { sessionId: 'tgt', policies: [sealed] })
+    await expect(applyStateDict(target, state)).rejects.toThrow(/sealed is refused/)
+    expect(gated).toContain('tgt')
+    expect(gated).not.toContain('src')
+    // Refused before anything landed: the live default keeps its id and
+    // the variable never arrived.
+    expect(target.defaultSessionId).toBe('tgt')
+    expect(target.getSession('tgt').vars.SEALED).toBeUndefined()
     await target.close()
   })
 })

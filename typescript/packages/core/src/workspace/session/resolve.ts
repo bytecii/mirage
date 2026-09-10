@@ -25,6 +25,8 @@ import {
   classifyVars,
   hideDepth,
   isGlob,
+  showDepth,
+  shownMode,
 } from '../../utils/hidden.ts'
 import { stripSlash } from '../../utils/slash.ts'
 import {
@@ -479,12 +481,12 @@ export function narrowProfile(session: Session, compiled: CompiledProfile): void
   const modes = mergeModes(session.mountModes, compiled.mountModes)
   const hidden = mergeHiddenPaths(session.hiddenPaths, compiled.hiddenPaths)
   const shown = mergeShown(
-    session.shownPaths,
-    compiled.shownPaths ?? null,
-    session.mountModes,
-    compiled.mountModes,
-    session.hiddenPaths,
-    compiled.hiddenPaths,
+    { caps: session.mountModes, hidden: session.hiddenPaths, shown: session.shownPaths },
+    {
+      caps: compiled.mountModes,
+      hidden: compiled.hiddenPaths,
+      shown: compiled.shownPaths ?? null,
+    },
   )
   session.hiddenVars = mergeHiddenVars(session.hiddenVars, compiled.hiddenVars)
   session.hideReasons = mergeGroups(session.hideReasons, compiled.hideReasons ?? [])
@@ -685,36 +687,64 @@ function capOf(modes: ReadonlyMap<string, MountMode> | null, head: string): Moun
   return best === null ? null : best[1]
 }
 
-/**
- * A show mode one side states, held under the other side's cap at that
- * anchor: a show scores deeper than the cap and would otherwise lift
- * what the other side capped.
- */
-function capped(
-  mode: MountMode,
-  caps: ReadonlyMap<string, MountMode> | null,
-  head: string,
-): MountMode {
-  const cap = capOf(caps, head)
-  return cap === null ? mode : weakerMode(mode, cap)
+/** One side of a show merge: its caps, its hides and its shows. */
+interface Side {
+  readonly caps: ReadonlyMap<string, MountMode> | null
+  readonly hidden: HiddenPaths | null
+  readonly shown: ShownPaths | null
+}
+
+/** Whether a hide set names anything at all. */
+function hidesAnything(hidden: HiddenPaths | null): boolean {
+  if (hidden === null) return false
+  return (hidden.paths ?? []).length > 0 || (hidden.patterns ?? []).length > 0
 }
 
 /**
- * Whether one side's hides cover a show entry the other side states.
+ * Whether one side leaves a path the other side shows accessible.
  *
  * The question a one-sided show turns on, and it is asked of the
- * *other* side's hides, never of the merged set: a show exists to
- * re-open what a hide covers, so the side that states the show has a
- * hide over it by construction, and testing the union would drop every
- * show against its own hide. An exact entry is tested against those
- * hides; a pattern re-opens by name and no comparison proves which
- * names a hide leaves open, so it counts as covered wherever the other
- * side hides at all.
+ * *other* side, never of the merged hide set: a show exists to re-open
+ * what a hide covers, so the side that states it has a hide over it by
+ * construction, and testing the union would drop every show against
+ * its own hide.
+ *
+ * It is the composition law's own rule (`pathVisible` without its road
+ * clause, which only makes a hidden ancestor listable): the path is
+ * granted when no hide covers it, or when a show covers it more deeply
+ * than the deepest hide that does. Asking the shows and not only the
+ * hides is what keeps a *nested* carve-out: one side's
+ * `show /vault/public` grants the other side's narrower
+ * `show /vault/public/docs`, and the narrower one is the intersection
+ * of the two grants.
+ *
+ * A pattern that anchors nothing (`*.key`, no separator) re-opens by
+ * name anywhere and no depth comparison bounds it, so it is granted
+ * only where the other side hides nothing at all.
  */
-function hidesShow(hidden: HiddenPaths | null, path: string): boolean {
-  if (hidden === null) return false
-  if ((hidden.paths ?? []).length === 0 && (hidden.patterns ?? []).length === 0) return false
-  return isGlob(path) || hideDepth(hidden, path) !== null
+function grants(side: Side, path: string): boolean {
+  if (isGlob(path) && !path.includes('/')) return !hidesAnything(side.hidden)
+  const hide = hideDepth(side.hidden, path)
+  if (hide === null) return true
+  const show = showDepth(side.shown, path)
+  return show !== null && show > hide
+}
+
+/**
+ * The mode one side allows below a path, null when it states none.
+ *
+ * A show scores deeper than a per-mount cap, so a show mode covering
+ * the path is the answer where there is one and the cap is the answer
+ * otherwise -- the same order `pathMode` reads them in.
+ */
+function allowance(side: Side, path: string): MountMode | null {
+  const stated = shownMode(side.shown, path)
+  return stated !== null ? stated[1] : capOf(side.caps, path)
+}
+
+/** A mode one side states, held under what the other side allows. */
+function held(mode: MountMode, allowed: MountMode | null): MountMode {
+  return allowed === null ? mode : weakerMode(mode, allowed)
 }
 
 /**
@@ -734,23 +764,22 @@ function hidesShow(hidden: HiddenPaths | null, path: string): boolean {
 function mergeShow(
   mine: ShowEntry,
   other: ShowEntry | null,
-  myCaps: ReadonlyMap<string, MountMode> | null,
-  otherCaps: ReadonlyMap<string, MountMode> | null,
-  otherHidden: HiddenPaths | null,
+  mySide: Side,
+  otherSide: Side,
 ): ShowEntry | null {
   let mode: MountMode | null
   if (other === null) {
-    if (hidesShow(otherHidden, mine.path)) return null
+    if (!grants(otherSide, mine.path)) return null
     if (mine.mode === null) return mine
-    mode = capped(mine.mode, otherCaps, mine.path)
+    mode = held(mine.mode, allowance(otherSide, mine.path))
   } else if (mine.mode === null && other.mode === null) {
     return mine
   } else if (mine.mode !== null && other.mode !== null) {
     mode = weakerMode(mine.mode, other.mode)
   } else if (mine.mode !== null) {
-    mode = capped(mine.mode, otherCaps, mine.path)
+    mode = held(mine.mode, allowance(otherSide, mine.path))
   } else {
-    mode = other.mode === null ? null : capped(other.mode, myCaps, mine.path)
+    mode = other.mode === null ? null : held(other.mode, allowance(mySide, mine.path))
   }
   return mode === mine.mode ? mine : { path: mine.path, mode }
 }
@@ -759,41 +788,29 @@ function mergeShow(
  * Both sides' show entries as both allow them (`mergeShow`), the
  * session's first; the session's own object when nothing changed.
  */
-function mergeShown(
-  base: ShownPaths | null,
-  table: ShownPaths | null,
-  baseCaps: ReadonlyMap<string, MountMode> | null,
-  tableCaps: ReadonlyMap<string, MountMode> | null,
-  baseHidden: HiddenPaths | null,
-  tableHidden: HiddenPaths | null,
-): ShownPaths | null {
-  if (base === null && table === null) return null
-  const baseEntries = base?.entries ?? []
-  const tableEntries = table?.entries ?? []
+function mergeShown(base: Side, table: Side): ShownPaths | null {
+  if (base.shown === null && table.shown === null) return null
+  const baseEntries = base.shown?.entries ?? []
+  const tableEntries = table.shown?.entries ?? []
   const byTable = new Map(tableEntries.map((entry) => [entry.path, entry]))
   const byBase = new Set(baseEntries.map((entry) => entry.path))
   const out: ShowEntry[] = []
   for (const entry of baseEntries) {
-    const merged = mergeShow(
-      entry,
-      byTable.get(entry.path) ?? null,
-      baseCaps,
-      tableCaps,
-      tableHidden,
-    )
+    const merged = mergeShow(entry, byTable.get(entry.path) ?? null, base, table)
     if (merged !== null) out.push(merged)
   }
   for (const entry of tableEntries) {
     if (byBase.has(entry.path)) continue
-    const merged = mergeShow(entry, null, tableCaps, baseCaps, baseHidden)
+    const merged = mergeShow(entry, null, table, base)
     if (merged !== null) out.push(merged)
   }
+  const held2 = base.shown
   if (
-    base !== null &&
-    out.length === base.entries.length &&
-    out.every((entry, i) => entry === base.entries[i])
+    held2 !== null &&
+    out.length === held2.entries.length &&
+    out.every((entry, i) => entry === held2.entries[i])
   ) {
-    return base
+    return held2
   }
   return classifyShows(out)
 }
@@ -832,12 +849,8 @@ export function narrowRestored(session: Session, table: Session): void {
   const modes = mergeModes(session.mountModes, table.mountModes)
   const hidden = mergeHiddenPaths(session.hiddenPaths, table.hiddenPaths)
   const shown = mergeShown(
-    session.shownPaths,
-    table.shownPaths,
-    session.mountModes,
-    table.mountModes,
-    session.hiddenPaths,
-    table.hiddenPaths,
+    { caps: session.mountModes, hidden: session.hiddenPaths, shown: session.shownPaths },
+    { caps: table.mountModes, hidden: table.hiddenPaths, shown: table.shownPaths },
   )
   session.hiddenVars = mergeHiddenVars(session.hiddenVars, table.hiddenVars)
   session.hideReasons = mergeGroups(session.hideReasons, table.hideReasons)

@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest'
 
 import { DEFAULT_ASK_REASON, DEFAULT_DENY_REASON } from './constants.ts'
 import { MountMode } from '../types.ts'
+import { shownMode } from '../utils/hidden.ts'
 import {
   parseProfileMount,
   parseProfileMounts,
@@ -504,5 +505,37 @@ describe('profileToJSON / profileFromJSON', () => {
         },
       }),
     ).toThrow(/carries no mount/)
+  })
+
+  // The document keys a show by path, so two entries for one path have
+  // one slot -- and the last one written is not the one that governs.
+  // `shownMode` takes the weaker of two entries at a depth, failing
+  // toward refusal, so serializing the last handed the subtree back
+  // executable after a reload while the source session was read-only.
+  it('serializes a duplicate show path at its weakest mode', () => {
+    const show = [
+      { path: '/vault/public', mode: MountMode.READ },
+      { path: '/vault/public', mode: MountMode.EXEC },
+    ]
+    expect(profileToJSON({ paths: { hide: ['/vault'], show } })).toEqual({
+      paths: { hide: ['/vault'], show: { '/vault/public': 'read' } },
+    })
+    // What is in force before the round trip is what comes back.
+    expect(shownMode({ entries: show }, '/vault/public/f')).toEqual([2, MountMode.READ])
+  })
+
+  // A list-form entry states visibility only and answers no mode
+  // question, so a stated mode beside it takes the slot rather than
+  // being erased by it.
+  it('does not let a list-form duplicate erase a stated mode', () => {
+    for (const pair of [
+      [null, MountMode.READ],
+      [MountMode.READ, null],
+    ]) {
+      const show = pair.map((mode) => ({ path: '/vault/public', mode }))
+      expect(profileToJSON({ paths: { hide: ['/vault'], show } })).toEqual({
+        paths: { hide: ['/vault'], show: { '/vault/public': 'read' } },
+      })
+    }
   })
 })

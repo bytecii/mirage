@@ -12,7 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,7 +24,7 @@ from mirage.policy.types import (AdmissionRules, CommandRule, HideReason,
                                  ProfileScript)
 from mirage.runtime.types import ScriptSource
 from mirage.types import (HiddenPaths, HiddenVars, MountMode, ShowEntry,
-                          ShownPaths, parse_mount_mode)
+                          ShownPaths, parse_mount_mode, weaker_mode)
 from mirage.utils.hidden import is_glob
 
 _DOC = ConfigDict(extra="forbid", frozen=True)
@@ -756,15 +756,41 @@ def _paths_to_doc(block: PathsBlock) -> dict[str, Any]:
     if block.hide:
         doc["hide"] = list(block.hide)
     if block.show:
-        doc["show"] = {
-            entry.path: entry.mode.value if entry.mode is not None else None
-            for entry in block.show
-        }
+        doc["show"] = _show_to_doc(block.show)
     if block.reasons:
         doc["reasons"] = [{
             "patterns": list(group.patterns),
             "reason": group.reason
         } for group in block.reasons]
+    return doc
+
+
+def _show_to_doc(entries: Sequence[ShowEntry]) -> dict[str, str | None]:
+    """A show list as the document's mapping, weakest mode per path.
+
+    The grammar keys a show by path, so two entries for one path have
+    one slot -- and the last one written is not the one that governs:
+    :func:`shown_mode` takes the weaker of two entries at a depth,
+    failing toward refusal, so keeping the last could serialize a
+    ``rwx`` over the ``r`` that was actually in force and hand the
+    subtree back executable after a reload. A list-form entry (no mode)
+    states visibility only and never answers a mode question, so a
+    stated mode beside it wins the slot rather than being erased by it.
+
+    Args:
+        entries (Sequence[ShowEntry]): the compiled show entries.
+    """
+    doc: dict[str, str | None] = {}
+    for entry in entries:
+        if entry.path not in doc:
+            doc[entry.path] = (entry.mode.value
+                               if entry.mode is not None else None)
+            continue
+        if entry.mode is None:
+            continue
+        held = doc[entry.path]
+        doc[entry.path] = (entry.mode.value if held is None else weaker_mode(
+            MountMode(held), entry.mode).value)
     return doc
 
 
