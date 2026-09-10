@@ -133,10 +133,15 @@ these synchronous calls and flushes them before the next index operation or
 failed flushes remain queued for retry. `entries()` returns all stored metadata,
 including entries whose directory listing has expired.
 
-Redis stores directory children and their deadline in one JSON record under
-`mirage:idx:directory:v3:`. Invalidation uses permanent keys independent of the
-payload format: `mirage:idx:children:!generation` for the whole store and
-`mirage:idx:children:!generation:<absolute-directory>` for each directory.
+Redis stores each entry as the `IndexEntry` JSON under `mirage:idx:entry:`
+and each directory's children and deadline as the `IndexDirectory` JSON under
+`mirage:idx:directory:`. Both are the documents pydantic writes, snake_case
+and every field, and TypeScript writes and reads the same bytes
+(`IndexEntry.toJSON` / `IndexEntry.fromJSON`), so one Redis serves both
+languages and a row that does not parse is an error rather than a miss.
+Invalidation uses permanent keys beside the payload:
+`mirage:idx:generation` for the whole store and
+`mirage:idx:generation:<absolute-directory>` for each directory.
 Each listing records both tokens, and one `MGET` reads the listing and its two
 current tokens. A missing or changed token makes the listing `EXPIRED`.
 New tokens are unique so eviction or a refill cannot revive an old listing.
@@ -144,23 +149,15 @@ Competing initializers retain their attempted tokens; a worker that loses
 initialization incurs a cache refill instead of adopting a later generation.
 Global invalidation rotates the global token atomically. Directory invalidation
 removes that directory's token; subtree invalidation removes tokens under that
-path. These signals invalidate every participating payload version while
-preserving fresh listings outside a scoped invalidation. Future formats must
-retain this protocol, even when their payload keys or schemas change.
-Metadata uses `mirage:idx:entry:v3:` so listings and their metadata both
-start cold after an upgrade. Existing list-format cache records and entry rows
-are not reused, and neither are `v2` rows: the entry payload became the one
-snake_case document both languages write, where the TypeScript releases before
-`v3` wrote camelCase, so a `v3` worker never opens a `v2` row rather than
-decoding two formats. The first lookup fetches current backend metadata.
+path, preserving fresh listings outside a scoped invalidation.
 Like RAM, these records retain expired listings until explicit removal; they do
 not use Redis TTL deletion. Redis server eviction can still turn any cached
 record into a miss. Configure Redis `maxmemory` for server-side size limits.
 
-The unversioned cache format is unsupported. Upgrade all workers that share
-an index together; mixing workers that do not implement the shared-token
-protocol is unsupported. Current workers do not read or clean up the old
-payload keys.
+The layout is not versioned and earlier layouts are not read. Upgrade every
+worker that shares an index together, and flush the key prefix first
+(`clear()`, or delete the keys under it), so no worker opens a row another
+release wrote.
 
 The Redis **file cache** likewise uses server-side limits instead of RAM's
 `cache_size`, `cache_entries`, or LRU. File bytes and metadata occupy separate

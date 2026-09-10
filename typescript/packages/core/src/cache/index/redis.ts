@@ -19,6 +19,7 @@ import { underPath } from '../../utils/key_prefix.ts'
 import { loadOptionalPeer } from '../../utils/optional_peer.ts'
 import { rstripSlash } from '../../utils/slash.ts'
 import {
+  IndexDirectorySchema,
   IndexEntry,
   LookupStatus,
   type IndexDirectory,
@@ -38,51 +39,6 @@ import { CHILDREN_PREFIX, DEFAULT_KEY_PREFIX, ENTRY_PREFIX, GENERATION_KEY } fro
  */
 function globEscape(value: string): string {
   return value.replace(/[*?[\]\\]/g, (char) => `\\${char}`)
-}
-
-/**
- * The one wire format for an entry: what pydantic writes for the Python
- * `IndexEntry`, snake_case and every field, so an entry either language
- * writes is one the other reads and one Redis can serve both. `extra` rides
- * along because it is load-bearing (`size_bytes`, the `folder.childCount`
- * that `find -empty` reads on Graph backends).
- */
-interface EntryWire {
-  id: string
-  name: string
-  resource_type: string
-  remote_time?: string
-  index_time?: string
-  vfs_name?: string
-  size?: number | null
-  extra?: Record<string, unknown>
-}
-
-function toWire(e: IndexEntry): EntryWire {
-  return {
-    id: e.id,
-    name: e.name,
-    resource_type: e.resourceType,
-    remote_time: e.remoteTime,
-    index_time: e.indexTime,
-    vfs_name: e.vfsName,
-    size: e.size,
-    extra: e.extra,
-  }
-}
-
-function fromWire(raw: string): IndexEntry {
-  const w = JSON.parse(raw) as EntryWire
-  return new IndexEntry({
-    id: w.id,
-    name: w.name,
-    resourceType: w.resource_type,
-    remoteTime: w.remote_time ?? '',
-    indexTime: w.index_time ?? '',
-    vfsName: w.vfs_name ?? '',
-    size: w.size ?? null,
-    extra: w.extra ?? {},
-  })
 }
 
 interface RedisPipeline {
@@ -238,7 +194,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
         const pipe = c.multi()
         for (const seed of pending) {
           for (const [path, entry] of seed.entries) {
-            pipe.set(this.entryKey(path), JSON.stringify(toWire(entry)))
+            pipe.set(this.entryKey(path), JSON.stringify(entry))
           }
           for (const [path, keys] of seed.children) {
             const listing: IndexDirectory = {
@@ -262,7 +218,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     for await (const batch of c.scanIterator({ MATCH: `${globEscape(this.entryPrefix)}*` })) {
       for (const key of Array.isArray(batch) ? batch : [batch]) {
         const raw = await c.get(key)
-        if (raw !== null) entries.set(key.slice(this.entryPrefix.length), fromWire(raw))
+        if (raw !== null) entries.set(key.slice(this.entryPrefix.length), IndexEntry.fromJSON(raw))
       }
     }
     return entries
@@ -273,7 +229,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     const c = await this.client()
     const raw = await c.get(this.entryKey(resourcePath))
     if (raw === null) return { status: LookupStatus.NOT_FOUND }
-    return { entry: fromWire(raw) }
+    return { entry: IndexEntry.fromJSON(raw) }
   }
 
   async put(resourcePath: string, entry: IndexEntry): Promise<void> {
@@ -281,7 +237,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     const c = await this.client()
     const stored =
       entry.indexTime === '' ? entry.copyWith({ indexTime: toIsoZ(new Date()) }) : entry
-    await c.set(this.entryKey(resourcePath), JSON.stringify(toWire(stored)))
+    await c.set(this.entryKey(resourcePath), JSON.stringify(stored))
   }
 
   async listDir(resourcePath: string): Promise<ListResult> {
@@ -293,7 +249,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
       `${this.generationKey}:${resourcePath}`,
     ])
     if (raw == null) return { status: LookupStatus.NOT_FOUND }
-    const listing = JSON.parse(raw) as IndexDirectory
+    const listing = IndexDirectorySchema.parse(JSON.parse(raw))
     if (
       current == null ||
       directory == null ||
@@ -321,7 +277,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     for (const [name, entry] of entries) {
       const fullPath = prefix + name
       const stored = entry.indexTime === '' ? entry.copyWith({ indexTime: nowIso }) : entry
-      pipe.set(this.entryKey(fullPath), JSON.stringify(toWire(stored)))
+      pipe.set(this.entryKey(fullPath), JSON.stringify(stored))
       childKeys.push(fullPath)
     }
     const listing: IndexDirectory = {
@@ -337,7 +293,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     await this.flushSeed()
     const c = await this.client()
     const raw = await c.get(this.childrenKey(resourcePath))
-    const childPaths = raw === null ? [] : (JSON.parse(raw) as IndexDirectory).entries
+    const childPaths = raw === null ? [] : IndexDirectorySchema.parse(JSON.parse(raw)).entries
     const pipe = c.multi()
     for (const child of childPaths) {
       pipe.del(this.entryKey(child))

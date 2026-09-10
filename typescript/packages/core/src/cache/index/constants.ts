@@ -12,14 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-// Entries and listings must go cold together when the cache format changes.
-// v3: the entry payload is the one snake_case document both languages write;
-// the TypeScript releases before it wrote camelCase under v2, and a v3 reader
-// never opens a v2 row, so no worker has to decode two formats.
-export const ENTRY_PREFIX = 'mirage:idx:entry:v3:'
-export const CHILDREN_PREFIX = 'mirage:idx:directory:v3:'
+// One payload layout, shared by both languages and never versioned: a row
+// is the JSON IndexEntry / IndexDirectory writes, and a row that does not
+// parse is an error, not a miss. Earlier layouts are not read; flush the key
+// prefix when upgrading workers that share an index.
+export const ENTRY_PREFIX = 'mirage:idx:entry:'
+export const CHILDREN_PREFIX = 'mirage:idx:directory:'
 
-// Invalidation tokens are shared across payload formats. Keep this key stable.
-export const GENERATION_KEY = 'mirage:idx:children:!generation'
+export const GENERATION_KEY = 'mirage:idx:generation'
 
 export const DEFAULT_KEY_PREFIX = 'mirage:index:'

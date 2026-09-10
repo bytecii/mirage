@@ -11,7 +11,6 @@ from redis.asyncio import Redis
 
 from mirage.cache.index.config import IndexEntry, LookupStatus
 from mirage.cache.index.redis import RedisIndexCacheStore
-from mirage.cache.index.warm import entry_or_warm
 
 
 @pytest_asyncio.fixture(params=["fake", "redis"])
@@ -37,7 +36,7 @@ def client():
     value = MagicMock()
     value.scan = AsyncMock(return_value=(
         0,
-        [b"test:mirage:idx:entry:v3:/folder/a.txt"],
+        [b"test:mirage:idx:entry:/folder/a.txt"],
     ))
     value.mget = AsyncMock(return_value=[
         b'{"entries":["/folder/a.txt"],"expires_at":4102444800,"generation":"g:d"}',
@@ -58,9 +57,9 @@ async def test_list_dir_decodes_injected_client_values(client):
     store = RedisIndexCacheStore(client=client)
     result = await store.list_dir("/folder")
     assert result.entries == ["/folder/a.txt"]
-    client.mget.assert_awaited_once_with(
-        "mirage:idx:directory:v3:/folder", "mirage:idx:children:!generation",
-        "mirage:idx:children:!generation:/folder")
+    client.mget.assert_awaited_once_with("mirage:idx:directory:/folder",
+                                         "mirage:idx:generation",
+                                         "mirage:idx:generation:/folder")
 
 
 @pytest.mark.asyncio
@@ -72,9 +71,9 @@ async def test_invalidate_dir_decodes_child_paths(client):
     await store.invalidate_dir("/folder")
     pipe = client.pipeline.return_value
     assert pipe.delete.call_args_list == [
-        call("mirage:idx:entry:v3:/folder/a.txt"),
-        call("mirage:idx:directory:v3:/folder"),
-        call("mirage:idx:children:!generation:/folder"),
+        call("mirage:idx:entry:/folder/a.txt"),
+        call("mirage:idx:directory:/folder"),
+        call("mirage:idx:generation:/folder"),
     ]
 
 
@@ -153,7 +152,7 @@ async def test_evicted_generation_cannot_revive_invalidated_listing():
     try:
         await store.set_dir("/old", [])
         await store.invalidate()
-        await client.delete("mirage:idx:children:!generation")
+        await client.delete("mirage:idx:generation")
         assert (await store.list_dir("/old")).status == LookupStatus.EXPIRED
         await store.set_dir("/new", [])
         assert (await store.list_dir("/new")).entries == []
@@ -263,66 +262,15 @@ async def test_scoped_invalidations_respect_literal_namespaces(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "operation",
-    ["invalidate", "invalidate_dir", "invalidate_prefix", "clear"])
-@pytest.mark.parametrize("writer_version", [0, 1])
-async def test_invalidation_signals_cross_payload_versions(
-        rolling_client, monkeypatch, operation, writer_version):
-    client, prefix = rolling_client
-    stores = [
-        RedisIndexCacheStore(client=client, key_prefix=prefix)
-        for _ in range(2)
-    ]
-    # A future payload format still uses the same invalidation protocol.
-    monkeypatch.setattr(stores[1], "_entry_prefix",
-                        f"{prefix}mirage:idx:entry:v4:")
-    monkeypatch.setattr(stores[1], "_children_prefix",
-                        f"{prefix}mirage:idx:directory:v4:")
-    writer, reader = stores[writer_version], stores[1 - writer_version]
-    row = IndexEntry(id="old", name="a.txt", resource_type="file")
-    deadline = datetime.now(timezone.utc) + timedelta(days=365)
-    try:
-        for store in stores:
-            for path in ("/repo", "/repo/sub", "/repository"):
-                await store.set_dir(path, [("a.txt", row)],
-                                    expired_at=deadline)
-        if operation in ("invalidate", "clear"):
-            await getattr(writer, operation)()
-        else:
-            await getattr(writer, operation)("/repo")
-
-        assert (await reader.list_dir("/repo")).status == LookupStatus.EXPIRED
-        child = await reader.list_dir("/repo/sub")
-        sibling = await reader.list_dir("/repository")
-        if operation == "invalidate_dir":
-            assert child.entries == ["/repo/sub/a.txt"]
-        else:
-            assert child.status == LookupStatus.EXPIRED
-        if operation in ("invalidate_dir", "invalidate_prefix"):
-            assert sibling.entries == ["/repository/a.txt"]
-        else:
-            assert sibling.status == LookupStatus.EXPIRED
-
-        await writer.set_dir("/repo", [])
-        assert (await reader.list_dir("/repo")).status == LookupStatus.EXPIRED
-        await reader.set_dir("/repo", [("new.txt", row)])
-        assert (await reader.list_dir("/repo")).entries == ["/repo/new.txt"]
-    finally:
-        for store in stores:
-            await store.close()
-
-
-@pytest.mark.asyncio
-async def test_evicted_directory_token_cannot_revive_other_format(
+async def test_evicted_directory_token_cannot_revive_restored_listing(
         rolling_client):
     client, prefix = rolling_client
     store = RedisIndexCacheStore(client=client, key_prefix=prefix)
     try:
         await store.set_dir("/repo", [])
-        payload_key = f"{prefix}mirage:idx:directory:v3:/repo"
+        payload_key = f"{prefix}mirage:idx:directory:/repo"
         original = await client.get(payload_key)
-        await client.delete(f"{prefix}mirage:idx:children:!generation:/repo")
+        await client.delete(f"{prefix}mirage:idx:generation:/repo")
         assert (await store.list_dir("/repo")).status == LookupStatus.EXPIRED
         await store.set_dir("/repo", [])
         assert (await store.list_dir("/repo")).entries == []
@@ -369,9 +317,8 @@ async def test_batched_initialization_preserves_observed_tokens(
             execute = pipe.execute
 
             async def execute_after_invalidation():
-                await client.set(
-                    f"{prefix}mirage:idx:children:!generation:/present",
-                    "replacement")
+                await client.set(f"{prefix}mirage:idx:generation:/present",
+                                 "replacement")
                 return await execute()
 
             pipe.execute = execute_after_invalidation
@@ -398,7 +345,7 @@ async def test_scalar_initialization_does_not_adopt_replacement_tokens(
     client, prefix = rolling_client
     store = RedisIndexCacheStore(client=client, key_prefix=prefix)
     writer = RedisIndexCacheStore(client=client, key_prefix=prefix)
-    generation_key = f"{prefix}mirage:idx:children:!generation"
+    generation_key = f"{prefix}mirage:idx:generation"
     target = generation_key if scope == "global" else f"{generation_key}:/repo"
     original_set = client.set
     fresh = IndexEntry(id="new", name="new.txt", resource_type="file")
@@ -549,87 +496,3 @@ async def test_seed_initialization_does_not_adopt_replacement_tokens(
     finally:
         await store.close()
         await writer.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("invalidate", [False, True])
-@pytest.mark.parametrize("change", ["updated", "renamed", "deleted"])
-async def test_previous_format_entries_and_listings_are_cold_before_warming(
-        change, invalidate):
-    client = FakeRedis()
-    store = RedisIndexCacheStore(client=client, key_prefix="upgrade:")
-    key = "/folder/f.txt"
-    old = IndexEntry(id="old", name="f.txt", resource_type="file")
-    name = "g.txt" if change == "renamed" else "f.txt"
-    fresh = IndexEntry(id="new", name=name, resource_type="file")
-    rows = [] if change == "deleted" else [(name, fresh)]
-
-    async def refresh():
-        await store.set_dir("/folder", rows)
-
-    warm = AsyncMock(side_effect=refresh)
-    try:
-        await client.set(f"upgrade:mirage:idx:entry:{key}",
-                         old.model_dump_json())
-        await client.rpush("upgrade:mirage:idx:children:/folder", key)
-        if invalidate:
-            await store.invalidate()
-        assert (await
-                store.list_dir("/folder")).status == LookupStatus.NOT_FOUND
-        assert (await store.get(key)).status == LookupStatus.NOT_FOUND
-        assert await store.entries() == {}
-
-        result = await entry_or_warm(store, key, warm)
-        if change == "updated":
-            assert result is not None and result.id == "new"
-        else:
-            assert result is None
-        warm.assert_awaited_once()
-        assert await entry_or_warm(store, key, warm) == result
-        warm.assert_awaited_once()
-        assert set(await
-                   store.entries()) == {f"/folder/{name}"
-                                        for name, _ in rows}
-    finally:
-        await store.close()
-        await client.aclose()
-
-
-# The TypeScript releases before v3 wrote camelCase entry rows under v2 and
-# Python wrote snake_case ones; a v3 worker opens neither (#1020). It starts
-# cold, refills under v3, and leaves the v2 rows in place for the operator to
-# delete, as it does with the unversioned format above.
-@pytest.mark.asyncio
-async def test_v2_rows_are_cold_and_left_in_place():
-    client = FakeRedis(decode_responses=True)
-    store = RedisIndexCacheStore(client=client, key_prefix="upgrade:")
-    key = "/folder/f.txt"
-    entry_key = f"upgrade:mirage:idx:entry:v2:{key}"
-    directory_key = "upgrade:mirage:idx:directory:v2:/folder"
-    camel = ('{"id":"old","name":"f.txt","resourceType":"file",'
-             '"remoteTime":"","indexTime":"","vfsName":"","size":null,'
-             '"extra":{}}')
-    listing = ('{"entries":["/folder/f.txt"],"expires_at":4102444800,'
-               '"generation":"g:d"}')
-    fresh = IndexEntry(id="new", name="f.txt", resource_type="file")
-
-    async def refresh():
-        await store.set_dir("/folder", [("f.txt", fresh)])
-
-    warm = AsyncMock(side_effect=refresh)
-    try:
-        await client.set(entry_key, camel)
-        await client.set(directory_key, listing)
-        assert (await
-                store.list_dir("/folder")).status == LookupStatus.NOT_FOUND
-        assert (await store.get(key)).status == LookupStatus.NOT_FOUND
-        assert await store.entries() == {}
-        result = await entry_or_warm(store, key, warm)
-        assert result is not None and result.id == "new"
-        warm.assert_awaited_once()
-        await store.clear()
-        assert await client.get(entry_key) == camel
-        assert await client.get(directory_key) == listing
-    finally:
-        await store.close()
-        await client.aclose()
