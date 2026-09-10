@@ -110,9 +110,13 @@ describe('gdocs readDoc', () => {
 
     const out = await readDoc(STUB_TOKEN_MANAGER, 'abc123')
     expect(new TextDecoder().decode(out)).toContain('abc123')
+    // The flag rides `params`, the way gsheets sends includeGridData, so
+    // the two halves of one family ask for their content the same way and
+    // python's read_doc has a call to mirror.
     expect(client.googleGet).toHaveBeenCalledWith(
       STUB_TOKEN_MANAGER,
-      'https://docs.googleapis.com/v1/documents/abc123?includeTabsContent=true',
+      'https://docs.googleapis.com/v1/documents/abc123',
+      { includeTabsContent: 'true' },
     )
   })
 })
