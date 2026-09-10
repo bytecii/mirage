@@ -179,13 +179,17 @@ def install_fingerprints(
     """Install snapshot fingerprints/revisions onto a reconstructed ws.
 
     Revisions pin replay reads to exact backend versions; bare
-    fingerprints queue an eager drift check. OFF evicts the snapshot
-    cache for fingerprinted paths so reads serve current state.
+    fingerprints queue an eager drift check. OFF drops the restored RAM
+    cache entries for fingerprinted paths so reads serve current state;
+    a Redis cache is never restored from a snapshot (``_restore_cache``
+    skips it), so its ``evict_paths`` is a documented no-op and there
+    is nothing to drop.
 
     Args:
         ws: the reconstructed workspace to install onto.
         fingerprint_entries: entries from a snapshot's FINGERPRINTS.
-        drift_policy: STRICT queues drift checks; OFF skips and evicts.
+        drift_policy: STRICT queues drift checks; OFF skips them and
+            drops the restored cache entries.
     """
     if drift_policy == DriftPolicy.OFF:
         if fingerprint_entries:
