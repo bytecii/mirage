@@ -757,10 +757,15 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     const userGlobalsPy = pyodide.toPy({})
 
     const initFlagsPy = pyodide.toPy(args.flags ?? {})
+    const cwd = args.cwd?.virtual ?? ''
+    const cwdMount = cwd === '' ? null : (this.vfs?.mountOf(cwd) ?? null)
     pyodide.globals.set('_user_code', args.code)
     pyodide.globals.set('_init_flags', initFlagsPy)
     pyodide.globals.set('_argv', argvPy)
-    pyodide.globals.set('_cwd', args.cwd?.virtual ?? '')
+    // A root mount cannot replace Pyodide's own filesystem. Keep the
+    // interpreter cwd in that case so filesystem-independent code still
+    // runs; a supported child mount keeps its actual cwd and errors.
+    pyodide.globals.set('_cwd', cwd !== '/' && cwdMount !== null && !servable(cwdMount) ? '' : cwd)
     pyodide.globals.set('_script_cli', args.scriptCli ?? false)
     pyodide.globals.set('_merged_env', mergedEnvPy)
     pyodide.globals.set('_stdin_bytes', stdinBytes)

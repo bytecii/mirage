@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest'
 import { PathSpec } from '../../types.ts'
 import { PyodideRuntime } from './pyodide.ts'
+import { PrefixResolver } from '../resolver.ts'
 import { PYTHON_EVAL_WRAPPER, PYTHON_REPL_WRAPPER, PYTHON_WRAPPER } from './wrapper.ts'
 
 // These constants are Python programs living inside TypeScript template
@@ -84,6 +85,63 @@ describe('embedded python wrappers', { timeout: 120_000 }, () => {
 })
 
 describe('Pyodide command cwd', { timeout: 120_000 }, () => {
+  it.each([false, true])(
+    'keeps executing with a cwd on an unsupported root mount (eager: %s)',
+    async (eager) => {
+      const rt = new PyodideRuntime()
+      try {
+        if (eager) await rt.eval('pass')
+        rt.attach(
+          () => Promise.reject(new Error('root mount must not be read')),
+          new PrefixResolver(() => ['/']),
+        )
+        const before = await rt.eval('import os; os.getcwd()')
+        if (typeof before.value !== 'string') throw new Error('cwd must be a string')
+        const result = await rt.run({
+          code: 'import os; print(1); print(os.getcwd())',
+          args: [],
+          env: {},
+          stdin: null,
+          cwd: PathSpec.fromStrPath('/unservable/nested'),
+        })
+        expect(result.exitCode).toBe(0)
+        expect(new TextDecoder().decode(result.stdout)).toBe(`1\n${before.value}\n`)
+        const root = await rt.run({
+          code: 'import os; print(os.getcwd())',
+          args: [],
+          env: {},
+          stdin: null,
+          cwd: PathSpec.fromStrPath('/'),
+        })
+        expect(root.exitCode).toBe(0)
+        expect(new TextDecoder().decode(root.stdout)).toBe('/\n')
+      } finally {
+        await rt.close()
+      }
+    },
+  )
+
+  it('still rejects a missing cwd on a supported child of a root mount', async () => {
+    const rt = new PyodideRuntime()
+    rt.attach(
+      () => Promise.reject(Object.assign(new Error('missing'), { code: 'ENOENT' })),
+      new PrefixResolver(() => ['/', '/data/']),
+    )
+    try {
+      const result = await rt.run({
+        code: "print('must not run')",
+        args: [],
+        env: {},
+        stdin: null,
+        cwd: PathSpec.fromStrPath('/data/missing'),
+      })
+      expect(result.exitCode).toBe(1)
+      expect(new TextDecoder().decode(result.stdout)).toBe('')
+    } finally {
+      await rt.close()
+    }
+  })
+
   it('restores trusted cwd functions when user code replaces or deletes them', async () => {
     const rt = new PyodideRuntime()
     try {

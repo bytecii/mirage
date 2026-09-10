@@ -166,6 +166,8 @@ new Workspace({}, { python: { autoLoadFromImports: false } })
 
 ## Resource compatibility
 
+A mount at `/` cannot replace Pyodide's own filesystem, which holds its standard library. If a non-root shell cwd belongs to that unsupported mount, Python runs from the interpreter's existing cwd so filesystem-independent code still works. `/` itself remains usable as a cwd. Mount workspace files under a non-root prefix to access them from Python. Supported child mounts keep their normal cwd and relative file access even when a root mount is also present.
+
 | Resource | Status |
 |---|---|
 | RAM, OPFS (browser), Disk | ✅ |
