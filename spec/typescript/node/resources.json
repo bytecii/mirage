@@ -2251,6 +2251,9 @@
         "collection": {
           "required": false
         },
+        "embed": {
+          "required": false
+        },
         "embeddingModel": {
           "required": false
         },

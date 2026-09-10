@@ -225,3 +225,45 @@ describe('QdrantAccessor group resolution', () => {
     await expect(acc.resolveGroup('c', 'source', {}, 'notes.pdf', true)).resolves.toEqual([])
   })
 })
+
+interface QueryOpts {
+  query: unknown
+  limit: number
+  with_payload: boolean
+}
+
+function queryClient(seen: QueryOpts[]) {
+  return {
+    query(_collection: string, opts: QueryOpts) {
+      seen.push(opts)
+      return Promise.resolve({ points: [{ id: 1, payload: { name: 'alpha' }, score: 0.9 }] })
+    },
+  }
+}
+
+describe('QdrantAccessor search', () => {
+  it('sends the caller-supplied vector when embed is configured', async () => {
+    const seen: QueryOpts[] = []
+    const embed = (text: string): Promise<number[]> => Promise.resolve([text.length, 0.5])
+    const acc = new QdrantAccessor(
+      resolveQdrantConfig({ url: 'http://x', collection: 'c', idField: 'id', embed }),
+    )
+    ;(acc as unknown as { client: unknown }).client = queryClient(seen)
+    const rows = await acc.searchRows('c', 'dog', 3)
+    expect(seen).toEqual([{ query: [3, 0.5], limit: 3, with_payload: true }])
+    expect(rows).toEqual([{ id: 1, name: 'alpha', _score: 0.9 }])
+  })
+
+  it('asks the server to embed the text otherwise', async () => {
+    const seen: QueryOpts[] = []
+    const acc = accessorWith(queryClient(seen))
+    await acc.searchRows('c', 'dog', 3)
+    expect(seen).toEqual([
+      {
+        query: { text: 'dog', model: 'sentence-transformers/all-MiniLM-L6-v2' },
+        limit: 3,
+        with_payload: true,
+      },
+    ])
+  })
+})

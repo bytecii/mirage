@@ -50,12 +50,9 @@ Every path is translated into a LanceDB query. Descending a folder adds one
       <id>.<ext>                   # raw blob / image bytes
 ```
 
-A group value holding `/` renders as `∕`, a value that already holds `∕` or `⁄`
-has that character prefixed with `⁄`, and a blank value or one that starts with
-`.` is prefixed with `⁄` as well, so every value keeps its own directory that
-lists and opens, and descending into it filters for exactly that value. A glob's
-literal head narrows a listing to the values whose rendering starts with it and
-reaches them past `max_rows`, so `⁄*` lists every blank or dot-led value.
+A group value holding `/` renders as `∕`, and a blank or dot-led value is led
+by `⁄`, so every value keeps its own directory that lists and opens, and
+descending into it filters for exactly that value.
 
 When `table` is set the table level is elided, so the mount root is that table:
 

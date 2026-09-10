@@ -22,7 +22,7 @@ import { makeRead, type Reader } from '../hierarchy/read.ts'
 import type { ScopeMatch } from '../hierarchy/scope.ts'
 import { blobBytes, renderJson, renderText } from './render.ts'
 import { detectFor, tableOf } from './scope.ts'
-import { pointIdFromStem } from './naming.ts'
+import { pointIdFromStem, rowStem } from './naming.ts'
 import { fieldValue } from './payload.ts'
 
 async function rowOf(
@@ -30,13 +30,17 @@ async function rowOf(
   match: ScopeMatch,
   virtual: string,
 ): Promise<QdrantRow> {
+  // The label is stripped before the retrieve, so every spelling that ends
+  // in __<id> reaches the point; only the stem readdir publishes names it,
+  // so an alias reads as absent rather than as the file.
   const config = accessor.config
+  const stem = match.slots.row_id ?? ''
   const row = await accessor.rowRecord(
     tableOf(config, match),
     config.idField,
-    pointIdFromStem(match.slots.row_id ?? '', config),
+    pointIdFromStem(stem, config),
   )
-  if (row === null) throw enoent(virtual)
+  if (row === null || rowStem(row, config) !== stem) throw enoent(virtual)
   return row
 }
 

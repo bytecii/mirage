@@ -47,3 +47,28 @@ it('reads a payload-named chunk by its embedded point id', async () => {
   )
   expect(requested).toBe('17')
 })
+
+it('rejects a stem the listing never published', async () => {
+  // The label is stripped before the retrieve, so any spelling that ends in
+  // __<id> fetches the point; only the stem readdir publishes opens.
+  const config = resolveQdrantConfig({
+    collection: 'docs',
+    groupBy: ['metadata.source'],
+    basenameFields: ['metadata.source'],
+    nameField: 'metadata.page',
+    textField: 'page_content',
+  })
+  const accessor = {
+    config,
+    rowRecord: () =>
+      Promise.resolve({
+        id: 17,
+        page_content: 'Refunds are processed within 14 days',
+        metadata: { source: 's3://docs/refund.pdf', page: '004' },
+      }),
+  } as unknown as QdrantAccessor
+  for (const path of ['/refund.pdf/wrong__17.txt', '/refund.pdf/17.txt']) {
+    const spec = new PathSpec({ virtual: path, directory: path, resourcePath: path.slice(1) })
+    await expect(read(accessor, spec)).rejects.toHaveProperty('code', 'ENOENT')
+  }
+})

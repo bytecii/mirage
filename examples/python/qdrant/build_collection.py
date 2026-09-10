@@ -17,6 +17,9 @@ import base64
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient, models
 
+# fastembed runs the ONNX export of this sentence-transformers model, and
+# it is what qdrant-client embeds `search` queries with, so the example
+# brings no model dependency of its own.
 MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 _PRODUCTS = [

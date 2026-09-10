@@ -64,13 +64,14 @@ config = QdrantConfig(
 This produces `refund-2026.pdf/004__<point-id>.txt`. The readable prefix comes
 from `name_field`; the Qdrant point id remains as a stable suffix so duplicate
 page labels cannot collide and a direct read never depends on a warm listing
-cache. A label that is not a string spells the way the point's `.json` spells
-it (`true`, `1`), the same in Python and TypeScript. `basename_fields` strips
-URL/path parents from the named `group_by` fields. Leave a field out to
-preserve its complete value in one path-safe segment: `/` renders as `∕`, a
-value that already holds `∕` or `⁄` has that character prefixed with `⁄`, and a
-blank value or one that starts with `.` is prefixed with `⁄` as well, so every
-value has its own segment that lists and opens. A basename longer than 255
+cache. Only the stem the listing publishes opens: another label in front of
+the same id reads as absent. A label that is not a string spells as compact
+JSON (`true`, `1`, `1e-7`), the same in Python and TypeScript.
+`basename_fields` strips
+URL/path parents from the named `group_by` fields. Leave a field out to preserve its
+complete value in one path-safe segment: `/` renders as `∕`, and a blank or
+dot-led value is led by `⁄`, so every value has its own segment that lists and
+opens. A basename longer than 255
 bytes, which ext4 and APFS refuse, is cut to fit and ends in `__` plus the md5
 of the whole name, so two long leaves stay two directories. Basenames must be
 unique within their parent group; Mirage refuses an ambiguous listing instead

@@ -91,6 +91,7 @@ def test_row_stem_spells_a_non_string_label_as_its_json_does():
     config = QdrantConfig(name_field="flag")
     assert row_stem({"id": 17, "flag": True}, config) == "true__17"
     assert row_stem({"id": 17, "flag": 1.0}, config) == "1__17"
+    assert row_stem({"id": 17, "flag": 1e-7}, config) == "1e-7__17"
     assert row_stem({"id": 17, "flag": {"a": 1.0}}, config) == '{"a":1}__17'
 
 

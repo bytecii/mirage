@@ -108,6 +108,7 @@ describe('qdrant naming spells values as their JSON', () => {
     const config = resolveQdrantConfig({ nameField: 'flag' })
     expect(rowStem({ id: 17, flag: true }, config)).toBe('true__17')
     expect(rowStem({ id: 17, flag: 1.0 }, config)).toBe('1__17')
+    expect(rowStem({ id: 17, flag: 1e-7 }, config)).toBe('1e-7__17')
     expect(rowStem({ id: 17, flag: { a: 1.0 } }, config)).toBe('{"a":1}__17')
   })
 

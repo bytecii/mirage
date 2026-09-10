@@ -225,8 +225,14 @@ export class QdrantAccessor extends Accessor {
     const hit = this.searchCache.get(key)
     if (hit !== undefined) return hit
     const client = await this.getClient()
+    // A caller-supplied `embed` vectorizes the query here; without one the
+    // text goes to the server, which only a cluster with inference answers.
+    const vector =
+      this.config.embed !== null
+        ? await this.config.embed(query)
+        : { text: query, model: this.config.embeddingModel }
     const res = (await client.query(table, {
-      query: { text: query, model: this.config.embeddingModel },
+      query: vector,
       limit,
       with_payload: true,
     })) as { points: QdrantPoint[] }

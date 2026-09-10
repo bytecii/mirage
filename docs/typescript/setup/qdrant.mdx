@@ -63,13 +63,13 @@ For a source value `s3://docs/policies/refund-2026.pdf` and page value `004`,
 the chunk text is exposed as
 `refund-2026.pdf/004__<point-id>.txt`. The point id remains as a stable suffix,
 so duplicate labels cannot collide and direct reads work without a warm cache.
-A label that is not a string spells the way the point's `.json` spells it
-(`true`, `1`), the same in TypeScript and Python. `basenameFields` strips
+Only the stem the listing publishes opens: another label in front of the same
+id reads as absent. A label that is not a string spells as compact JSON
+(`true`, `1`, `1e-7`), the same in TypeScript and Python. `basenameFields` strips
 URL/path parents from the named `groupBy` fields; omit a field to preserve its
-complete value in one path-safe segment: `/` renders as `∕`, a value that
-already holds `∕` or `⁄` has that character prefixed with `⁄`, and a blank value
-or one that starts with `.` is prefixed with `⁄` as well, so every value has its
-own segment that lists and opens. A basename longer than 255 bytes, which ext4
+complete value in one path-safe segment: `/` renders as `∕`, and a blank or
+dot-led value is led by `⁄`, so every value has its own segment that lists and
+opens. A basename longer than 255 bytes, which ext4
 and APFS refuse, is cut to fit and ends in `__` plus the md5 of the whole name,
 so two long leaves stay two directories. Basenames must be unique within a
 parent group; ambiguous listings are refused, and opening a basename directory
@@ -91,11 +91,16 @@ above, annotated with the similarity score.
 
 ## Search embedding
 
-The query is embedded **server-side**: the TypeScript client sends the query
-text to Qdrant, so the cluster must have inference enabled (Qdrant Cloud) and
-store vectors from the same `embeddingModel`
-(default `sentence-transformers/all-MiniLM-L6-v2`). Browsing
-(`ls`/`cat`/`find`/`grep`) needs no embedding.
+`search` needs a vector for the query, and the config decides where it comes
+from. With `embed` set, a `(text: string) => Promise<number[]>` the caller
+brings, the query is vectorized in-process, so a self-hosted Qdrant works and
+mirage depends on no model runtime; `examples/typescript/qdrant/qdrant.ts`
+uses `@huggingface/transformers` with `Xenova/all-MiniLM-L6-v2`, the ONNX
+export of the default model. Without it the query text goes to the server, so
+the cluster must have inference enabled (Qdrant Cloud) and store vectors from
+the same `embeddingModel` (default `sentence-transformers/all-MiniLM-L6-v2`).
+The hook never lands in a snapshot: a restored mount asks for a fresh
+resource. Browsing (`ls`/`cat`/`find`/`grep`) needs no embedding.
 
 ## Supported commands
 

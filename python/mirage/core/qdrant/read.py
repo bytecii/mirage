@@ -20,7 +20,7 @@ from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.hierarchy.bind import per_accessor
 from mirage.core.hierarchy.read import Reader, make_read
 from mirage.core.hierarchy.scope import ScopeMatch
-from mirage.core.qdrant.naming import point_id_from_stem
+from mirage.core.qdrant.naming import point_id_from_stem, row_stem
 from mirage.core.qdrant.payload import field_value
 from mirage.core.qdrant.query import row_record
 from mirage.core.qdrant.render import blob_bytes, render_json, render_text
@@ -31,11 +31,14 @@ from mirage.utils.errors import enoent
 
 async def _row_of(accessor: QdrantAccessor, match: ScopeMatch,
                   virtual: str) -> dict[str, Any]:
+    # The label is stripped before the retrieve, so every spelling that
+    # ends in __<id> reaches the point; only the stem readdir publishes
+    # names it, so an alias reads as absent rather than as the file.
     config = accessor.config
-    row_id = point_id_from_stem(match.slots["row_id"], config)
+    stem = match.slots["row_id"]
     row = await row_record(accessor, table_of(config, match), config.id_field,
-                           row_id)
-    if row is None:
+                           point_id_from_stem(stem, config))
+    if row is None or row_stem(row, config) != stem:
         raise enoent(virtual)
     return row
 

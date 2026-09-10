@@ -18,8 +18,13 @@ import {
   parseConfigWithSchema,
   REDACTED_SECRET,
   type RedactedConfig,
+  secretSchema,
   secretStr,
 } from '../secrets.ts'
+
+// What `search` vectorizes the query with when the caller brings a model:
+// the text in, its embedding out, in the space the collection was built in.
+export type EmbedFn = (text: string) => Promise<number[]>
 
 const QdrantConfigSchema = z.object({
   url: z.string().optional(),
@@ -39,6 +44,10 @@ const QdrantConfigSchema = z.object({
   searchLimit: z.number().optional(),
   maxRows: z.number().optional(),
   embeddingModel: z.string().optional(),
+  // Declared so parse keeps it, and marked secret so no snapshot carries
+  // it: a restored mount asks for a fresh resource rather than searching
+  // with a hook it cannot have.
+  embed: secretSchema(z.custom<EmbedFn>((value) => typeof value === 'function')).optional(),
 })
 
 export type QdrantConfig = ConfigOf<typeof QdrantConfigSchema>
@@ -65,6 +74,7 @@ export interface QdrantConfigResolved {
   searchLimit: number
   maxRows: number
   embeddingModel: string
+  embed: EmbedFn | null
 }
 
 export function resolveQdrantConfig(config: QdrantConfig): QdrantConfigResolved {
@@ -86,6 +96,7 @@ export function resolveQdrantConfig(config: QdrantConfig): QdrantConfigResolved 
     searchLimit: config.searchLimit ?? 10,
     maxRows: config.maxRows ?? 1000,
     embeddingModel: config.embeddingModel ?? 'sentence-transformers/all-MiniLM-L6-v2',
+    embed: config.embed ?? null,
   }
 }
 
@@ -94,8 +105,12 @@ export function resolveQdrantConfig(config: QdrantConfig): QdrantConfigResolved 
 // credential has nothing to mask, and planting the marker anyway would
 // make `Workspace.load` demand a fresh config for a self-contained
 // snapshot. Python's redactor skips None for the same reason.
-export type QdrantConfigRedacted = RedactedConfig<QdrantConfigResolved, 'apiKey'>
+export type QdrantConfigRedacted = RedactedConfig<QdrantConfigResolved, 'apiKey' | 'embed'>
 
 export function redactQdrantConfig(config: QdrantConfigResolved): QdrantConfigRedacted {
-  return { ...config, apiKey: config.apiKey === null ? null : REDACTED_SECRET }
+  return {
+    ...config,
+    apiKey: config.apiKey === null ? null : REDACTED_SECRET,
+    embed: config.embed === null ? null : REDACTED_SECRET,
+  }
 }
