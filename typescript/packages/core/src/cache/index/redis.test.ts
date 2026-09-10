@@ -15,13 +15,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IndexEntry, LookupStatus } from './config.ts'
 import { RedisIndexCacheStore, type RedisClientLike } from './redis.ts'
-import { entryOrWarm } from './warm.ts'
 
 describe('RedisIndexCacheStore default keyPrefix', () => {
   it('namespaces keys under mirage:index: by default', () => {
     const store = new RedisIndexCacheStore()
     const prefix = (store as unknown as { entryPrefix: string }).entryPrefix
-    expect(prefix).toBe('mirage:index:mirage:idx:entry:v2:')
+    expect(prefix).toBe('mirage:index:mirage:idx:entry:')
   })
 })
 
@@ -50,16 +49,8 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
     await store.close()
   })
 
-  async function redis(): Promise<
-    RedisClientLike & { rPush: (key: string, value: string) => Promise<number> }
-  > {
-    return (
-      store as unknown as {
-        client: () => Promise<
-          RedisClientLike & { rPush: (key: string, value: string) => Promise<number> }
-        >
-      }
-    ).client()
+  async function redis(): Promise<RedisClientLike> {
+    return (store as unknown as { client: () => Promise<RedisClientLike> }).client()
   }
 
   it('batches cold snapshot directory tokens in a bounded number of requests', async () => {
@@ -123,7 +114,7 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
   it('preserves an observed directory token while missing seed tokens initialize', async () => {
     const client = await redis()
     await store.setDir('/existing', [])
-    const key = `${prefix}mirage:idx:children:!generation:/existing`
+    const key = `${prefix}mirage:idx:generation:/existing`
     const multi = client.multi.bind(client)
     const spy = vi.spyOn(client, 'multi').mockImplementationOnce(() => {
       const pipeline = multi()
@@ -195,7 +186,7 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
       async (race) => {
         const client = await redis()
         if (token === 'directory') await store.setDir('/other', [])
-        const key = `${prefix}mirage:idx:children:!generation${token === 'directory' ? ':/snapshot' : ''}`
+        const key = `${prefix}mirage:idx:generation${token === 'directory' ? ':/snapshot' : ''}`
         const set = client.set.bind(client)
         let intercepted = false
         const spy = vi.spyOn(client, 'set').mockImplementation(async (path, value, options) => {
@@ -265,7 +256,7 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
 
   it('keeps a listing expired when its directory token is removed and recreated', async () => {
     const client = await redis()
-    const directoryKey = `${prefix}mirage:idx:children:!generation:/snapshot`
+    const directoryKey = `${prefix}mirage:idx:generation:/snapshot`
     await store.setDir('/snapshot', [])
     const original = await client.get(directoryKey)
     await client.del(directoryKey)
@@ -283,7 +274,7 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
 
   it('keeps a late refill expired after its directory token is deleted', async () => {
     const client = await redis()
-    const directoryKey = `${prefix}mirage:idx:children:!generation:/snapshot`
+    const directoryKey = `${prefix}mirage:idx:generation:/snapshot`
     await store.setDir('/snapshot', [])
     const multi = client.multi.bind(client)
     const spy = vi.spyOn(client, 'multi').mockImplementationOnce(() => {
@@ -304,98 +295,6 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
       spy.mockRestore()
     }
   })
-
-  it.each(['invalidateDir', 'invalidatePrefix', 'clear'] as const)(
-    '%s invalidates an independent payload format through stable directory tokens',
-    async (method) => {
-      const client = await redis()
-      const globalKey = `${prefix}mirage:idx:children:!generation`
-      const paths = ['/scope', '/scope/nested', '/scope-other']
-      const originals = new Map<string, string | null>()
-      const foreignKeys: string[] = []
-      try {
-        for (const path of paths) {
-          await store.setDir(path, [])
-          originals.set(path, await client.get(`${globalKey}:${path}`))
-          const payload = await client.get(`${prefix}mirage:idx:directory:v2:${path}`)
-          expect(payload).not.toBeNull()
-          const foreignKey = `${prefix}future-index-format:${path}`
-          foreignKeys.push(foreignKey)
-          await client.set(foreignKey, payload ?? '')
-        }
-        if (method === 'clear') await store.clear()
-        else await store[method]('/scope')
-
-        for (const path of paths) {
-          const [payload, global, directory] = await client.mGet([
-            `${prefix}future-index-format:${path}`,
-            globalKey,
-            `${globalKey}:${path}`,
-          ])
-          expect(payload).not.toBeNull()
-          const listing = JSON.parse(payload ?? '') as { generation: string }
-          const invalidated =
-            method === 'clear' ||
-            path === '/scope' ||
-            (method === 'invalidatePrefix' && path === '/scope/nested')
-          if (invalidated) {
-            expect(directory).toBeNull()
-            expect(listing.generation).not.toBe(`${global ?? ''}:${directory ?? ''}`)
-          } else {
-            expect(directory).toBe(originals.get(path))
-            expect(listing.generation).toBe(`${global ?? ''}:${directory ?? ''}`)
-            expect((await store.listDir(path)).entries).toEqual([])
-          }
-        }
-      } finally {
-        await client.del(foreignKeys)
-      }
-    },
-  )
-
-  for (const writerFormat of ['v2', 'v3'] as const) {
-    it.each(['invalidate', 'invalidateDir', 'invalidatePrefix', 'clear'] as const)(
-      `${writerFormat} %s invalidates a peer using another payload format`,
-      async (method) => {
-        const peer = new RedisIndexCacheStore({ client: await redis(), keyPrefix: prefix })
-        Object.defineProperties(peer, {
-          entryPrefix: { value: `${prefix}mirage:idx:entry:v3:` },
-          childrenPrefix: { value: `${prefix}mirage:idx:directory:v3:` },
-        })
-        const writer = writerFormat === 'v2' ? store : peer
-        const reader = writerFormat === 'v2' ? peer : store
-        const paths = ['/repo', '/repo/sub', '/repository']
-        try {
-          for (const cache of [store, peer]) {
-            for (const path of paths) {
-              await cache.setDir(path, [['a', entry('original', 'a')]])
-            }
-          }
-          if (method === 'invalidate' || method === 'clear') await writer[method]()
-          else await writer[method]('/repo')
-
-          for (const path of paths) {
-            const invalidated =
-              method === 'invalidate' ||
-              method === 'clear' ||
-              path === '/repo' ||
-              (method === 'invalidatePrefix' && path === '/repo/sub')
-            if (invalidated) {
-              expect((await reader.listDir(path)).status).toBe(LookupStatus.EXPIRED)
-              await writer.setDir(path, [['b', entry('refreshed', 'b')]])
-              expect((await writer.listDir(path)).entries).toEqual([`${path}/b`])
-              expect((await reader.listDir(path)).status).toBe(LookupStatus.EXPIRED)
-            } else {
-              expect((await reader.listDir(path)).entries).toEqual([`${path}/a`])
-            }
-          }
-        } finally {
-          await peer.clear()
-          await peer.close()
-        }
-      },
-    )
-  }
 
   it('globally invalidates listings while retaining current metadata', async () => {
     await store.setDir('/snapshot', [['a', entry('new', 'a')]])
@@ -447,47 +346,39 @@ describe.skipIf(skip)('RedisIndexCacheStore', () => {
     expect(r.status).toBe(LookupStatus.NOT_FOUND)
   })
 
-  for (const invalidate of [false, true]) {
-    it.each(['updated', 'renamed', 'deleted'])(
-      `keeps previous-format entries and listings cold after %s (invalidate=${String(invalidate)})`,
-      async (change) => {
-        const client = await (
-          store as unknown as {
-            client: () => Promise<
-              RedisClientLike & { rPush: (key: string, value: string) => Promise<number> }
-            >
-          }
-        ).client()
-        const key = '/folder/f.txt'
-        const entryKey = `${prefix}mirage:idx:entry:${key}`
-        const childrenKey = `${prefix}mirage:idx:children:/folder`
-        const name = change === 'renamed' ? 'g.txt' : 'f.txt'
-        const rows: [string, IndexEntry][] =
-          change === 'deleted' ? [] : [[name, entry('new', name)]]
-        const warm = vi.fn(() => store.setDir('/folder', rows))
-        try {
-          await client.set(entryKey, JSON.stringify(entry('old', 'f.txt')))
-          await client.rPush(childrenKey, key)
-          if (invalidate) await store.invalidate()
-          expect((await store.listDir('/folder')).status).toBe(LookupStatus.NOT_FOUND)
-          expect((await store.get(key)).status).toBe(LookupStatus.NOT_FOUND)
-          expect(await store.entries()).toEqual(new Map())
-
-          const result = await entryOrWarm(store, key, warm)
-          if (change === 'updated') expect(result?.id).toBe('new')
-          else expect(result).toBeNull()
-          expect(warm).toHaveBeenCalledTimes(1)
-          expect(await entryOrWarm(store, key, warm)).toEqual(result)
-          expect(warm).toHaveBeenCalledTimes(1)
-          expect([...(await store.entries()).keys()]).toEqual(
-            rows.map(([name]) => `/folder/${name}`),
-          )
-        } finally {
-          await client.del([entryKey, childrenKey])
-        }
-      },
+  // The one wire format: what pydantic writes for the Python IndexEntry,
+  // snake_case and every field. `test_redis.py` pins the same literal, so an
+  // entry either language writes is one the other reads (#1020).
+  it('writes the entry JSON Python writes', async () => {
+    await store.put(
+      '/a.txt',
+      new IndexEntry({
+        id: '/a.txt',
+        name: 'a.txt',
+        resourceType: 'file',
+        remoteTime: '2026-01-01T00:00:00Z',
+        indexTime: '2026-01-01T00:00:00Z',
+        size: 6,
+      }),
     )
-  }
+    const c = await redis()
+    expect(await c.get(`${prefix}mirage:idx:entry:/a.txt`)).toBe(
+      '{"id":"/a.txt","name":"a.txt","resource_type":"file","remote_time":"2026-01-01T00:00:00Z","index_time":"2026-01-01T00:00:00Z","vfs_name":"","size":6,"extra":{}}',
+    )
+  })
+
+  it('reads the entry JSON Python writes', async () => {
+    const c = await redis()
+    await c.set(
+      `${prefix}mirage:idx:entry:/b.txt`,
+      '{"id":"/b.txt","name":"b.txt","resource_type":"file","remote_time":"","index_time":"2026-01-01T00:00:00Z","vfs_name":"","size":null,"extra":{"size_bytes":9}}',
+    )
+    const r = await store.get('/b.txt')
+    expect(r.entry?.resourceType).toBe('file')
+    expect(r.entry?.indexTime).toBe('2026-01-01T00:00:00Z')
+    expect(r.entry?.size).toBeNull()
+    expect(r.entry?.extra).toEqual({ size_bytes: 9 })
+  })
 
   it('put + get round-trips entry metadata', async () => {
     const extra = { drive_id: 'drive-a', nested: { slug: 'alpha', tags: ['x', 'y'] } }
@@ -688,9 +579,9 @@ describe('deferred Redis seeds', () => {
     expect((await store.listDir('/')).entries).toEqual([])
     expect(value.mGet).toHaveBeenCalledTimes(1)
     expect(value.mGet).toHaveBeenCalledWith([
-      'mirage:index:mirage:idx:directory:v2:/',
-      'mirage:index:mirage:idx:children:!generation',
-      'mirage:index:mirage:idx:children:!generation:/',
+      'mirage:index:mirage:idx:directory:/',
+      'mirage:index:mirage:idx:generation',
+      'mirage:index:mirage:idx:generation:/',
     ])
     expect(value.get).not.toHaveBeenCalled()
   })

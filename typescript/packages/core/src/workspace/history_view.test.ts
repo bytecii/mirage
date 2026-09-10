@@ -346,6 +346,25 @@ describe('history recording boundaries (GNU line-reader semantics)', () => {
     await ws.close()
   })
 
+  // bash 5.2 adds a line to history only when it is non-empty
+  // (`shell_input_line[0]`): a blank line is never recorded, while a
+  // whitespace-only or comment-only line is. Pinned in debian:stable-slim
+  // with `printf 'echo one\n\n   \n# comment\n' | bash -i; history -w`.
+  it('a blank line is not recorded but whitespace and comments are', async () => {
+    const ws = makeWs()
+    await ws.execute('echo one')
+    await ws.execute('')
+    await ws.execute('\n')
+    await ws.execute('   ')
+    await ws.execute('# comment')
+    expect(await commands(ws)).toEqual(['echo one', '   ', '# comment'])
+    const file = out(await ws.execute('cat /.bash_history'))
+    expect(file).not.toContain('\n\n')
+    expect(file).toContain('\n   \n')
+    expect(file).toContain('\n# comment\n')
+    await ws.close()
+  })
+
   it('an unrecorded execute skips history but keeps its ops', async () => {
     const ws = makeWs()
     await ws.execute('echo hi > /data/f.txt')

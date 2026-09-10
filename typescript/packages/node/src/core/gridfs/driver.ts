@@ -22,6 +22,7 @@ import type {
 } from '@struktoai/mirage-core/core/object_store/driver'
 import type { FindOptions } from '@struktoai/mirage-core/resource/base'
 import { ResourceName } from '@struktoai/mirage-core/types'
+import { toIsoZ } from '@struktoai/mirage-core/utils/dates'
 import type { ObjectId } from 'mongodb'
 import type { GridFSAccessor } from '../../accessor/gridfs.ts'
 import {
@@ -133,7 +134,7 @@ async function* listChildren(conn: GridFSAccessor, pfx: string): AsyncIterable<C
         key: fname,
         kind: 'f',
         size: doc.length,
-        modified: doc.uploadDate.toISOString(),
+        modified: toIsoZ(doc.uploadDate),
       }
     } else {
       // A deeper filename or a "seg/" directory marker both imply an
@@ -145,13 +146,13 @@ async function* listChildren(conn: GridFSAccessor, pfx: string): AsyncIterable<C
 
 async function* listTree(conn: GridFSAccessor, pfx: string): AsyncIterable<TreeEntry> {
   for await (const doc of iterLatest(conn, prefixQuery(pfx))) {
-    yield { key: doc.filename, size: doc.length, modified: doc.uploadDate.toISOString() }
+    yield { key: doc.filename, size: doc.length, modified: toIsoZ(doc.uploadDate) }
   }
 }
 
 async function* listSubtree(conn: GridFSAccessor, stem: string): AsyncIterable<TreeEntry> {
   for await (const doc of iterLatest(conn, subtreeQuery(stem))) {
-    yield { key: doc.filename, size: doc.length, modified: doc.uploadDate.toISOString() }
+    yield { key: doc.filename, size: doc.length, modified: toIsoZ(doc.uploadDate) }
   }
 }
 
@@ -160,7 +161,7 @@ async function* iterQuery(
   query: Record<string, unknown>,
 ): AsyncIterable<TreeEntry> {
   for await (const doc of iterLatest(conn, query)) {
-    yield { key: doc.filename, size: doc.length, modified: doc.uploadDate.toISOString() }
+    yield { key: doc.filename, size: doc.length, modified: toIsoZ(doc.uploadDate) }
   }
 }
 
@@ -179,7 +180,7 @@ async function head(conn: GridFSAccessor, key: string): Promise<ObjectMeta | nul
   const revision = doc._id.toString()
   return {
     size: doc.length,
-    modified: doc.uploadDate.toISOString(),
+    modified: toIsoZ(doc.uploadDate),
     fingerprint: revision,
     revision,
     extra: { file_id: revision },

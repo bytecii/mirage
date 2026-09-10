@@ -505,7 +505,8 @@ class Workspace:
         previous = self._registry.mounts()
         # Configure before mount() captures the index in its CacheManager.
         # An alias must retain the index used by the resource's other mounts.
-        if (self._registry.try_mount_for_prefix(prefix) is None
+        if (self._index_config is not None
+                and self._registry.try_mount_for_prefix(prefix) is None
                 and not any(m.resource is resource
                             for m in self._registry.mounts())):
             resource.set_index(self._index_config)

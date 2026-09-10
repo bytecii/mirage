@@ -241,3 +241,25 @@ async def test_invalidate_prefix_handles_glob_metacharacters(store, entry):
     await store.invalidate_prefix("/chan/a[1]")
     assert (await store.list_dir("/chan/a[1]")).entries is None
     assert (await store.list_dir("/chan/ab")).entries is not None
+
+
+# The one wire format: what pydantic writes for IndexEntry, snake_case and
+# every field. `redis.test.ts` pins the same literal, so an entry either
+# language writes is one the other reads (#1020).
+ENTRY_WIRE = ('{"id":"/a.txt","name":"a.txt","resource_type":"file",'
+              '"remote_time":"2026-01-01T00:00:00Z",'
+              '"index_time":"2026-01-01T00:00:00Z","vfs_name":"","size":6,'
+              '"extra":{}}')
+
+
+@pytest.mark.asyncio
+async def test_entry_wire_format_is_the_shared_json(store):
+    await store.put(
+        "/a.txt",
+        IndexEntry(id="/a.txt",
+                   name="a.txt",
+                   resource_type="file",
+                   remote_time="2026-01-01T00:00:00Z",
+                   index_time="2026-01-01T00:00:00Z",
+                   size=6))
+    assert await store._client.get(store._entry_key("/a.txt")) == ENTRY_WIRE

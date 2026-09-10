@@ -19,6 +19,7 @@ from typing import Any, cast, get_args
 
 from pydantic import BaseModel
 
+from mirage.cache.file.ram import RAMFileCacheStore
 from mirage.commands.cli.types import CLISpec
 from mirage.observe.log_entry import EVENT_CLEAR, EVENT_COMMAND, EVENT_DELETE
 from mirage.resource.history import HISTORY_PREFIX
@@ -169,6 +170,9 @@ async def to_state_dict(ws) -> dict[str, Any]:
             MountKey.RESOURCE_STATE: resource_state,
         })
 
+    # Only a RAM cache holds entries the snapshot can carry; a Redis
+    # cache lives outside the workspace and is skipped on both sides
+    # (see `_restore_cache`), as TypeScript's `toStateDict` does.
     cache = ws._cache
     cache_entries = [{
         CacheKey.KEY: k,
@@ -177,7 +181,8 @@ async def to_state_dict(ws) -> dict[str, Any]:
         CacheKey.TTL: e.ttl,
         CacheKey.CACHED_AT: e.cached_at,
         CacheKey.SIZE: e.size,
-    } for k, e in cache._entries.items()]
+    } for k, e in cache._entries.items()] if isinstance(
+        cache, RAMFileCacheStore) else []
 
     history_events = [
         e for e in await ws.observer.events()

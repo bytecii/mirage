@@ -1037,10 +1037,11 @@ def seed_var(session: Session, name: str, value: ShellValue) -> None:
     state. `visible_arrays` already names this case ("the embedder can
     seed session.arrays before narrowing"). The other is the shell
     writing its own bookkeeping -- ``$PWD``/``$OLDPWD`` after a ``cd``,
-    ``BASH_REMATCH`` after a ``[[ =~ ]]``, the loop variable a ``for``
-    puts back when it ends -- which are the shell's to maintain, not
-    the session's to admit, and which a ``pre_session`` rule refusing
-    them could only break.
+    ``BASH_REMATCH`` after a ``[[ =~ ]]`` -- which are the shell's to
+    maintain, not the session's to admit, and which a ``pre_session``
+    rule refusing them could only break. (A ``for`` loop's variable is
+    not one of these: bash leaves it holding its last value, so the
+    loop never writes it back.)
 
     A variable the *line* named goes through `SessionView.set` instead,
     which is the whole point of the store being read-only from outside.
