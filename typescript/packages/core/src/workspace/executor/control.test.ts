@@ -106,7 +106,8 @@ describe('handleFor', () => {
     const [stdout] = await handleFor(execute, 'X', ['a', 'b', 'c'], [node('body')], s)
     expect(seen).toEqual(['a', 'b', 'c'])
     expect(decode(await materialize(stdout))).toBe('iter-a\niter-b\niter-c\n')
-    expect(s.env.X).toBeUndefined()
+    // bash leaves the loop variable holding its last value.
+    expect(s.env.X).toBe('c')
   })
 
   it('BreakSignal stops the loop early', async () => {
@@ -143,12 +144,25 @@ describe('handleFor', () => {
     expect(seen).toEqual(['a', 'b', 'c'])
   })
 
-  it('restores previous value of the loop variable', async () => {
+  // bash 5.2: `Z=before; for Z in a b; do :; done; echo $Z` prints b. The
+  // loop variable is an ordinary variable and keeps its last value; the
+  // shadowed value is not put back.
+  it('keeps the loop variable at its last value', async () => {
     const s = new Session({ sessionId: 'test', vars: varsFromEnv({ X: 'saved' }) })
     const execute: ExecuteNodeFn = () =>
       Promise.resolve([null, new IOResult(), new ExecutionNode()])
-    await handleFor(execute, 'X', ['a'], [node('body')], s)
-    expect(s.env.X).toBe('saved')
+    await handleFor(execute, 'X', ['a', 'b'], [node('body')], s)
+    expect(s.env.X).toBe('b')
+  })
+
+  // bash 5.2: `unset Y; for Y in ; do :; done` leaves Y unset, since no
+  // iteration ever assigned it.
+  it('leaves the variable untouched when there are no words', async () => {
+    const s = new Session({ sessionId: 'test' })
+    const execute: ExecuteNodeFn = () =>
+      Promise.resolve([null, new IOResult(), new ExecutionNode()])
+    await handleFor(execute, 'Y', [], [node('body')], s)
+    expect('Y' in s.env).toBe(false)
   })
 })
 
