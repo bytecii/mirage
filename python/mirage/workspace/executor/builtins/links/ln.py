@@ -95,9 +95,10 @@ class LinkPlan:
 def parse_flags(fl: FlagView) -> LnFlags:
     """Parse the ln flag bag once into a frozen struct.
 
-    ``-P`` is accepted without effect: a hard link of a symlink is the
-    default here as it is in GNU. Raises ``UsageError`` for a
-    ``--backup`` control GNU does not know.
+    ``-L`` and ``-P`` are one switch and the later occurrence wins, as
+    in GNU (``-LP`` links the symlink itself, ``-PL`` its target); a
+    hard link of a symlink is the ``-P`` default. Raises ``UsageError``
+    for a ``--backup`` control GNU does not know.
 
     Args:
         fl (FlagView): flag view constructed with the ln spec.
@@ -105,13 +106,14 @@ def parse_flags(fl: FlagView) -> LnFlags:
     raw: FlagValue | None = fl.raw("backup")
     backup_raw = raw if isinstance(raw, (str, bool)) else None
     suffix = fl.as_str("suffix") or None
+    deref = fl.typed_order("logical", "physical")
     return LnFlags(
         symbolic=fl.as_bool("symbolic"),
         force=fl.as_bool("force"),
         no_dereference=fl.as_bool("no_dereference"),
         verbose=fl.as_bool("verbose"),
         relative=fl.as_bool("relative"),
-        logical=fl.as_bool("logical"),
+        logical=bool(deref) and deref[-1] == "logical",
         directory=fl.as_bool("directory") or fl.as_bool("F"),
         no_target=fl.as_bool("no_target_directory"),
         backup=backup_control("ln", backup_raw, suffix),
@@ -568,6 +570,12 @@ async def handle_ln(
         flags = parse_flags(fl)
     except UsageError as exc:
         return fail("ln", f"{exc}\n", exc.exit_code)
+    operands, target_typed = operand_words(args)
+    if not operands:
+        return fail("ln", f"ln: missing file operand\n{usage_hint('ln')}\n")
+    # GNU's order: the operand count first, then -r, then the -T/-t clash.
+    if flags.relative and not flags.symbolic:
+        return fail("ln", "ln: cannot do --relative without --symbolic\n")
     raw_dir = fl.raw("target_directory")
     target_dir = raw_dir.virtual if isinstance(
         raw_dir, PathSpec) else (raw_dir if isinstance(raw_dir, str) else None)
@@ -575,9 +583,6 @@ async def handle_ln(
         return fail(
             "ln", "ln: cannot combine --target-directory and "
             "--no-target-directory\n")
-    operands, target_typed = operand_words(args)
-    if not operands:
-        return fail("ln", f"ln: missing file operand\n{usage_hint('ln')}\n")
     plans, refused = await plan_links(namespace, dispatch, session.cwd,
                                       operands, target_dir, target_typed,
                                       flags)

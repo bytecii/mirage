@@ -1271,4 +1271,36 @@ describe('ln operand grammar and backups', () => {
     expect(dec((await ws.execute('readlink /data/h4')).stdout)).toBe('/data/nope\n')
     await ws.close()
   })
+
+  it('the last of -L and -P wins', async () => {
+    const ws = buildWorkspace()
+    await seedLn(ws)
+    await ws.execute('ln -s /data/a.txt /data/lnk')
+    expect((await ws.execute('ln -LP /data/lnk /data/hp')).exitCode).toBe(0)
+    expect(dec((await ws.execute('readlink /data/hp')).stdout)).toBe('/data/a.txt\n')
+    expect((await ws.execute('ln -PL /data/lnk /data/hl')).exitCode).toBe(0)
+    expect((await ws.execute('readlink /data/hl')).exitCode).toBe(1)
+    expect(dec((await ws.execute('cat /data/hl')).stdout)).toBe('hi\n')
+    expect((await ws.execute('ln --logical --physical /data/lnk /data/hp2')).exitCode).toBe(0)
+    expect(dec((await ws.execute('readlink /data/hp2')).stdout)).toBe('/data/a.txt\n')
+    await ws.close()
+  })
+
+  it('-r needs -s, checked after the operand count', async () => {
+    const ws = buildWorkspace()
+    await seedLn(ws)
+    const r = await ws.execute('ln -r /data/a.txt /data/rel')
+    expect(r.exitCode).toBe(1)
+    expect(dec(r.stderr)).toBe('ln: cannot do --relative without --symbolic\n')
+    expect((await ws.execute('test -e /data/rel')).exitCode).toBe(1)
+    const missing = "ln: missing file operand\nTry 'ln --help' for more information.\n"
+    expect(dec((await ws.execute('ln -r')).stderr)).toBe(missing)
+    expect(dec((await ws.execute('ln -r -T -t /data/d /data/a.txt /data/x')).stderr)).toBe(
+      'ln: cannot do --relative without --symbolic\n',
+    )
+    expect(dec((await ws.execute('ln -T -t /data/d')).stderr)).toBe(missing)
+    expect((await ws.execute('ln -rs /data/a.txt /data/d/rel')).exitCode).toBe(0)
+    expect(dec((await ws.execute('readlink /data/d/rel')).stdout)).toBe('../a.txt\n')
+    await ws.close()
+  })
 })

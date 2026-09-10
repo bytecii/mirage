@@ -199,6 +199,38 @@ describe('tail -f', () => {
     )
   })
 
+  it('--retry under a descriptor covers the initial open only', async () => {
+    const fs = new Growing(new Map())
+    const abort = new AbortController()
+    const [stream, io] = (await tailGeneric(
+      [spec('/d/later')],
+      [],
+      opts({ F: true, follow: 'descriptor', sleep_interval: '0.02' }, abort.signal),
+      fs.stream,
+      fs.stat,
+      fs.readRange,
+    )) as [AsyncIterable<Uint8Array>, IOResult]
+    const first = DEC.decode(io.stderr as Uint8Array)
+    expect(
+      first.startsWith('tail: warning: --retry only effective for the initial open\ntail: '),
+    ).toBe(true)
+    expect(first.endsWith('No such file or directory\n')).toBe(true)
+    const grower = (async () => {
+      await sleep(60)
+      fs.set('/d/later', 'born\n')
+      await sleep(100)
+      fs.data.delete('/d/later')
+    })()
+    const text = await drainFor(stream, 300, abort)
+    await grower
+    expect(text).toBe('born\n')
+    expect(
+      DEC.decode(io.stderr as Uint8Array).endsWith(
+        "tail: '/d/later' has appeared;  following new file\n",
+      ),
+    ).toBe(true)
+  })
+
   it('--follow=name reports a file that vanishes', async () => {
     const fs = new Growing(new Map())
     fs.set('/d/gone', 'x\n')

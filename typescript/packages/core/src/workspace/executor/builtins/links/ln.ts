@@ -73,21 +73,23 @@ interface LinkPlan {
   readonly linkTyped: string
 }
 
-// Parse the ln flag bag once into a frozen struct. -P is accepted without
-// effect: a hard link of a symlink is the default here as it is in GNU.
+// Parse the ln flag bag once into a frozen struct. -L and -P are one
+// switch and the later occurrence wins, as in GNU (-LP links the symlink
+// itself, -PL its target); a hard link of a symlink is the -P default.
 // Throws UsageError for a --backup control GNU does not know.
 export function parseFlags(fl: FlagView): LnFlags {
   const raw: unknown = fl.raw('backup')
   const backupRaw = typeof raw === 'string' || typeof raw === 'boolean' ? raw : undefined
   const suffixRaw = fl.asStr('suffix')
   const suffix = suffixRaw === undefined || suffixRaw === '' ? null : suffixRaw
+  const deref = fl.typedOrder('logical', 'physical')
   return Object.freeze({
     symbolic: fl.asBool('symbolic'),
     force: fl.asBool('force'),
     noDereference: fl.asBool('no_dereference'),
     verbose: fl.asBool('verbose'),
     relative: fl.asBool('relative'),
-    logical: fl.asBool('logical'),
+    logical: deref.length > 0 && deref[deref.length - 1] === 'logical',
     directory: fl.asBool('directory') || fl.asBool('F'),
     noTarget: fl.asBool('no_target_directory'),
     backup: backupControl('ln', backupRaw, suffix),
@@ -528,14 +530,18 @@ export async function handleLn(
     if (err instanceof UsageError) return fail('ln', `${err.message}\n`, err.exitCode)
     throw err
   }
+  const [operands, targetTyped] = operandWords(args)
+  if (operands.length === 0) return fail('ln', `ln: missing file operand\n${usageHint('ln')}\n`)
+  // GNU's order: the operand count first, then -r, then the -T/-t clash.
+  if (flags.relative && !flags.symbolic) {
+    return fail('ln', 'ln: cannot do --relative without --symbolic\n')
+  }
   const rawDir: unknown = fl.raw('target_directory')
   const targetDir =
     rawDir instanceof PathSpec ? rawDir.virtual : typeof rawDir === 'string' ? rawDir : null
   if (targetDir !== null && flags.noTarget) {
     return fail('ln', 'ln: cannot combine --target-directory and --no-target-directory\n')
   }
-  const [operands, targetTyped] = operandWords(args)
-  if (operands.length === 0) return fail('ln', `ln: missing file operand\n${usageHint('ln')}\n`)
   const [plans, refused] = await planLinks(
     namespace,
     dispatch,

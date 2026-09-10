@@ -558,6 +558,83 @@
         "stderr": "ln: missing file operand\nTry 'ln --help' for more information.\n"
       },
       "flags": []
+    },
+    {
+      "id": "ln_last_of_logical_and_physical_wins",
+      "seq": 611043,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "ln -s /data/lnf/a.txt /data/lnf/lk2 && ln -LP /data/lnf/lk2 /data/lnf/hp && readlink /data/lnf/hp && ln -PL /data/lnf/lk2 /data/lnf/hl && cat /data/lnf/hl && readlink /data/lnf/hl; echo code=$?",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/lnf/a.txt\nhicode=1\n",
+        "stderr": ""
+      },
+      "flags": [
+        "L",
+        "P"
+      ]
+    },
+    {
+      "id": "ln_relative_needs_symbolic",
+      "seq": 611044,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "ln -r /data/lnf/a.txt /data/lnf/rel; echo code=$?; test -e /data/lnf/rel; echo exists=$?; ln -r -T -t /data/lnf/d /data/lnf/a.txt /data/lnf/x",
+      "expect": {
+        "exit": 1,
+        "stdout": "code=1\nexists=1\n",
+        "stderr": "ln: cannot do --relative without --symbolic\nln: cannot do --relative without --symbolic\n"
+      },
+      "flags": [
+        "r",
+        "T",
+        "t"
+      ]
     }
   ]
 }

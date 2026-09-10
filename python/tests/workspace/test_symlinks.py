@@ -1585,3 +1585,38 @@ async def test_ln_hard_of_a_link_keeps_the_link_unless_L():
         b"ln: failed to access '/data/dang': No such file or directory\n"
     assert (await ws.execute("ln /data/dang /data/h4")).exit_code == 0
     assert (await ws.execute("readlink /data/h4")).stdout == b"/data/nope\n"
+
+
+@pytest.mark.asyncio
+async def test_ln_last_of_logical_and_physical_wins():
+    ws = _ws()
+    await _seed_ln(ws)
+    await ws.execute("ln -s /data/a.txt /data/lnk")
+    assert (await ws.execute("ln -LP /data/lnk /data/hp")).exit_code == 0
+    assert (await ws.execute("readlink /data/hp")).stdout == b"/data/a.txt\n"
+    assert (await ws.execute("ln -PL /data/lnk /data/hl")).exit_code == 0
+    assert (await ws.execute("readlink /data/hl")).exit_code == 1
+    assert (await ws.execute("cat /data/hl")).stdout == b"hi\n"
+    r = await ws.execute("ln --logical --physical /data/lnk /data/hp2")
+    assert r.exit_code == 0
+    assert (await ws.execute("readlink /data/hp2")).stdout == b"/data/a.txt\n"
+
+
+@pytest.mark.asyncio
+async def test_ln_relative_needs_symbolic_after_the_operand_count():
+    ws = _ws()
+    await _seed_ln(ws)
+    r = await ws.execute("ln -r /data/a.txt /data/rel")
+    assert r.exit_code == 1
+    assert r.stderr == b"ln: cannot do --relative without --symbolic\n"
+    assert (await ws.execute("test -e /data/rel")).exit_code == 1
+    r = await ws.execute("ln -r")
+    assert r.stderr == (b"ln: missing file operand\n"
+                        b"Try 'ln --help' for more information.\n")
+    r = await ws.execute("ln -r -T -t /data/d /data/a.txt /data/x")
+    assert r.stderr == b"ln: cannot do --relative without --symbolic\n"
+    r = await ws.execute("ln -T -t /data/d")
+    assert r.stderr == (b"ln: missing file operand\n"
+                        b"Try 'ln --help' for more information.\n")
+    assert (await ws.execute("ln -rs /data/a.txt /data/d/rel")).exit_code == 0
+    assert (await ws.execute("readlink /data/d/rel")).stdout == b"../a.txt\n"

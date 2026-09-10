@@ -57,21 +57,24 @@ def _follow_flags(fl: FlagView) -> tuple[bool, bool, bool]:
         fl (FlagView): the tail flag view.
     """
     raw = fl.raw("follow")
-    follow = raw is not None and raw is not False
-    by_name = False
-    if isinstance(raw, str):
-        if raw == "name":
-            by_name = True
-        elif raw != "descriptor":
-            raise ValueError(f"tail: invalid argument '{raw}' for '--follow'\n"
-                             "Valid arguments are:\n"
-                             "  - 'descriptor'\n"
-                             "  - 'name'\n"
-                             f"{usage_hint('tail')}\n")
-    retry = fl.as_bool("retry")
-    if fl.as_bool("F"):
-        follow = by_name = retry = True
-    return follow, by_name, retry
+    if isinstance(raw, str) and raw not in ("name", "descriptor"):
+        raise ValueError(f"tail: invalid argument '{raw}' for '--follow'\n"
+                         "Valid arguments are:\n"
+                         "  - 'descriptor'\n"
+                         "  - 'name'\n"
+                         f"{usage_hint('tail')}\n")
+    # -F is --follow=name --retry. The mode is whichever of -f/--follow
+    # and -F came last, GNU's own order (`-F --follow=descriptor` follows
+    # the descriptor), while -F's --retry half stays on either way.
+    typed = [
+        k for k in fl.typed_order("follow", "F")
+        if (k == "F" and fl.as_bool("F")) or (
+            k == "follow" and raw is not None and raw is not False)
+    ]
+    if not typed:
+        return False, False, fl.as_bool("retry")
+    by_name = raw == "name" if typed[-1] == "follow" else True
+    return True, by_name, fl.as_bool("retry") or "F" in typed
 
 
 def _interval_flag(fl: FlagView) -> float:
@@ -340,7 +343,9 @@ async def _follow(
     file. GNU tells the two apart by inode, which no backend here
     reports, so a same-sized replacement prints nothing and a larger
     one prints only its tail; only a smaller size (``file truncated``)
-    resets the position to zero.
+    resets the position to zero. For the same reason a descriptor
+    follow cannot keep reading a file renamed away: there is no open
+    handle, so the path is polled until it holds bytes again.
 
     Args:
         paths (list[PathSpec]): the operands that opened.
@@ -387,7 +392,10 @@ async def _follow(
             try:
                 current = await stat(p)
             except FS_ERRORS as exc:
-                if flags.follow_name or flags.retry:
+                # Only name-following notices a path that went away; under
+                # a descriptor --retry covers the initial open alone, as
+                # in GNU.
+                if flags.follow_name:
                     _note(
                         io, f"tail: '{p.raw_path}' has become inaccessible: "
                         f"{fs_strerror(exc)}\n")
@@ -482,6 +490,11 @@ async def tail_generic(
         readable, err = await split_readable(paths, stat, "tail")
         io = operands_io(err)
         if parsed.follow:
+            if parsed.retry and not parsed.follow_name:
+                io.stderr = (
+                    b"tail: warning: --retry only effective for "
+                    b"the initial open\n" +
+                    (io.stderr if isinstance(io.stderr, bytes) else b""))
             pending = await _unfollowable(paths, readable, stat, parsed.retry,
                                           io)
             if not readable and not pending:

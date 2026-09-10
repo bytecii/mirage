@@ -221,6 +221,36 @@ async def test_retry_waits_for_a_file_to_appear():
 
 
 @pytest.mark.asyncio
+async def test_retry_under_a_descriptor_covers_the_initial_open_only():
+    fs = _Growing({})
+    stream, io = await tail_generic(
+        _paths("/d/later"), [],
+        CommandOpts(flags={
+            "F": True,
+            "follow": "descriptor",
+            "sleep_interval": "0.02"
+        }), fs.stat, fs.read, fs.read_range)
+    assert stream is not None
+    assert io.stderr.startswith(
+        b"tail: warning: --retry only effective for the initial open\n"
+        b"tail: ")
+    assert io.stderr.endswith(b"No such file or directory\n")
+
+    async def appear_then_vanish() -> None:
+        await asyncio.sleep(0.06)
+        fs.data["/d/later"] = b"born\n"
+        await asyncio.sleep(0.1)
+        del fs.data["/d/later"]
+
+    grower = asyncio.create_task(appear_then_vanish())
+    chunks = await _drain_for(stream, 0.3)
+    await grower
+    assert b"".join(chunks) == b"born\n"
+    assert io.stderr.endswith(
+        b"tail: '/d/later' has appeared;  following new file\n")
+
+
+@pytest.mark.asyncio
 async def test_follow_by_name_reports_a_file_that_vanishes():
     fs = _Growing({"/d/gone": b"x\n"})
     stream, io = await tail_generic(_paths("/d/gone"), [],
@@ -246,6 +276,18 @@ def test_follow_flags_parse_gnu_spellings():
     assert parsed.follow and parsed.follow_name and parsed.retry
     assert tail_parse_flags({"follow": "name"}).follow_name
     assert not tail_parse_flags({"follow": True}).follow_name
+    # Scan order is dict order: the later of -f/--follow and -F picks the
+    # mode, and -F's --retry half stays on either way.
+    later_descriptor = tail_parse_flags({"F": True, "follow": "descriptor"})
+    assert later_descriptor.follow and later_descriptor.retry
+    assert not later_descriptor.follow_name
+    later_f = tail_parse_flags({"F": True, "follow": True})
+    assert later_f.retry and not later_f.follow_name
+    later_big_f = tail_parse_flags({"follow": True, "F": True})
+    assert later_big_f.retry and later_big_f.follow_name
+    only_retry = tail_parse_flags({"follow": "name", "retry": True})
+    assert only_retry.follow_name and only_retry.retry
+    assert not tail_parse_flags({"retry": True}).follow
     assert tail_parse_flags({
         "follow": True,
         "sleep_interval": "0.5"

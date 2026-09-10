@@ -47,27 +47,26 @@ interface FollowFlags {
 }
 
 // -f, --follow[=HOW] and -F. A bad HOW is GNU's ARGMATCH refusal; -F is
-// --follow=name --retry.
+// --follow=name --retry. The mode is whichever of -f/--follow and -F came
+// last, GNU's own order (`-F --follow=descriptor` follows the descriptor),
+// while -F's --retry half stays on either way.
 function followFlags(fl: FlagView): FollowFlags | string {
   const raw: unknown = fl.raw('follow')
-  let follow = raw !== undefined && raw !== null && raw !== false
-  let byName = false
-  if (typeof raw === 'string') {
-    if (raw === 'name') byName = true
-    else if (raw !== 'descriptor') {
-      return (
-        `tail: invalid argument '${raw}' for '--follow'\n` +
-        "Valid arguments are:\n  - 'descriptor'\n  - 'name'\n" +
-        `${usageHint('tail')}\n`
-      )
-    }
+  if (typeof raw === 'string' && raw !== 'name' && raw !== 'descriptor') {
+    return (
+      `tail: invalid argument '${raw}' for '--follow'\n` +
+      "Valid arguments are:\n  - 'descriptor'\n  - 'name'\n" +
+      `${usageHint('tail')}\n`
+    )
   }
-  let retry = fl.asBool('retry')
-  if (fl.asBool('F')) {
-    follow = true
-    byName = true
-    retry = true
-  }
+  const typed = fl
+    .typedOrder('follow', 'F')
+    .filter((k) =>
+      k === 'F' ? fl.asBool('F') : raw !== undefined && raw !== null && raw !== false,
+    )
+  const follow = typed.length > 0
+  const byName = follow && (typed[typed.length - 1] === 'F' || raw === 'name')
+  const retry = fl.asBool('retry') || typed.includes('F')
   const rawSeconds = fl.asStr('sleep_interval')
   let interval = DEFAULT_SLEEP_INTERVAL
   if (rawSeconds !== undefined) {
@@ -180,7 +179,9 @@ async function* follow(
         current = await stat(p)
       } catch (err) {
         if (!isFsError(err)) throw err
-        if (flags.byName || flags.retry) {
+        // Only name-following notices a path that went away; under a
+        // descriptor --retry covers the initial open alone, as in GNU.
+        if (flags.byName) {
           note(
             io,
             `tail: '${p.rawPath}' has become inaccessible: ${fsStrerror(err) ?? 'No such file or directory'}\n`,
@@ -301,9 +302,13 @@ export async function tailGeneric(
         err += fsErrorLine('tail', p, e)
       }
     }
+    const warn =
+      following.retry && !following.byName
+        ? 'tail: warning: --retry only effective for the initial open\n'
+        : ''
     const io = new IOResult({
       exitCode: err === '' ? 0 : 1,
-      stderr: err === '' ? null : ENC.encode(err),
+      stderr: warn + err === '' ? null : ENC.encode(warn + err),
     })
     const pending = await unfollowable(
       paths,
