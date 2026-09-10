@@ -194,32 +194,29 @@ export function strftime(dt: Date, fmt: string, utc: boolean): string {
   )
 }
 
-// GNU's flag and width prefix, pinned against date 9.7: a width on %N
-// keeps that many leading digits and pads a wider one with zeros on the
-// right (%3N is milliseconds) and its flags change nothing, while a width
-// on %q pads on the left under the padding flags (%_2q is " 3", %-2q is
-// 3, and the last of `-`, `_`, `0` wins). On any other directive `-` strips
-// the padding, `_` pads with spaces, `0` pads with zeros, `^` upcases,
-// `#` swaps case, and a width pads on the left.
+// GNU's flag and width prefix, pinned against date 9.7. %N is the one
+// directive its flags do not touch: a width keeps that many leading
+// digits and pads a wider one with zeros on the right (%3N is
+// milliseconds). Everywhere else the last of `-`, `_` and `0` typed wins
+// (%0_d is " 3", %_0d is "03"): `-` strips the padding and ignores the
+// width (%-3d is "3"), `_` pads with spaces, `0` with zeros, and a bare
+// width fills with zeros for a digit-led value and spaces otherwise
+// (%3d is "003", %5b is "  Jan"). `^` upcases and `#` swaps case.
 function modified(base: string, code: string, flags: string, digits: string): string {
   const width = digits === '' ? null : Number(digits)
   if (code === '%') return base
   if (code === 'N') return width === null ? base : base.slice(0, width).padEnd(width, '0')
-  if (code === 'q') {
-    const padFlags = flags.replace(/[^-_0]/g, '')
-    const pad = padFlags === '' ? '0' : padFlags[padFlags.length - 1]
-    if (pad === '-' || width === null) return base
-    return base.padStart(width, pad === '_' ? ' ' : '0')
-  }
   if (flags === '' && width === null) return base
+  const padFlags = flags.replace(/[^-_0]/g, '')
+  const pad = padFlags === '' ? null : padFlags[padFlags.length - 1]
   let out = base
-  if (flags.includes('-')) out = out.replace(/^[0 ]+(?=.)/, '')
-  if (flags.includes('_')) out = out.replace(/^0+(?=.)/, (zeros) => ' '.repeat(zeros.length))
-  if (flags.includes('0')) out = out.replace(/^ +(?=.)/, (spaces) => '0'.repeat(spaces.length))
+  if (pad === '-') out = out.replace(/^[0 ]+(?=.)/, '')
+  if (pad === '_') out = out.replace(/^0+(?=.)/, (zeros) => ' '.repeat(zeros.length))
+  if (pad === '0') out = out.replace(/^ +(?=.)/, (spaces) => '0'.repeat(spaces.length))
   if (flags.includes('^')) out = out.toUpperCase()
   if (flags.includes('#')) out = out === out.toUpperCase() ? out.toLowerCase() : out.toUpperCase()
-  if (width !== null) {
-    const fill = flags.includes('_') ? ' ' : flags.includes('0') || /^\d/.test(out) ? '0' : ' '
+  if (width !== null && pad !== '-') {
+    const fill = pad === '_' ? ' ' : pad === '0' || /^\d/.test(out) ? '0' : ' '
     out = out.padStart(width, fill)
   }
   return out

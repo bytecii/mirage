@@ -88,14 +88,15 @@ async def test_tail_multi_stream_reader():
 class _Growing:
     """A fake mount whose files the test grows between polls."""
 
-    def __init__(self, data: dict[str, bytes]) -> None:
+    def __init__(self, data: dict[str, bytes], sized: bool = True) -> None:
         self.data = data
+        self.sized = sized
 
     async def stat(self, p: PathSpec) -> FileStat:
         if p.virtual not in self.data:
             raise FileNotFoundError(p.virtual)
         return FileStat(name=p.virtual.rsplit("/", 1)[-1],
-                        size=len(self.data[p.virtual]),
+                        size=len(self.data[p.virtual]) if self.sized else None,
                         type=FileType.FILE)
 
     async def read(self, p: PathSpec) -> bytes:
@@ -164,6 +165,25 @@ async def test_follow_reads_whole_when_the_backend_has_no_range():
     chunks = await _drain_for(stream, 0.2)
     await grower
     assert b"".join(chunks) == b"a\nb\n"
+
+
+@pytest.mark.asyncio
+async def test_follow_reads_a_size_unknown_file_whole_every_poll():
+    fs = _Growing({"/d/log": b"a\n"}, sized=False)
+    stream, io = await tail_generic(_paths("/d/log"), [], _follow_opts(),
+                                    fs.stat, fs.read, fs.read_range)
+
+    async def grow() -> None:
+        await asyncio.sleep(0.06)
+        fs.data["/d/log"] += b"b\n"
+        await asyncio.sleep(0.06)
+        fs.data["/d/log"] = b"z\n"
+
+    grower = asyncio.create_task(grow())
+    chunks = await _drain_for(stream, 0.25)
+    await grower
+    assert b"".join(chunks) == b"a\nb\nz\n"
+    assert io.stderr == b"tail: /d/log: file truncated\n"
 
 
 @pytest.mark.asyncio

@@ -171,14 +171,14 @@ describe('ls', () => {
     expect(out).toBe('/tmp\n')
   })
 
-  it('-1 overrides -l: forces short (one-per-line) format', async () => {
+  it('-1 never undoes -l, as in GNU', async () => {
     const resource = new RAMResource()
     seed(resource, ['/tmp'], { '/tmp/a.txt': 'a', '/tmp/b.txt': 'b' })
-    const short = await runLs(resource, [PathSpec.fromStrPath('/tmp')], { args_1: true })
-    const overridden = await runLs(resource, [PathSpec.fromStrPath('/tmp')], {
+    const long = await runLs(resource, [PathSpec.fromStrPath('/tmp')], { args_l: true })
+    const both = await runLs(resource, [PathSpec.fromStrPath('/tmp')], {
       args_l: true,
       args_1: true,
     })
-    expect(overridden).toBe(short)
+    expect(both).toBe(long)
   })
 })

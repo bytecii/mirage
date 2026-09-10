@@ -131,7 +131,11 @@ async function window(
 // `has appeared` when it turns up, reading it from the start as GNU does
 // after a rotation. The loop ends only when nothing is left to follow
 // (`no files remaining`, exit 1) or the caller's signal fires, which is
-// how `timeout` and a killed job end it.
+// how `timeout` and a killed job end it. A file whose stat carries no
+// size (a backend that cannot know one without reading reports null,
+// never a guess) is polled by reading it whole every interval and
+// measuring that: one read per poll, rather than a follow that never
+// prints.
 async function* follow(
   paths: readonly PathSpec[],
   pending: PathSpec[],
@@ -191,15 +195,20 @@ async function* follow(
         }
         continue
       }
-      const size = current.size
-      if (size === null) continue
+      let size = current.size
+      let whole: Uint8Array | null = null
+      if (size === null) {
+        whole = await materialize(stream(p))
+        size = whole.byteLength
+      }
       let pos = positions.get(p.virtual) ?? 0
       if (size < pos) {
         note(io, `tail: ${p.rawPath}: file truncated\n`)
         pos = 0
       }
       if (size > pos) {
-        const data = await window(stream, readRange, p, pos, size - pos)
+        const data =
+          whole !== null ? whole.slice(pos) : await window(stream, readRange, p, pos, size - pos)
         if (showHeaders && last !== p.virtual) yield ENC.encode(`\n==> ${p.rawPath} <==\n`)
         last = p.virtual
         if (data.byteLength > 0) yield data

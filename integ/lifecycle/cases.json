@@ -2394,6 +2394,114 @@
           }
         }
       ]
+    },
+    {
+      "id": "closing_a_session_drops_its_jobs",
+      "settings": {
+        "mode": "write",
+        "mounts": {
+          "/a": {
+            "resource": "ram",
+            "config": {}
+          }
+        }
+      },
+      "steps": [
+        {
+          "op": "exec",
+          "command": "sleep 30 & echo $!",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "1\n",
+              "stderr": ""
+            }
+          }
+        },
+        {
+          "op": "session",
+          "id": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "sleep 30 & sleep 30 & echo $!",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "2\n",
+              "stderr": ""
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "jobs | wc -l",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "2\n",
+              "stderr": ""
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "close_session",
+          "id": "agent"
+        },
+        {
+          "op": "session",
+          "id": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "jobs | wc -l",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "0\n",
+              "stderr": ""
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "sleep 30 & echo $!",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "1\n",
+              "stderr": ""
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "wait %2 2>/dev/null; echo code=$?",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "code=127\n",
+              "stderr": ""
+            }
+          },
+          "session": "agent"
+        },
+        {
+          "op": "exec",
+          "command": "jobs | wc -l",
+          "expect": {
+            "value": {
+              "exit_code": 0,
+              "stdout": "1\n",
+              "stderr": ""
+            }
+          }
+        }
+      ]
     }
   ]
 }

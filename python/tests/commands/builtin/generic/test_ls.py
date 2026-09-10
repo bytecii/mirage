@@ -233,21 +233,6 @@ async def test_ls_long_format_renders_via_format_ls_long():
 
 
 @pytest.mark.asyncio
-async def test_ls_one_per_line_overrides_long():
-    tree = {
-        "/dir": _dir("dir"),
-        "/dir/a.txt": _file("a.txt", 42),
-    }
-    readdir, stat = _make_fs_backend(tree)
-    out_long, _ = await ls([_spec("/dir")],
-                           readdir=readdir,
-                           stat=stat,
-                           long=True,
-                           one_per_line=True)
-    assert out_long == b"a.txt\n"
-
-
-@pytest.mark.asyncio
 async def test_ls_classify_appends_slash_for_dirs():
     tree = {
         "/dir": _dir("dir"),
@@ -1034,6 +1019,19 @@ def test_filevercmp_pins_gnu_corner_cases():
     assert filevercmp("abc", "abc") == 0
 
 
+def test_filevercmp_orders_bytes_past_the_letters():
+    # Pinned on coreutils 9.7 under LC_ALL=C: `_ { é ÿ Ā €` and
+    # `a- a{ aé`, since gnulib classifies bytes, not code points.
+    assert filevercmp("_", "{") < 0
+    assert filevercmp("{", "é") < 0
+    assert filevercmp("é", "ÿ") < 0
+    assert filevercmp("ÿ", "Ā") < 0
+    assert filevercmp("Ā", "€") < 0
+    assert filevercmp("a-", "a{") < 0
+    assert filevercmp("a{", "aé") < 0
+    assert filevercmp("\uffff", "\U0001d11e") < 0
+
+
 @pytest.mark.asyncio
 async def test_access_time_sorts_and_shows_under_u():
     tree = {
@@ -1172,9 +1170,14 @@ def test_parse_flags_g_o_n_imply_long_and_shape_the_columns():
     assert not parsed.columns.owner and not parsed.columns.group
     assert parsed.columns.inode
     assert parse_flags({"numeric_uid_gid": True}).long
+    assert parse_flags({"g": True, "args_1": True}).long
+    assert parse_flags({"args_l": True, "args_1": True}).long
+    assert not parse_flags({"args_1": True}).long
     assert parse_flags({
         "block_size": "K"
     }).columns.block_size == BlockSize(1024, "K")
+    with pytest.raises(UsageError, match="invalid --block-size argument '0K'"):
+        parse_flags({"block_size": "0K"})
     assert parse_flags({"hyperlink": "always"}).hyperlink
     assert not parse_flags({"hyperlink": "auto"}).hyperlink
     assert parse_flags({

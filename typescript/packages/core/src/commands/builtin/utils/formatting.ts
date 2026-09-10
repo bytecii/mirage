@@ -81,17 +81,17 @@ export const DEFAULT_COLUMNS: LsColumns = Object.freeze({
 // GNU's --block-size=SIZE grammar, null when the text is not one:
 // human-readable and si pick the two -h scales; otherwise an optional
 // count is followed by an optional unit letter, B making it decimal (KB
-// is 1000 and prints kB) and iB keeping it binary.
+// is 1000 and prints kB) and iB keeping it binary. A zero count is
+// refused under any unit, as GNU refuses 0K the way it refuses 0.
 export function parseBlockSize(text: string): BlockSize | null {
   if (text === 'human-readable') return { divisor: 1024, suffix: '', humanBase: 1024 }
   if (text === 'si') return { divisor: 1000, suffix: '', humanBase: 1000 }
   let i = 0
   while (i < text.length && /[0-9]/.test(text[i] ?? '')) i += 1
   const count = i > 0 ? Number(text.slice(0, i)) : 1
+  if (count === 0) return null
   const unit = text.slice(i)
-  if (unit === '') {
-    return i > 0 && count > 0 ? { divisor: count, suffix: '', humanBase: null } : null
-  }
+  if (unit === '') return i > 0 ? { divisor: count, suffix: '', humanBase: null } : null
   const letter = (unit[0] ?? '').toUpperCase()
   const rest = unit.slice(1)
   const power = BLOCK_UNITS.indexOf(letter) + 1

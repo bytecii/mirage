@@ -949,6 +949,160 @@
       "flags": [
         "hyperlink"
       ]
+    },
+    {
+      "id": "ls_block_size_zero_count",
+      "seq": 960133,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "ls -l --block-size=0K /data/lsf",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "ls: invalid --block-size argument '0K'\n"
+      },
+      "flags": [
+        "l",
+        "block-size"
+      ]
+    },
+    {
+      "id": "ls_one_per_line_keeps_the_long_format",
+      "seq": 960134,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "ls -go1 --time-style=+x /data/lsf/a.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "-rw-r--r-- 1 5 x /data/lsf/a.txt\n",
+        "stderr": ""
+      },
+      "flags": [
+        "g",
+        "o",
+        "1",
+        "time-style"
+      ]
+    },
+    {
+      "id": "ls_v_orders_bytes_past_the_letters",
+      "seq": 960135,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/lsv && printf x > /data/lsv/Z && printf x > /data/lsv/_ && printf x > '/data/lsv/{' && printf x > /data/lsv/é && ls -v /data/lsv",
+      "expect": {
+        "exit": 0,
+        "stdout": "Z\n_\n{\né\n",
+        "stderr": ""
+      },
+      "flags": [
+        "v"
+      ]
+    },
+    {
+      "id": "ls_time_style_quarter_padding",
+      "seq": 960136,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "ls -go --time-style=+%_2q/%-2q/%02q /data/lsf/a.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "-rw-r--r-- 1 5  1/1/01 /data/lsf/a.txt\n",
+        "stderr": ""
+      },
+      "flags": [
+        "g",
+        "o",
+        "time-style"
+      ]
     }
   ]
 }

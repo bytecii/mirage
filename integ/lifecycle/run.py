@@ -115,6 +115,8 @@ async def action(ws: Workspace, step: dict[str, Any],
     elif op == "session":
         ws.create_session(step["id"],
                           profile=profile_document(step.get("profile", {})))
+    elif op == "close_session":
+        await ws.close_session(step["id"])
     elif op == "set_profile":
         raw = step["profile"]
         profile = profile_document(raw) if isinstance(raw, dict) else raw

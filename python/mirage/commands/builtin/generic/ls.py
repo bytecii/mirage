@@ -33,7 +33,6 @@ LS_FAILURE = 2
 @dataclass(frozen=True, slots=True)
 class LsFlags:
     long: bool = False
-    one_per_line: bool = False
     all_files: bool = False
     human: bool = False
     sort_by: LsSortBy = LsSortBy.NAME
@@ -188,7 +187,10 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> LsFlags:
     """Parse the ls flag bag once into a frozen struct.
 
     GNU's rules that are easy to get wrong: ``-g``, ``-o`` and ``-n``
-    imply the long format; ``-n`` prints the same columns as ``-l``,
+    imply the long format, and ``-1`` never undoes it in either order
+    (GNU ignores ``-1`` beside ``-l``, and with no terminal there are
+    never columns, so ``-1`` has nothing else to do); ``-n`` prints the
+    same columns as ``-l``,
     because a mirage owner is already the id (an agent, a profile) and
     never a name looked up from one; the last of ``-t``, ``-S``, ``-X``,
     ``-v``, ``-U`` and ``--sort`` wins, as does the last of ``-c``, ``-u``
@@ -225,7 +227,6 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> LsFlags:
                                    block_size=block)
     return LsFlags(
         long=long,
-        one_per_line=fl.as_bool("args_1"),
         all_files=fl.as_bool("all") or fl.as_bool("almost_all"),
         human=fl.as_bool("human_readable"),
         sort_by=sort_by,
@@ -349,68 +350,88 @@ def format_simple(entries: list[FileStat],
     return out
 
 
-def _version_order(c: str) -> int:
-    """gnulib ``filevercmp``'s character order: a tilde sorts before
-    the end of the string, letters by code, and everything else after
-    the letters.
+def _is_digit(c: int) -> bool:
+    """Whether a byte is an ASCII digit.
 
     Args:
-        c (str): one character.
+        c (int): one byte.
     """
-    if c.isdigit():
+    return 0x30 <= c <= 0x39
+
+
+def _is_alpha(c: int) -> bool:
+    """Whether a byte is an ASCII letter.
+
+    Args:
+        c (int): one byte.
+    """
+    return 0x41 <= c <= 0x5A or 0x61 <= c <= 0x7A
+
+
+def _version_order(c: int) -> int:
+    """gnulib ``filevercmp``'s byte order: a tilde sorts before the end
+    of the string, ASCII letters by code, and every other byte after the
+    letters. gnulib classifies in the C locale one byte at a time, so a
+    multibyte letter such as ``é`` is two bytes past the letters, not a
+    letter.
+
+    Args:
+        c (int): one byte.
+    """
+    if _is_digit(c):
         return 0
-    if c.isalpha():
-        return ord(c)
-    if c == "~":
+    if _is_alpha(c):
+        return c
+    if c == 0x7E:
         return -1
-    return ord(c) + 256
+    return c + 256
 
 
-def _verrevcmp(a: str, b: str) -> int:
+def _verrevcmp(a: bytes, b: bytes) -> int:
     """Debian's version comparison as gnulib's ``verrevcmp`` runs it:
     alternating non-digit and digit runs, the digit runs compared as
     numbers.
 
     Args:
-        a (str): left operand.
-        b (str): right operand.
+        a (bytes): left operand.
+        b (bytes): right operand.
     """
     i = j = 0
     while i < len(a) or j < len(b):
-        while ((i < len(a) and not a[i].isdigit())
-               or (j < len(b) and not b[j].isdigit())):
+        while ((i < len(a) and not _is_digit(a[i]))
+               or (j < len(b) and not _is_digit(b[j]))):
             ac = _version_order(a[i]) if i < len(a) else 0
             bc = _version_order(b[j]) if j < len(b) else 0
             if ac != bc:
                 return ac - bc
             i += 1
             j += 1
-        while i < len(a) and a[i] == "0":
+        while i < len(a) and a[i] == 0x30:
             i += 1
-        while j < len(b) and b[j] == "0":
+        while j < len(b) and b[j] == 0x30:
             j += 1
         first_diff = 0
-        while (i < len(a) and j < len(b) and a[i].isdigit()
-               and b[j].isdigit()):
+        while (i < len(a) and j < len(b) and _is_digit(a[i])
+               and _is_digit(b[j])):
             if not first_diff:
-                first_diff = ord(a[i]) - ord(b[j])
+                first_diff = a[i] - b[j]
             i += 1
             j += 1
-        if i < len(a) and a[i].isdigit():
+        if i < len(a) and _is_digit(a[i]):
             return 1
-        if j < len(b) and b[j].isdigit():
+        if j < len(b) and _is_digit(b[j]):
             return -1
         if first_diff:
             return first_diff
     return 0
 
 
-def _version_prefix_len(s: str) -> int:
+def _version_prefix_len(s: bytes) -> int:
     """How much of a name ``filevercmp`` compares first: everything but
     a trailing run of suffixes (``.txt``, ``.tar.gz``, ``~``).
 
     Args:
-        s (str): the name.
+        s (bytes): the name.
     """
     n = len(s)
     i = 0
@@ -420,10 +441,11 @@ def _version_prefix_len(s: str) -> int:
             return prefix
         i += 1
         prefix = i
-        while i + 1 < n and s[i] == "." and (s[i + 1].isalpha()
-                                             or s[i + 1] == "~"):
+        while i + 1 < n and s[i] == 0x2E and (_is_alpha(s[i + 1])
+                                              or s[i + 1] == 0x7E):
             i += 2
-            while i < n and (s[i].isalnum() or s[i] == "~"):
+            while i < n and (_is_alpha(s[i]) or _is_digit(s[i])
+                             or s[i] == 0x7E):
                 i += 1
 
 
@@ -431,7 +453,9 @@ def filevercmp(a: str, b: str) -> int:
     """gnulib's ``filevercmp``, the order behind ``ls -v``: the empty
     name, ``.`` and ``..`` first, then hidden names, then the names
     compared as versions with their suffixes set aside, the suffixes
-    breaking a tie.
+    breaking a tie. The comparison runs over the names' UTF-8 bytes,
+    which is what GNU sees; a lone surrogate maps back to the byte it
+    was decoded from.
 
     Args:
         a (str): left name.
@@ -447,11 +471,14 @@ def filevercmp(a: str, b: str) -> int:
     a_hidden, b_hidden = a.startswith("."), b.startswith(".")
     if a_hidden != b_hidden:
         return -1 if a_hidden else 1
-    result = _verrevcmp(a[:_version_prefix_len(a)], b[:_version_prefix_len(b)])
+    ab = a.encode("utf-8", "surrogateescape")
+    bb = b.encode("utf-8", "surrogateescape")
+    result = _verrevcmp(ab[:_version_prefix_len(ab)],
+                        bb[:_version_prefix_len(bb)])
     if result == 0:
-        result = _verrevcmp(a, b)
+        result = _verrevcmp(ab, bb)
     if result == 0:
-        result = (a > b) - (a < b)
+        result = (ab > bb) - (ab < bb)
     return result
 
 
@@ -1058,16 +1085,14 @@ def _render_group(
     entries: list[FileStat],
     *,
     long: bool,
-    one_per_line: bool,
     human: bool,
     classify: bool,
     identity: Identity | None,
     columns: formatting.LsColumns = formatting.DEFAULT_COLUMNS,
     hrefs: list[str] | None = None,
 ) -> None:
-    wide = long and not one_per_line
-    names = _decorated_names(entries, hrefs, wide)
-    if wide:
+    names = _decorated_names(entries, hrefs, long)
+    if long:
         results.extend(
             formatting.format_ls_long(entries,
                                       human=human,
@@ -1095,7 +1120,6 @@ async def ls(
     readdir: Readdir,
     stat: Stat,
     long: bool = False,
-    one_per_line: bool = False,
     all_files: bool = False,
     human: bool = False,
     sort_by: LsSortBy = LsSortBy.NAME,
@@ -1148,7 +1172,6 @@ async def ls(
         _render_group(results,
                       rows,
                       long=long,
-                      one_per_line=one_per_line,
                       human=human,
                       classify=classify,
                       identity=identity,
@@ -1191,7 +1214,6 @@ async def ls(
         results,
         rows,
         long=long,
-        one_per_line=one_per_line,
         human=human,
         classify=classify,
         identity=identity,
@@ -1210,7 +1232,6 @@ async def ls(
             _render_group(results,
                           entries,
                           long=long,
-                          one_per_line=one_per_line,
                           human=human,
                           classify=classify,
                           identity=identity,

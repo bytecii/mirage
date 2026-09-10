@@ -80,7 +80,8 @@ def parse_block_size(text: str) -> BlockSize | None:
     ``human-readable`` and ``si`` pick the two ``-h`` scales; otherwise
     an optional count is followed by an optional unit letter, ``B``
     making it decimal (``KB`` is 1000 and prints ``kB``) and ``iB``
-    keeping it binary.
+    keeping it binary. A zero count is refused under any unit, as GNU
+    refuses ``0K`` the way it refuses ``0``.
 
     Args:
         text (str): the option value as typed.
@@ -93,9 +94,11 @@ def parse_block_size(text: str) -> BlockSize | None:
     while i < len(text) and text[i].isdigit():
         i += 1
     count = int(text[:i]) if i else 1
+    if count == 0:
+        return None
     unit = text[i:]
     if not unit:
-        return BlockSize(count, "") if i and count > 0 else None
+        return BlockSize(count, "") if i else None
     letter, rest = unit[0].upper(), unit[1:]
     if letter not in BLOCK_UNITS:
         return None

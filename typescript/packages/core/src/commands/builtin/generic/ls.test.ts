@@ -758,6 +758,19 @@ describe('lsGeneric sort orders', () => {
     expect(filevercmp('1.0~rc1', '1.0')).toBeLessThan(0)
     expect(filevercmp('abc', 'abc')).toBe(0)
   })
+
+  it('filevercmp orders bytes past the letters', () => {
+    // Pinned on coreutils 9.7 under LC_ALL=C: `_ { é ÿ Ā €` and
+    // `a- a{ aé`, since gnulib classifies bytes, not code points.
+    expect(filevercmp('_', '{')).toBeLessThan(0)
+    expect(filevercmp('{', 'é')).toBeLessThan(0)
+    expect(filevercmp('é', 'ÿ')).toBeLessThan(0)
+    expect(filevercmp('ÿ', 'Ā')).toBeLessThan(0)
+    expect(filevercmp('Ā', '€')).toBeLessThan(0)
+    expect(filevercmp('a-', 'a{')).toBeLessThan(0)
+    expect(filevercmp('a{', 'aé')).toBeLessThan(0)
+    expect(filevercmp('\uffff', '\u{1d11e}')).toBeLessThan(0)
+  })
 })
 
 describe('lsGeneric columns and time styles', () => {
@@ -829,6 +842,14 @@ describe('lsGeneric columns and time styles', () => {
     expect(parsed.timeKind).toBe(timeKind)
   })
 
+  it('parseFlags: -1 never undoes the long format', () => {
+    const parse = (flags: Record<string, FlagValue>): boolean =>
+      parseFlags(new FlagView(flags, specOf('ls'))).long
+    expect(parse({ g: true, args_1: true })).toBe(true)
+    expect(parse({ args_l: true, args_1: true })).toBe(true)
+    expect(parse({ args_1: true })).toBe(false)
+  })
+
   it.each([
     [{ sort: 'bogus' }, "ls: invalid argument 'bogus' for '--sort'", 1],
     [
@@ -838,6 +859,7 @@ describe('lsGeneric columns and time styles', () => {
     ],
     [{ time_style: 'bogus' }, "ls: invalid argument 'bogus' for 'time style'", 2],
     [{ block_size: 'bogus' }, "ls: invalid --block-size argument 'bogus'", 2],
+    [{ block_size: '0K' }, "ls: invalid --block-size argument '0K'", 2],
     [{ hyperlink: 'bogus' }, "ls: invalid argument 'bogus' for '--hyperlink'", 1],
   ])('parseFlags refuses in GNU words (%o)', (flags, prefix, code) => {
     let caught: unknown = null

@@ -61,6 +61,9 @@ def test_find_ls_and_ls_show_the_year_for_an_old_or_future_time():
     ("si", formatting.BlockSize(1000, "", 1000)),
     ("bogus", None),
     ("0", None),
+    ("0K", None),
+    ("0KB", None),
+    ("00KiB", None),
     ("KiX", None),
 ])
 def test_parse_block_size_reads_gnu_units(text, expected):

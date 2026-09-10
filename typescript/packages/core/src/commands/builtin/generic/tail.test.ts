@@ -44,7 +44,10 @@ function opts(flags: Record<string, string | boolean>, signal?: AbortSignal): Co
 
 // A fake mount whose files the test grows between polls.
 class Growing {
-  constructor(readonly data: Map<string, Uint8Array>) {}
+  constructor(
+    readonly data: Map<string, Uint8Array>,
+    readonly sized = true,
+  ) {}
   stat = (p: PathSpec): Promise<FileStat> => {
     const data = this.data.get(p.virtual)
     if (data === undefined) {
@@ -55,7 +58,7 @@ class Growing {
     return Promise.resolve(
       new FileStat({
         name: p.virtual.split('/').pop() ?? '',
-        size: data.byteLength,
+        size: this.sized ? data.byteLength : null,
         type: FileType.FILE,
       }),
     )
@@ -130,6 +133,30 @@ describe('tail -f', () => {
     expect(text).toBe('l1\nl2\nl3\nz\ny\n')
     expect(DEC.decode(io.stderr as Uint8Array)).toBe('tail: /d/log: file truncated\n')
     expect(io.exitCode).toBe(0)
+  })
+
+  it('reads a size-unknown file whole every poll', async () => {
+    const fs = new Growing(new Map(), false)
+    fs.set('/d/log', 'a\n')
+    const abort = new AbortController()
+    const [stream, io] = (await tailGeneric(
+      [spec('/d/log')],
+      [],
+      followOpts(abort),
+      fs.stream,
+      fs.stat,
+      fs.readRange,
+    )) as [AsyncIterable<Uint8Array>, IOResult]
+    const grower = (async () => {
+      await sleep(60)
+      fs.append('/d/log', 'b\n')
+      await sleep(60)
+      fs.set('/d/log', 'z\n')
+    })()
+    const text = await drainFor(stream, 250, abort)
+    await grower
+    expect(text).toBe('a\nb\nz\n')
+    expect(DEC.decode(io.stderr as Uint8Array)).toBe('tail: /d/log: file truncated\n')
   })
 
   it('switches headers as files take turns', async () => {

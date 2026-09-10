@@ -307,9 +307,17 @@ async def _window(read: Callable[..., Any], read_range: ReadRangeFn | None,
         # are already bound, and the protocol names the rest.
         data = await read_range(path, offset=offset, size=size)
         return bytes(data)
-    box = [0]
-    parts = [chunk async for chunk in _counted(read(path), box)]
-    return b"".join(parts)[offset:offset + size]
+    return (await _whole(read, path))[offset:offset + size]
+
+
+async def _whole(read: Callable[..., Any], path: PathSpec) -> bytes:
+    """The file as the whole-file reader returns it, joined.
+
+    Args:
+        read (Callable[..., Any]): bound whole-file reader.
+        path (PathSpec): the file.
+    """
+    return b"".join([chunk async for chunk in _counted(read(path), [0])])
 
 
 async def _follow(
@@ -346,6 +354,11 @@ async def _follow(
     resets the position to zero. For the same reason a descriptor
     follow cannot keep reading a file renamed away: there is no open
     handle, so the path is polled until it holds bytes again.
+
+    A file whose stat carries no size (a backend that cannot know one
+    without reading reports ``None``, never a guess) is polled by
+    reading it whole every interval and measuring that: one read per
+    poll, rather than a follow that never prints.
 
     Args:
         paths (list[PathSpec]): the operands that opened.
@@ -404,14 +417,17 @@ async def _follow(
                         pending.append(p)
                 continue
             size = current.size
+            whole: bytes | None = None
             if size is None:
-                continue
+                whole = await _whole(read, p)
+                size = len(whole)
             pos = positions[p.virtual]
             if size < pos:
                 _note(io, f"tail: {p.raw_path}: file truncated\n")
                 pos = 0
             if size > pos:
-                data = await _window(read, read_range, p, pos, size - pos)
+                data = (whole[pos:] if whole is not None else await _window(
+                    read, read_range, p, pos, size - pos))
                 if show_headers and last != p.virtual:
                     yield f"\n==> {p.raw_path} <==\n".encode()
                 last = p.virtual

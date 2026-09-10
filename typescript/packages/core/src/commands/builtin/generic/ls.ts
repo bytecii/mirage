@@ -191,35 +191,39 @@ function appendListing(
   stats.forEach((s, i) => lines.push(formatShort(s, render.classify, render.columns, names?.[i])))
 }
 
-// gnulib filevercmp's character order: a tilde sorts before the end of
-// the string, letters by code, and everything else after the letters.
-function versionOrder(c: string): number {
-  if (/[0-9]/.test(c)) return 0
-  if (/[A-Za-z]/.test(c)) return c.charCodeAt(0)
-  if (c === '~') return -1
-  return c.charCodeAt(0) + 256
-}
+const isDigit = (c: number | undefined): boolean => c !== undefined && c >= 0x30 && c <= 0x39
+const isAlpha = (c: number | undefined): boolean =>
+  c !== undefined && ((c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a))
 
-const isDigit = (c: string | undefined): boolean => c !== undefined && /[0-9]/.test(c)
+// gnulib filevercmp's byte order: a tilde sorts before the end of the
+// string, ASCII letters by code, and every other byte after the letters.
+// gnulib classifies in the C locale one byte at a time, so a multibyte
+// letter such as é is two bytes past the letters, not a letter.
+function versionOrder(c: number): number {
+  if (isDigit(c)) return 0
+  if (isAlpha(c)) return c
+  if (c === 0x7e) return -1
+  return c + 256
+}
 
 // Debian's version comparison as gnulib's verrevcmp runs it: alternating
 // non-digit and digit runs, the digit runs compared as numbers.
-function verrevcmp(a: string, b: string): number {
+function verrevcmp(a: Uint8Array, b: Uint8Array): number {
   let i = 0
   let j = 0
   while (i < a.length || j < b.length) {
     while ((i < a.length && !isDigit(a[i])) || (j < b.length && !isDigit(b[j]))) {
-      const ac = i < a.length ? versionOrder(a[i] ?? '') : 0
-      const bc = j < b.length ? versionOrder(b[j] ?? '') : 0
+      const ac = i < a.length ? versionOrder(a[i] ?? 0) : 0
+      const bc = j < b.length ? versionOrder(b[j] ?? 0) : 0
       if (ac !== bc) return ac - bc
       i += 1
       j += 1
     }
-    while (a[i] === '0') i += 1
-    while (b[j] === '0') j += 1
+    while (a[i] === 0x30) i += 1
+    while (b[j] === 0x30) j += 1
     let firstDiff = 0
     while (isDigit(a[i]) && isDigit(b[j])) {
-      if (firstDiff === 0) firstDiff = (a[i] ?? '').charCodeAt(0) - (b[j] ?? '').charCodeAt(0)
+      if (firstDiff === 0) firstDiff = (a[i] ?? 0) - (b[j] ?? 0)
       i += 1
       j += 1
     }
@@ -232,7 +236,7 @@ function verrevcmp(a: string, b: string): number {
 
 // How much of a name filevercmp compares first: everything but a
 // trailing run of suffixes (.txt, .tar.gz, ~).
-function versionPrefixLen(s: string): number {
+function versionPrefixLen(s: Uint8Array): number {
   const n = s.length
   let i = 0
   let prefix = 0
@@ -240,16 +244,29 @@ function versionPrefixLen(s: string): number {
     if (i === n) return prefix
     i += 1
     prefix = i
-    while (i + 1 < n && s[i] === '.' && (/[A-Za-z]/.test(s[i + 1] ?? '') || s[i + 1] === '~')) {
+    while (i + 1 < n && s[i] === 0x2e && (isAlpha(s[i + 1]) || s[i + 1] === 0x7e)) {
       i += 2
-      while (i < n && (/[A-Za-z0-9]/.test(s[i] ?? '') || s[i] === '~')) i += 1
+      while (i < n && (isAlpha(s[i]) || isDigit(s[i]) || s[i] === 0x7e)) i += 1
     }
   }
 }
 
+// Bytewise order, the tie-break GNU's memcmp gives.
+function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i += 1) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0)
+    if (d !== 0) return d
+  }
+  return a.length - b.length
+}
+
+const NAME_BYTES = new TextEncoder()
+
 // gnulib's filevercmp, the order behind `ls -v`: the empty name, `.` and
 // `..` first, then hidden names, then the names compared as versions with
-// their suffixes set aside, the suffixes breaking a tie.
+// their suffixes set aside, the suffixes breaking a tie. The comparison
+// runs over the names' UTF-8 bytes, which is what GNU sees.
 export function filevercmp(a: string, b: string): number {
   if (a === b) return 0
   for (const special of ['', '.', '..']) {
@@ -259,9 +276,11 @@ export function filevercmp(a: string, b: string): number {
   const aHidden = a.startsWith('.')
   const bHidden = b.startsWith('.')
   if (aHidden !== bHidden) return aHidden ? -1 : 1
-  let result = verrevcmp(a.slice(0, versionPrefixLen(a)), b.slice(0, versionPrefixLen(b)))
-  if (result === 0) result = verrevcmp(a, b)
-  if (result === 0) result = a > b ? 1 : -1
+  const ab = NAME_BYTES.encode(a)
+  const bb = NAME_BYTES.encode(b)
+  let result = verrevcmp(ab.subarray(0, versionPrefixLen(ab)), bb.subarray(0, versionPrefixLen(bb)))
+  if (result === 0) result = verrevcmp(ab, bb)
+  if (result === 0) result = compareBytes(ab, bb)
   return result
 }
 
@@ -726,7 +745,9 @@ function hyperlinkFlag(fl: FlagView): boolean {
 }
 
 // Parse the ls flag bag once into a frozen struct. GNU's rules that are
-// easy to get wrong: -g, -o and -n imply the long format; -n prints the
+// easy to get wrong: -g, -o and -n imply the long format, and -1 never
+// undoes it in either order (GNU ignores -1 beside -l, and with no
+// terminal there are never columns, so -1 has nothing else to do); -n prints the
 // same columns as -l, because a mirage owner is already the id (an agent,
 // a profile) and never a name looked up from one; the last of -t, -S, -X,
 // -v, -U and --sort wins, as does the last of -c, -u and --time; and -c or
@@ -737,9 +758,7 @@ export function parseFlags(fl: FlagView): LsFlags {
   const timeKind = timeFlag(fl)
   const noOwner = fl.asBool('g')
   const noGroup = fl.asBool('o')
-  const long =
-    (fl.asBool('args_l') || noOwner || noGroup || fl.asBool('numeric_uid_gid')) &&
-    !fl.asBool('args_1')
+  const long = fl.asBool('args_l') || noOwner || noGroup || fl.asBool('numeric_uid_gid')
   const sortBy: SortBy = !sortedExplicitly && timeKind !== 'mtime' && !long ? 'time' : askedSort
   const blockText = fl.asStr('block_size')
   let blockSize = null
