@@ -22,7 +22,7 @@ from mirage.core.hierarchy.probe import ReaddirFn
 from mirage.core.hierarchy.readdir import (DirListing, Listed, Lister,
                                            make_readdir)
 from mirage.core.hierarchy.scope import ROOT, ScopeMatch
-from mirage.core.lancedb.query import (distinct_values, list_tables,
+from mirage.core.lancedb.query import (ValueTest, distinct_values, list_tables,
                                        rows_matching, table_columns,
                                        table_exists)
 from mirage.core.lancedb.render import render_card
@@ -70,6 +70,19 @@ def _row_entries(rows: list[dict[str, Any]],
     return entries
 
 
+def _rendered_prefix_test(prefix: str) -> ValueTest:
+    """Keep values whose rendered name starts with a glob's literal head.
+
+    Args:
+        prefix (str): the head, spelled in rendered names.
+    """
+
+    def keep(value: str) -> bool:
+        return PATH_SAFE.encode(value).startswith(prefix)
+
+    return keep
+
+
 def _row_prefix(pattern: str | None, config: LanceDBConfig) -> str:
     """The row-id prefix a leaf glob narrows the row query to.
 
@@ -97,14 +110,16 @@ async def _children(accessor: LanceDBAccessor,
     depth = len(filters)
     if depth < len(config.group_by):
         display_prefix = glob_prefix(pattern)
-        values = await distinct_values(accessor, table, config.group_by[depth],
-                                       filters, config.max_rows,
-                                       PATH_SAFE.prefix_value(display_prefix))
         # Values render path-safe, so a glob's head is spelled in rendered
-        # names: the query took the value prefix the head stands for, and
-        # this keeps only the renderings that really start with it.
-        names = sorted(name for name in map(PATH_SAFE.encode, values)
-                       if name.startswith(display_prefix))
+        # names: the query takes the value prefix the head stands for, which
+        # loses nothing, and the cap counts the renderings that really start
+        # with the head, so a head no value prefix spells (the escape lead
+        # alone) still reaches past the rows at the head of the table.
+        values = await distinct_values(
+            accessor, table, config.group_by[depth], filters, config.max_rows,
+            PATH_SAFE.prefix_value(display_prefix),
+            _rendered_prefix_test(display_prefix) if display_prefix else None)
+        names = sorted(map(PATH_SAFE.encode, values))
         return DirListing(entries=[(name, _dir_entry(name)) for name in names],
                           partial=bool(display_prefix))
     # Select every column except the vector and blob ones (schema order, so

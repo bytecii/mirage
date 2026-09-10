@@ -16,7 +16,7 @@ import type { LanceDBAccessor } from '../../accessor/lancedb.ts'
 import { IndexEntry } from '../../cache/index/config.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { LanceDBConfigResolved } from '../../resource/lancedb/config.ts'
-import type { LanceRow } from './_driver.ts'
+import type { LanceRow, ValueTest } from './_driver.ts'
 import { PathSpec } from '../../types.ts'
 import { perAccessor } from '../hierarchy/bind.ts'
 import { PATH_SAFE } from '../hierarchy/codec.ts'
@@ -67,6 +67,11 @@ function rowEntries(rows: LanceRow[], config: LanceDBConfigResolved): [string, I
   return entries
 }
 
+/** Keep values whose rendered name starts with a glob's literal head. */
+function renderedPrefixTest(prefix: string): ValueTest {
+  return (value) => PATH_SAFE.encode(value).startsWith(prefix)
+}
+
 /**
  * The row-id prefix a leaf glob narrows the row query to.
  *
@@ -89,20 +94,20 @@ async function children(accessor: LanceDBAccessor, match: ScopeMatch): Promise<L
   const depth = Object.keys(filters).length
   if (depth < config.groupBy.length) {
     const displayPrefix = globPrefix(pattern)
+    // Values render path-safe, so a glob's head is spelled in rendered names:
+    // the query takes the value prefix the head stands for, which loses
+    // nothing, and the cap counts the renderings that really start with the
+    // head, so a head no value prefix spells (the escape lead alone) still
+    // reaches past the rows at the head of the table.
     const values = await accessor.driver.distinct(
       table,
       config.groupBy[depth] ?? '',
       filters,
       config.maxRows,
       PATH_SAFE.prefixValue(displayPrefix),
+      displayPrefix === '' ? undefined : renderedPrefixTest(displayPrefix),
     )
-    // Values render path-safe, so a glob's head is spelled in rendered names:
-    // the query took the value prefix the head stands for, and this keeps
-    // only the renderings that really start with it.
-    const names = values
-      .map((value) => PATH_SAFE.encode(value))
-      .filter((name) => name.startsWith(displayPrefix))
-      .sort(compareCodePoints)
+    const names = values.map((value) => PATH_SAFE.encode(value)).sort(compareCodePoints)
     const listing: DirListing = {
       entries: names.map((name): [string, IndexEntry] => [name, dirEntry(name)]),
       seeds: {},

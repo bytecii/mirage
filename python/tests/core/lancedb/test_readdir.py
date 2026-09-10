@@ -222,3 +222,56 @@ async def test_a_group_glob_narrows_on_the_decoded_value(slashed):
     assert _names(await readdir(slashed, _globbed("/", "a∕*"))) == {"a∕b"}
     assert _names(await readdir(slashed, _globbed("/",
                                                   "a*"))) == {"a∕b", "a⁄∕b"}
+
+
+@pytest.fixture
+def crowded(tmp_path) -> LanceDBAccessor:
+    """Values whose rendering starts with the escape lead, every one of
+    them past a cap the head of the table fills.
+
+    Args:
+        tmp_path (Path): pytest tmp dir.
+    """
+    uri = str(tmp_path / "crowded")
+    db = lancedb.connect(uri)
+    rows = [{
+        "id": i,
+        "label": "all",
+        "name": f"n{i}",
+        "vector": [0.1, 0.2],
+    } for i in range(WIDE)]
+    rows += [{
+        "id": WIDE + i,
+        "label": label,
+        "name": label,
+        "vector": [0.1, 0.2],
+    } for i, label in enumerate(("", ".env", "a∕x"))]
+    db.create_table("crowded", data=rows)
+    return LanceDBAccessor(
+        LanceDBConfig(uri=uri,
+                      table="crowded",
+                      group_by=["label"],
+                      id_column="id",
+                      title_column="name",
+                      text_column="name",
+                      max_rows=CAP))
+
+
+@pytest.mark.asyncio
+async def test_a_glob_head_no_value_prefix_spells_reaches_past_the_cap(
+        crowded):
+    # ``⁄`` alone stands for no value prefix (a blank value, a dot-led one,
+    # one opening with ``∕`` or ``⁄`` all render behind it), so nothing
+    # narrows the query; the cap counts the renderings that match rather
+    # than the rows at the head of the table. The plain listing stays capped.
+    assert _names(await readdir(crowded, _ps("/"))) == {"all"}
+    assert _names(await readdir(crowded, _globbed("/",
+                                                  "⁄*"))) == {"⁄", "⁄.env"}
+
+
+@pytest.mark.asyncio
+async def test_a_glob_head_cut_inside_an_escape_counts_matches(crowded):
+    # ``a⁄`` decodes to ``a``, which every ``all`` row also starts with: the
+    # LIKE loses nothing, and the cap counts the renderings that really
+    # start with ``a⁄`` rather than the rows the LIKE let through.
+    assert _names(await readdir(crowded, _globbed("/", "a⁄*"))) == {"a⁄∕x"}

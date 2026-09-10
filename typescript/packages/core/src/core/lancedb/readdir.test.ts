@@ -161,10 +161,23 @@ describe('lancedb readdir narrows a capped listing', () => {
   })
 })
 
+const SLASHED = ['a/b', 'a∕b', '', '.env']
+
 function slashedAccessor(): { accessor: LanceDBAccessor; distinct: ReturnType<typeof vi.fn> } {
-  // The driver stands in for the store and ignores the prefix, so what the
-  // listing keeps is the lister's own doing.
-  const distinct = vi.fn().mockResolvedValue(['a/b', 'a∕b', '', '.env'])
+  // The driver stands in for the store: it ignores the prefix and honors the
+  // test, so what the listing keeps is the test's doing.
+  const distinct = vi
+    .fn()
+    .mockImplementation(
+      (
+        _t: string,
+        _c: string,
+        _f: unknown,
+        _l: number,
+        _p: string,
+        keep?: (value: string) => boolean,
+      ) => Promise.resolve(SLASHED.filter((value) => keep === undefined || keep(value))),
+    )
   const driver = {
     listTables: vi.fn().mockResolvedValue(['animals']),
     tableColumns: vi.fn().mockResolvedValue(['id', 'label', 'kind', 'name']),
@@ -207,5 +220,67 @@ describe('lancedb group values holding a slash', () => {
     expect(distinct.mock.calls[0]?.[2]).toEqual({ label: '' })
     await readdir(accessor, spec('/animals/⁄.env'))
     expect(distinct.mock.calls[1]?.[2]).toEqual({ label: '.env' })
+  })
+})
+
+function crowdedAccessor(): { accessor: LanceDBAccessor; distinct: ReturnType<typeof vi.fn> } {
+  // The driver stands in for the store: the prefix narrows the rows, the test
+  // bounds the cap by what it keeps, and the cap cuts the head of what is
+  // left, exactly as the streamed query does.
+  const labels: string[] = []
+  for (let i = 0; i < WIDE; i += 1) labels.push('all')
+  labels.push('', '.env', 'a∕x')
+  const distinct = vi
+    .fn()
+    .mockImplementation(
+      (
+        _t: string,
+        _c: string,
+        _f: unknown,
+        limit: number,
+        prefix: string,
+        keep?: (value: string) => boolean,
+      ) => {
+        const narrowed = labels.filter((value) => value.startsWith(prefix))
+        const kept = keep === undefined ? narrowed : narrowed.filter(keep)
+        return Promise.resolve([...new Set(kept.slice(0, limit))])
+      },
+    )
+  const driver = {
+    listTables: vi.fn().mockResolvedValue(['crowded']),
+    tableColumns: vi.fn().mockResolvedValue(['id', 'label']),
+    distinct,
+    rowsMatching: vi.fn().mockResolvedValue([]),
+  } as unknown as LanceDriver
+  const crowdedConfig = resolveLanceDBConfig({
+    uri: '/tmp/db',
+    table: 'crowded',
+    groupBy: ['label'],
+    idColumn: 'id',
+    titleColumn: 'label',
+    maxRows: CAP,
+  })
+  return { accessor: new LanceDBAccessor(driver, crowdedConfig), distinct }
+}
+
+describe('lancedb group globs past the cap', () => {
+  it('reach a value no value prefix spells', async () => {
+    // `⁄` alone stands for no value prefix (a blank value, a dot-led one, one
+    // opening with `∕` or `⁄` all render behind it), so nothing narrows the
+    // query; the cap counts the renderings that match rather than the rows at
+    // the head of the table. The plain listing stays capped.
+    const { accessor, distinct } = crowdedAccessor()
+    expect(await readdir(accessor, spec('/'))).toEqual(['/all'])
+    expect(await readdir(accessor, globbed('/', '⁄*'))).toEqual(['/⁄', '/⁄.env'])
+    expect(distinct.mock.calls[1]?.[4]).toBe('')
+  })
+
+  it('count the matches when the head is cut inside an escape', async () => {
+    // `a⁄` decodes to `a`, which every `all` row also starts with: the LIKE
+    // loses nothing, and the cap counts the renderings that really start
+    // with `a⁄` rather than the rows the LIKE let through.
+    const { accessor, distinct } = crowdedAccessor()
+    expect(await readdir(accessor, globbed('/', 'a⁄*'))).toEqual(['/a⁄∕x'])
+    expect(distinct.mock.calls[0]?.[4]).toBe('a')
   })
 })

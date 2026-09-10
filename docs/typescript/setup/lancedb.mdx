@@ -48,7 +48,9 @@ await ws.execute('search "red running shoes" /fashion') // ranked paths + score 
 A `groupBy` value holding `/` renders as `∕`, a value that already holds `∕` or
 `⁄` has that character prefixed with `⁄`, and a blank value or one that starts
 with `.` is prefixed with `⁄` as well, so every value keeps its own directory
-that lists and opens, and descending into it filters for exactly that value.
+that lists and opens, and descending into it filters for exactly that value. A
+glob's literal head narrows a listing to the values whose rendering starts with
+it and reaches them past `maxRows`, so `⁄*` lists every blank or dot-led value.
 
 Semantic search is the `search` command, not a path: it returns ranked rows as
 the canonical `<id>.md` paths above, annotated with the vector distance.
