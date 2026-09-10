@@ -34,7 +34,9 @@ describe('Pyodide lazy VFS', { timeout: 60_000 }, () => {
     'counts all writes discarded after %s fails',
     async (rejected) => {
       const names = ['first', 'bad', 'later', 'after', 'last']
-      const files = new Map(names.map((name) => [`/data/${name}`, ENC.encode('old')]))
+      const files = new Map<string, Uint8Array>(
+        names.map((name) => [`/data/${name}`, ENC.encode('old')]),
+      )
       const writes: string[] = []
       const dispatch: BridgeDispatchFn = async (op, path, bytes) => {
         await Promise.resolve()
