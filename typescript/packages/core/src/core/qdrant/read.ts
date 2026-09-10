@@ -22,7 +22,8 @@ import { makeRead, type Reader } from '../hierarchy/read.ts'
 import type { ScopeMatch } from '../hierarchy/scope.ts'
 import { blobBytes, renderJson, renderText } from './render.ts'
 import { detectFor, tableOf } from './scope.ts'
-import { fieldValue, pointIdFromStem } from './fields.ts'
+import { pointIdFromStem } from './naming.ts'
+import { fieldValue } from './payload.ts'
 
 async function rowOf(
   accessor: QdrantAccessor,

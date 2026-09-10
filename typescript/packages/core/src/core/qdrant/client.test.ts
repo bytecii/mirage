@@ -76,3 +76,14 @@ describe('qdrant client helpers', () => {
     expect(candidateIds('__nf_missing__')).toEqual([])
   })
 })
+
+describe('qdrant group values spell as their JSON', () => {
+  it('keeps a boolean payload behind the segment its JSON spells', () => {
+    // Python's `str(True)` and `String(true)` disagree, so both sides spell
+    // a non-string value as compact JSON before comparing it to a segment.
+    const seen = new Set<string>()
+    const keep = exactNameTest('flag', 'true', false, seen)
+    expect(keep({ id: 1, payload: { flag: true } })).toBe(true)
+    expect([...seen]).toEqual(['true'])
+  })
+})

@@ -15,7 +15,8 @@
 from typing import Any
 
 from mirage.accessor.qdrant import QdrantAccessor
-from mirage.core.qdrant.fields import field_value, group_name, row_stem
+from mirage.core.qdrant.naming import group_name, row_stem
+from mirage.core.qdrant.payload import field_value
 from mirage.core.qdrant.query import search_rows
 from mirage.core.qdrant.render import render_json, render_text
 from mirage.resource.qdrant.config import QdrantConfig

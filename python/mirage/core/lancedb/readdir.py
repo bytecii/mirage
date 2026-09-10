@@ -17,6 +17,7 @@ from typing import Any
 from mirage.accessor.lancedb import LanceDBAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
 from mirage.core.hierarchy.bind import per_accessor
+from mirage.core.hierarchy.codec import PATH_SAFE
 from mirage.core.hierarchy.probe import ReaddirFn
 from mirage.core.hierarchy.readdir import (DirListing, Listed, Lister,
                                            make_readdir)
@@ -95,11 +96,17 @@ async def _children(accessor: LanceDBAccessor,
         return None
     depth = len(filters)
     if depth < len(config.group_by):
-        prefix = glob_prefix(pattern)
-        names = await distinct_values(accessor, table, config.group_by[depth],
-                                      filters, config.max_rows, prefix)
+        display_prefix = glob_prefix(pattern)
+        values = await distinct_values(accessor, table, config.group_by[depth],
+                                       filters, config.max_rows,
+                                       PATH_SAFE.prefix_value(display_prefix))
+        # Values render path-safe, so a glob's head is spelled in rendered
+        # names: the query took the value prefix the head stands for, and
+        # this keeps only the renderings that really start with it.
+        names = sorted(name for name in map(PATH_SAFE.encode, values)
+                       if name.startswith(display_prefix))
         return DirListing(entries=[(name, _dir_entry(name)) for name in names],
-                          partial=bool(prefix))
+                          partial=bool(display_prefix))
     # Select every column except the vector and blob ones (schema order, so
     # the projected rows render byte-identically to the full rows read()
     # fetches). Still one data query; the schema lookup is local metadata on

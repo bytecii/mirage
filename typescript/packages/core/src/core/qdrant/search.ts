@@ -18,7 +18,8 @@ import type { QdrantConfigResolved } from '../../resource/qdrant/config.ts'
 import type { PathSpec } from '../../types.ts'
 import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { renderJson, renderText } from './render.ts'
-import { fieldValue, groupName, rowStem } from './fields.ts'
+import { groupName, rowStem } from './naming.ts'
+import { fieldValue } from './payload.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()

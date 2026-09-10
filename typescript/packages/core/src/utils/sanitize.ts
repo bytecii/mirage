@@ -21,6 +21,15 @@ const MAX_LEN = 100
 // 300 bytes.
 export const NAME_MAX_BYTES = 255
 const ELLIPSIS = '...'
+// What `/` becomes inside a path segment: U+2215 DIVISION SLASH, the one
+// character every backend renders a slash as, so a value cannot open a
+// directory boundary. `core/hierarchy/codec` is what inverts it.
+export const SAFE_SLASH = '∕'
+// What marks the next character of a path segment as literal: U+2044
+// FRACTION SLASH. `pathSafeName` leads a dot-led name with it, since the
+// hierarchy hides a dot-led segment, and `core/hierarchy/codec` spells its
+// reversible encoding with it.
+export const ESCAPE_LEAD = '⁄'
 
 const UTF8 = new TextEncoder()
 const UTF8_DECODER = new TextDecoder('utf-8')
@@ -94,14 +103,17 @@ export function sanitizeName(name: string): string {
  * Make a name safe to embed in a VFS path segment.
  *
  * Preserves the original spelling (spaces, apostrophes, emoji, etc.) and only
- * replaces the path separator `/` with `∕` (U+2215) so the value cannot
- * collide with a directory boundary. Use this for resource directory and file
- * names where keeping the original display name matters more than shell
- * ergonomics.
+ * replaces the path separator `/` with `SAFE_SLASH` (`∕`, U+2215), so the value
+ * cannot collide with a directory boundary, and leads a name that starts with
+ * `.` with `ESCAPE_LEAD` (`⁄`, U+2044), since the hierarchy classifies a
+ * dot-led segment as hidden: it would be dropped from every listing and refused
+ * as a path. Use this for resource directory and file names where keeping the
+ * original display name matters more than shell ergonomics.
  */
 export function pathSafeName(name: string): string {
   if (name.trim() === '') return 'unknown'
-  return name.replace(/\//g, '∕')
+  const safe = name.replace(/\//g, SAFE_SLASH)
+  return safe.startsWith('.') ? ESCAPE_LEAD + safe : safe
 }
 
 /**

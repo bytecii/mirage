@@ -49,3 +49,8 @@ def test_nested_text_and_blob_fields_are_resolved_consistently():
             "text": "chunk"
         }
     }
+
+
+def test_render_text_spells_a_non_string_value_as_its_json_does():
+    # ``str(True)`` would write ``True`` where TypeScript writes ``true``.
+    assert render_text({"id": 3, "name": True}, _cfg()) == b"true\n"

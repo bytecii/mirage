@@ -13,7 +13,8 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.core.render.json import (compact_json_bytes, compact_json_text,
-                                     json_bytes, json_text, jsonl_bytes)
+                                     json_bytes, json_text, jsonl_bytes,
+                                     value_text)
 
 # Byte-for-byte the fixture in the typescript twin
 # (packages/core/src/core/render/json.test.ts). Both languages pin the same
@@ -74,3 +75,21 @@ def test_jsonl_bytes_renders_no_rows_as_empty():
 def test_jsonl_bytes_keeps_the_given_order():
     rows = [{"i": 2}, {"i": 1}]
     assert jsonl_bytes(rows) == b'{"i":2}\n{"i":1}\n'
+
+
+def test_value_text_spells_a_value_as_its_json_does():
+    # A string is itself; anything else is its compact JSON, so a boolean
+    # is ``true`` in both languages rather than Python's ``True``, and an
+    # integral float is the integer TypeScript never told it apart from.
+    assert value_text("x") == "x"
+    assert value_text("True") == "True"
+    assert value_text(True) == "true"
+    assert value_text(False) == "false"
+    assert value_text(7) == "7"
+    assert value_text(1.0) == "1"
+    assert value_text(1.5) == "1.5"
+    assert value_text(None) == "null"
+    assert value_text({
+        "a": 1.0,
+        "b": [True, None]
+    }) == '{"a":1,"b":[true,null]}'

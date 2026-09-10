@@ -20,7 +20,8 @@ from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.hierarchy.bind import per_accessor
 from mirage.core.hierarchy.read import Reader, make_read
 from mirage.core.hierarchy.scope import ScopeMatch
-from mirage.core.qdrant.fields import field_value, point_id_from_stem
+from mirage.core.qdrant.naming import point_id_from_stem
+from mirage.core.qdrant.payload import field_value
 from mirage.core.qdrant.query import row_record
 from mirage.core.qdrant.render import blob_bytes, render_json, render_text
 from mirage.core.qdrant.scope import detect_for, table_of

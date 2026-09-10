@@ -15,12 +15,21 @@
 import asyncio
 import os
 
-from build_collection import MODEL, build_collection
+from build_collection import MODEL, build_collection, build_lineage_collection
 from qdrant_client import QdrantClient
 
 from mirage import MountMode, Workspace
 from mirage.resource.qdrant import QdrantConfig, QdrantResource
 from mirage.types import PathSpec
+
+
+def _connection() -> dict[str, str | int | None]:
+    return {
+        "url": os.environ.get("QDRANT_URL"),
+        "api_key": os.environ.get("QDRANT_API_KEY"),
+        "host": os.environ.get("QDRANT_HOST", "localhost"),
+        "port": int(os.environ.get("QDRANT_PORT", "6333")),
+    }
 
 
 def _client() -> QdrantClient:
@@ -40,12 +49,10 @@ async def show(ws: Workspace, cmd: str) -> None:
 async def main() -> None:
     client = _client()
     build_collection(client, "fashion")
+    build_lineage_collection(client, "company_docs")
 
-    config = QdrantConfig(
-        url=os.environ.get("QDRANT_URL"),
-        api_key=os.environ.get("QDRANT_API_KEY"),
-        host=os.environ.get("QDRANT_HOST", "localhost"),
-        port=int(os.environ.get("QDRANT_PORT", "6333")),
+    fashion = QdrantConfig(
+        **_connection(),
         collection="fashion",
         group_by=["gender", "articleType", "baseColour"],
         id_field="id",
@@ -55,7 +62,26 @@ async def main() -> None:
         embedding_model=MODEL,
         search_limit=4,
     )
-    ws = Workspace({"/fashion/": QdrantResource(config)}, mode=MountMode.READ)
+    # Chunks grouped by the document they came from: `metadata.source` is
+    # a nested payload path, `basename_fields` lists it by file name, and
+    # `name_field` puts the page label in front of the point id.
+    docs = QdrantConfig(
+        **_connection(),
+        collection="company_docs",
+        group_by=["metadata.source"],
+        basename_fields=["metadata.source"],
+        name_field="metadata.page",
+        text_field="page_content",
+        embedding_model=MODEL,
+        search_limit=2,
+    )
+    ws = Workspace(
+        {
+            "/fashion/": QdrantResource(fashion),
+            "/docs/": QdrantResource(docs),
+        },
+        mode=MountMode.READ,
+    )
 
     print("=== mounted Qdrant collection 'fashion' at /fashion/ ===")
 
@@ -91,6 +117,14 @@ async def main() -> None:
     print("\n=== find /fashion -name '*.txt' | wc -l ===")
     r = await ws.execute("find /fashion -name '*.txt' | wc -l")
     print(f"  products: {(await r.stdout_str()).strip()}")
+
+    print("\n=== mounted Qdrant collection 'company_docs' at /docs/ ===")
+    # One directory per source document, named by its basename; each
+    # chunk is `<page>__<point-id>.txt` beside its `.json` payload.
+    await show(ws, "tree /docs/")
+    await show(ws, "cat /docs/refund-2026.pdf/004__102.txt")
+    await show(ws, "cat /docs/refund-2026.pdf/004__102.json")
+    await show(ws, 'search "how long does a refund take" /docs')
 
 
 if __name__ == "__main__":

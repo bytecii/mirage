@@ -25,7 +25,8 @@ import { ROOT, type ScopeMatch } from '../hierarchy/scope.ts'
 import { blobBytes, renderJson, renderText } from './render.ts'
 import { detectFor, filtersOf, tableOf } from './scope.ts'
 import { globPrefix, globStemPrefix, hasGlobPrefix } from '../../utils/glob_walk.ts'
-import { fieldValue, groupName, rowStem } from './fields.ts'
+import { groupName, rowStem } from './naming.ts'
+import { fieldValue } from './payload.ts'
 
 const GROUP_TYPE = 'qdrant/group'
 

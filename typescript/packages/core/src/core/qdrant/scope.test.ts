@@ -107,6 +107,8 @@ describe('qdrant scope', () => {
     const pinned = cfg({ collection: 'animals', groupBy: ['label'] })
     expect(filtersOf(pinned, detect(pinned)(ps('/a∕b')))).toEqual({ label: 'a/b' })
     expect(filtersOf(pinned, detect(pinned)(ps('/a⁄∕b')))).toEqual({ label: 'a∕b' })
+    expect(filtersOf(pinned, detect(pinned)(ps('/⁄')))).toEqual({ label: '' })
+    expect(filtersOf(pinned, detect(pinned)(ps('/⁄.env')))).toEqual({ label: '.env' })
   })
 
   it('detectFor caches per accessor', () => {

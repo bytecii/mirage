@@ -15,6 +15,8 @@
 import json
 from typing import Any
 
+from mirage.utils.json_canonical import canonicalize_value
+
 
 def json_text(value: Any) -> str:
     """Render a value as indented JSON text.
@@ -54,6 +56,24 @@ def compact_json_bytes(value: Any) -> bytes:
         value (Any): the JSON-serializable payload to render.
     """
     return compact_json_text(value).encode()
+
+
+def value_text(value: Any) -> str:
+    """Spell a payload value as text, the way its ``.json`` spells it.
+
+    A string is itself; anything else renders as compact JSON, so a
+    boolean spells ``true`` in both languages rather than Python's
+    ``True``, an integral float spells as the integer TypeScript never
+    told it apart from, and an object or array spells as one JSON
+    literal rather than a ``repr``. Path labels and group values are
+    built from this, so one collection grows one tree.
+
+    Args:
+        value (Any): a decoded JSON value.
+    """
+    if isinstance(value, str):
+        return value
+    return compact_json_text(canonicalize_value(value))
 
 
 def jsonl_bytes(rows: list[dict[str, Any]]) -> bytes:

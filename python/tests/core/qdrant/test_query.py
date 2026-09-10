@@ -139,3 +139,17 @@ async def test_non_index_error_propagates():
 
     with pytest.raises(UnexpectedResponse):
         await query.rows_matching(accessor, "c", {"code": "100"}, 100)
+
+
+@pytest.mark.asyncio
+async def test_group_values_spell_a_non_string_as_its_json_does(accessor):
+    # Python's ``str(True)`` and TypeScript's ``String(true)`` disagree,
+    # so a boolean payload spells as JSON on both sides of the listing:
+    # the distinct values and the value a rendered segment resolves to.
+    client = await accessor.client()
+    client.points[0].payload["label"] = True
+    client.points[1].payload["label"] = 1.0
+    values = await query.distinct_values(accessor, "animals", "label", {}, 100)
+    assert values == ["1", "dog", "true"]
+    assert await query.resolve_group(accessor, "animals", "label", {},
+                                     "true") == ["true"]

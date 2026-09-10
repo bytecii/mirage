@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mirage.core.qdrant.fields import field_value
+from mirage.core.qdrant.payload import field_value
 from mirage.resource.qdrant.config import QdrantConfig
 
 COLLECTION = "animals"
@@ -184,6 +184,19 @@ def slashed() -> FakeAccessor:
     client = FakeQdrantClient()
     client.points[0].payload["label"] = "a/b"
     client.points[1].payload["label"] = "a∕b"
+    client.points = client.points[:2]
+    return FakeAccessor(
+        QdrantConfig(collection=COLLECTION,
+                     group_by=["label"],
+                     text_field="name"), client)
+
+
+@pytest.fixture
+def edged() -> FakeAccessor:
+    """A blank label and a dot-led one, the two a raw rendering loses."""
+    client = FakeQdrantClient()
+    client.points[0].payload["label"] = ""
+    client.points[1].payload["label"] = ".env"
     client.points = client.points[:2]
     return FakeAccessor(
         QdrantConfig(collection=COLLECTION,

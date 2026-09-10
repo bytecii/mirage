@@ -160,3 +160,52 @@ describe('lancedb readdir narrows a capped listing', () => {
     expect(ids(plain)).toEqual(['doc-000', 'doc-001', 'doc-002', 'doc-003', 'doc-004'])
   })
 })
+
+function slashedAccessor(): { accessor: LanceDBAccessor; distinct: ReturnType<typeof vi.fn> } {
+  // The driver stands in for the store and ignores the prefix, so what the
+  // listing keeps is the lister's own doing.
+  const distinct = vi.fn().mockResolvedValue(['a/b', 'a∕b', '', '.env'])
+  const driver = {
+    listTables: vi.fn().mockResolvedValue(['animals']),
+    tableColumns: vi.fn().mockResolvedValue(['id', 'label', 'kind', 'name']),
+    distinct,
+    rowsMatching: vi.fn().mockResolvedValue([ROW]),
+  } as unknown as LanceDriver
+  return { accessor: new LanceDBAccessor(driver, config), distinct }
+}
+
+describe('lancedb group values holding a slash', () => {
+  it('give every value its own directory', async () => {
+    // `a/b` renders as `a∕b` and `a∕b` as `a⁄∕b`, so neither hides the other.
+    const { accessor } = slashedAccessor()
+    const out = await readdir(accessor, spec('/animals'))
+    expect(new Set(out)).toEqual(
+      new Set(['/animals/a∕b', '/animals/a⁄∕b', '/animals/⁄', '/animals/⁄.env']),
+    )
+  })
+
+  it('filter a rendered directory for exactly its own value', async () => {
+    const { accessor, distinct } = slashedAccessor()
+    await readdir(accessor, spec('/animals/a∕b'))
+    expect(distinct.mock.calls[0]?.[2]).toEqual({ label: 'a/b' })
+    await readdir(accessor, spec('/animals/a⁄∕b'))
+    expect(distinct.mock.calls[1]?.[2]).toEqual({ label: 'a∕b' })
+  })
+
+  it('push the decoded value prefix down and keep only the rendered matches', async () => {
+    const { accessor, distinct } = slashedAccessor()
+    const out = await readdir(accessor, globbed('/animals', 'a∕*'))
+    expect(out).toEqual(['/animals/a∕b'])
+    expect(distinct.mock.calls[0]?.[4]).toBe('a/')
+  })
+
+  it('keep a blank and a dot-led value listable and filter for them', async () => {
+    // A blank value rendered as `unknown` and a dot-led one as a hidden
+    // segment; each carries the escape lead and filters for its own value.
+    const { accessor, distinct } = slashedAccessor()
+    await readdir(accessor, spec('/animals/⁄'))
+    expect(distinct.mock.calls[0]?.[2]).toEqual({ label: '' })
+    await readdir(accessor, spec('/animals/⁄.env'))
+    expect(distinct.mock.calls[1]?.[2]).toEqual({ label: '.env' })
+  })
+})

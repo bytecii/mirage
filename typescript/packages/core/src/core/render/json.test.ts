@@ -13,7 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { compactJsonBytes, compactJsonText, jsonBytes, jsonlBytes, jsonText } from './json.ts'
+import {
+  compactJsonBytes,
+  compactJsonText,
+  jsonBytes,
+  jsonlBytes,
+  jsonText,
+  valueText,
+} from './json.ts'
 
 const DEC = new TextDecoder()
 
@@ -71,5 +78,22 @@ describe('json render kit', () => {
 
   it('keeps the given jsonl order', () => {
     expect(DEC.decode(jsonlBytes([{ i: 2 }, { i: 1 }]))).toBe('{"i":2}\n{"i":1}\n')
+  })
+})
+
+describe('valueText', () => {
+  it('spells a value as its JSON does', () => {
+    // A string is itself; anything else is its compact JSON, so a boolean
+    // is `true` in both languages rather than Python's `True`, and an
+    // integral float is the integer this side never told apart.
+    expect(valueText('x')).toBe('x')
+    expect(valueText('True')).toBe('True')
+    expect(valueText(true)).toBe('true')
+    expect(valueText(false)).toBe('false')
+    expect(valueText(7)).toBe('7')
+    expect(valueText(1.0)).toBe('1')
+    expect(valueText(1.5)).toBe('1.5')
+    expect(valueText(null)).toBe('null')
+    expect(valueText({ a: 1.0, b: [true, null] })).toBe('{"a":1,"b":[true,null]}')
   })
 })

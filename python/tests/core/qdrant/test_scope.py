@@ -102,6 +102,8 @@ def test_filters_decode_escaped_group_segments():
     detect = _detect(config)
     assert filters_of(config, detect(_ps("/a∕b"))) == {"label": "a/b"}
     assert filters_of(config, detect(_ps("/a⁄∕b"))) == {"label": "a∕b"}
+    assert filters_of(config, detect(_ps("/⁄"))) == {"label": ""}
+    assert filters_of(config, detect(_ps("/⁄.env"))) == {"label": ".env"}
 
 
 def test_detect_for_caches_per_accessor():

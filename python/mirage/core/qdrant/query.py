@@ -21,7 +21,9 @@ from qdrant_client import models
 from qdrant_client.http.exceptions import UnexpectedResponse
 
 from mirage.accessor.qdrant import QdrantAccessor
-from mirage.core.qdrant.fields import field_value, group_name, row_stem
+from mirage.core.qdrant.naming import group_name, row_stem
+from mirage.core.qdrant.payload import field_value
+from mirage.core.render.json import value_text
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +115,7 @@ def exact_name_test(column: str, name: str, basename: bool,
         value = field_value(point.payload or {}, column)
         if value is None:
             return False
-        raw = str(value)
+        raw = value_text(value)
         if raw in seen or group_name(raw, basename=basename) != name:
             return False
         seen.add(raw)
@@ -209,7 +211,7 @@ async def distinct_values(accessor: QdrantAccessor,
     keep = value_prefix_test(column, prefix, basename) if prefix else None
     points = await _scroll_all(accessor, table, filters, limit, keep)
     values = {
-        str(value)
+        value_text(value)
         for point in points
         if (value := field_value(point.payload or {}, column)) is not None
     }
@@ -243,7 +245,8 @@ async def resolve_group(accessor: QdrantAccessor,
     points = await _scroll_all(accessor, table, filters, 2,
                                exact_name_test(column, name, basename, seen))
     return sorted(
-        str(field_value(point.payload or {}, column)) for point in points)
+        value_text(field_value(point.payload or {}, column))
+        for point in points)
 
 
 async def rows_matching(accessor: QdrantAccessor,

@@ -50,6 +50,11 @@ Every path is translated into a LanceDB query. Descending a folder adds one
       <id>.<ext>                   # raw blob / image bytes
 ```
 
+A group value holding `/` renders as `∕`, a value that already holds `∕` or `⁄`
+has that character prefixed with `⁄`, and a blank value or one that starts with
+`.` is prefixed with `⁄` as well, so every value keeps its own directory that
+lists and opens, and descending into it filters for exactly that value.
+
 When `table` is set the table level is elided, so the mount root is that table:
 
 ```text

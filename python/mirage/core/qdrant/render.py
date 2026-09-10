@@ -15,8 +15,8 @@
 import base64
 from typing import Any
 
-from mirage.core.qdrant.fields import field_value, without_field
-from mirage.core.render.json import compact_json_text
+from mirage.core.qdrant.payload import field_value, without_field
+from mirage.core.render.json import compact_json_text, value_text
 from mirage.resource.qdrant.config import QdrantConfig
 from mirage.types import JsonValue
 
@@ -42,4 +42,4 @@ def render_text(row: dict[str, Any], config: QdrantConfig) -> bytes:
     value = field_value(row, config.text_field)
     if value is None:
         return b""
-    return (str(value) + "\n").encode()
+    return (value_text(value) + "\n").encode()

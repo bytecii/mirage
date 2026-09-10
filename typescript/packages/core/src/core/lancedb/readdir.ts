@@ -19,12 +19,14 @@ import type { LanceDBConfigResolved } from '../../resource/lancedb/config.ts'
 import type { LanceRow } from './_driver.ts'
 import { PathSpec } from '../../types.ts'
 import { perAccessor } from '../hierarchy/bind.ts'
+import { PATH_SAFE } from '../hierarchy/codec.ts'
 import type { ReaddirFn } from '../hierarchy/probe.ts'
 import { makeReaddir, type DirListing, type Listed, type Lister } from '../hierarchy/readdir.ts'
 import { ROOT, type ScopeMatch } from '../hierarchy/scope.ts'
 import { renderCard } from './render.ts'
 import { detectFor, filtersOf, tableOf } from './scope.ts'
 import { globPrefix, globStemPrefix, hasGlobPrefix } from '../../utils/glob_walk.ts'
+import { compareCodePoints } from '../../utils/sort.ts'
 
 const GROUP_TYPE = 'lancedb/group'
 
@@ -86,18 +88,25 @@ async function children(accessor: LanceDBAccessor, match: ScopeMatch): Promise<L
   if (!tables.includes(table)) return null
   const depth = Object.keys(filters).length
   if (depth < config.groupBy.length) {
-    const groupPrefix = globPrefix(pattern)
-    const names = await accessor.driver.distinct(
+    const displayPrefix = globPrefix(pattern)
+    const values = await accessor.driver.distinct(
       table,
       config.groupBy[depth] ?? '',
       filters,
       config.maxRows,
-      groupPrefix,
+      PATH_SAFE.prefixValue(displayPrefix),
     )
+    // Values render path-safe, so a glob's head is spelled in rendered names:
+    // the query took the value prefix the head stands for, and this keeps
+    // only the renderings that really start with it.
+    const names = values
+      .map((value) => PATH_SAFE.encode(value))
+      .filter((name) => name.startsWith(displayPrefix))
+      .sort(compareCodePoints)
     const listing: DirListing = {
       entries: names.map((name): [string, IndexEntry] => [name, dirEntry(name)]),
       seeds: {},
-      partial: groupPrefix !== '',
+      partial: displayPrefix !== '',
     }
     return listing
   }

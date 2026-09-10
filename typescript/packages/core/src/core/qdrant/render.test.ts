@@ -74,3 +74,9 @@ describe('qdrant render', () => {
     })
   })
 })
+
+describe('qdrant renderText spells values as their JSON', () => {
+  it('writes a boolean text field as true, the way python now does', () => {
+    expect(DEC.decode(renderText({ id: 3, name: true }, config))).toBe('true\n')
+  })
+})

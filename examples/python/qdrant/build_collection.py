@@ -32,9 +32,27 @@ _PRODUCTS = [
     ("Women", "Jeans", "Blue", "H&M Women Blue Summer Jeans"),
 ]
 
+# (source document, page, chunk text): LangChain-style points whose
+# lineage lives in a nested ``metadata`` payload.
+_CHUNKS = [
+    ("s3://docs/policies/refund-2026.pdf", "001",
+     "Refund policy. An order may be returned within 30 days of delivery."),
+    ("s3://docs/policies/refund-2026.pdf", "004",
+     "Refunds are processed within 14 days of the return reaching the "
+     "warehouse."),
+    ("s3://docs/hr/leave-policy.pdf", "002",
+     "Employees accrue 1.5 days of paid leave per month of service."),
+]
+
 
 def build_collection(client: QdrantClient,
                      collection: str = "fashion") -> None:
+    """(Re)create a product collection with flat, low-cardinality payloads.
+
+    Args:
+        client (QdrantClient): the client to build with.
+        collection (str): the collection to create, replacing any old one.
+    """
     embedder = TextEmbedding(MODEL)
     names = [name for _, _, _, name in _PRODUCTS]
     vectors = [list(map(float, vector)) for vector in embedder.embed(names)]
@@ -68,3 +86,46 @@ def build_collection(client: QdrantClient,
             field_name=field,
             field_schema=models.PayloadSchemaType.KEYWORD,
         )
+
+
+def build_lineage_collection(client: QdrantClient,
+                             collection: str = "company_docs") -> None:
+    """(Re)create a chunk collection whose payload nests the source document.
+
+    Args:
+        client (QdrantClient): the client to build with.
+        collection (str): the collection to create, replacing any old one.
+    """
+    embedder = TextEmbedding(MODEL)
+    texts = [text for _, _, text in _CHUNKS]
+    vectors = [list(map(float, vector)) for vector in embedder.embed(texts)]
+    if client.collection_exists(collection):
+        client.delete_collection(collection)
+    client.create_collection(
+        collection,
+        vectors_config=models.VectorParams(size=len(vectors[0]),
+                                           distance=models.Distance.COSINE),
+    )
+    client.upsert(
+        collection,
+        points=[
+            models.PointStruct(
+                id=100 + idx,
+                vector=vector,
+                payload={
+                    "page_content": text,
+                    "metadata": {
+                        "source": source,
+                        "page": page
+                    },
+                },
+            ) for idx, ((source, page, text),
+                        vector) in enumerate(zip(_CHUNKS, vectors), start=1)
+        ])
+    # Qdrant spells a nested payload path with a dot, in filters and in
+    # index names alike; the mount config spells it the same way.
+    client.create_payload_index(
+        collection,
+        field_name="metadata.source",
+        field_schema=models.PayloadSchemaType.KEYWORD,
+    )

@@ -33,6 +33,21 @@ export function compactJsonBytes(value: unknown): Uint8Array {
   return ENC.encode(compactJsonText(value))
 }
 
+/**
+ * Spell a payload value as text, the way its `.json` spells it.
+ *
+ * A string is itself; anything else renders as compact JSON, so a boolean
+ * spells `true` in both languages rather than Python's `True`, and an object
+ * or array spells as one JSON literal rather than `[object Object]`. Path
+ * labels and group values are built from this, so one collection grows one
+ * tree.
+ */
+export function valueText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (typeof value === 'bigint') return value.toString()
+  return compactJsonText(value)
+}
+
 // An empty row list renders as empty bytes rather than a lone newline, so an
 // empty .jsonl leaf sizes and reads as a zero-byte file.
 export function jsonlBytes(rows: readonly unknown[]): Uint8Array {

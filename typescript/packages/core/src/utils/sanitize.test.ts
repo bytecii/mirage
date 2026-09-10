@@ -14,7 +14,9 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  ESCAPE_LEAD,
   NAME_MAX_BYTES,
+  SAFE_SLASH,
   byteLength,
   pathSafeName,
   sanitizeLabel,
@@ -146,5 +148,30 @@ describe('sanitizeLabel', () => {
     // where `\w` is unicode-aware -- kept it.
     expect(sanitizeLabel('日本語の文書', { fallback: 'X', maxLen: 100 })).toBe('日本語の文書')
     expect(sanitizeLabel('Café Notes', { fallback: 'X', maxLen: 100 })).toBe('Café_Notes')
+  })
+})
+
+describe('SAFE_SLASH', () => {
+  it('is the one character pathSafeName renders a slash as', () => {
+    // Every backend that renders an API name as a path segment emits it,
+    // and the codec that inverts the rendering imports it from here rather
+    // than copying the literal.
+    expect(SAFE_SLASH).toBe('\u2215')
+    expect(pathSafeName('a/b')).toBe(`a${SAFE_SLASH}b`)
+  })
+})
+
+describe('ESCAPE_LEAD', () => {
+  it('leads a dot-led name so it stays listable and openable', () => {
+    // The hierarchy classifies a dot-led segment as hidden: it is dropped
+    // from every listing and refused as a path. A name that starts with a
+    // dot therefore carries the escape lead, which the segment codec reads
+    // as "the next character is literal".
+    expect(ESCAPE_LEAD).toBe('\u2044')
+    expect(pathSafeName('.env')).toBe(`${ESCAPE_LEAD}.env`)
+    expect(pathSafeName('..')).toBe(`${ESCAPE_LEAD}..`)
+    expect(pathSafeName('./x')).toBe(`${ESCAPE_LEAD}.${SAFE_SLASH}x`)
+    expect(pathSafeName('a.b')).toBe('a.b')
+    expect(pathSafeName(' ')).toBe('unknown')
   })
 })

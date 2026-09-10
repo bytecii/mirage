@@ -63,10 +63,13 @@ For a source value `s3://docs/policies/refund-2026.pdf` and page value `004`,
 the chunk text is exposed as
 `refund-2026.pdf/004__<point-id>.txt`. The point id remains as a stable suffix,
 so duplicate labels cannot collide and direct reads work without a warm cache.
-`basenameFields` strips URL/path parents from the named `groupBy` fields; omit
-a field to preserve its complete value in one path-safe segment: `/` renders as
-`∕`, and a value that already holds `∕` or `⁄` has that character prefixed with
-`⁄`, so no two values share a segment. Basenames must be unique within a parent
+A label that is not a string spells the way the point's `.json` spells it
+(`true`, `1`), the same in TypeScript and Python. `basenameFields` strips
+URL/path parents from the named `groupBy` fields; omit a field to preserve its
+complete value in one path-safe segment: `/` renders as `∕`, a value that
+already holds `∕` or `⁄` has that character prefixed with `⁄`, and a blank value
+or one that starts with `.` is prefixed with `⁄` as well, so every value has its
+own segment that lists and opens. Basenames must be unique within a parent
 group; ambiguous listings are refused, and opening a basename directory checks
 every point of its parent group, so a second source past `maxRows` is refused
 rather than hidden.

@@ -265,3 +265,34 @@ describe('qdrant readdir narrows a capped listing', () => {
     expect(ids(plain)).toEqual(['doc-000', 'doc-001', 'doc-002', 'doc-003', 'doc-004'])
   })
 })
+
+describe('qdrant blank and dot-led group values', () => {
+  const edgedConfig = resolveQdrantConfig({
+    collection: 'animals',
+    groupBy: ['label'],
+    textField: 'name',
+  })
+
+  function edgedAccessor(seen: Record<string, string>[]): QdrantAccessor {
+    return {
+      config: edgedConfig,
+      tableExists: () => Promise.resolve(true),
+      distinct: () => Promise.resolve(['', '.env']),
+      rowsMatching: (_table: string, filters: Record<string, string>) => {
+        seen.push(filters)
+        return Promise.resolve([ROW])
+      },
+    } as unknown as QdrantAccessor
+  }
+
+  it('list with the escape lead and filter for their own value', async () => {
+    // A blank value listed as `unknown` and then filtered for that word; a
+    // dot-led one was dropped as hidden and refused as a path. Both carry
+    // the escape lead, so each lists and filters for its own value.
+    const seen: Record<string, string>[] = []
+    await expect(readdir(edgedAccessor(seen), spec('/'))).resolves.toEqual(['/⁄', '/⁄.env'])
+    await readdir(edgedAccessor(seen), spec('/⁄'))
+    await readdir(edgedAccessor(seen), spec('/⁄.env'))
+    expect(seen).toEqual([{ label: '' }, { label: '.env' }])
+  })
+})

@@ -27,9 +27,11 @@ import {
   type QdrantPoint,
   type QdrantRow,
 } from '../core/qdrant/client.ts'
+import { valueText } from '../core/render/json.ts'
 import type { QdrantConfigResolved } from '../resource/qdrant/config.ts'
 import { compareCodePoints } from '../utils/sort.ts'
-import { fieldValue, rowStem } from '../core/qdrant/fields.ts'
+import { rowStem } from '../core/qdrant/naming.ts'
+import { fieldValue } from '../core/qdrant/payload.ts'
 
 type QdrantClientCtor = new (opts: {
   url?: string
@@ -158,8 +160,7 @@ export class QdrantAccessor extends Accessor {
     const values = new Set<string>()
     for (const point of points) {
       const value = fieldValue(point.payload ?? {}, column)
-      if (value !== null && value !== undefined)
-        values.add(String(value as string | number | boolean))
+      if (value !== null && value !== undefined) values.add(valueText(value))
     }
     return [...values].sort(compareCodePoints)
   }
@@ -185,7 +186,7 @@ export class QdrantAccessor extends Accessor {
     const keep = exactNameTest(column, name, basename, seen)
     const points = await this.scrollFiltered(table, filters, 2, keep)
     return points
-      .map((point) => String(fieldValue(point.payload ?? {}, column) as string | number | boolean))
+      .map((point) => valueText(fieldValue(point.payload ?? {}, column)))
       .sort(compareCodePoints)
   }
 

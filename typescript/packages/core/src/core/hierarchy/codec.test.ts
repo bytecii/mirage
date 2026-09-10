@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { DATE, INT_JSON, JSON_NAME, JSONL_NAME, RAW, asciiDigits } from './codec.ts'
+import { DATE, INT_JSON, JSON_NAME, JSONL_NAME, PATH_SAFE, RAW, asciiDigits } from './codec.ts'
 
 describe('hierarchy codec', () => {
   it('RAW takes any nonempty segment', () => {
@@ -61,5 +61,59 @@ describe('DATE', () => {
     expect(DATE.decode('2024-1-15')).toBeNull()
     expect(DATE.decode('notadate')).toBeNull()
     expect(DATE.decode('2024-01-15x')).toBeNull()
+  })
+})
+
+describe('PATH_SAFE', () => {
+  it('gives every value its own segment and decodes it back', () => {
+    // `/` renders as `∕`; a value already holding `∕` or `⁄` has that
+    // character escaped, so `a/b` and `a∕b` cannot name one directory and
+    // the decode recovers exactly the value that was rendered.
+    expect(PATH_SAFE.encode('a/b')).toBe('a∕b')
+    expect(PATH_SAFE.encode('a∕b')).toBe('a⁄∕b')
+    expect(PATH_SAFE.encode('a⁄b')).toBe('a⁄⁄b')
+    for (const raw of ['plain', 'a/b', 'a∕b', 'a⁄b', '/∕⁄/', '⁄∕']) {
+      expect(PATH_SAFE.decode(PATH_SAFE.encode(raw))).toBe(raw)
+    }
+    expect(new Set(['a/b', 'a∕b', 'a⁄∕b'].map((raw) => PATH_SAFE.encode(raw))).size).toBe(3)
+  })
+
+  it('keeps blank and dot-led values addressable', () => {
+    // A blank value would render as `unknown` and a dot-led one as a hidden
+    // segment, and neither could then be listed and opened as the value it
+    // stands for. Both carry the escape lead instead: an empty value is the
+    // lone lead, and the decode reads a lead with nothing after it as
+    // escaping nothing.
+    expect(PATH_SAFE.encode('')).toBe('⁄')
+    expect(PATH_SAFE.encode(' ')).toBe('⁄ ')
+    expect(PATH_SAFE.encode('.env')).toBe('⁄.env')
+    expect(PATH_SAFE.encode('..')).toBe('⁄..')
+    expect(PATH_SAFE.encode('unknown')).toBe('unknown')
+    const edges = ['', ' ', '  ', '.', '..', '.env', './x', '.⁄', '⁄.x', 'unknown']
+    for (const raw of edges) {
+      expect(PATH_SAFE.decode(PATH_SAFE.encode(raw))).toBe(raw)
+      expect(PATH_SAFE.encode(raw).startsWith('.')).toBe(false)
+    }
+    expect(new Set(edges.map((raw) => PATH_SAFE.encode(raw))).size).toBe(edges.length)
+    expect(PATH_SAFE.decode('⁄')).toBe('')
+    expect(PATH_SAFE.decode('a⁄')).toBe('a')
+    expect(PATH_SAFE.decode('')).toBeNull()
+    expect(RAW.encode('a/b')).toBe('a/b')
+  })
+
+  it('prefixValue is what a rendered prefix implies about the value', () => {
+    // A backend that pushes a glob's literal head into a query needs the
+    // VALUE prefix that rendered head stands for. A head cut inside an
+    // escape pair drops the dangling lead, so the pushdown stays a sound
+    // over-approximation the rendered-name filter then tightens.
+    expect(PATH_SAFE.prefixValue('doc-03')).toBe('doc-03')
+    expect(PATH_SAFE.prefixValue('a∕')).toBe('a/')
+    expect(PATH_SAFE.prefixValue('a⁄∕')).toBe('a∕')
+    expect(PATH_SAFE.prefixValue('a⁄')).toBe('a')
+    expect(PATH_SAFE.prefixValue('a⁄⁄')).toBe('a⁄')
+    expect(PATH_SAFE.prefixValue('')).toBe('')
+    expect(PATH_SAFE.prefixValue('⁄')).toBe('')
+    expect(PATH_SAFE.prefixValue('⁄.e')).toBe('.e')
+    expect(RAW.prefixValue('a∕')).toBe('a∕')
   })
 })

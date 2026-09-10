@@ -12,7 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { fieldValue, groupName } from './fields.ts'
+import { valueText } from '../render/json.ts'
+import { groupName } from './naming.ts'
+import { fieldValue } from './payload.ts'
 
 export type QdrantRow = Record<string, unknown>
 
@@ -66,7 +68,7 @@ export function exactNameTest(
   return (point) => {
     const value = fieldValue(point.payload ?? {}, column)
     if (value === null || value === undefined) return false
-    const raw = String(value as string | number | boolean | bigint)
+    const raw = valueText(value)
     if (seen.has(raw) || groupName(raw, basename) !== name) return false
     seen.add(raw)
     return true

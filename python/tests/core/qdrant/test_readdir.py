@@ -139,6 +139,16 @@ async def test_a_value_holding_the_division_slash_keeps_its_own_directory(
 
 
 @pytest.mark.asyncio
+async def test_blank_and_dot_led_values_list_and_open(edged):
+    # A blank value listed as ``unknown`` and then filtered for that word;
+    # a dot-led one was dropped as hidden and refused as a path. Both carry
+    # the escape lead, so each lists and filters for its own value.
+    assert _names(await readdir(edged, _ps("/"))) == {"⁄", "⁄.env"}
+    assert _ids(await readdir(edged, _ps("/⁄"))) == {"1"}
+    assert _ids(await readdir(edged, _ps("/⁄.env"))) == {"2"}
+
+
+@pytest.mark.asyncio
 async def test_a_basename_collision_past_the_cap_is_refused(
         basename_collision_capped):
     # The capped listing sees one source. Opening the directory must not

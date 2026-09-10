@@ -22,7 +22,8 @@ from mirage.core.hierarchy.probe import ReaddirFn
 from mirage.core.hierarchy.readdir import (DirListing, Listed, Lister,
                                            make_readdir)
 from mirage.core.hierarchy.scope import ROOT, ScopeMatch
-from mirage.core.qdrant.fields import field_value, group_name, row_stem
+from mirage.core.qdrant.naming import group_name, row_stem
+from mirage.core.qdrant.payload import field_value
 from mirage.core.qdrant.query import (distinct_values, list_tables,
                                       resolve_group, rows_matching,
                                       table_exists)
