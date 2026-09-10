@@ -13,8 +13,18 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { coerceRuntimeConfig, type RuntimeConfig } from './config.ts'
+import type { WorkspaceBinding } from './binding.ts'
+import { UnsupportedExecutionError } from './errors.ts'
+import { isEvaluator, isLineExecutor } from './mixin.ts'
 import { ScriptSource, type RouteScript } from './routing/types.ts'
-import type { RuntimeOptions, RuntimeReach } from './types.ts'
+import type {
+  ExecutionRequest,
+  RuntimeCapabilities,
+  RuntimeContext,
+  RunResult,
+  RuntimeOptions,
+  RuntimeReach,
+} from './types.ts'
 
 /**
  * An engine the workspace can route commands or whole lines to.
@@ -58,6 +68,7 @@ export abstract class Runtime {
   /** The runtime's coerced implementation knobs. */
   config: RuntimeConfig
   script?: RouteScript
+  private binding: WorkspaceBinding | null = null
 
   constructor(
     options: RuntimeOptions<RuntimeConfig> = {},
@@ -71,6 +82,49 @@ export abstract class Runtime {
     if (typeof options.script === 'function' || options.script instanceof ScriptSource) {
       this.script = options.script
     }
+  }
+
+  get capabilities(): RuntimeCapabilities {
+    return {
+      languages: [],
+      shell: isLineExecutor(this),
+      process: false,
+      evaluate: isEvaluator(this),
+      reach: this.reach,
+    }
+  }
+
+  /** Attach workspace services; a runtime instance belongs to one workspace. */
+  bind(binding: WorkspaceBinding): void {
+    if (this.binding !== null && this.binding !== binding)
+      throw new Error(`${this.name}: runtime is already bound to another workspace`)
+    this.binding = binding
+  }
+
+  /** Engine entry point; Workspace.execute still owns shell admission and routing. */
+  async execute(request: ExecutionRequest, context?: RuntimeContext): Promise<RunResult> {
+    const current = context ?? this.binding?.capture()
+    if (current !== undefined) {
+      if (current.binding !== this.binding)
+        throw new Error(`${this.name}: context belongs to another binding`)
+      return current.scope.run(() => this.executeRequest(request, current))
+    }
+    return this.executeRequest(request)
+  }
+
+  protected async executeRequest(
+    request: ExecutionRequest,
+    _context?: RuntimeContext,
+  ): Promise<RunResult> {
+    if (request.kind === 'shell' && isLineExecutor(this))
+      return this.runLine(
+        request.line,
+        request.stdin,
+        request.env,
+        request.cwd.virtual,
+        request.signal,
+      )
+    throw new UnsupportedExecutionError(`${this.name}: ${request.kind} execution is unsupported`)
   }
 
   /** Release engine resources. Default: nothing held. */

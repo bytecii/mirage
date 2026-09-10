@@ -16,8 +16,13 @@ from abc import ABC
 from collections.abc import Sequence
 from typing import Any, Callable, ClassVar
 
+from mirage.runtime.binding import WorkspaceBinding
 from mirage.runtime.config import RuntimeConfig
-from mirage.runtime.types import RuntimeReach, ScriptSource
+from mirage.runtime.errors import UnsupportedExecutionError
+from mirage.runtime.mixin import EvaluatorMixin, LineExecutorMixin
+from mirage.runtime.types import (ExecutionRequest, RunResult,
+                                  RuntimeCapabilities, RuntimeContext,
+                                  RuntimeReach, ScriptSource, ShellExecution)
 
 
 class Runtime(ABC):
@@ -60,6 +65,7 @@ class Runtime(ABC):
     # loud, so runtimes need no per-field rejection code.
     config_cls: ClassVar[type[RuntimeConfig]] = RuntimeConfig
     config: RuntimeConfig = RuntimeConfig()
+    _binding: WorkspaceBinding | None = None
 
     def __init__(
             self,
@@ -85,6 +91,46 @@ class Runtime(ABC):
             self.captures = tuple(captures)
         self.config = self.config_cls.coerce(config)
         self.script = script
+
+    @property
+    def capabilities(self) -> RuntimeCapabilities:
+        return RuntimeCapabilities(shell=isinstance(self, LineExecutorMixin),
+                                   evaluate=isinstance(self, EvaluatorMixin),
+                                   reach=self.reach)
+
+    def bind(self, binding: WorkspaceBinding) -> None:
+        """Bind this instance to one workspace."""
+        if self._binding is not None and self._binding is not binding:
+            raise ValueError(
+                f"{self.name}: runtime is already bound to another workspace")
+        self._binding = binding
+
+    async def execute(self,
+                      request: ExecutionRequest,
+                      context: RuntimeContext | None = None) -> RunResult:
+        """Execute directly, or under the bound workspace's captured context.
+
+        This is the engine door. Workspace.execute remains the shell admission
+        and routing door, as it was for callers of run and run_line.
+        """
+        if context is None and self._binding is not None:
+            context = self._binding.capture()
+        if context is not None:
+            if context.binding is not self._binding:
+                raise ValueError(
+                    f"{self.name}: context belongs to another binding")
+            return await context.scope.run(
+                lambda: self._execute(request, context))
+        return await self._execute(request, None)
+
+    async def _execute(self, request: ExecutionRequest,
+                       context: RuntimeContext | None) -> RunResult:
+        if isinstance(request, ShellExecution) and isinstance(
+                self, LineExecutorMixin):
+            return await self.run_line(request.line, request.stdin,
+                                       request.env, request.cwd.virtual)
+        raise UnsupportedExecutionError(
+            f"{self.name}: {request.kind} execution is unsupported")
 
     async def close(self) -> None:
         """Release engine resources. Default: nothing held."""

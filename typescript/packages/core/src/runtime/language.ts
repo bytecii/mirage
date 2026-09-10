@@ -13,8 +13,18 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { Runtime } from './base.ts'
+import type { WorkspaceBinding } from './binding.ts'
+import { UnsupportedExecutionError } from './errors.ts'
 import type { MountResolver } from './resolver.ts'
-import type { BridgeDispatchFn, RunArgs, RunResult, RuntimeLanguage } from './types.ts'
+import type {
+  BridgeDispatchFn,
+  ExecutionRequest,
+  RunArgs,
+  RunResult,
+  RuntimeLanguage,
+  RuntimeCapabilities,
+  RuntimeContext,
+} from './types.ts'
 
 /**
  * A runtime that interprets one language's code inside a command.
@@ -37,17 +47,37 @@ import type { BridgeDispatchFn, RunArgs, RunResult, RuntimeLanguage } from './ty
  * dispatch attached here, while a host subprocess only sees the host
  * filesystem and keeps the default no-op attach.
  *
- * The doors are the data plane (dispatch) and the name plane
- * (resolver), and the list is complete on purpose: there is no
- * session door. A guest reads the frozen `RunArgs.env` snapshot; an
- * env write lands on the guest's own copy and dies with the run,
- * never reaching the live session, so guest code can neither trip nor
- * bypass a `preSession` rule. That blindness is a security boundary,
- * not a gap — a runtime that ever needs session state must take a
- * gated `SessionView`, never a bare session reference.
+ * A host adapter receives data, namespace and gated session views through
+ * WorkspaceBinding and its per-execution RuntimeContext. Existing engines
+ * use attach for their filesystem bridge. Guests receive only RunArgs.env,
+ * a copy whose writes do not mutate the Mirage session; the adapter must
+ * explicitly use the gated SessionView for any intended session write.
  */
 export abstract class LanguageRuntime extends Runtime {
   abstract readonly language: RuntimeLanguage
+
+  override get capabilities(): RuntimeCapabilities {
+    return { ...super.capabilities, languages: [this.language] }
+  }
+
+  override bind(binding: WorkspaceBinding): void {
+    super.bind(binding)
+    this.attach(binding.dispatch, binding.resolver)
+  }
+
+  protected override async executeRequest(
+    request: ExecutionRequest,
+    context?: RuntimeContext,
+  ): Promise<RunResult> {
+    if (request.kind === 'code') {
+      if (request.language !== this.language)
+        throw new UnsupportedExecutionError(
+          `${this.name}: ${request.language} execution is unsupported`,
+        )
+      return this.run(request)
+    }
+    return super.executeRequest(request, context)
+  }
 
   /** Report the bound interpreter's version. */
   version(

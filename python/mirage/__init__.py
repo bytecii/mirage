@@ -55,13 +55,18 @@ from mirage.resource.registry import (build_resource, known_resources,
                                       register_resource)
 from mirage.runtime.base import Runtime
 from mirage.runtime.config import RuntimeConfig
+from mirage.runtime.binding import WorkspaceBinding
+from mirage.runtime.errors import UnsupportedExecutionError
 from mirage.runtime.language import LanguageRuntime
 from mirage.runtime.mixin import EvaluatorMixin, LineExecutorMixin
 from mirage.runtime.routing import DenyResult, RouteContext, RouteResult
 from mirage.runtime.sandbox import RemoteSandbox, SandboxConfig
 from mirage.runtime.table import (build_runtime, known_runtimes,
                                   register_runtime)
-from mirage.runtime.types import RunArgs, RunResult
+from mirage.runtime.types import (RunArgs, RunResult, CodeExecution,
+                                  ShellExecution, ProcessExecution,
+                                  ExecutionRequest, RuntimeContext,
+                                  RuntimeCapabilities)
 from mirage.secrets.registry import known_sources, register_secrets
 from mirage.types import (ContentType, DriftPolicy, FileType, Limit, PathSpec,
                           ResourceName)
@@ -130,6 +135,14 @@ __all__ = [
     "ResourceName",
     "RouteContext",
     "RouteResult",
+    "CodeExecution",
+    "ShellExecution",
+    "ProcessExecution",
+    "ExecutionRequest",
+    "RuntimeContext",
+    "RuntimeCapabilities",
+    "WorkspaceBinding",
+    "UnsupportedExecutionError",
     "RunArgs",
     "RunResult",
     "Runtime",

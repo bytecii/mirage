@@ -892,17 +892,15 @@ describe('monty unavailable', () => {
   it('handlePython maps MontyUnavailableError to exit 127', async () => {
     const { handlePython } = await import('../../../workspace/executor/python/handle.ts')
     const { MontyUnavailableError } = await import('./index.ts')
-    const runtime = {
-      name: 'monty',
-      captures: ['python3', 'python'],
-      language: 'python' as const,
-      reach: 'vfs' as const,
-      config: {},
-      attach: () => undefined,
-      run: () => Promise.reject(new MontyUnavailableError('install @pydantic/monty')),
-      version: () => Promise.reject(new MontyUnavailableError('install @pydantic/monty')),
-      close: () => Promise.resolve(),
+    class UnavailableMonty extends MontyRuntime {
+      override run(): Promise<never> {
+        return Promise.reject(new MontyUnavailableError('install @pydantic/monty'))
+      }
+      override version(): Promise<never> {
+        return this.run()
+      }
     }
+    const runtime = new UnavailableMonty()
     const dispatch = (() => Promise.reject(new Error('unused'))) as never
     const [, io] = await handlePython(
       dispatch,

@@ -136,7 +136,9 @@ export function makeInterpreterHandler(spec: InterpreterSpec): InterpreterHandle
     try {
       const refusal = opts.refuse?.(deps.runtime) ?? null
       if (refusal !== null) return errorResult(cmdStr, refusal, 1)
-      const result = await deps.runtime.run({
+      const result = await deps.runtime.execute({
+        kind: 'code',
+        language: deps.runtime.language,
         code,
         args,
         env: opts.env,

@@ -39,7 +39,7 @@ from mirage.policy import resolve_limit
 from mirage.runtime.base import Runtime
 from mirage.runtime.language import LanguageRuntime
 from mirage.runtime.routing import runtime_for_language
-from mirage.runtime.types import DispatchFn, RunArgs, ScriptSource
+from mirage.runtime.types import CodeExecution, DispatchFn, ScriptSource
 from mirage.types import PathSpec, Producer, word_text
 from mirage.workspace.cli.types import CLIInstall
 from mirage.workspace.executor.command.flags import option_error, parse_flags
@@ -145,7 +145,7 @@ def _select_runtime(
 async def _script_output(inv: CLIInvocation[Any], script: ScriptSource,
                          runtime: LanguageRuntime, prog: str,
                          cwd: PathSpec) -> CommandOutput:
-    """Render the invocation onto the selected runtime as one RunArgs.
+    """Render the invocation onto the selected runtime as one CodeExecution.
 
     The script tier's whole contract, the one a native binary could
     also honor: the program is named (argv slot 0, so its own messages
@@ -169,15 +169,16 @@ async def _script_output(inv: CLIInvocation[Any], script: ScriptSource,
     # A .mjs source needs the engine's module mode, the same bit the
     # js command derives from the operand's extension.
     flags = {"module": True} if script.module else {}
-    result = await runtime.run(
-        RunArgs(code=script.source,
-                args=list(inv.argv),
-                prog=prog,
-                script_cli=True,
-                cwd=cwd,
-                env=env,
-                stdin=stdin,
-                flags=flags))
+    result = await runtime.execute(
+        CodeExecution(language=runtime.language,
+                      code=script.source,
+                      args=list(inv.argv),
+                      prog=prog,
+                      script_cli=True,
+                      cwd=cwd,
+                      env=env,
+                      stdin=stdin,
+                      flags=flags))
     return run_output(result)
 
 

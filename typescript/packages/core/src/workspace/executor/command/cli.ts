@@ -136,7 +136,9 @@ async function scriptOutput(
   const stdin = inv.stdin !== null ? await materialize(inv.stdin) : null
   // A .mjs source needs the engine's module mode, the same bit the js
   // command derives from the operand's extension.
-  const result = await runtime.run({
+  const result = await runtime.execute({
+    kind: 'code',
+    language: runtime.language,
     code: script.source,
     args: [...inv.argv],
     prog,

@@ -21,7 +21,8 @@ from mirage.io.types import ByteSource, CommandOutput, IOResult
 from mirage.runtime.base import Runtime
 from mirage.runtime.language import LanguageRuntime
 from mirage.runtime.python.base import PythonRuntime
-from mirage.runtime.types import DispatchFn, ExecPathFn, RunArgs, RunResult
+from mirage.runtime.types import (CodeExecution, DispatchFn, ExecPathFn,
+                                  RunResult)
 from mirage.types import PathSpec
 
 
@@ -351,12 +352,13 @@ async def run_code(
         err = (f"{label}: -m is not supported by the {runtime.name!r} "
                f"runtime\n").encode()
         return None, IOResult(exit_code=1, stderr=err)
-    result = await runtime.run(
-        RunArgs(code=prepared.code,
-                args=prepared.args,
-                prog=prepared.argv0,
-                env=env or {},
-                stdin=prepared.stdin,
-                flags=flags,
-                cwd=cwd))
+    result = await runtime.execute(
+        CodeExecution(language=runtime.language,
+                      code=prepared.code,
+                      args=prepared.args,
+                      prog=prepared.argv0,
+                      env=env or {},
+                      stdin=prepared.stdin,
+                      flags=flags,
+                      cwd=cwd))
     return run_output(result)

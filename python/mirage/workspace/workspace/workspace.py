@@ -24,6 +24,8 @@ from mirage.cache.file.mixin import FileCacheMixin
 from mirage.cache.index import IndexConfig
 from mirage.commands.cli import CLISpec
 from mirage.commands.cli.specs import cli_spec_for
+from mirage.context import (get_current_session_for, reset_current_session,
+                            set_current_session)
 from mirage.io import IOResult
 from mirage.io.types import ByteSource
 from mirage.observe.observer import Observer
@@ -37,8 +39,10 @@ from mirage.provision import ProvisionResult
 from mirage.resource.base import BaseResource
 from mirage.resource.history import HISTORY_PREFIX, HistoryViewResource
 from mirage.runtime.base import Runtime
+from mirage.runtime.binding import WorkspaceBinding, capture_binding
 from mirage.runtime.resolver import PrefixResolver
 from mirage.runtime.routing import RouteDecision, RoutePolicy
+from mirage.runtime.types import RuntimeContext
 from mirage.secrets.config import EnvVar, SecretSource
 from mirage.secrets.errors import SecretsError
 from mirage.secrets.registry import source_for
@@ -62,6 +66,7 @@ from mirage.workspace.session.constants import DEFAULT_PROFILE
 from mirage.workspace.session.resolve import (apply_profile, compile_profile,
                                               resolve_profile, with_inline)
 from mirage.workspace.session.session import vars_from_entries
+from mirage.workspace.session.state import env_snapshot, session_view
 from mirage.workspace.session.validate import check_cli_verbs
 from mirage.workspace.snapshot import (DriftQueue, apply_state_dict,
                                        build_mount_args, install_fingerprints,
@@ -295,8 +300,11 @@ class Workspace:
         self._original_os_names: dict[str, Callable[..., Any]] | None = None
         self._vfs_loop: asyncio.AbstractEventLoop | None = None
 
+        self._runtime_binding = WorkspaceBinding(
+            self.dispatch, self._sandbox_resolver,
+            lambda _binding: self.runtime_context())
         self._runtimes, self._router = wire_runtime_world(
-            self._registry, self.dispatch, self._sandbox_resolver, runtimes)
+            self._registry, self._runtime_binding, runtimes)
         reject_config_script("route_policy", route_policy)
         self._route_policy = route_policy
 
@@ -622,6 +630,29 @@ class Workspace:
                 continue
             prefixes.append(entry.prefix)
         return prefixes
+
+    def runtime_context(self, session_id: str | None = None) -> RuntimeContext:
+        """Capture local workspace doors for an adapter, scoped to one session.
+
+        With no id, use this workspace's active session or its default.
+        Calling a runtime directly remains a host API, outside shell admission.
+        """
+        from mirage.workspace.executor.command.run import namespace_view_of
+
+        session = (self._session_mgr.get(session_id) if session_id is not None
+                   else get_current_session_for(self._session_mgr)
+                   or self._session_mgr.get(self._session_mgr.default_id))
+        token = set_current_session(session, self._session_mgr)
+        try:
+            return capture_binding(
+                self._runtime_binding,
+                ns=namespace_view_of(self._registry, self._namespace,
+                                     self.dispatch),
+                session_view=session_view(session, self.policies),
+                cwd=PathSpec.from_str_path(session.cwd),
+                env=env_snapshot(session))
+        finally:
+            reset_current_session(token)
 
     def add_runtime(self, runtime: Runtime | str) -> Runtime:
         """Append a runtime entry to the workspace's ordered set.

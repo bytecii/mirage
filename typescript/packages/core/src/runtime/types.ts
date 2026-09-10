@@ -16,6 +16,10 @@ import type { IOResult, OpReport } from '../io/types.ts'
 import type { PathSpec, SetAttrFields } from '../types.ts'
 import type { RuntimeConfig } from './config.ts'
 import type { RouteScript } from './routing/types.ts'
+import type { NamespaceView, SessionView } from '../ops/types.ts'
+import type { WorkspaceBinding } from './binding.ts'
+import type { MountResolver } from './resolver.ts'
+import type { ContextScope } from '../utils/context_scope.ts'
 
 /**
  * The languages a runtime can interpret, one name for both doors (run
@@ -161,6 +165,55 @@ export interface RunResult {
   /** Captured standard error, null when empty (mirrors Python). */
   stderr: Uint8Array | null
   exitCode: number
+}
+
+/** Language-explicit execution; interpreter switches remain in RunArgs. */
+export interface CodeExecution extends RunArgs {
+  kind: 'code'
+  language: RuntimeLanguage
+}
+
+/** A whole shell line interpreted entirely by the selected runtime. */
+export interface ShellExecution {
+  kind: 'shell'
+  line: string
+  cwd: PathSpec
+  env: Record<string, string>
+  stdin: Uint8Array | null
+  signal?: AbortSignal
+}
+
+/** Current providers refuse argv requests until they implement this capability. */
+export interface ProcessExecution {
+  kind: 'process'
+  argv: readonly [string, ...string[]]
+  cwd: PathSpec
+  env: Record<string, string>
+  stdin: Uint8Array | null
+  signal?: AbortSignal
+}
+
+export type ExecutionRequest = CodeExecution | ShellExecution | ProcessExecution
+
+/** Derived execution support; reach remains a separate guarantee. */
+export interface RuntimeCapabilities {
+  readonly languages: readonly RuntimeLanguage[]
+  readonly shell: boolean
+  readonly process: boolean
+  readonly evaluate: boolean
+  readonly reach: RuntimeReach
+}
+
+/** Local workspace doors captured for one execution, never guest globals. */
+export interface RuntimeContext {
+  readonly binding: WorkspaceBinding
+  readonly dispatch: BridgeDispatchFn
+  readonly resolver: MountResolver
+  readonly ns: NamespaceView
+  readonly sessionView: SessionView | null
+  readonly cwd: PathSpec
+  readonly env: Readonly<Record<string, string>>
+  readonly scope: ContextScope
 }
 
 /**
