@@ -39,7 +39,7 @@ type ReadRange = (p: PathSpec, offset: number, size: number) => Promise<Uint8Arr
 const DEFAULT_SLEEP_INTERVAL = 1
 
 /** -f/--follow[=HOW], -F, --retry and -s as tail reads them. */
-interface FollowFlags {
+export interface FollowFlags {
   readonly follow: boolean
   readonly byName: boolean
   readonly retry: boolean
@@ -50,7 +50,7 @@ interface FollowFlags {
 // --follow=name --retry. The mode is whichever of -f/--follow and -F came
 // last, GNU's own order (`-F --follow=descriptor` follows the descriptor),
 // while -F's --retry half stays on either way.
-function followFlags(fl: FlagView): FollowFlags | string {
+export function followFlags(fl: FlagView): FollowFlags | string {
   const raw: unknown = fl.raw('follow')
   if (typeof raw === 'string' && raw !== 'name' && raw !== 'descriptor') {
     return (
