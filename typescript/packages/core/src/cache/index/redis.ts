@@ -19,10 +19,10 @@ import { underPath } from '../../utils/key_prefix.ts'
 import { loadOptionalPeer } from '../../utils/optional_peer.ts'
 import { rstripSlash } from '../../utils/slash.ts'
 import {
+  IndexDirectorySchema,
   IndexEntry,
   LookupStatus,
   type IndexDirectory,
-  type IndexEntryInit,
   type ListResult,
   type LookupResult,
 } from './config.ts'
@@ -194,7 +194,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
         const pipe = c.multi()
         for (const seed of pending) {
           for (const [path, entry] of seed.entries) {
-            pipe.set(this.entryKey(path), JSON.stringify(this.serialize(entry)))
+            pipe.set(this.entryKey(path), JSON.stringify(entry))
           }
           for (const [path, keys] of seed.children) {
             const listing: IndexDirectory = {
@@ -218,11 +218,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     for await (const batch of c.scanIterator({ MATCH: `${globEscape(this.entryPrefix)}*` })) {
       for (const key of Array.isArray(batch) ? batch : [batch]) {
         const raw = await c.get(key)
-        if (raw !== null)
-          entries.set(
-            key.slice(this.entryPrefix.length),
-            new IndexEntry(JSON.parse(raw) as IndexEntryInit),
-          )
+        if (raw !== null) entries.set(key.slice(this.entryPrefix.length), IndexEntry.fromJSON(raw))
       }
     }
     return entries
@@ -233,8 +229,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     const c = await this.client()
     const raw = await c.get(this.entryKey(resourcePath))
     if (raw === null) return { status: LookupStatus.NOT_FOUND }
-    const parsed = JSON.parse(raw) as IndexEntryInit
-    return { entry: new IndexEntry(parsed) }
+    return { entry: IndexEntry.fromJSON(raw) }
   }
 
   async put(resourcePath: string, entry: IndexEntry): Promise<void> {
@@ -242,7 +237,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     const c = await this.client()
     const stored =
       entry.indexTime === '' ? entry.copyWith({ indexTime: toIsoZ(new Date()) }) : entry
-    await c.set(this.entryKey(resourcePath), JSON.stringify(this.serialize(stored)))
+    await c.set(this.entryKey(resourcePath), JSON.stringify(stored))
   }
 
   async listDir(resourcePath: string): Promise<ListResult> {
@@ -254,7 +249,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
       `${this.generationKey}:${resourcePath}`,
     ])
     if (raw == null) return { status: LookupStatus.NOT_FOUND }
-    const listing = JSON.parse(raw) as IndexDirectory
+    const listing = IndexDirectorySchema.parse(JSON.parse(raw))
     if (
       current == null ||
       directory == null ||
@@ -282,7 +277,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     for (const [name, entry] of entries) {
       const fullPath = prefix + name
       const stored = entry.indexTime === '' ? entry.copyWith({ indexTime: nowIso }) : entry
-      pipe.set(this.entryKey(fullPath), JSON.stringify(this.serialize(stored)))
+      pipe.set(this.entryKey(fullPath), JSON.stringify(stored))
       childKeys.push(fullPath)
     }
     const listing: IndexDirectory = {
@@ -298,7 +293,7 @@ export class RedisIndexCacheStore extends IndexCacheStore {
     await this.flushSeed()
     const c = await this.client()
     const raw = await c.get(this.childrenKey(resourcePath))
-    const childPaths = raw === null ? [] : (JSON.parse(raw) as IndexDirectory).entries
+    const childPaths = raw === null ? [] : IndexDirectorySchema.parse(JSON.parse(raw)).entries
     const pipe = c.multi()
     for (const child of childPaths) {
       pipe.del(this.entryKey(child))
@@ -358,18 +353,5 @@ export class RedisIndexCacheStore extends IndexCacheStore {
       this.clientPromise = null
     }
     this.closed = true
-  }
-
-  private serialize(e: IndexEntry): Record<string, unknown> {
-    return {
-      id: e.id,
-      name: e.name,
-      resourceType: e.resourceType,
-      remoteTime: e.remoteTime,
-      indexTime: e.indexTime,
-      vfsName: e.vfsName,
-      size: e.size,
-      extra: e.extra,
-    }
   }
 }

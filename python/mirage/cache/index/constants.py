@@ -12,9 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-# Entries and listings must go cold together when the cache format changes.
-ENTRY_PREFIX = "mirage:idx:entry:v2:"
-CHILDREN_PREFIX = "mirage:idx:directory:v2:"
+# One payload layout, shared by both languages and never versioned: a row
+# is the JSON IndexEntry / IndexDirectory writes, and a row that does not
+# parse is an error, not a miss. Earlier layouts are not read; flush the key
+# prefix when upgrading workers that share an index.
+ENTRY_PREFIX = "mirage:idx:entry:"
+CHILDREN_PREFIX = "mirage:idx:directory:"
 
-# Invalidation tokens are shared across payload formats. Keep this key stable.
-GENERATION_KEY = "mirage:idx:children:!generation"
+GENERATION_KEY = "mirage:idx:generation"
