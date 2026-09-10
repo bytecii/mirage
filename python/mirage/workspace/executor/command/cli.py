@@ -358,6 +358,10 @@ async def handle_cli(
                         env=env_snapshot(session),
                         doors=doors)
 
+    # asyncio's timeout cancels the runtime task as well as the caller;
+    # TypeScript forwards an explicit deadline and abort signal instead.
+    limit = resolve_limit(prog, command_default=leaf.limit)
+    timeout = limit.timeout_seconds if limit is not None else None
     if leaf.script is not None:
         runtime, refused = _select_runtime(prog, leaf, entries or [])
         if runtime is None:
@@ -383,8 +387,6 @@ async def handle_cli(
     # streams, exactly like mount dispatch: without the wrap a blocking
     # leaf hangs forever and an unbounded-output leaf ignores its own
     # limits.
-    limit = resolve_limit(prog, command_default=leaf.limit)
-    timeout = limit.timeout_seconds if limit is not None else None
     try:
         out = await run_with_timeout(body, timeout, prog)
     except UsageError as exc:

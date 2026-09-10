@@ -126,6 +126,8 @@ async function scriptOutput(
   runtime: LanguageRuntime,
   prog: string,
   cwd: PathSpec,
+  timeout: number | null,
+  signal: AbortSignal,
 ): Promise<[Uint8Array | null, IOResult]> {
   const env: Record<string, string> = { ...inv.env }
   if (inv.config !== null && inv.config !== undefined) {
@@ -142,6 +144,8 @@ async function scriptOutput(
     cwd,
     env,
     stdin,
+    signal,
+    ...(timeout !== null && timeout > 0 ? { timeoutSeconds: timeout } : {}),
     ...(script.module ? { flags: { module: true } } : {}),
   })
   return runOutput(result)
@@ -289,6 +293,12 @@ export async function handleCli(
     ...(Object.keys(doors).length > 0 ? { doors } : {}),
   }
 
+  // The outer timer bounds the whole invocation; the runtime deadline
+  // also interrupts engines that block their event loop. Unlike Python's
+  // asyncio cancellation, racing a promise does not stop its work.
+  const limit = resolveLimit(prog, [], leaf.limit)
+  const timeout = limit?.timeoutSeconds ?? null
+  const abort = new AbortController()
   let body: Promise<[ByteSource | null, IOResult] | null>
   if (leaf.script !== null) {
     const [runtime, refused] = selectRuntime(prog, leaf, context.entries ?? [])
@@ -302,7 +312,15 @@ export async function handleCli(
         new ExecutionNode({ command: cmdStr, exitCode: 127, stderr }),
       ]
     }
-    body = scriptOutput(inv, leaf.script, runtime, prog, PathSpec.fromStrPath(session.cwd))
+    body = scriptOutput(
+      inv,
+      leaf.script,
+      runtime,
+      prog,
+      PathSpec.fromStrPath(session.cwd),
+      timeout,
+      abort.signal,
+    )
   } else {
     const fn = leaf.fn
     if (fn === null) {
@@ -320,8 +338,6 @@ export async function handleCli(
   // streams, exactly like mount dispatch: without the wrap a blocking
   // leaf hangs forever and an unbounded-output leaf ignores its own
   // limits.
-  const limit = resolveLimit(prog, [], leaf.limit)
-  const timeout = limit?.timeoutSeconds ?? null
   let stdout: ByteSource | null = null
   let io = new IOResult()
   try {
@@ -342,7 +358,10 @@ export async function handleCli(
     }
     // A limit timeout is answered by the workspace-level handler
     // (exit 124), not here.
-    if (err instanceof CommandTimeoutError) throw err
+    if (err instanceof CommandTimeoutError) {
+      abort.abort()
+      throw err
+    }
     // Any other thrown leaf error (an API error, a TypeError) becomes
     // this command's IOResult, prefixed like GNU (prog: message), so
     // the rest of the line keeps running.

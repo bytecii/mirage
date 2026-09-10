@@ -16,15 +16,50 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { describe, expect, it } from 'vitest'
 import { PyodideRuntime } from '../pyodide.ts'
 import { PrefixResolver } from '../../resolver.ts'
-import { FileStat, FileType } from '../../../types.ts'
+import { FileStat, FileType, Limit, MountMode } from '../../../types.ts'
 import type { BridgeDispatchFn, RunArgs } from '../../types.ts'
 import { CommandTimeoutError } from '../../../commands/errors.ts'
+import { CLISpec } from '../../../commands/cli/types.ts'
+import { ScriptSource } from '../../routing/types.ts'
+import { Workspace } from '../../../workspace/workspace/workspace.ts'
+import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
+import { RAMResource } from '../../../resource/ram/ram.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
 const runArgs = (code: string): RunArgs => ({ code, args: [], env: {}, stdin: null })
 
 describe('Pyodide lazy VFS', { timeout: 60_000 }, () => {
+  it.each([false, true])(
+    'stops a timed-out script CLI and recovers (warm worker: %s)',
+    async (warm) => {
+      const rt = new PyodideRuntime()
+      const ws = new Workspace(
+        { '/data': new RAMResource() },
+        { mode: MountMode.EXEC, runtimes: [rt, 'vfs'], shellParser: await getTestParser() },
+      )
+      ws.registerCli(
+        'spin',
+        new CLISpec({
+          name: 'spin',
+          script: new ScriptSource('while True: pass'),
+          runtime: 'pyodide',
+          limit: new Limit({ timeoutSeconds: 0.1 }),
+        }),
+      )
+      try {
+        // Cover both cancellation during startup and an already executing guest.
+        if (warm) expect((await ws.execute("python3 -c 'pass'")).exitCode).toBe(0)
+        expect((await ws.execute('spin')).exitCode).toBe(124)
+        const next = await ws.execute("python3 -c 'print(42)'")
+        expect(next.exitCode).toBe(0)
+        expect(DEC.decode(next.stdout)).toBe('42\n')
+      } finally {
+        await ws.close()
+      }
+    },
+  )
+
   it('does no preload, reads only accessed bytes, and refreshes between sessions', async () => {
     const context = new AsyncLocalStorage<string>()
     const calls: { op: string; path: string; session: string | undefined }[] = []
