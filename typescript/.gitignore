@@ -3,4 +3,4 @@ dist/
 .turbo/
 coverage/
 *.tsbuildinfo
-packages/core/src/generated/pyodide.ts
+packages/core/src/generated/

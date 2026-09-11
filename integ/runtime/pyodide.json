@@ -942,6 +942,99 @@
           }
         }
       ]
+    },
+    {
+      "id": "fs_list",
+      "world": {
+        "runtimes": [
+          "pyodide",
+          "vfs"
+        ],
+        "mounts": {
+          "/data": {
+            "resource": "ram",
+            "files": {
+              "seed.txt": "seed\n",
+              "sub/inner.txt": "inner\n"
+            }
+          }
+        }
+      },
+      "hosts": [
+        "typescript"
+      ],
+      "steps": [
+        {
+          "command": "python3 -c",
+          "script": "fs/list.py",
+          "expect": {
+            "exit": 0,
+            "stdout": "seed.txt\nsub\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fs_stat",
+      "world": {
+        "runtimes": [
+          "pyodide",
+          "vfs"
+        ],
+        "mounts": {
+          "/data": {
+            "resource": "ram",
+            "files": {
+              "seed.txt": "seed\n",
+              "sub/inner.txt": "inner\n"
+            }
+          }
+        }
+      },
+      "hosts": [
+        "typescript"
+      ],
+      "steps": [
+        {
+          "command": "python3 -c",
+          "script": "fs/stat.py",
+          "expect": {
+            "exit": 0,
+            "stdout": "file 5 32768\ndir 16384\nmissing\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fs_glob",
+      "world": {
+        "runtimes": [
+          "pyodide",
+          "vfs"
+        ],
+        "mounts": {
+          "/data": {
+            "resource": "ram",
+            "files": {
+              "seed.txt": "seed\n",
+              "sub/inner.txt": "inner\n"
+            }
+          }
+        }
+      },
+      "hosts": [
+        "typescript"
+      ],
+      "steps": [
+        {
+          "command": "python3 -c",
+          "script": "fs/glob.py",
+          "expect": {
+            "exit": 0,
+            "stdout": "seed.txt\nsub/inner.txt\n"
+          }
+        }
+      ]
     }
   ]
 }

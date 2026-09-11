@@ -23,6 +23,7 @@ import json  # noqa: E402
 import logging  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
+import shlex  # noqa: E402
 import uuid  # noqa: E402
 from typing import Any  # noqa: E402
 
@@ -587,6 +588,10 @@ async def _run_step(ws: Workspace, case_id: str, index: int,
                             f"expected {expect['content']!r}")
         return [f"{case_id} {label}: {p}" for p in problems]
     command = step["command"]
+    if "script" in step:
+        source = (SUITE_DIR.parent / "fixtures" / "runtime" /
+                  step["script"]).read_text()
+        command += " " + shlex.quote(source)
     kwargs: dict[str, Any] = {}
     if "runtime" in step:
         kwargs["runtime"] = step["runtime"]

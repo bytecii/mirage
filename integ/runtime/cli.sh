@@ -157,11 +157,15 @@ run_case() {
                   | .key as $p | (.value.files // {}) | keys[]
                   | [$p, .] | @tsv' <<<"$case_json")
 
-  local steps step cmd runtime expect got_exit
+  local steps step cmd script runtime expect got_exit
   steps=$(jq -c '.steps[]' <<<"$case_json")
   local index=0
   while IFS= read -r step; do
     cmd=$(jq -r '.command' <<<"$step")
+    script=$(jq -r '.script // empty' <<<"$step")
+    if [ -n "$script" ]; then
+      cmd+=" $(jq -Rrs '@sh' "$SUITE_DIR/../fixtures/runtime/$script")"
+    fi
     runtime=$(jq -r '.runtime // empty' <<<"$step")
     expect=$(jq -c '.expect // {}' <<<"$step")
     local args=(execute -w "$wsid" -c "$cmd")

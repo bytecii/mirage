@@ -57,7 +57,7 @@ function bridgeStderr(value: Uint8Array | ArrayLike<number>): Uint8Array | null 
 // The init switches this engine acts on, by CPython letter. The rest
 // (-E, -I, -s, -S) only change how an interpreter *starts*, and this
 // one is already running by the time a line is typed, so it reports
-// them instead of pretending. See guest.py for what honoring the
+// them instead of pretending. See execution.py for what honoring the
 // four below amounts to.
 const HONORED_FLAGS: readonly string[] = ['B', 'O', 'W', 'X']
 

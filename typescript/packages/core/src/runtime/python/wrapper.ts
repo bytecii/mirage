@@ -39,7 +39,7 @@ export class PyodideGuest {
   constructor(private readonly pyodide: PyodideInterface) {
     this.namespace = pyodide.toPy({ __name__: '_mirage_guest' }) as PyNamespace
     try {
-      pyodide.runPython(source, { globals: this.namespace, filename: 'mirage/guest.py' })
+      pyodide.runPython(source, { globals: this.namespace, filename: 'mirage/execution.py' })
     } catch (error) {
       this.namespace.destroy()
       throw error
