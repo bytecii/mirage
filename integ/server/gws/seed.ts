@@ -56,9 +56,29 @@ export function seedCalendars(st: GwsState, entries: JsonObj[]): void {
   }
 }
 
+// Every id a fixture pinned, collected before any is minted so a mint can
+// step over one, whichever order the two appear in. A pin repeated is a
+// fixture bug and is named here: DocTab is keyed by (tenant, documentId,
+// tabId), so the alternative is a primary-key violation at save time,
+// reported against a table rather than against the line that caused it.
+function pinnedTabIds(entries: JsonObj[], seen: Set<string>): Set<string> {
+  for (const raw of entries) {
+    const pinned = asStr(raw.tabId)
+    if (pinned !== undefined) {
+      if (seen.has(pinned)) {
+        throw new ResetBodyError(`/reset extras.docs pins tab id "${pinned}" twice`)
+      }
+      seen.add(pinned)
+    }
+    pinnedTabIds(asObjArr(raw.childTabs), seen)
+  }
+  return seen
+}
+
 // Tab ids are minted in pre-order (t.0, t.1, ... across the whole
 // document, children before the next sibling) so a truth file can name one
-// and stay stable. A fixture may pin its own instead.
+// and stay stable. A fixture may pin its own instead, and a minted id then
+// steps over every pinned one rather than colliding with it.
 function docTabsFrom(entries: JsonObj[], mint: () => string): DocTab[] {
   return entries.map((raw) => {
     const tabId = asStr(raw.tabId) ?? mint()
@@ -86,8 +106,15 @@ export function seedDocs(st: GwsState, entries: JsonObj[]): void {
     const item = createDriveItem(st, name, DOC_MIME, [], Buffer.alloc(0), st.nextId('doc'))
     const doc = st.docs.get(item.id)
     if (doc === undefined) throw new ResetBodyError(`doc ${item.id} was not auto-linked`)
+    const declared = asObjArr(entry.tabs)
+    const pinned = pinnedTabIds(declared, new Set<string>())
     let next = 0
-    const tabs = docTabsFrom(asObjArr(entry.tabs), () => `t.${String(next++)}`)
+    const mint = (): string => {
+      let id = `t.${String(next++)}`
+      while (pinned.has(id)) id = `t.${String(next++)}`
+      return id
+    }
+    const tabs = docTabsFrom(declared, mint)
     // No tabs declared is one tab, which is what autoLink already made:
     // every document has at least one, and a tabless one cannot be read.
     if (tabs.length > 0) doc.tabs = tabs
