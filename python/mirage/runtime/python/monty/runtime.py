@@ -33,7 +33,8 @@ from mirage.runtime.python.monty.constants import (DEFAULT_PROG,
 from mirage.runtime.python.monty.osaccess import MirageOSAccess
 from mirage.runtime.resolver import MountResolver
 from mirage.runtime.types import (DispatchFn, EvalResult, EvalValue, RunArgs,
-                                  RunResult, RuntimeReach, ScriptSource)
+                                  RunResult, RuntimeContext, RuntimeReach,
+                                  ScriptSource)
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,13 @@ class MontyRuntime(PythonRuntime, EvaluatorMixin):
         await pool.__aenter__()
         return pool
 
-    async def run(self, args: RunArgs) -> RunResult:
+    async def _execute_code(self, args: RunArgs,
+                            context: RuntimeContext | None) -> RunResult:
+        return await self.run(args, context)
+
+    async def run(self,
+                  args: RunArgs,
+                  context: RuntimeContext | None = None) -> RunResult:
         """Run one program, reporting any switch this engine cannot honor.
 
         Monty implements a Python subset with no ``compile``, no
@@ -126,12 +133,13 @@ class MontyRuntime(PythonRuntime, EvaluatorMixin):
             args (RunArgs): the execution request.
         """
         notice = unhonored_notice(args.flags, self.name)
-        result = await self._run(args)
+        result = await self._run(args, context or self._capture_context())
         if not notice:
             return result
         return replace(result, stderr=notice + (result.stderr or b""))
 
-    async def _run(self, args: RunArgs) -> RunResult:
+    async def _run(self, args: RunArgs,
+                   context: RuntimeContext | None) -> RunResult:
         # Execution lives in a monty worker subprocess (0.0.19 moved it
         # out of process so an interpreter crash cannot take the host
         # with it). feed_run awaits off the event loop, so the loop
@@ -139,8 +147,10 @@ class MontyRuntime(PythonRuntime, EvaluatorMixin):
         # MontyCrashedError and the pool replaces it.
         loop = asyncio.get_running_loop()
         collector = pydantic_monty.CollectStreams()
-        bridge = MirageOSAccess(loop, self._workspace_dispatch, args.env,
-                                self._resolver)
+        bridge = MirageOSAccess(
+            loop, context.dispatch
+            if context is not None else self._workspace_dispatch, args.env,
+            context.resolver if context is not None else self._resolver)
         pool = await self._ensure_pool()
         # argv[0] is the program's own name when the caller has one (a
         # CLI install's head word), else the interpreter's placeholder.
@@ -217,8 +227,11 @@ class MontyRuntime(PythonRuntime, EvaluatorMixin):
         """
         loop = asyncio.get_running_loop()
         collector = pydantic_monty.CollectStreams()
-        bridge = MirageOSAccess(loop, self._workspace_dispatch, {},
-                                self._resolver)
+        context = self._capture_context()
+        bridge = MirageOSAccess(
+            loop, context.dispatch
+            if context is not None else self._workspace_dispatch, {},
+            context.resolver if context is not None else self._resolver)
         pool = await self._ensure_pool()
         repl = self._eval_sessions.get(session) if session is not None \
             else None

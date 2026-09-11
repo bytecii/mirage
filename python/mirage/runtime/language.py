@@ -70,8 +70,12 @@ class LanguageRuntime(Runtime):
                 raise UnsupportedExecutionError(
                     f"{self.name}: {request.language} execution is unsupported"
                 )
-            return await self.run(request)
+            return await self._execute_code(request, context)
         return await super()._execute(request, context)
+
+    async def _execute_code(self, args: RunArgs,
+                            context: RuntimeContext | None) -> RunResult:
+        return await self.run(args)
 
     async def version(self, env: dict[str, str]) -> RunResult:
         """Report the bound interpreter's version.

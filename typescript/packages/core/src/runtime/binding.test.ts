@@ -18,8 +18,11 @@ import type { WorkspaceBinding } from './binding.ts'
 import { LanguageRuntime } from './language.ts'
 import { LINE_EXECUTOR } from './mixin.ts'
 import { UnsupportedExecutionError } from './errors.ts'
-import type { RunArgs, RunResult, RuntimeContext, ExecutionRequest } from './types.ts'
+import type { RunArgs, RunResult, RuntimeContext } from './types.ts'
 import { RuntimeVFS } from './vfs.ts'
+import { MontyRuntime } from './python/monty/runtime.ts'
+import { PyodideRuntime } from './python/pyodide.ts'
+import { QuickJsRuntime } from './js/quickjs.ts'
 import { RAMResource } from '../resource/ram/ram.ts'
 import { MountMode, PathSpec } from '../types.ts'
 import { getTestParser } from '../workspace/fixtures/workspace_fixture.ts'
@@ -39,12 +42,9 @@ class Probe extends LanguageRuntime {
   readonly language = 'python' as const
   override readonly reach = 'vfs' as const
   readonly contexts: RuntimeContext[] = []
-  protected override executeRequest(
-    request: ExecutionRequest,
-    context?: RuntimeContext,
-  ): Promise<RunResult> {
+  protected override executeCode(request: RunArgs, context?: RuntimeContext): Promise<RunResult> {
     if (context !== undefined) this.contexts.push(context)
-    return super.executeRequest(request, context)
+    return super.executeCode(request, context)
   }
   run(args: RunArgs): Promise<RunResult> {
     return Promise.resolve({ stdout: enc.encode(args.code), stderr: null, exitCode: 0 })
@@ -236,6 +236,59 @@ describe('execution bindings', () => {
     }
   })
 })
+
+it.each([
+  ['monty', () => new MontyRuntime()],
+  ['quickjs', () => new QuickJsRuntime()],
+  ['pyodide', () => new PyodideRuntime()],
+] as const)(
+  '%s uses each execution context for filesystem callbacks',
+  async (_name, create) => {
+    const runtime = create()
+    const ws = await world([runtime])
+    try {
+      await ws.execute('echo shared > /data/file; ln -s /data/file /data/link')
+      ws.createSession('one')
+      ws.createSession('two')
+      const calls: string[][] = [[], []]
+      const results = await Promise.all(
+        ['one', 'two'].map((session, index) => {
+          const captured = ws.runtimeContext(session)
+          const context: RuntimeContext = {
+            ...captured,
+            dispatch: (...args) => {
+              required(calls[index]).push(`${args[0]}:${args[1]}`)
+              return captured.dispatch(...args)
+            },
+          }
+          return runtime.execute(
+            {
+              kind: 'code',
+              language: runtime.language,
+              code:
+                runtime.language === 'js'
+                  ? "const f = std.open('/data/link', 'r'); std.out.puts(f.readAsString()); f.close()"
+                  : "print(open('/data/link').read(), end='')",
+              args: [],
+              env: {},
+              stdin: null,
+            },
+            context,
+          )
+        }),
+      )
+      for (const result of results) {
+        expect(result.exitCode, dec.decode(result.stderr ?? new Uint8Array())).toBe(0)
+        expect(dec.decode(result.stdout)).toBe('shared\n')
+      }
+      for (const entries of calls)
+        expect(entries.some((entry) => /^read:\/data\/(file|link)$/.test(entry))).toBe(true)
+    } finally {
+      await ws.close()
+    }
+  },
+  60_000,
+)
 
 it('command execution supplies its active workspace context', async () => {
   const runtime = new Probe({ captures: ['python3'] })

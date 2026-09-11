@@ -16,8 +16,8 @@ import type { ContextScope } from '../../../utils/context_scope.ts'
 import { PyodideUnavailableError } from '../types.ts'
 import { EvalError } from '../../errors.ts'
 import { CommandTimeoutError } from '../../../commands/errors.ts'
-import type { BridgeDispatchFn, EvalResult, RunResult } from '../../types.ts'
-import type { RuntimeVFS } from '../../vfs.ts'
+import type { BridgeDispatchFn, EvalResult, RunResult, RuntimeContext } from '../../types.ts'
+import { RuntimeVFS } from '../../vfs.ts'
 import { applyMutation } from '../vfs/journal.ts'
 import type { FlushFailure } from '../vfs/types.ts'
 import { respond } from './transport.ts'
@@ -145,8 +145,12 @@ export class PyodideWorkerClient {
     request: ExecuteRequest,
     scope: ContextScope,
     signal?: AbortSignal,
+    context?: RuntimeContext,
   ): Promise<RunResult | EvalResult> {
     if (this.failure !== null) throw this.failure
+    const vfs =
+      context === undefined ? this.vfs : new RuntimeVFS(context.dispatch, context.resolver)
+    const dispatch = context?.dispatch ?? this.dispatch
     const responses = new Set<Promise<void>>()
     const cells = new Int32Array(this.interruptBuffer)
     Atomics.store(cells, 3, 0)
@@ -166,7 +170,9 @@ export class PyodideWorkerClient {
           continue
         }
         if (message.kind === 'vfs') {
-          const response = respond(message.buffer, () => scope.run(() => this.operation(message)))
+          const response = respond(message.buffer, () =>
+            scope.run(() => this.operation(message, vfs, dispatch)),
+          )
           responses.add(response)
           void response.then(() => {
             responses.delete(response)
@@ -219,25 +225,29 @@ export class PyodideWorkerClient {
     this.buffers.clear()
   }
 
-  private async operation(request: VfsRequest): Promise<unknown> {
+  private async operation(
+    request: VfsRequest,
+    vfs: RuntimeVFS,
+    dispatch: BridgeDispatchFn,
+  ): Promise<unknown> {
     switch (request.op) {
       case 'read':
-        return this.vfs.read(request.path)
+        return vfs.read(request.path)
       case 'stat':
-        return this.vfs.stat(request.path, true)
+        return vfs.stat(request.path, true)
       case 'readdir':
-        return this.vfs.readdir(request.path)
+        return vfs.readdir(request.path)
       case 'readlink':
-        return this.vfs.readlink(request.path)
+        return vfs.readlink(request.path)
       case 'dispatch': {
         if (request.args === undefined) throw new Error('missing bridge arguments')
-        return this.dispatch(...request.args)
+        return dispatch(...request.args)
       }
       case 'flush': {
         const mutations = request.mutations ?? []
         for (const [index, mutation] of mutations.entries()) {
           try {
-            await applyMutation(this.vfs, mutation)
+            await applyMutation(vfs, mutation)
           } catch (error) {
             return {
               message: `python3: failed to ${mutation.kind} ${mutation.path} on mount: ${error instanceof Error ? error.message : String(error)}`,

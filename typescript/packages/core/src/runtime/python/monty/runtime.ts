@@ -16,7 +16,14 @@ import { CommandTimeoutError } from '../../../commands/errors.ts'
 import { PythonRuntime } from '../base.ts'
 import { EvalError } from '../../errors.ts'
 import { EVALUATOR, type Evaluator } from '../../mixin.ts'
-import type { EvalResult, EvalValue, RunArgs, RunResult, RuntimeOptions } from '../../types.ts'
+import type {
+  EvalResult,
+  EvalValue,
+  RunArgs,
+  RunResult,
+  RuntimeOptions,
+  RuntimeContext,
+} from '../../types.ts'
 import type { MountResolver } from '../../resolver.ts'
 import type { BridgeDispatchFn } from '../../types.ts'
 import { RuntimeVFS } from '../../vfs.ts'
@@ -140,9 +147,13 @@ export class MontyRuntime extends PythonRuntime implements Evaluator {
    * Args:
    *   args: the execution request.
    */
-  async run(args: RunArgs): Promise<RunResult> {
+  protected override executeCode(args: RunArgs, context?: RuntimeContext): Promise<RunResult> {
+    return this.run(args, context)
+  }
+
+  async run(args: RunArgs, context = this.captureContext()): Promise<RunResult> {
     const notice = unhonoredNotice((args.flags ?? {}) as InitFlags, this.name)
-    const result = await this.runOne(args)
+    const result = await this.runOne(args, context)
     if (notice.length === 0) return result
     const stderr = result.stderr ?? new Uint8Array()
     const merged = new Uint8Array(notice.length + stderr.length)
@@ -151,7 +162,7 @@ export class MontyRuntime extends PythonRuntime implements Evaluator {
     return { ...result, stderr: merged }
   }
 
-  private async runOne(args: RunArgs): Promise<RunResult> {
+  private async runOne(args: RunArgs, context?: RuntimeContext): Promise<RunResult> {
     const pool = await this.ensurePool()
     const session = await pool.checkout()
     // Monty executes on its own worker process, so the event loop stays
@@ -161,7 +172,7 @@ export class MontyRuntime extends PythonRuntime implements Evaluator {
     const workerPid = session.workerPid
     const interruption = this.installInterruption(args.signal, args.timeoutSeconds)
     try {
-      const run = this.feedOne(session, args.code, args)
+      const run = this.feedOne(session, args.code, args, context)
       const winner = await Promise.race([run, interruption.promise])
       if (winner !== INTERRUPTED) return winner
       run.catch(() => undefined)
@@ -228,6 +239,7 @@ export class MontyRuntime extends PythonRuntime implements Evaluator {
     code: string,
     opts: { inputs?: Record<string, EvalValue>; session?: string } = {},
   ): Promise<EvalResult> {
+    const context = this.captureContext()
     const pool = await this.ensurePool()
     const module = await this.loadModule()
     let session: MontySessionLike
@@ -249,7 +261,7 @@ export class MontyRuntime extends PythonRuntime implements Evaluator {
         if (stream === 'stderr') err.push(text)
         else out.push(text)
       },
-      os: new MirageOSAccess(module, {}, this.perRunVfs()).handle,
+      os: new MirageOSAccess(module, {}, this.perRunVfs(context)).handle,
     }
     const enc = new TextEncoder()
     // One-shot evals get the quickjs-style 10s bound (the policy layer
@@ -344,7 +356,9 @@ export class MontyRuntime extends PythonRuntime implements Evaluator {
    * has to be told. Without the reset a path a shell command created
    * between two monty commands would stay invisible to the second.
    */
-  private perRunVfs(): MontyVFS | null {
+  private perRunVfs(context?: RuntimeContext): MontyVFS | null {
+    if (context !== undefined)
+      return new MontyVFS(new RuntimeVFS(context.dispatch, context.resolver))
     this.vfs?.reset()
     return this.vfs
   }
@@ -370,6 +384,7 @@ export class MontyRuntime extends PythonRuntime implements Evaluator {
     session: MontySessionLike,
     code: string,
     args: RunArgs,
+    context?: RuntimeContext,
   ): Promise<RunResult> {
     const module = await this.loadModule()
     const out: string[] = []
@@ -382,7 +397,7 @@ export class MontyRuntime extends PythonRuntime implements Evaluator {
         if (stream === 'stderr') err.push(text)
         else out.push(text)
       },
-      os: new MirageOSAccess(module, args.env, this.perRunVfs()).handle,
+      os: new MirageOSAccess(module, args.env, this.perRunVfs(context)).handle,
     }
     try {
       await session.feedRun(code, options)

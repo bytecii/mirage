@@ -123,6 +123,9 @@ class Runtime(ABC):
                 lambda: self._execute(request, context))
         return await self._execute(request, None)
 
+    def _capture_context(self) -> RuntimeContext | None:
+        return self._binding.capture() if self._binding is not None else None
+
     async def _execute(self, request: ExecutionRequest,
                        context: RuntimeContext | None) -> RunResult:
         if isinstance(request, ShellExecution) and isinstance(

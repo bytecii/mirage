@@ -13,6 +13,9 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import os
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -23,8 +26,10 @@ from mirage.context import get_current_session_for
 from mirage.fuse.core import MountCore
 from mirage.policy import Deny, Policy
 from mirage.resource.ram import RAMResource
+from mirage.runtime.js import QuickJsRuntime
 from mirage.runtime.language import LanguageRuntime
 from mirage.runtime.mixin import LineExecutorMixin
+from mirage.runtime.python.monty import MontyRuntime
 from mirage.runtime.vfs import RuntimeVFS
 
 
@@ -38,10 +43,10 @@ class Probe(LanguageRuntime):
         super().__init__()
         self.contexts = []
 
-    async def _execute(self, request, context):
+    async def _execute_code(self, request, context):
         if context is not None:
             self.contexts.append(context)
-        return await super()._execute(request, context)
+        return await super()._execute_code(request, context)
 
     async def run(self, args):
         return RunResult(stdout=args.code.encode(), stderr=None, exit_code=0)
@@ -175,3 +180,49 @@ async def test_command_execution_supplies_its_active_workspace_context():
         await ws.execute("python3 -c other")
         assert "PUBLIC" not in runtime.contexts[-1].env
         assert captured.session_view.get("PUBLIC") == "agent"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["monty", "quickjs"])
+async def test_adapters_use_each_execution_context_for_filesystem_callbacks(
+        name):
+    if name == "quickjs":
+        if not (Path(os.environ.get("MIRAGE_QUICKJS_HOME", "")) /
+                "qjs-wasi.wasm").is_file():
+            pytest.skip("MIRAGE_QUICKJS_HOME does not contain qjs-wasi.wasm")
+        runtime = QuickJsRuntime()
+    else:
+        pytest.importorskip("pydantic_monty")
+        runtime = MontyRuntime()
+    with Workspace({"/data": RAMResource()},
+                   mode=MountMode.EXEC,
+                   runtimes=[runtime, "vfs"]) as ws:
+        await ws.execute(
+            "echo shared > /data/file; ln -s /data/file /data/link")
+        ws.create_session("one")
+        ws.create_session("two")
+        calls = [[], []]
+
+        async def execute(session, entries):
+            captured = ws.runtime_context(session)
+
+            async def dispatch(op, path, *args, **kwargs):
+                entries.append(f"{op}:{path.virtual}")
+                return await captured.dispatch(op, path, *args, **kwargs)
+
+            context = replace(captured, dispatch=dispatch)
+            code = ("const f = std.open('/data/link', 'r'); "
+                    "std.out.puts(f.readAsString()); f.close()"
+                    if runtime.language == "js" else
+                    "print(open('/data/link').read(), end='')")
+            return await runtime.execute(
+                CodeExecution(language=runtime.language, code=code), context)
+
+        results = await asyncio.gather(execute("one", calls[0]),
+                                       execute("two", calls[1]))
+        for result in results:
+            assert result.exit_code == 0, result.stderr
+            assert result.stdout == b"shared\n"
+        for entries in calls:
+            assert any(entry in ("read:/data/link", "read:/data/file")
+                       for entry in entries)

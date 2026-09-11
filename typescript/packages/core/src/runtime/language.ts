@@ -74,9 +74,13 @@ export abstract class LanguageRuntime extends Runtime {
         throw new UnsupportedExecutionError(
           `${this.name}: ${request.language} execution is unsupported`,
         )
-      return this.run(request)
+      return this.executeCode(request, context)
     }
     return super.executeRequest(request, context)
+  }
+
+  protected executeCode(args: RunArgs, _context?: RuntimeContext): Promise<RunResult> {
+    return this.run(args)
   }
 
   /** Report the bound interpreter's version. */

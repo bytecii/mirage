@@ -21,9 +21,9 @@ import { EvalError } from '../errors.ts'
 import { EVALUATOR, type Evaluator } from '../mixin.ts'
 import type {
   EvalResult,
-  EvalStatus,
   EvalValue,
   RunArgs,
+  RuntimeContext,
   RunResult,
   RuntimeOptions,
 } from '../types.ts'
@@ -40,7 +40,7 @@ import { applyMutation, createJournal, type MutationJournal } from './vfs/journa
 import { preloadInto } from './vfs/preload.ts'
 import { MirageFs } from './vfs/vfs.ts'
 import { MirageFsSeed } from './vfs/seed.ts'
-import { PYTHON_EVAL_WRAPPER, PYTHON_REPL_WRAPPER, PYTHON_WRAPPER } from './wrapper.ts'
+import { PyodideGuest } from './wrapper.ts'
 import { unhonoredNotice, type InitFlags } from './flags.ts'
 import type { SyncVFS } from './vfs/types.ts'
 import { PyodideWorkerClient } from './worker/client.ts'
@@ -57,7 +57,7 @@ function bridgeStderr(value: Uint8Array | ArrayLike<number>): Uint8Array | null 
 // The init switches this engine acts on, by CPython letter. The rest
 // (-E, -I, -s, -S) only change how an interpreter *starts*, and this
 // one is already running by the time a line is typed, so it reports
-// them instead of pretending. See PYTHON_WRAPPER for what honoring the
+// them instead of pretending. See guest.py for what honoring the
 // four below amounts to.
 const HONORED_FLAGS: readonly string[] = ['B', 'O', 'W', 'X']
 
@@ -226,39 +226,6 @@ const PYODIDE_CONFIG_KEYS: readonly string[] = [
   'lockFileURL',
 ]
 
-// Prepend, glob-expand, and invalidate. Three things are load-bearing.
-// Prepending (not appending) lets a vendored package beat a bundled one
-// of the same name, which is CPython's own PYTHONPATH precedence. A
-// pattern that expands to nothing is collected into `_seed_misses` for
-// the host to report, because a silent [] shows up much later as a bare
-// ModuleNotFoundError with nothing pointing at the config; the seed
-// cannot report it itself, since this runs inside syncMounts, where
-// nothing is capturing sys.stderr yet. And invalidate_caches() runs
-// UNCONDITIONALLY, because
-// syncMounts remounts every prefix on every run: zipimport's archive
-// table of contents is keyed by path rather than mtime, so a remounted
-// wheel would otherwise keep serving the previous run's contents.
-const SYS_PATH_SEED_PY = String.raw`
-import sys, glob, importlib
-
-_seed_misses = []
-_expanded = []
-for _p in _seed_paths:
-    if any(c in _p for c in '*?['):
-        _hits = sorted(glob.glob(_p))
-        if not _hits:
-            _seed_misses.append(_p)
-        _expanded.extend(_hits)
-    else:
-        _expanded.append(_p)
-
-_new = [p for p in _expanded if p not in sys.path]
-if _new:
-    sys.path[:0] = _new
-
-importlib.invalidate_caches()
-`
-
 // One-shot eval is bounded like quickjs's: nothing above the runtime
 // can stop a hung guest on this thread, so the runtime owns its own
 // interrupt. Console (repl) sessions stay unbounded, matching python.
@@ -275,6 +242,7 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
   override readonly reach = 'vfs'
   readonly [EVALUATOR] = true as const
   private pyodide: PyodideInterface | null = null
+  private guest: PyodideGuest | null = null
   private initPromise: Promise<PyodideInterface> | null = null
   private bootstrapPromise: Promise<void> | null = null
   private queue: Promise<unknown> = Promise.resolve()
@@ -342,9 +310,14 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     }
   }
 
-  async run(args: RunArgs): Promise<RunResult> {
-    const scope = new ContextScope([...captureSessionContext(), ...captureRecordingContext()])
-    const task = (): Promise<RunResult> => scope.run(() => this.runOne(args, scope))
+  protected override executeCode(args: RunArgs, context?: RuntimeContext): Promise<RunResult> {
+    return this.run(args, context)
+  }
+
+  async run(args: RunArgs, context = this.captureContext()): Promise<RunResult> {
+    const scope =
+      context?.scope ?? new ContextScope([...captureSessionContext(), ...captureRecordingContext()])
+    const task = (): Promise<RunResult> => scope.run(() => this.runOne(args, scope, context))
     const next = this.queue.then(task, task)
     this.queue = next.catch(() => undefined)
     return next
@@ -362,8 +335,11 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     code: string,
     opts: { inputs?: Record<string, EvalValue>; session?: string } = {},
   ): Promise<EvalResult> {
-    const scope = new ContextScope([...captureSessionContext(), ...captureRecordingContext()])
-    const task = (): Promise<EvalResult> => scope.run(() => this.evalOne(code, opts, scope))
+    const context = this.captureContext()
+    const scope =
+      context?.scope ?? new ContextScope([...captureSessionContext(), ...captureRecordingContext()])
+    const task = (): Promise<EvalResult> =>
+      scope.run(() => this.evalOne(code, opts, scope, context))
     const next = this.queue.then(task, task)
     this.queue = next.catch(() => undefined)
     return next
@@ -373,7 +349,9 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     code: string,
     opts: { inputs?: Record<string, EvalValue>; session?: string },
     scope: ContextScope,
+    context?: RuntimeContext,
   ): Promise<EvalResult> {
+    this.vfs = context !== undefined ? new RuntimeVFS(context.dispatch, context.resolver) : null
     const worker = await this.ensureWorker()
     if (worker !== null) {
       return (await worker.execute(
@@ -381,11 +359,13 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
           kind: 'execute',
           method: 'eval',
           config: this.config as PyodideConfig,
-          prefixes: scope.call(() => this.resolver.prefixes()),
+          prefixes: context?.resolver.prefixes() ?? scope.call(() => this.resolver.prefixes()),
           code,
           ...opts,
         },
         scope,
+        undefined,
+        context,
       )) as EvalResult
     }
     if (opts.session !== undefined) {
@@ -394,31 +374,13 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     }
     const pyodide = await this.ensureLoaded()
     await this.loadImports(pyodide, code)
-    const inputsPy = pyodide.toPy(opts.inputs ?? {})
-    pyodide.globals.set('_user_code', code)
-    pyodide.globals.set('_eval_inputs', inputsPy)
-    pyodide.globals.set('_eval_result', undefined)
     const armed = this.interrupter !== null ? this.interrupter.arm(EVAL_INTERRUPT_SECONDS) : null
     try {
-      pyodide.runPython(PYTHON_EVAL_WRAPPER)
+      const arr = this.guestModule(pyodide).evaluate(code, opts.inputs ?? {})
       if (armed?.disarm() === 'deadline') {
         throw new EvalError(`pyodide eval timed out after ${String(EVAL_INTERRUPT_SECONDS)}s`)
       }
       const flushFailures = await this.drainMutations()
-      const resultProxy = pyodide.globals.get('_eval_result') as
-        | {
-            toJs?: (opts?: Record<string, unknown>) => unknown
-            destroy?: () => void
-          }
-        | null
-        | undefined
-      const arr = resultProxy?.toJs?.({ create_proxies: false }) as
-        | [string, Uint8Array, Uint8Array, boolean, boolean]
-        | undefined
-      resultProxy?.destroy?.()
-      if (arr === undefined) {
-        throw new EvalError('pyodide returned no eval result')
-      }
       const [valueJson, out, errBytes, ok, syntax] = arr
       if (!ok) {
         for (const failure of flushFailures) console.warn(failure)
@@ -443,16 +405,6 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
       throw err
     } finally {
       armed?.disarm()
-      pyodide.globals.delete?.('_user_code')
-      pyodide.globals.delete?.('_eval_inputs')
-      pyodide.globals.delete?.('_eval_result')
-      if (inputsPy !== null && typeof inputsPy === 'object' && 'destroy' in inputsPy) {
-        try {
-          ;(inputsPy as { destroy: () => void }).destroy()
-        } catch {
-          // destroy is best-effort; ignore double-destroy errors
-        }
-      }
     }
   }
 
@@ -462,6 +414,9 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     } catch {
       // queue failures already surfaced to individual callers; safe to swallow here
     }
+    this.guest?.close()
+    this.guest = null
+    this.bootstrapPromise = null
     this.pyodide = null
     ;(await this.worker)?.close()
     this.worker = null
@@ -606,7 +561,7 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
       fs.seed(seed)
       this.mounted.add(prefix)
     }
-    await this.seedSysPath(pyodide)
+    this.seedSysPath(pyodide)
   }
 
   /**
@@ -621,52 +576,17 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
    * Args:
    *   pyodide: the loaded interpreter.
    */
-  private async seedSysPath(pyodide: PyodideInterface): Promise<void> {
-    if (this.sysPath.length === 0) return
-    const seedPy = pyodide.toPy([...this.sysPath])
-    pyodide.globals.set('_seed_paths', seedPy)
-    try {
-      await pyodide.runPythonAsync(SYS_PATH_SEED_PY)
-      this.recordSeedMisses(pyodide)
-    } finally {
-      pyodide.globals.delete?.('_seed_paths')
-      if (seedPy !== null && typeof seedPy === 'object' && 'destroy' in seedPy) {
-        try {
-          ;(seedPy as { destroy: () => void }).destroy()
-        } catch {
-          // destroy is best-effort; ignore double-destroy errors
-        }
-      }
-    }
-  }
-
-  /**
-   * Queue a notice for each glob that expanded to nothing this pass.
-   *
-   * The seed cannot report these itself: it runs inside syncMounts,
-   * before the run's stdout/stderr are captured, so anything it wrote
-   * to sys.stderr reached nobody. Queuing here and draining onto the
-   * run's stderr puts the warning in front of the same agent whose
-   * import is about to fail.
-   *
-   * Args:
-   *   pyodide: the loaded interpreter, holding the seed's `_seed_misses`.
-   */
-  private recordSeedMisses(pyodide: PyodideInterface): void {
-    const proxy = pyodide.globals.get('_seed_misses') as
-      | { toJs?: () => unknown; destroy?: () => void }
-      | null
-      | undefined
-    const misses = proxy?.toJs?.()
-    proxy?.destroy?.()
-    pyodide.globals.delete?.('_seed_misses')
-    if (!Array.isArray(misses)) return
-    for (const miss of misses as unknown[]) {
-      const pattern = String(miss)
+  private seedSysPath(pyodide: PyodideInterface): void {
+    for (const pattern of this.guestModule(pyodide).seedSysPath(this.sysPath)) {
       if (this.seedMissesReported.has(pattern)) continue
       this.seedMissesReported.add(pattern)
       this.seedNotices.push(`python3: sysPath: '${pattern}' matched nothing`)
     }
+  }
+
+  private guestModule(pyodide: PyodideInterface): PyodideGuest {
+    this.guest ??= new PyodideGuest(pyodide)
+    return this.guest
   }
 
   private takeSeedNotices(): string[] {
@@ -729,7 +649,12 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     }
   }
 
-  private async runOne(args: RunArgs, scope: ContextScope): Promise<RunResult> {
+  private async runOne(
+    args: RunArgs,
+    scope: ContextScope,
+    context?: RuntimeContext,
+  ): Promise<RunResult> {
+    this.vfs = context !== undefined ? new RuntimeVFS(context.dispatch, context.resolver) : null
     const worker = await this.ensureWorker()
     if (worker !== null) {
       const { cwd, signal, ...rest } = args
@@ -738,11 +663,12 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
           kind: 'execute',
           method: 'run',
           config: this.config as PyodideConfig,
-          prefixes: scope.call(() => this.resolver.prefixes()),
+          prefixes: context?.resolver.prefixes() ?? scope.call(() => this.resolver.prefixes()),
           args: { ...rest, ...(cwd !== undefined ? { cwd: cwd.virtual } : {}) },
         },
         scope,
         signal,
+        context,
       )) as RunResult
     }
     const pyodide = await this.ensureLoaded()
@@ -760,27 +686,18 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     // sys.argv[0] is the program's own name when the caller has one (a
     // CLI install's head word), else CPython's own -c spelling.
     const argv = [args.prog ?? '-c', ...args.args]
-    const stdinBytes = args.stdin ?? undefined
-
-    const mergedEnvPy = pyodide.toPy(mergedEnv)
-    const argvPy = pyodide.toPy(argv)
-    const userGlobalsPy = pyodide.toPy({})
-
-    const initFlagsPy = pyodide.toPy(args.flags ?? {})
     const cwd = args.cwd?.virtual ?? ''
     const cwdMount = cwd === '' ? null : (this.vfs?.mountOf(cwd) ?? null)
-    pyodide.globals.set('_user_code', args.code)
-    pyodide.globals.set('_init_flags', initFlagsPy)
-    pyodide.globals.set('_argv', argvPy)
-    // A root mount cannot replace Pyodide's own filesystem. Keep the
-    // interpreter cwd in that case so filesystem-independent code still
-    // runs; a supported child mount keeps its actual cwd and errors.
-    pyodide.globals.set('_cwd', cwd !== '/' && cwdMount !== null && !servable(cwdMount) ? '' : cwd)
-    pyodide.globals.set('_script_cli', args.scriptCli ?? false)
-    pyodide.globals.set('_merged_env', mergedEnvPy)
-    pyodide.globals.set('_stdin_bytes', stdinBytes)
-    pyodide.globals.set('_user_globals', userGlobalsPy)
-    pyodide.globals.set('_result', undefined)
+    const request = {
+      code: args.code,
+      argv,
+      env: mergedEnv,
+      stdin: args.stdin,
+      flags: args.flags ?? {},
+      script_cli: args.scriptCli ?? false,
+      // A root mount cannot replace the interpreter's own filesystem.
+      cwd: cwd !== '/' && cwdMount !== null && !servable(cwdMount) ? '' : cwd,
+    }
 
     // Deadline trip -> exit 124 via CommandTimeoutError; a kill signal
     // raises KeyboardInterrupt in the guest, whose wrapper-reported
@@ -790,49 +707,20 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     // handlers, never in its preamble or epilogue where it would escape
     // as a KeyboardInterrupt nothing catches and the deadline is lost.
     const slot: { armed: ArmedInterrupt | null } = { armed: null }
-    pyodide.globals.set('_arm_interrupt', () => {
+    const arm = (): void => {
       if (this.interrupter !== null && slot.armed === null) {
         slot.armed = this.interrupter.arm(args.timeoutSeconds ?? null, args.signal)
       }
-    })
-    pyodide.globals.set('_disarm_interrupt', () => {
+    }
+    const disarm = (): void => {
       slot.armed?.disarm()
-    })
+    }
     try {
-      // The wrapper runs through the synchronous entry point on purpose.
-      // Every wrapper is straight-line Python with no top-level await,
-      // and the interrupt buffer is only honored reliably on that path:
-      // under runPythonAsync the trip is consumed by the eval loop but the
-      // KeyboardInterrupt does not reach the running code often enough,
-      // so a busy loop past its deadline ran unbounded and wedged the
-      // host's event loop (observed on Node 24.20 in CI, reproducible on
-      // 24.15 with bare pyodide, with or without JSPI).
-      pyodide.runPython(PYTHON_WRAPPER)
+      const arr = this.guestModule(pyodide).run(request, arm, disarm)
       if (slot.armed?.disarm() === 'deadline' && args.timeoutSeconds !== undefined) {
         throw new CommandTimeoutError(this.name, args.timeoutSeconds)
       }
       const flushFailures = await this.drainMutations()
-      const resultProxy = pyodide.globals.get('_result') as
-        | {
-            toJs?: (opts?: Record<string, unknown>) => unknown
-            destroy?: () => void
-          }
-        | null
-        | undefined
-      const arr = resultProxy?.toJs?.({ create_proxies: false }) as
-        | [Uint8Array, Uint8Array, number]
-        | undefined
-      resultProxy?.destroy?.()
-      if (arr === undefined) {
-        return {
-          stdout: new Uint8Array(),
-          stderr: appendStderrLines(
-            new TextEncoder().encode('python3: runtime returned no result\n'),
-            [...seedNotices, ...flushFailures],
-          ),
-          exitCode: 1,
-        }
-      }
       return {
         stdout: bridgeBytes(arr[0]),
         // A seed notice rides on stderr but never on the exit code: an
@@ -854,30 +742,6 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
       throw err
     } finally {
       slot.armed?.disarm()
-      pyodide.globals.delete?.('_arm_interrupt')
-      pyodide.globals.delete?.('_disarm_interrupt')
-      pyodide.globals.delete?.('_user_code')
-      pyodide.globals.delete?.('_init_flags')
-      pyodide.globals.delete?.('_argv')
-      pyodide.globals.delete?.('_cwd')
-      pyodide.globals.delete?.('_script_cli')
-      pyodide.globals.delete?.('_merged_env')
-      pyodide.globals.delete?.('_stdin_bytes')
-      pyodide.globals.delete?.('_user_globals')
-      pyodide.globals.delete?.('_result')
-      const maybeDestroy = (obj: unknown): void => {
-        if (obj !== null && typeof obj === 'object' && 'destroy' in obj) {
-          try {
-            ;(obj as { destroy: () => void }).destroy()
-          } catch {
-            // destroy is best-effort; ignore double-destroy errors
-          }
-        }
-      }
-      maybeDestroy(mergedEnvPy)
-      maybeDestroy(initFlagsPy)
-      maybeDestroy(argvPy)
-      maybeDestroy(userGlobalsPy)
     }
   }
 
@@ -889,47 +753,13 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     const pyodide = await this.ensureLoaded()
     await this.loadImports(pyodide, code)
 
-    pyodide.globals.set('_user_code', code)
-    pyodide.globals.set('_repl_session_id', sessionId)
-    pyodide.globals.set('_repl_inputs', pyodide.toPy(inputs))
-    pyodide.globals.set('_repl_result', undefined)
-
-    try {
-      pyodide.runPython(PYTHON_REPL_WRAPPER)
-      const flushFailures = await this.drainMutations()
-      const resultProxy = pyodide.globals.get('_repl_result') as
-        | {
-            toJs?: (opts?: Record<string, unknown>) => unknown
-            destroy?: () => void
-          }
-        | null
-        | undefined
-      const arr = resultProxy?.toJs?.({ create_proxies: false }) as
-        | [Uint8Array, Uint8Array, number, EvalStatus]
-        | undefined
-      resultProxy?.destroy?.()
-      if (arr === undefined) {
-        return {
-          stdout: new Uint8Array(),
-          stderr: appendStderrLines(
-            new TextEncoder().encode('python3: repl returned no result\n'),
-            flushFailures,
-          ),
-          exitCode: 1,
-          status: 'complete',
-        }
-      }
-      return {
-        stdout: bridgeBytes(arr[0]),
-        stderr: appendStderrLines(bridgeStderr(arr[1]), flushFailures),
-        exitCode: flushFailures.length > 0 && arr[2] === 0 ? 1 : arr[2],
-        status: arr[3],
-      }
-    } finally {
-      pyodide.globals.delete?.('_user_code')
-      pyodide.globals.delete?.('_repl_session_id')
-      pyodide.globals.delete?.('_repl_inputs')
-      pyodide.globals.delete?.('_repl_result')
+    const arr = this.guestModule(pyodide).repl(code, sessionId, inputs)
+    const flushFailures = await this.drainMutations()
+    return {
+      stdout: bridgeBytes(arr[0]),
+      stderr: appendStderrLines(bridgeStderr(arr[1]), flushFailures),
+      exitCode: flushFailures.length > 0 && arr[2] === 0 ? 1 : arr[2],
+      status: arr[3],
     }
   }
 }

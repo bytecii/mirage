@@ -55,9 +55,10 @@
     "dist"
   ],
   "scripts": {
-    "build": "node scripts/clean.mjs && tsc -p tsconfig.build.json",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "build": "node scripts/embed-python.mjs && node scripts/clean.mjs && tsc -p tsconfig.build.json",
+    "test": "node scripts/embed-python.mjs && vitest run",
+    "typecheck": "node scripts/embed-python.mjs && tsc --noEmit",
+    "prepare": "node scripts/embed-python.mjs"
   },
   "devDependencies": {
     "@pydantic/monty": "0.0.21",

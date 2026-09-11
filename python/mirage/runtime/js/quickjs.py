@@ -25,7 +25,8 @@ from mirage.runtime.js.base import JsRuntime
 from mirage.runtime.mixin import EvaluatorMixin
 from mirage.runtime.resolver import MountResolver
 from mirage.runtime.types import (DispatchFn, EvalResult, EvalValue, RunArgs,
-                                  RunResult, RuntimeReach, ScriptSource)
+                                  RunResult, RuntimeContext, RuntimeReach,
+                                  ScriptSource)
 from mirage.runtime.vfs import RuntimeVFS
 from mirage.runtime.wasm import WasmRuntime, WasmVFS
 
@@ -142,7 +143,14 @@ class QuickJsRuntime(JsRuntime, EvaluatorMixin):
             stdout = f"JavaScript (quickjs-ng {version})\n".encode()
         return RunResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
 
-    async def run(self, args: RunArgs) -> RunResult:
+    async def _execute_code(self, args: RunArgs,
+                            context: RuntimeContext | None) -> RunResult:
+        return await self.run(args, context)
+
+    async def run(self,
+                  args: RunArgs,
+                  context: RuntimeContext | None = None) -> RunResult:
+        context = context or self._capture_context()
         # --std exposes the std/os globals (stdin via std.in); -m selects
         # ES-module mode for .mjs sources. Trailing args become scriptArgs.
         argv = ["qjs", "--std"]
@@ -161,9 +169,10 @@ class QuickJsRuntime(JsRuntime, EvaluatorMixin):
         # any filename (quickjs-ng v0.15.1 qjs.c).
         named = [args.prog] if args.prog else []
         argv += ["-e", args.code, "--", *named, *args.args]
-        core = (RuntimeVFS(self._dispatch, asyncio.get_running_loop(),
-                           self._resolver)
-                if self._dispatch is not None else None)
+        dispatch = context.dispatch if context is not None else self._dispatch
+        resolver = context.resolver if context is not None else self._resolver
+        core = (RuntimeVFS(dispatch, asyncio.get_running_loop(), resolver)
+                if dispatch is not None else None)
         fs = WasmVFS(core=core)
         stdout, stderr, exit_code = await self._runtime.run(
             argv=argv,

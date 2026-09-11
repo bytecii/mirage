@@ -17,7 +17,14 @@ import { HOME_CONFIG_KEYS } from '../config.ts'
 import { EvalError } from '../errors.ts'
 import { JsRuntime } from './base.ts'
 import { EVALUATOR, type Evaluator } from '../mixin.ts'
-import type { EvalResult, EvalValue, RunArgs, RunResult, RuntimeOptions } from '../types.ts'
+import type {
+  EvalResult,
+  EvalValue,
+  RunArgs,
+  RunResult,
+  RuntimeOptions,
+  RuntimeContext,
+} from '../types.ts'
 import { RuntimeVFS } from '../vfs.ts'
 import { PrefixResolver, type MountResolver } from '../resolver.ts'
 import type { BridgeDispatchFn } from '../types.ts'
@@ -200,7 +207,11 @@ export class QuickJsRuntime extends JsRuntime implements Evaluator {
     }
   }
 
-  async run(args: RunArgs): Promise<RunResult> {
+  protected override executeCode(args: RunArgs, context?: RuntimeContext): Promise<RunResult> {
+    return this.run(args, context)
+  }
+
+  async run(args: RunArgs, context = this.captureContext()): Promise<RunResult> {
     const newAsyncModule = await this.loadModule()
     const QuickJS = await newAsyncModule()
     // Module-owned context, not newRuntime(): the async module's runtime
@@ -223,7 +234,11 @@ export class QuickJsRuntime extends JsRuntime implements Evaluator {
     try {
       this.installGlobals(ctx, args, out, err, exit)
       const vfs =
-        this.workspaceBridge !== null ? new RuntimeVFS(this.workspaceBridge, this.resolver) : null
+        context !== undefined
+          ? new RuntimeVFS(context.dispatch, context.resolver)
+          : this.workspaceBridge !== null
+            ? new RuntimeVFS(this.workspaceBridge, this.resolver)
+            : null
       installMirageFs(ctx, vfs)
 
       const boot = ctx.evalCode(BOOTSTRAP + MIRAGE_FS_BOOTSTRAP, 'mirage:bootstrap')
@@ -280,6 +295,7 @@ export class QuickJsRuntime extends JsRuntime implements Evaluator {
     code: string,
     opts: { inputs?: Record<string, EvalValue>; session?: string } = {},
   ): Promise<EvalResult> {
+    const context = this.captureContext()
     if (opts.session !== undefined) {
       throw new EvalError(
         'the quickjs evaluator is one-shot only: each eval is a fresh ' +
@@ -312,7 +328,11 @@ export class QuickJsRuntime extends JsRuntime implements Evaluator {
       // std.open/os.readdir, so a JS policy script can read mounted
       // content (the python evaluator gets this via run()'s RuntimeVFS).
       const vfs =
-        this.workspaceBridge !== null ? new RuntimeVFS(this.workspaceBridge, this.resolver) : null
+        context !== undefined
+          ? new RuntimeVFS(context.dispatch, context.resolver)
+          : this.workspaceBridge !== null
+            ? new RuntimeVFS(this.workspaceBridge, this.resolver)
+            : null
       installMirageFs(ctx, vfs)
       const boot = ctx.evalCode(BOOTSTRAP + MIRAGE_FS_BOOTSTRAP, 'mirage:bootstrap')
       if (boot.error) {

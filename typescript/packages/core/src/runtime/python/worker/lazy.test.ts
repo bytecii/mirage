@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { readFileSync } from 'node:fs'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { describe, expect, it, vi } from 'vitest'
 import { PyodideRuntime } from '../pyodide.ts'
@@ -51,7 +52,12 @@ function gate(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve }
 }
 
-const runArgs = (code: string): RunArgs => ({ code, args: [], env: {}, stdin: null })
+const runArgs = (code: string, args: string[] = []): RunArgs => ({
+  code,
+  args,
+  env: {},
+  stdin: null,
+})
 
 describe('Pyodide lazy VFS', { timeout: 60_000 }, () => {
   it.each(['first', 'bad', 'later'])(
@@ -81,19 +87,7 @@ describe('Pyodide lazy VFS', { timeout: 60_000 }, () => {
       rt.attach(dispatch, new PrefixResolver(() => ['/data/']))
       try {
         const result = await rt.run(
-          runArgs(`
-import os
-for name in ['first', 'bad', 'later', 'after', 'last']:
-    os.stat('/data/' + name)
-for name in ['first', 'bad', 'later']:
-    with open('/data/' + name, 'w') as f: f.write('new')
-try: os.stat('/data/missing')
-except OSError: pass
-with open('/data/after', 'w') as f: f.write('discarded inline')
-try: os.stat('/data/also_missing')
-except OSError: pass
-with open('/data/last', 'w') as f: f.write('discarded at completion')
-`),
+          runArgs(readFileSync(new URL('./fixtures/discarded_writes.py', import.meta.url), 'utf8')),
         )
         const failedAt = names.indexOf(rejected)
         expect(result.exitCode).toBe(1)
@@ -237,12 +231,7 @@ with open('/data/last', 'w') as f: f.write('discarded at completion')
         data = ENC.encode(JSON.stringify({ name }))
         calls.length = 0
         const result = await rt.run(
-          runArgs(`
-import glob, json
-path = glob.glob('/notion/databases/*/database.json')[0]
-with open(path) as f:
-    print(json.load(f)['name'])
-`),
+          runArgs(readFileSync(new URL('./fixtures/lazy_glob.py', import.meta.url), 'utf8')),
         )
         expect(result.exitCode).toBe(0)
         expect(DEC.decode(result.stdout)).toBe(`${name}\n`)
@@ -289,15 +278,10 @@ with open(path) as f:
       )
       try {
         const result = await rt.run(
-          runArgs(`import os
-fd = os.open('/data/file', os.O_WRONLY | os.${mode === 'append' ? 'O_APPEND' : 'O_TRUNC'})
-os.write(fd, b'first')
-os.write(fd, b'+')
-os.listdir('/other')
-os.write(fd, b'second')
-os.listdir('/other')
-os.close(fd)
-os.listdir('/other')`),
+          runArgs(
+            readFileSync(new URL('./fixtures/descriptor_writes.py', import.meta.url), 'utf8'),
+            [mode],
+          ),
         )
         expect(result.exitCode).toBe(0)
         const start = mode === 'append' ? 'old' : ''
@@ -430,14 +414,7 @@ os.listdir('/other')`),
         controller.abort()
       }, 100)
       const aborted = await rt.run({
-        ...runArgs(`import traceback, time
-_original = traceback.print_exc
-def slow_traceback(*args, **kwargs):
-    traceback.print_exc = _original
-    time.sleep(0.1)
-    _original(*args, **kwargs)
-traceback.print_exc = slow_traceback
-while True: pass`),
+        ...runArgs(readFileSync(new URL('./fixtures/slow_traceback.py', import.meta.url), 'utf8')),
         signal: controller.signal,
       })
       clearTimeout(timer)

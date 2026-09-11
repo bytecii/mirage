@@ -66,6 +66,7 @@ def _spied_runtime() -> QuickJsRuntime:
     # the only thing under test, so the engine is stubbed out. These run
     # everywhere; the @live tests below need the build.
     rt = object.__new__(QuickJsRuntime)
+    rt._binding = None
     rt._dispatch = None
     rt._resolver = None
     rt._runtime = _ArgvSpy()

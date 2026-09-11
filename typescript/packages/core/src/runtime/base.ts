@@ -103,13 +103,17 @@ export abstract class Runtime {
 
   /** Engine entry point; Workspace.execute still owns shell admission and routing. */
   async execute(request: ExecutionRequest, context?: RuntimeContext): Promise<RunResult> {
-    const current = context ?? this.binding?.capture()
+    const current = context ?? this.captureContext()
     if (current !== undefined) {
       if (current.binding !== this.binding)
         throw new Error(`${this.name}: context belongs to another binding`)
       return current.scope.run(() => this.executeRequest(request, current))
     }
     return this.executeRequest(request)
+  }
+
+  protected captureContext(): RuntimeContext | undefined {
+    return this.binding?.capture()
   }
 
   protected async executeRequest(

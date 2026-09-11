@@ -16,28 +16,36 @@ import { describe, expect, it } from 'vitest'
 import { PathSpec } from '../../types.ts'
 import { PyodideRuntime } from './pyodide.ts'
 import { PrefixResolver } from '../resolver.ts'
-import { PYTHON_EVAL_WRAPPER, PYTHON_REPL_WRAPPER, PYTHON_WRAPPER } from './wrapper.ts'
+import { loadPyodideRuntime } from './loader.ts'
+import { PyodideGuest } from './wrapper.ts'
+describe('Python guest module', { timeout: 120_000 }, () => {
+  it('releases converted arguments and keeps helper globals outside guest programs', async () => {
+    const pyodide = await loadPyodideRuntime()
+    const toPy = pyodide.toPy
+    const converted: { toJs: () => unknown }[] = []
+    pyodide.toPy = (value) => {
+      const proxy = toPy(value)
+      if (proxy !== null && typeof proxy === 'object' && 'toJs' in proxy)
+        converted.push(proxy as { toJs: () => unknown })
+      return proxy
+    }
+    const guest = new PyodideGuest(pyodide)
+    try {
+      expect(guest.evaluate("'run' in globals() or '_saved_env' in globals()", {})[0]).toBe('false')
+      // The first proxy owns the module; each later proxy is a call argument.
+      for (const proxy of converted.slice(1)) expect(() => proxy.toJs()).toThrow(/destroyed/i)
+      expect(pyodide.runPython("'_saved_env' in globals() or '_eval_result' in globals()")).toBe(
+        false,
+      )
+      expect(guest.repl('answer = 42', 'one', {})[2]).toBe(0)
+      expect(new TextDecoder().decode(guest.repl('answer', 'one', {})[0])).toBe('42\n')
+      expect(guest.repl('answer', 'two', {})[2]).toBe(1)
+    } finally {
+      guest.close()
+    }
+    for (const proxy of converted) expect(() => proxy.toJs()).toThrow(/destroyed/i)
+  })
 
-// These constants are Python programs living inside TypeScript template
-// literals, a combination with one sharp edge: a plain template literal
-// processes backslash escapes before Python ever sees the text, so a
-// lone `\n` written inside an embedded Python string literal becomes a
-// REAL newline and truncates that literal. The symptom is remote from
-// the cause -- every pyodide run dies with `pyodide_fatal_error`,
-// including `print(42)` -- which is why this compiles each wrapper with
-// the real CPython that is going to run it and names the one that broke.
-//
-// The literals are `String.raw` so the escapes mean what they say; that
-// is the fix, and this is the backstop. Reading the .ts file and
-// un-escaping it by hand is NOT a substitute: doing that models the
-// escaping wrong and reports a false pass.
-const WRAPPERS: readonly (readonly [string, string])[] = [
-  ['PYTHON_WRAPPER', PYTHON_WRAPPER],
-  ['PYTHON_EVAL_WRAPPER', PYTHON_EVAL_WRAPPER],
-  ['PYTHON_REPL_WRAPPER', PYTHON_REPL_WRAPPER],
-]
-
-describe('embedded python wrappers', { timeout: 120_000 }, () => {
   it('distinguishes absent and empty stdin for script CLIs without changing ordinary globals', async () => {
     const rt = new PyodideRuntime()
     try {
@@ -64,20 +72,6 @@ describe('embedded python wrappers', { timeout: 120_000 }, () => {
         stdin: null,
       })
       expect(new TextDecoder().decode(ordinary.stdout)).toBe('False False\n')
-    } finally {
-      await rt.close()
-    }
-  })
-
-  it('every wrapper compiles on the interpreter that runs it', async () => {
-    const rt = new PyodideRuntime()
-    try {
-      for (const [name, src] of WRAPPERS) {
-        const result = await rt.eval("compile(_src, _name, 'exec') and 'ok'", {
-          inputs: { _src: src, _name: name },
-        })
-        expect(result.value, `${name} is not valid python`).toBe('ok')
-      }
     } finally {
       await rt.close()
     }
