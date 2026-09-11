@@ -110,8 +110,11 @@ Three things worth knowing:
   hand-written commands with a `+` (`gws docs +write`); mirage's tree does
   not need the marker, because a helper and a Discovery method cannot
   collide inside a typed spec. So an upstream line carrying `+` has to
-  drop it here. The helper flags are mirage's own too, and `--tab` has no
-  upstream counterpart: upstream has no tab support at all.
+  drop it here. The flag *names* are upstream's own and match it
+  (`--document --text`, `gmail send`'s `--to --subject --body`, `sheets
+  read`'s `--spreadsheet --range`); `--tab` is the single addition,
+  because upstream's `+write` takes no tab argument and upstream has no
+  tab support at all.
 
 ### Document tabs
 
