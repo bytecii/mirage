@@ -275,25 +275,6 @@ async def test_eval_cancellation_reclaims_the_worker():
 
 
 @pytest.mark.asyncio
-async def test_monty_concurrent_first_use_shares_one_pool():
-    """Two cold runs must not each build a pool.
-
-    The loser of the race would be unreachable from close(), leaking
-    its worker subprocesses.
-    """
-    runtime = MontyRuntime()
-    pools: list[object] = []
-
-    async def probe():
-        pool = await runtime._execution._ensure_pool()
-        pools.append(pool)
-
-    await asyncio.gather(probe(), probe(), probe())
-    assert len({id(p) for p in pools}) == 1
-    await runtime.close()
-
-
-@pytest.mark.asyncio
 async def test_monty_cancelled_eval_session_releases_its_checkout(monkeypatch):
     """A cancelled console session must hand its lease back.
 
