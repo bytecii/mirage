@@ -256,6 +256,59 @@ with open(path) as f:
     }
   })
 
+  it.each(['truncate', 'append'])(
+    'flushes open descriptor %s writes before reads on another mount',
+    async (mode) => {
+      const files = new Map<string, Uint8Array>([['/data/file', ENC.encode('old')]])
+      const observed: string[] = []
+      const rt = new PyodideRuntime()
+      rt.attach(
+        async (op, path, bytes) => {
+          await Promise.resolve()
+          if (op === 'readdir' && path === '/other/') {
+            observed.push(DEC.decode(files.get('/data/file')))
+            return []
+          }
+          if (op === 'stat') {
+            const data = files.get(path)
+            if (data === undefined) throw Object.assign(new Error(path), { code: 'ENOENT' })
+            return new FileStat({ name: path, type: FileType.FILE, size: data.length })
+          }
+          if (op === 'read') return files.get(path)
+          if (op === 'write') {
+            files.set(path, bytes ?? new Uint8Array())
+            return
+          }
+          if (op === 'append') {
+            files.set(path, ENC.encode(DEC.decode(files.get(path)) + DEC.decode(bytes)))
+            return
+          }
+          throw new Error(`unexpected op: ${op} ${path}`)
+        },
+        new PrefixResolver(() => ['/data/', '/other/']),
+      )
+      try {
+        const result = await rt.run(
+          runArgs(`import os
+fd = os.open('/data/file', os.O_WRONLY | os.${mode === 'append' ? 'O_APPEND' : 'O_TRUNC'})
+os.write(fd, b'first')
+os.write(fd, b'+')
+os.listdir('/other')
+os.write(fd, b'second')
+os.listdir('/other')
+os.close(fd)
+os.listdir('/other')`),
+        )
+        expect(result.exitCode).toBe(0)
+        const start = mode === 'append' ? 'old' : ''
+        expect(observed).toEqual([start + 'first+', start + 'first+second', start + 'first+second'])
+        expect(DEC.decode(files.get('/data/file'))).toBe(start + 'first+second')
+      } finally {
+        await rt.close()
+      }
+    },
+  )
+
   it('preserves queued run and eval session attribution without async storage isolation', async () => {
     const calls: string[] = []
     const rt = new PyodideRuntime()

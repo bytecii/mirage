@@ -89,8 +89,6 @@ export interface FSNode {
 export interface FSStream {
   node: FSNode
   position: number
-  baseLen?: number
-  lowWrite?: number
 }
 
 export interface FSAttr {

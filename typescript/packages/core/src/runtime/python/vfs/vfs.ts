@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { NO_WRITE, planFlush } from '../../handles/index.ts'
+import { planFlush } from '../../handles/index.ts'
 import { epochToIso } from '../../../utils/dates.ts'
 import type { SetAttrFields } from '../../../types.ts'
 import { BLKSIZE, LINK_MODE, SEEK_CUR, SEEK_END } from './constants.ts'
@@ -184,7 +184,7 @@ export class MirageFs {
     }
     const streamOps: StreamOps = {
       open: this.streamOpen.bind(this),
-      close: this.streamClose.bind(this),
+      close: () => undefined,
       read: this.streamRead.bind(this),
       write: this.streamWrite.bind(this),
       llseek: this.llseek.bind(this),
@@ -327,7 +327,7 @@ export class MirageFs {
     else {
       // An empty write is what carries a file that is created and never
       // written (`Path.touch()`, `open(p,'w').close()`) through to the
-      // mount. A later close for the same path coalesces over it.
+      // mount. A later write for the same path coalesces over it.
       this.journal.markWrite(path, new Uint8Array(0))
       // FS.open finalizes a new file with a chmod of its own, right
       // here and on this node. Only a file is marked: a directory gets
@@ -449,20 +449,6 @@ export class MirageFs {
     // length and content are unknown. Any handle at all is refused,
     // because a write through one could only guess at what it replaces.
     if (stream.node.unreadable === true) throw errnoError(this.host, this.errno, 'EIO')
-    stream.baseLen = stream.node.usedBytes ?? 0
-    stream.lowWrite = NO_WRITE
-  }
-
-  private streamClose(stream: FSStream): void {
-    const low = stream.lowWrite ?? NO_WRITE
-    if (low === NO_WRITE) return
-    const node = stream.node
-    const buf = (node.contents ?? new Uint8Array(0)).subarray(0, node.usedBytes ?? 0)
-    const [kind, bytes] = planFlush(stream.baseLen ?? 0, low, buf)
-    stream.lowWrite = NO_WRITE
-    const path = this.tree.pathOf(node)
-    if (kind === 'append') this.journal.markAppend(path, bytes)
-    else this.journal.markWrite(path, bytes)
   }
 
   private streamRead(
@@ -495,6 +481,7 @@ export class MirageFs {
     if (length === 0) return 0
     const node = stream.node
     if (isCharDevice(node.mode)) return length
+    const baseLen = node.usedBytes ?? 0
     const need = position + length
     let contents = node.contents ?? new Uint8Array(0)
     if (contents.length < need) {
@@ -506,7 +493,10 @@ export class MirageFs {
     contents.set(buffer.subarray(offset, offset + length), position)
     node.usedBytes = Math.max(node.usedBytes ?? 0, need)
     node.mtime = node.ctime = Date.now()
-    stream.lowWrite = Math.min(stream.lowWrite ?? NO_WRITE, position)
+    const [kind, bytes] = planFlush(baseLen, position, contents.subarray(0, node.usedBytes))
+    const path = this.tree.pathOf(node)
+    if (kind === 'append') this.journal.markAppend(path, bytes)
+    else this.journal.markWrite(path, bytes)
     return length
   }
 
