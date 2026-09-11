@@ -237,14 +237,14 @@ try:
         _globals.update(argv=list(_argv),
                         stdin=bytes(_stdin_bytes) if _stdin_bytes is not None else None)
     try:
-        # The host's deadline is armed here and disarmed in the finally
-        # below, so a trip can only ever land inside this try, where the
-        # handlers below own it.
-        _arm_interrupt()
-        if _cwd != '':
-            _saved_chdir(_cwd)
-        exec(compile(_user_code, '<string>', 'exec', optimize=_optimize),
-             _globals)
+        try:
+            _arm_interrupt()
+            if _cwd != '':
+                _saved_chdir(_cwd)
+            exec(compile(_user_code, '<string>', 'exec', optimize=_optimize),
+                 _globals)
+        finally:
+            _disarm_interrupt()
     except SystemExit as _e:
         _code = _e.code
         if _code is None:
@@ -259,8 +259,6 @@ try:
     except BaseException:
         traceback.print_exc(file=_err_text)
         _exit_code = 1
-    finally:
-        _disarm_interrupt()
 finally:
     _out_text.flush()
     _err_text.flush()

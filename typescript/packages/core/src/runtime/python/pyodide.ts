@@ -12,6 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { captureSessionContext } from '../../context/session_context.ts'
+import { captureRecordingContext } from '../../observe/context.ts'
+import { ContextScope } from '../../utils/context_scope.ts'
 import { CommandTimeoutError } from '../../commands/errors.ts'
 import { PythonRuntime } from './base.ts'
 import { EvalError } from '../errors.ts'
@@ -340,7 +343,8 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
   }
 
   async run(args: RunArgs): Promise<RunResult> {
-    const task = (): Promise<RunResult> => this.runOne(args)
+    const scope = new ContextScope([...captureSessionContext(), ...captureRecordingContext()])
+    const task = (): Promise<RunResult> => scope.run(() => this.runOne(args, scope))
     const next = this.queue.then(task, task)
     this.queue = next.catch(() => undefined)
     return next
@@ -358,7 +362,8 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     code: string,
     opts: { inputs?: Record<string, EvalValue>; session?: string } = {},
   ): Promise<EvalResult> {
-    const task = (): Promise<EvalResult> => this.evalOne(code, opts)
+    const scope = new ContextScope([...captureSessionContext(), ...captureRecordingContext()])
+    const task = (): Promise<EvalResult> => scope.run(() => this.evalOne(code, opts, scope))
     const next = this.queue.then(task, task)
     this.queue = next.catch(() => undefined)
     return next
@@ -367,17 +372,21 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
   private async evalOne(
     code: string,
     opts: { inputs?: Record<string, EvalValue>; session?: string },
+    scope: ContextScope,
   ): Promise<EvalResult> {
     const worker = await this.ensureWorker()
     if (worker !== null) {
-      return (await worker.execute({
-        kind: 'execute',
-        method: 'eval',
-        config: this.config as PyodideConfig,
-        prefixes: this.resolver.prefixes(),
-        code,
-        ...opts,
-      })) as EvalResult
+      return (await worker.execute(
+        {
+          kind: 'execute',
+          method: 'eval',
+          config: this.config as PyodideConfig,
+          prefixes: scope.call(() => this.resolver.prefixes()),
+          code,
+          ...opts,
+        },
+        scope,
+      )) as EvalResult
     }
     if (opts.session !== undefined) {
       const repl = await this.runOneRepl(code, opts.session, opts.inputs ?? {})
@@ -720,7 +729,7 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     }
   }
 
-  private async runOne(args: RunArgs): Promise<RunResult> {
+  private async runOne(args: RunArgs, scope: ContextScope): Promise<RunResult> {
     const worker = await this.ensureWorker()
     if (worker !== null) {
       const { cwd, signal, ...rest } = args
@@ -729,9 +738,10 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
           kind: 'execute',
           method: 'run',
           config: this.config as PyodideConfig,
-          prefixes: this.resolver.prefixes(),
+          prefixes: scope.call(() => this.resolver.prefixes()),
           args: { ...rest, ...(cwd !== undefined ? { cwd: cwd.virtual } : {}) },
         },
+        scope,
         signal,
       )) as RunResult
     }

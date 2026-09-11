@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { ContextScope } from '../../../utils/context_scope.ts'
 import { PyodideUnavailableError } from '../types.ts'
 import { EvalError } from '../../errors.ts'
 import { CommandTimeoutError } from '../../../commands/errors.ts'
@@ -140,8 +141,13 @@ export class PyodideWorkerClient {
     }
   }
 
-  async execute(request: ExecuteRequest, signal?: AbortSignal): Promise<RunResult | EvalResult> {
+  async execute(
+    request: ExecuteRequest,
+    scope: ContextScope,
+    signal?: AbortSignal,
+  ): Promise<RunResult | EvalResult> {
     if (this.failure !== null) throw this.failure
+    const responses = new Set<Promise<void>>()
     const cells = new Int32Array(this.interruptBuffer)
     Atomics.store(cells, 3, 0)
     const abort = (): void => {
@@ -160,11 +166,12 @@ export class PyodideWorkerClient {
           continue
         }
         if (message.kind === 'vfs') {
-          // Start the operation in the calling run's async context. A worker
-          // event callback would retain the first session's policy/observer.
-          void respond(message.buffer, () => this.operation(message)).finally(() =>
-            this.buffers.delete(message.buffer),
-          )
+          const response = respond(message.buffer, () => scope.run(() => this.operation(message)))
+          responses.add(response)
+          void response.then(() => {
+            responses.delete(response)
+            this.buffers.delete(message.buffer)
+          })
           continue
         }
         if (message.kind === 'result') return message.value
@@ -178,6 +185,9 @@ export class PyodideWorkerClient {
       }
     } finally {
       signal?.removeEventListener('abort', abort)
+      // An interrupted guest can finish while a backend mutation is still pending.
+      // Keep the runtime queue closed until every response has finished.
+      await Promise.all(responses)
     }
   }
 

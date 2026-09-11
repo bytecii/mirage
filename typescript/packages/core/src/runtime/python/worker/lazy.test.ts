@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { PyodideRuntime } from '../pyodide.ts'
 import { PrefixResolver } from '../../resolver.ts'
 import { FileStat, FileType, Limit, MountMode } from '../../../types.ts'
@@ -25,8 +25,32 @@ import { Workspace } from '../../../workspace/workspace/workspace.ts'
 import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
 import { RAMResource } from '../../../resource/ram/ram.ts'
 
+import { getCurrentSession, runWithSession } from '../../../context/session_context.ts'
+import { record, runWithRecording, startOp } from '../../../observe/context.ts'
+import { Session } from '../../../workspace/session/session.ts'
+import type * as asyncContextModule from '../../../utils/async_context.ts'
+
+vi.mock('../../../utils/async_context.ts', async (importOriginal) => {
+  const real = await importOriginal<typeof asyncContextModule>()
+  return {
+    ...real,
+    asyncContextIsolatesTasks: false,
+    createAsyncContext<T>() {
+      return new real.FallbackStorage<T>()
+    },
+  }
+})
+
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
+function gate(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
 const runArgs = (code: string): RunArgs => ({ code, args: [], env: {}, stdin: null })
 
 describe('Pyodide lazy VFS', { timeout: 60_000 }, () => {
@@ -232,6 +256,103 @@ with open(path) as f:
     }
   })
 
+  it('preserves queued run and eval session attribution without async storage isolation', async () => {
+    const calls: string[] = []
+    const rt = new PyodideRuntime()
+    rt.attach(
+      async (op, path) => {
+        await Promise.resolve()
+        const session = getCurrentSession()?.sessionId ?? 'missing'
+        calls.push(`${op}:${session}`)
+        if (op === 'stat') return new FileStat({ name: path, type: FileType.FILE, size: 3 })
+        if (op === 'read') {
+          record(op, path, 'test', 3, startOp())
+          return ENC.encode(session)
+        }
+        throw new Error(`unexpected op: ${op}`)
+      },
+      new PrefixResolver(() => ['/data/']),
+    )
+    const one = new Session({ sessionId: 'one' })
+    const two = new Session({ sessionId: 'two' })
+    try {
+      const first = runWithSession(one, () =>
+        runWithRecording(() => rt.run(runArgs("print(open('/data/one').read())"))),
+      )
+      const second = runWithSession(two, () =>
+        runWithRecording(() => rt.eval("open('/data/two').read()")),
+      )
+      const [[run, firstRecords], [evaluated, secondRecords]] = await Promise.all([first, second])
+      expect(DEC.decode(run.stdout)).toBe('one\n')
+      expect(evaluated.value).toBe('two')
+      expect(calls).toEqual(['stat:one', 'read:one', 'stat:two', 'read:two'])
+      expect(firstRecords.map((entry) => entry.path)).toEqual(['/data/one'])
+      expect(secondRecords.map((entry) => entry.path)).toEqual(['/data/two'])
+      expect(getCurrentSession()).toBeNull()
+    } finally {
+      await rt.close()
+    }
+  })
+
+  it.each(['abort', 'timeout'])(
+    'drains a slow mutation before advancing after %s',
+    async (kind) => {
+      const entered = gate()
+      const release = gate()
+      let contents: Uint8Array = ENC.encode('old')
+      const writes: string[] = []
+      const rt = new PyodideRuntime()
+      rt.attach(
+        async (op, path, bytes) => {
+          if (op === 'stat')
+            return new FileStat({ name: path, type: FileType.FILE, size: contents.length })
+          if (op === 'read') return contents
+          if (op === 'write') {
+            const value = DEC.decode(bytes)
+            if (value === 'first') {
+              entered.resolve()
+              await release.promise
+            }
+            contents = bytes ?? new Uint8Array()
+            writes.push(value)
+            return
+          }
+          throw new Error(`unexpected op: ${op}`)
+        },
+        new PrefixResolver(() => ['/data/']),
+      )
+      try {
+        await rt.run(runArgs('pass'))
+        const controller = new AbortController()
+        const first = rt.run({
+          ...runArgs(
+            "import os\nwith open('/data/file', 'w') as f: f.write('first')\nos.stat('/data/flush')",
+          ),
+          ...(kind === 'abort' ? { signal: controller.signal } : { timeoutSeconds: 0.1 }),
+        })
+        const checked =
+          kind === 'timeout'
+            ? expect(first).rejects.toBeInstanceOf(CommandTimeoutError)
+            : first.then((result) => {
+                expect(result.exitCode).toBe(1)
+              })
+        await entered.promise
+        const next = rt.run(runArgs("with open('/data/file', 'w') as f: f.write('second')"))
+        controller.abort()
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        expect(writes).toEqual([])
+        release.resolve()
+        await checked
+        expect((await next).exitCode).toBe(0)
+        expect(writes).toEqual(['first', 'second'])
+        expect(DEC.decode(contents)).toBe('second')
+      } finally {
+        release.resolve()
+        await rt.close()
+      }
+    },
+  )
+
   it('interrupts compute and a blocked file read, then keeps serving requests', async () => {
     let release: (() => void) | undefined
     const dispatch: BridgeDispatchFn = async (op, path) => {
@@ -255,13 +376,28 @@ with open(path) as f:
       const timer = setTimeout(() => {
         controller.abort()
       }, 100)
-      const aborted = await rt.run({ ...runArgs('while True: pass'), signal: controller.signal })
+      const aborted = await rt.run({
+        ...runArgs(`import traceback, time
+_original = traceback.print_exc
+def slow_traceback(*args, **kwargs):
+    traceback.print_exc = _original
+    time.sleep(0.1)
+    _original(*args, **kwargs)
+traceback.print_exc = slow_traceback
+while True: pass`),
+        signal: controller.signal,
+      })
       clearTimeout(timer)
       expect(aborted.exitCode).toBe(1)
-      await expect(
+      const blocked = expect(
         rt.run({ ...runArgs("open('/data/hang').read()"), timeoutSeconds: 0.1 }),
       ).rejects.toBeInstanceOf(CommandTimeoutError)
+      await vi.waitFor(() => {
+        expect(release).toBeDefined()
+      })
+      await new Promise((resolve) => setTimeout(resolve, 300))
       release?.()
+      await blocked
       const fresh = await rt.run(runArgs('print(42)'))
       expect(fresh.exitCode).toBe(0)
       expect(DEC.decode(fresh.stdout)).toBe('42\n')

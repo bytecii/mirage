@@ -14,6 +14,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { Runtime } from './base.ts'
+import type { WorkspaceBinding } from './binding.ts'
 import { LanguageRuntime } from './language.ts'
 import { LINE_EXECUTOR } from './mixin.ts'
 import { UnsupportedExecutionError } from './errors.ts'
@@ -85,6 +86,35 @@ async function world(runtimes?: Runtime[]): Promise<Workspace> {
 }
 
 describe('execution bindings', () => {
+  it('makes workspace services available during runtime binding', async () => {
+    class EagerProbe extends Probe {
+      context?: RuntimeContext
+      read?: Promise<unknown>
+      prefixes: string[] = []
+      links: string[] = []
+      override bind(binding: WorkspaceBinding): void {
+        super.bind(binding)
+        this.context = binding.capture()
+        this.prefixes = binding.resolver.prefixes()
+        this.links = [...binding.resolver.linkChildren('/data')]
+        this.read = binding.dispatch('read', '/data/file')
+      }
+    }
+    const runtime = new EagerProbe()
+    const data = new RAMResource()
+    data.loadState({ type: 'ram', files: { '/file': enc.encode('ready') } })
+    const ws = new Workspace({ '/data': data }, { runtimes: [runtime] })
+    try {
+      expect(runtime.prefixes).toEqual(['/data/', '/dev/'])
+      expect(runtime.links).toEqual([])
+      expect(required(runtime.context).cwd.virtual).toBe('/')
+      expect(required(runtime.context).sessionView).not.toBeNull()
+      expect(dec.decode((await runtime.read) as Uint8Array)).toBe('ready')
+    } finally {
+      await ws.close()
+    }
+  })
+
   it('declares capabilities and refuses unsupported kinds and languages', async () => {
     const language = new Probe(),
       native = new ShellProbe()

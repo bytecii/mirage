@@ -257,15 +257,6 @@ export class Workspace {
     this.runtimeBinding = new WorkspaceBinding(this.buildWorkspaceBridge(), sandboxResolver, () =>
       this.runtimeContext(),
     )
-    this.runtimes = new Runtimes({
-      registry: this.registry,
-      entries: options.runtimes,
-      pythonConfig: options.python ?? {},
-      binding: this.runtimeBinding,
-      registerCloser: (fn) => {
-        this.closers.push(fn)
-      },
-    })
     rejectConfigScript('routePolicy', options.routePolicy)
     this.routePolicy = options.routePolicy ?? null
     // The permission profiles: one per name, and the one a session
@@ -323,13 +314,6 @@ export class Workspace {
       const cliSpec = typeof specOrKey === 'string' ? cliSpecFor(specOrKey) : specOrKey
       this.registry.clis.install(cliName, cliSpec, cliConfig)
     }
-    this.router = new Router(
-      this.registry,
-      this.runtimes,
-      this.routePolicy,
-      this.agentId,
-      sandboxResolver,
-    )
     this.observer = new Observer(stores.observe)
     this.registry.mount(HISTORY_PREFIX, new HistoryViewResource(this.observer), MountMode.READ)
     this.cache = buildFileCache(options.cache, options.cacheLimit)
@@ -411,6 +395,22 @@ export class Workspace {
         const mount = this.registry.tryMountFor(path)
         return mount === null ? null : { prefix: mount.prefix, kind: mount.resource.kind }
       },
+    )
+    this.runtimes = new Runtimes({
+      registry: this.registry,
+      entries: options.runtimes,
+      pythonConfig: options.python ?? {},
+      binding: this.runtimeBinding,
+      registerCloser: (fn) => {
+        this.closers.push(fn)
+      },
+    })
+    this.router = new Router(
+      this.registry,
+      this.runtimes,
+      this.routePolicy,
+      this.agentId,
+      sandboxResolver,
     )
   }
 
