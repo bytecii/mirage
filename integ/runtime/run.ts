@@ -46,6 +46,7 @@ import {
   type RuntimeEntry,
 } from '@struktoai/mirage-node'
 import { parseSessionProfile } from '@struktoai/mirage-core/policy/profile'
+import type { RuntimeLanguage } from '@struktoai/mirage-core/runtime/types'
 
 const HOST = 'typescript'
 const SUITE_DIR = dirname(fileURLToPath(import.meta.url))
@@ -90,12 +91,13 @@ interface Step {
 interface MountSpecJson {
   resource: string
   files?: Record<string, string>
+  generated_files?: number
   limits?: Record<string, Record<string, unknown>>
 }
 
 interface CliSpecJson {
   script: string
-  language?: string
+  language?: RuntimeLanguage
   runtime?: string
   config?: Record<string, unknown>
 }
@@ -383,7 +385,21 @@ async function ensureMongo(): Promise<void> {
 }
 
 async function buildResource(spec: MountSpecJson, runId: string): Promise<Resource> {
-  if (spec.resource === 'ram') return new RAMResource()
+  if (spec.resource === 'ram') {
+    const resource = new RAMResource()
+    if (spec.generated_files !== undefined) {
+      resource.loadState({
+        type: 'ram',
+        files: Object.fromEntries(
+          Array.from({ length: spec.generated_files }, (_, i) => [
+            `/file-${String(i)}.txt`,
+            ENC.encode('unused'),
+          ]),
+        ),
+      })
+    }
+    return resource
+  }
   if (spec.resource === 'redis') {
     return new RedisResource({
       url: process.env.REDIS_URL ?? '',
@@ -524,14 +540,15 @@ function check(
 }
 
 function checkOps(expect: Expect, seen: string[]): string[] {
+  const recorded = new Set([...seen, ...seen.map((entry) => entry.split(' ', 1)[0])])
   const problems: string[] = []
   for (const entry of expect.ops_contain ?? []) {
-    if (!seen.includes(entry)) {
+    if (!recorded.has(entry)) {
       problems.push(`ledger missing ${JSON.stringify(entry)}: got ${JSON.stringify(seen)}`)
     }
   }
   for (const entry of expect.ops_absent ?? []) {
-    if (seen.includes(entry)) {
+    if (recorded.has(entry)) {
       problems.push(`ledger must not hold ${JSON.stringify(entry)}: got ${JSON.stringify(seen)}`)
     }
   }

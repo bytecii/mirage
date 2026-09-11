@@ -13,11 +13,16 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from abc import abstractmethod
+from dataclasses import replace
 from typing import ClassVar
 
 from mirage.runtime.base import Runtime
+from mirage.runtime.binding import WorkspaceBinding
+from mirage.runtime.errors import UnsupportedExecutionError
 from mirage.runtime.resolver import MountResolver
-from mirage.runtime.types import DispatchFn, Language, RunArgs, RunResult
+from mirage.runtime.types import (CodeExecution, DispatchFn, ExecutionRequest,
+                                  Language, RunArgs, RunResult,
+                                  RuntimeCapabilities, RuntimeContext)
 
 
 class LanguageRuntime(Runtime):
@@ -41,17 +46,32 @@ class LanguageRuntime(Runtime):
     dispatch attached here, while a host subprocess only sees the host
     filesystem and keeps the default no-op attach.
 
-    The doors are the data plane (dispatch) and the name plane
-    (resolver), and the list is complete on purpose: there is no
-    session door. A guest reads the frozen ``RunArgs.env`` snapshot; an
-    env write lands on the guest's own copy and dies with the run,
-    never reaching the live session, so guest code can neither trip nor
-    bypass a ``pre_session`` rule. That blindness is a security
-    boundary, not a gap — a runtime that ever needs session state must
-    take a gated ``SessionView``, never a bare session reference.
+    A host adapter receives data, namespace and gated session views through
+    WorkspaceBinding and its per-execution RuntimeContext. Existing engines
+    use attach for their filesystem bridge. Guests receive only RunArgs.env,
+    a copy whose writes do not mutate the Mirage session; the adapter must
+    explicitly use the gated SessionView for any intended session write.
     """
 
     language: ClassVar[Language]
+
+    @property
+    def capabilities(self) -> RuntimeCapabilities:
+        return replace(super().capabilities, languages=(self.language, ))
+
+    def bind(self, binding: WorkspaceBinding) -> None:
+        super().bind(binding)
+        self.attach(binding.dispatch, binding.resolver)
+
+    async def _execute(self, request: ExecutionRequest,
+                       context: RuntimeContext | None) -> RunResult:
+        if isinstance(request, CodeExecution):
+            if request.language != self.language:
+                raise UnsupportedExecutionError(
+                    f"{self.name}: {request.language} execution is unsupported"
+                )
+            return await self.run(request)
+        return await super()._execute(request, context)
 
     async def version(self, env: dict[str, str]) -> RunResult:
         """Report the bound interpreter's version.

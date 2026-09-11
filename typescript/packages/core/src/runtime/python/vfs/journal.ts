@@ -35,7 +35,7 @@ export type MirageMutation =
 /**
  * The write-ahead log a pyodide guest records into.
  *
- * Every mark is deliberately synchronous: the guest's close(), os.mkdir()
+ * Every mark is deliberately synchronous: the guest's write(), os.mkdir()
  * and os.rename() run inside sync WASM frames where awaiting a mount op
  * needs JSPI stack switching, which most engines do not enable. The guest
  * records here and the runtime replays after the script returns, where
@@ -91,9 +91,9 @@ export function createJournal(): MutationJournal {
     markAppend(path, bytes) {
       const owned = new Uint8Array(bytes)
       const last = journal[journal.length - 1]
-      if (last?.kind === 'append' && last.path === path) {
+      if ((last?.kind === 'append' || last?.kind === 'write') && last.path === path) {
         journal[journal.length - 1] = {
-          kind: 'append',
+          kind: last.kind,
           path,
           bytes: concatBytes(last.bytes, owned),
         }

@@ -15,7 +15,7 @@
 import { parsedCommands, type RouteDecision } from '../../runtime/routing/index.ts'
 import type { Runtime, RuntimeEntry } from '../../runtime/base.ts'
 import { rejectConfigScript } from './guard.ts'
-import { LanguageRuntime } from '../../runtime/language.ts'
+import type { WorkspaceBinding } from '../../runtime/binding.ts'
 import { isLineExecutor, type LineExecutor } from '../../runtime/mixin.ts'
 import {
   bindCommands,
@@ -25,8 +25,6 @@ import {
   VFSRuntime,
   wholeLineRuntime,
 } from '../../runtime/table.ts'
-import type { MountResolver } from '../../runtime/resolver.ts'
-import type { BridgeDispatchFn } from '../../runtime/types.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import type { MountRegistry } from '../mount/registry.ts'
 
@@ -36,8 +34,7 @@ export interface RuntimesInit {
   entries: RuntimeEntry[] | undefined
   /** `options.python`, forwarded into the default python engine's build. */
   pythonConfig: Record<string, unknown>
-  bridge: () => BridgeDispatchFn
-  resolver: MountResolver
+  binding: WorkspaceBinding
   registerCloser: (fn: () => Promise<void>) => void
 }
 
@@ -54,14 +51,12 @@ export class Runtimes {
   readonly entries: Runtime[] = []
   bindings: Record<string, Runtime>
   private readonly registry: MountRegistry
-  private readonly bridge: () => BridgeDispatchFn
-  private readonly resolver: MountResolver
+  private readonly binding: WorkspaceBinding
   private readonly registerCloser: (fn: () => Promise<void>) => void
 
   constructor(init: RuntimesInit) {
     this.registry = init.registry
-    this.bridge = init.bridge
-    this.resolver = init.resolver
+    this.binding = init.binding
     this.registerCloser = init.registerCloser
     if (init.entries === undefined) {
       for (const name of DEFAULT_ENTRIES) {
@@ -84,7 +79,7 @@ export class Runtimes {
     init.registry.runtimeEntries = this.entries
     for (const entry of this.entries) {
       rejectConfigScript(`runtime '${entry.name}' script`, entry.script)
-      if (entry instanceof LanguageRuntime) entry.attach(this.bridge(), this.resolver)
+      entry.bind(this.binding)
       this.registerCloser(() => entry.close())
     }
     this.bindings = bindCommands(this.entries)
@@ -103,7 +98,7 @@ export class Runtimes {
     rejectConfigScript(`runtime '${entry.name}' script`, entry.script)
     const candidate = [...this.entries, entry]
     const bindings = bindCommands(candidate)
-    if (entry instanceof LanguageRuntime) entry.attach(this.bridge(), this.resolver)
+    entry.bind(this.binding)
     this.registerCloser(() => entry.close())
     this.entries.push(entry)
     this.bindings = bindings

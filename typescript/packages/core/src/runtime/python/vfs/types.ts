@@ -12,6 +12,23 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { VFSEntry, VFSStat } from '../../vfs.ts'
+import type { MirageMutation } from './journal.ts'
+
+/** An inline flush stops at its first failure; skipped excludes that entry. */
+export interface FlushFailure {
+  message: string
+  skipped: number
+}
+
+export interface SyncVFS {
+  read(path: string): Uint8Array
+  stat(path: string): VFSStat
+  readdir(path: string): VFSEntry[]
+  readlink(path: string): string
+  flush(mutations: MirageMutation[]): FlushFailure | undefined
+}
+
 /**
  * Emscripten's errno numbering, which is musl's and not Linux's: EXDEV
  * is 75 here and 18 is EDOM. Always read the numbers off the running
@@ -60,6 +77,7 @@ export interface FSNode {
   contents?: Uint8Array
   usedBytes?: number
   unreadable?: boolean
+  loaded?: boolean
   /**
    * A symlink's target, verbatim as it was typed. Emscripten's own
    * MEMFS keeps it under this name and `FS.readlink` reads it, so the
@@ -71,8 +89,6 @@ export interface FSNode {
 export interface FSStream {
   node: FSNode
   position: number
-  baseLen?: number
-  lowWrite?: number
 }
 
 export interface FSAttr {

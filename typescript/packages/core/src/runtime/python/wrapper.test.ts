@@ -13,7 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
+import { PathSpec } from '../../types.ts'
 import { PyodideRuntime } from './pyodide.ts'
+import { PrefixResolver } from '../resolver.ts'
 import { PYTHON_EVAL_WRAPPER, PYTHON_REPL_WRAPPER, PYTHON_WRAPPER } from './wrapper.ts'
 
 // These constants are Python programs living inside TypeScript template
@@ -36,6 +38,37 @@ const WRAPPERS: readonly (readonly [string, string])[] = [
 ]
 
 describe('embedded python wrappers', { timeout: 120_000 }, () => {
+  it('distinguishes absent and empty stdin for script CLIs without changing ordinary globals', async () => {
+    const rt = new PyodideRuntime()
+    try {
+      for (const [stdin, expected] of [
+        [null, 'None'],
+        [new Uint8Array(), "b''"],
+      ] as const) {
+        const result = await rt.run({
+          code: 'print(argv); print(stdin)',
+          prog: 'pager',
+          args: ['one'],
+          scriptCli: true,
+          env: {},
+          stdin,
+        })
+        expect(result.exitCode).toBe(0)
+        expect(new TextDecoder().decode(result.stdout)).toBe(`['pager', 'one']\n${expected}\n`)
+      }
+      const ordinary = await rt.run({
+        code: "print('argv' in globals(), 'stdin' in globals())",
+        prog: '/work/script.py',
+        args: [],
+        env: {},
+        stdin: null,
+      })
+      expect(new TextDecoder().decode(ordinary.stdout)).toBe('False False\n')
+    } finally {
+      await rt.close()
+    }
+  })
+
   it('every wrapper compiles on the interpreter that runs it', async () => {
     const rt = new PyodideRuntime()
     try {
@@ -45,6 +78,141 @@ describe('embedded python wrappers', { timeout: 120_000 }, () => {
         })
         expect(result.value, `${name} is not valid python`).toBe('ok')
       }
+    } finally {
+      await rt.close()
+    }
+  })
+})
+
+describe('Pyodide command cwd', { timeout: 120_000 }, () => {
+  it.each([false, true])(
+    'keeps executing with a cwd on an unsupported root mount (eager: %s)',
+    async (eager) => {
+      const rt = new PyodideRuntime()
+      try {
+        if (eager) await rt.eval('pass')
+        rt.attach(
+          () => Promise.reject(new Error('root mount must not be read')),
+          new PrefixResolver(() => ['/']),
+        )
+        const before = await rt.eval('import os; os.getcwd()')
+        if (typeof before.value !== 'string') throw new Error('cwd must be a string')
+        const result = await rt.run({
+          code: 'import os; print(1); print(os.getcwd())',
+          args: [],
+          env: {},
+          stdin: null,
+          cwd: PathSpec.fromStrPath('/unservable/nested'),
+        })
+        expect(result.exitCode).toBe(0)
+        expect(new TextDecoder().decode(result.stdout)).toBe(`1\n${before.value}\n`)
+        const root = await rt.run({
+          code: 'import os; print(os.getcwd())',
+          args: [],
+          env: {},
+          stdin: null,
+          cwd: PathSpec.fromStrPath('/'),
+        })
+        expect(root.exitCode).toBe(0)
+        expect(new TextDecoder().decode(root.stdout)).toBe('/\n')
+      } finally {
+        await rt.close()
+      }
+    },
+  )
+
+  it('still rejects a missing cwd on a supported child of a root mount', async () => {
+    const rt = new PyodideRuntime()
+    rt.attach(
+      () => Promise.reject(Object.assign(new Error('missing'), { code: 'ENOENT' })),
+      new PrefixResolver(() => ['/', '/data/']),
+    )
+    try {
+      const result = await rt.run({
+        code: "print('must not run')",
+        args: [],
+        env: {},
+        stdin: null,
+        cwd: PathSpec.fromStrPath('/data/missing'),
+      })
+      expect(result.exitCode).toBe(1)
+      expect(new TextDecoder().decode(result.stdout)).toBe('')
+    } finally {
+      await rt.close()
+    }
+  })
+
+  it('restores trusted cwd functions when user code replaces or deletes them', async () => {
+    const rt = new PyodideRuntime()
+    try {
+      await rt.eval(
+        "import os; os.makedirs('/tmp/a', exist_ok=True); os.makedirs('/tmp/b', exist_ok=True)",
+      )
+      const before = await rt.eval('import os; os.getcwd()')
+      for (const code of [
+        'import os; os.chdir = lambda _: None',
+        "import os; del os.chdir; raise ValueError('expected')",
+        "import os; os.getcwd = lambda: '/missing-cwd'",
+        "import os; del os.getcwd; raise ValueError('expected')",
+      ]) {
+        await rt.run({ code, args: [], env: {}, stdin: null, cwd: PathSpec.fromStrPath('/tmp/a') })
+        expect((await rt.eval('import os; os.getcwd()')).value).toBe(before.value)
+        const next = await rt.run({
+          code: 'from pathlib import Path; print(Path.cwd())',
+          args: [],
+          env: {},
+          stdin: null,
+          cwd: PathSpec.fromStrPath('/tmp/b'),
+        })
+        expect(next.exitCode).toBe(0)
+        expect(new TextDecoder().decode(next.stdout)).toBe('/tmp/b\n')
+      }
+    } finally {
+      await rt.close()
+    }
+  })
+
+  it('isolates queued runs and restores cwd after success and errors', async () => {
+    const rt = new PyodideRuntime()
+    try {
+      await rt.eval(
+        "import os; os.makedirs('/tmp/a', exist_ok=True); os.makedirs('/tmp/b', exist_ok=True)",
+      )
+      const before = await rt.eval('import os; os.getcwd()')
+      if (typeof before.value !== 'string') throw new Error('cwd must be a string')
+      const results = await Promise.all(
+        ['/tmp/a', '/tmp/b'].map((cwd) =>
+          rt.run({
+            code: "import os; print(os.getcwd()); os.chdir('/tmp'); raise ValueError('expected')",
+            args: [],
+            env: { PWD: '/wrong' },
+            stdin: null,
+            cwd: PathSpec.fromStrPath(cwd),
+          }),
+        ),
+      )
+      expect(results.map((r) => new TextDecoder().decode(r.stdout))).toEqual([
+        '/tmp/a\n',
+        '/tmp/b\n',
+      ])
+      expect(results.map((r) => r.exitCode)).toEqual([1, 1])
+      expect((await rt.eval('import os; os.getcwd()')).value).toBe(before.value)
+      const missing = await rt.run({
+        code: "print('must not run')",
+        args: [],
+        env: {},
+        stdin: null,
+        cwd: PathSpec.fromStrPath('/missing-cwd'),
+      })
+      expect(missing.exitCode).toBe(1)
+      expect(new TextDecoder().decode(missing.stdout)).toBe('')
+      const fresh = await rt.run({
+        code: 'import os; print(os.getcwd())',
+        args: [],
+        env: {},
+        stdin: null,
+      })
+      expect(new TextDecoder().decode(fresh.stdout)).toBe(`${before.value}\n`)
     } finally {
       await rt.close()
     }

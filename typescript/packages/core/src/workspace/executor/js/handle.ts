@@ -40,6 +40,7 @@ export async function handleJs(
     command?: string
     stdin: ByteSource | null
     env: Record<string, string>
+    cwd?: PathSpec
     code: string | null
     module: boolean
     signal?: AbortSignal
@@ -57,6 +58,7 @@ export async function handleJs(
       command: opts.command ?? 'js',
       stdin: opts.stdin,
       env: opts.env,
+      ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
       code: opts.code,
       flags: { module },
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),

@@ -163,7 +163,7 @@ describe('PyodideRuntime mount visibility', () => {
       stdin: new Uint8Array(),
     })
     expect(new TextDecoder().decode(result.stdout)).toContain('lazy')
-    expect(calls.some((c) => c.op === 'readdir' && c.path === '/ram/')).toBe(true)
+    expect(calls.filter((c) => c.op === 'readdir')).toEqual([])
     await rt.close()
   }, 60_000)
 
@@ -220,6 +220,8 @@ describe('PyodideRuntime mount visibility', () => {
 
   it('a failed flush surfaces on stderr and flips a clean exit to 1', async () => {
     const dispatch: BridgeDispatchFn = (op) => {
+      if (op === 'stat')
+        return Promise.reject(Object.assign(new Error('missing'), { code: 'ENOENT' }))
       if (op === 'write') return Promise.reject(new Error('mount is read-only'))
       if (op === 'read') return Promise.resolve(new Uint8Array())
       return Promise.resolve([])
@@ -256,6 +258,8 @@ describe('PyodideRuntime mount visibility', () => {
     const attempted: string[] = []
     const dispatch: BridgeDispatchFn = (op, path) => {
       attempted.push(`${op} ${path}`)
+      if (op === 'stat')
+        return Promise.reject(Object.assign(new Error('missing'), { code: 'ENOENT' }))
       if (op === 'write') return Promise.reject(new Error('backend hiccup'))
       if (op === 'read') return Promise.resolve(new Uint8Array())
       if (op === 'readdir') return Promise.resolve([])
@@ -278,7 +282,7 @@ describe('PyodideRuntime mount visibility', () => {
     expect(attempted.filter((c) => c.startsWith('rename'))).toHaveLength(0)
     const stderr = new TextDecoder().decode(result.stderr ?? new Uint8Array())
     expect(stderr).toContain('failed to write /ram/tmp.txt')
-    expect(stderr).toContain('skipped 1 later mutation(s)')
+    expect(stderr).toContain('backend hiccup')
     expect(result.exitCode).toBe(1)
     await rt.close()
   }, 60_000)

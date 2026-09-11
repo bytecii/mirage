@@ -58,6 +58,26 @@ def test_local_stdin():
     assert result.stdout == b"HELLO\n"
 
 
+@pytest.mark.parametrize("stdin", [None, b"", b"x" * 300_000],
+                         ids=["absent", "empty", "large"])
+def test_script_cli_stdin_is_not_embedded_in_process_argv(stdin):
+    runtime = LocalRuntime()
+    result = asyncio.run(
+        runtime.run(
+            RunArgs(code=("from __future__ import annotations\n"
+                          "import sys\nprint(argv)\n"
+                          "print(stdin is None, len(stdin or b''), "
+                          "sys.stdin.buffer.read() == (stdin or b''))"),
+                    prog="pager",
+                    args=["one"],
+                    script_cli=True,
+                    stdin=stdin)))
+    assert result.exit_code == 0
+    assert result.stdout == (
+        f"['pager', 'one']\n{stdin is None} {len(stdin or b'')} True\n"
+    ).encode()
+
+
 def test_local_exit_code_and_stderr():
     runtime = LocalRuntime()
     result = asyncio.run(runtime.run(RunArgs(code="1/0")))
