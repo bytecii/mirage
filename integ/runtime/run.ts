@@ -46,6 +46,7 @@ import {
   type RuntimeEntry,
 } from '@struktoai/mirage-node'
 import { parseSessionProfile } from '@struktoai/mirage-core/policy/profile'
+import { singleQuote } from '@struktoai/mirage-core/utils/quote'
 import type { RuntimeLanguage } from '@struktoai/mirage-core/runtime/types'
 
 const HOST = 'typescript'
@@ -78,6 +79,7 @@ interface FacadeSpec {
 
 interface Step {
   command?: string
+  script?: string
   runtime?: string
   stdin?: string
   add_runtime?: string
@@ -663,7 +665,11 @@ async function runStep(
     }
     return problems.map((p) => `${caseId} ${label}: ${p}`)
   }
-  const command = step.command ?? ''
+  let command = step.command ?? ''
+  if (step.script !== undefined) {
+    const source = readFileSync(join(SUITE_DIR, '../fixtures/runtime', step.script), 'utf8')
+    command += ' ' + singleQuote(source)
+  }
   const options: Record<string, unknown> = {}
   if (step.runtime !== undefined) options.runtime = step.runtime
   if (step.stdin !== undefined) options.stdin = ENC.encode(step.stdin)

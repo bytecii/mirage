@@ -537,6 +537,90 @@
           }
         }
       ]
+    },
+    {
+      "id": "fs_list",
+      "world": {
+        "runtimes": [
+          "quickjs",
+          "vfs"
+        ],
+        "mounts": {
+          "/data": {
+            "resource": "ram",
+            "files": {
+              "seed.txt": "seed\n",
+              "sub/inner.txt": "inner\n"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "js -e",
+          "script": "fs/js/list.js",
+          "expect": {
+            "exit": 0,
+            "stdout": "seed.txt\nsub\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fs_stat",
+      "world": {
+        "runtimes": [
+          "quickjs",
+          "vfs"
+        ],
+        "mounts": {
+          "/data": {
+            "resource": "ram",
+            "files": {
+              "seed.txt": "seed\n",
+              "sub/inner.txt": "inner\n"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "js -e",
+          "script": "fs/js/stat.js",
+          "expect": {
+            "exit": 0,
+            "stdout": "file 5 32768\ndir 16384\nmissing\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fs_glob",
+      "world": {
+        "runtimes": [
+          "quickjs",
+          "vfs"
+        ],
+        "mounts": {
+          "/data": {
+            "resource": "ram",
+            "files": {
+              "seed.txt": "seed\n",
+              "sub/inner.txt": "inner\n"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "js -e",
+          "script": "fs/js/glob.js",
+          "expect": {
+            "exit": 0,
+            "stdout": "unsupported\n"
+          }
+        }
+      ]
     }
   ]
 }

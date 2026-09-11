@@ -16,7 +16,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest'
 import type { BridgeDispatchFn } from '../../types.ts'
 import { MontyRuntime } from './index.ts'
 import { MontyUnavailableError } from './binding.ts'
-import { PyodideRuntime } from '../pyodide.ts'
+import { PyodideRuntime } from '../pyodide/runtime.ts'
 import { buildRuntime } from '../../table.ts'
 import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
 import { RAMResource } from '../../../resource/ram/ram.ts'
@@ -773,7 +773,7 @@ describe('MontyRuntime', () => {
       close: () => Promise.resolve(),
     })
     const rt = make()
-    ;(rt as unknown as { pool: unknown }).pool = crashed(
+    ;(rt as unknown as { execution: { pool: unknown } }).execution.pool = crashed(
       new monty.MontyCrashedError('worker gone', { timedOut: false }),
     )
     const dead = await run(rt, 'print(1)')
@@ -781,7 +781,7 @@ describe('MontyRuntime', () => {
     expect(text(dead.stderr)).toBe('monty: worker crashed\n')
 
     const timedOut = make()
-    ;(timedOut as unknown as { pool: unknown }).pool = crashed(
+    ;(timedOut as unknown as { execution: { pool: unknown } }).execution.pool = crashed(
       new monty.MontyCrashedError('watchdog', { timedOut: true }),
     )
     const late = await run(timedOut, 'print(1)')

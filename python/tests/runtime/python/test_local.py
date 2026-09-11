@@ -16,12 +16,37 @@ import asyncio
 import json
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
 from mirage import MountMode, RAMResource, Workspace
 from mirage.runtime.python import LocalRuntime
 from mirage.runtime.types import RunArgs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation, expected', [
+    ('list', 'seed.txt\nsub\n'),
+    ('stat', 'file 5 32768\ndir 16384\nmissing\n'),
+    ('glob', 'seed.txt\nsub/inner.txt\n'),
+])
+async def test_filesystem_operations(tmp_path, operation, expected):
+    (tmp_path / 'seed.txt').write_text('seed\n')
+    (tmp_path / 'sub').mkdir()
+    (tmp_path / 'sub' / 'inner.txt').write_text('inner\n')
+    fixture = (Path(__file__).resolve().parents[4] / 'integ' / 'fixtures' /
+               'runtime' / 'fs' / 'py' / f'{operation}.py')
+    runtime = LocalRuntime()
+    try:
+        result = await runtime.run(
+            RunArgs(code=fixture.read_text(),
+                    env={'MIRAGE_TEST_ROOT': str(tmp_path)}))
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout.decode() == expected
+        assert result.stderr is None
+    finally:
+        await runtime.close()
 
 
 def test_local_runs_on_host_interpreter():

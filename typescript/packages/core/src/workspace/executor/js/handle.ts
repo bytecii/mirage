@@ -14,7 +14,7 @@
 
 import type { ByteSource, IOResult } from '../../../io/types.ts'
 import type { LanguageRuntime } from '../../../runtime/language.ts'
-import { QuickJsUnavailableError } from '../../../runtime/js/types.ts'
+import { QuickJsUnavailableError } from '../../../runtime/js/quickjs/errors.ts'
 import type { DispatchFn } from '../../../runtime/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import type { ExecutionNode } from '../../types.ts'

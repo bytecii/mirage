@@ -670,6 +670,124 @@
           }
         }
       ]
+    },
+    {
+      "id": "fs_list",
+      "world": {
+        "runtimes": [
+          "monty",
+          "vfs"
+        ],
+        "mounts": {
+          "/data": {
+            "resource": "ram",
+            "files": {
+              "seed.txt": "seed\n",
+              "sub/inner.txt": "inner\n"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "python3 -c",
+          "script": "fs/py/list.py",
+          "expect": {
+            "exit": 0,
+            "stdout": "seed.txt\nsub\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fs_stat",
+      "world": {
+        "runtimes": [
+          "monty",
+          "vfs"
+        ],
+        "mounts": {
+          "/data": {
+            "resource": "ram",
+            "files": {
+              "seed.txt": "seed\n",
+              "sub/inner.txt": "inner\n"
+            }
+          }
+        }
+      },
+      "hosts": [
+        "python"
+      ],
+      "steps": [
+        {
+          "command": "python3 -c",
+          "script": "fs/py/stat.py",
+          "expect": {
+            "exit": 0,
+            "stdout": "file 5 32768\ndir 16384\nmissing\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fs_stat_requires_js_named_tuple",
+      "world": {
+        "runtimes": [
+          "monty",
+          "vfs"
+        ],
+        "mounts": {
+          "/data": {
+            "resource": "ram",
+            "files": {
+              "seed.txt": "seed\n",
+              "sub/inner.txt": "inner\n"
+            }
+          }
+        }
+      },
+      "hosts": [
+        "typescript"
+      ],
+      "steps": [
+        {
+          "command": "python3 -c",
+          "script": "fs/py/stat.py",
+          "expect": {
+            "exit": 1,
+            "stderr_contains": "PermissionError"
+          }
+        }
+      ]
+    },
+    {
+      "id": "fs_glob",
+      "world": {
+        "runtimes": [
+          "monty",
+          "vfs"
+        ],
+        "mounts": {
+          "/data": {
+            "resource": "ram",
+            "files": {
+              "seed.txt": "seed\n",
+              "sub/inner.txt": "inner\n"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "python3 -c",
+          "script": "fs/py/glob.py",
+          "expect": {
+            "exit": 1,
+            "stderr_contains": "No module named 'glob'"
+          }
+        }
+      ]
     }
   ]
 }
