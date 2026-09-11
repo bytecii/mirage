@@ -13,10 +13,12 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
+from mirage.policy.constants import WILDCARD
 from mirage.policy.errors import PolicyError
-from mirage.policy.match.pattern import intersect_patterns, pattern_matches
+from mirage.policy.match.pattern import (intersect_patterns, pattern_matches,
+                                         split_pattern)
 from mirage.policy.types import (AdmissionRules, CommandRule, HideReason,
                                  ProfileScript)
 from mirage.types import (HiddenPaths, HiddenVars, MountMode, ShowEntry,
@@ -723,186 +725,157 @@ def _merge_allow(base: tuple[str, ...] | None,
     return intersect_patterns(base, table)
 
 
-def _covers_entry(entry: str, rule: CommandRule, other: CommandRule) -> bool:
-    """Whether a deny would answer an ask's path entry more shallowly.
+def _shared_mount(mine: str, other: str) -> str | None:
+    """The mount both rules speak inside, spelled as the deeper was.
 
-    The one way concatenating two rule sets can *lift* a restriction.
-    ``rule_at`` reads competing rules by anchor depth, deny before ask
-    only at equal depth, so a deeper ask outranks a shallower deny: a
-    target denying ``cat /vault/*`` and a table asking
-    ``cat /vault/public/*`` would answer the deeper ask and turn a
-    refusal into a prompt. Every other pairing composes correctly on
-    its own, since a deny that wins is the stricter answer and an ask
-    that wins over nothing is stricter than allowing.
-
-    Three questions, and the deny has to answer all of them, because
-    what is done with a covered entry is refuse it: a deny that does
-    not really reach there would refuse a line neither side refuses.
-    It must apply wherever the ask does (its mount is the whole
-    session or the ask's own), its command patterns must cover the
-    ask's (none means every command; otherwise each of the ask's
-    spellings must match one of the deny's, so a ``git *`` deny covers
-    a ``git push`` ask), and it must reach the entry from higher up --
-    the hide law's own covering test, since a rule's path entries are
-    the same grammar, with a pathless deny reaching every entry from
-    depth 0.
+    An empty mount is the whole session, so the other's stands; two
+    mounts share the deeper when one lies under the other, and nothing
+    when neither does, since no line's subject sits in both.
 
     Args:
-        entry (str): one path entry of the ask rule.
-        rule (CommandRule): the ask rule the entry belongs to.
-        other (CommandRule): the candidate deny.
+        mine (str): the ask rule's mount, empty at the top level.
+        other (str): the deny's mount, empty at the top level.
+    """
+    if not mine or not other:
+        return mine or other
+    a, b = _root_of(mine), _root_of(other)
+    if a == b or b == "/" or a.startswith(b + "/"):
+        return mine
+    if a == "/" or b.startswith(a + "/"):
+        return other
+    return None
+
+
+def _shared_commands(mine: tuple[str, ...],
+                     other: tuple[str, ...]) -> tuple[str, ...] | None:
+    """The command patterns both rules speak about, None when no line
+    can match both.
+
+    No pattern on a side means every command, so the other side's list
+    stands; two lists meet token by token (``intersect_patterns``, so a
+    ``git`` ask and a ``git push`` deny share ``git push``), and an
+    empty meeting means the two rules never read the same line.
+
+    Args:
+        mine (tuple[str, ...]): the ask rule's patterns.
+        other (tuple[str, ...]): the deny's patterns.
+    """
+    if not mine or not other:
+        return mine or other
+    return intersect_patterns(mine, other) or None
+
+
+def _reach_above(deny: CommandRule, entry: str) -> int | None:
+    """How deep a deny reaches an ask's path entry from above it.
+
+    The anchor depth of the deny's deepest entry covering the ask's
+    from higher up (the hide law's own covering test, since a rule's
+    path entries are the same grammar); 0 for a pathless deny, which
+    every placed entry outranks; None when the deny does not reach the
+    entry, or reaches it at the entry's own depth, where the verb
+    tie-break already lets it win.
+
+    Args:
+        deny (CommandRule): the candidate deny.
+        entry (str): one path entry of an ask rule.
     """
     depth = anchor_depth(entry)
-    if not other.paths:
-        return depth > 0
+    if not deny.paths:
+        return 0 if depth > 0 else None
+    reached = [
+        anchor_depth(path) for path in deny.paths
+        if anchor_depth(path) < depth and hide_depth(classify_paths((
+            path, )), entry) is not None
+    ]
+    return max(reached) if reached else None
+
+
+def _shields(ask: CommandRule, entry: str, floor: int,
+             commands: tuple[str, ...]) -> bool:
+    """Whether a side's own ask already outranks its deny at an entry,
+    so that side's answer there is a question and not a refusal.
+
+    The ask has to cover the entry from below the deny's reach (the
+    entry's own depth counts; a tie with the deny does not, since the
+    deny wins it) and speak about every command the two rules share,
+    because a narrower ask leaves the deny answering the rest. Its
+    mount needs no check: a rule's entries lie under its mount, so a
+    line the entry names touches it.
+
+    Args:
+        ask (CommandRule): one of the other side's own ask rules.
+        entry (str): the path entry being restated.
+        floor (int): the depth the deny reaches the entry from.
+        commands (tuple[str, ...]): the shared command patterns, empty
+            for every command.
+    """
+    if ask.commands and not all(
+            any(
+                pattern_matches(pat, split_pattern(spelling))
+                for pat in ask.commands)
+            for spelling in (commands or (WILDCARD, ))):
+        return False
     return any(
-        anchor_depth(path) < depth and hide_depth(classify_paths((
-            path, )), entry) is not None for path in other.paths)
+        anchor_depth(path) > floor and hide_depth(classify_paths((
+            path, )), entry) is not None for path in ask.paths)
 
 
-def _entry_under(mount: str, entry: str) -> bool:
-    root = mount.rstrip("/")
-    return entry == root or entry.startswith(root + "/")
-
-
-def _curb_mount(entry: str, rule: CommandRule,
-                other: CommandRule) -> str | None:
-    """The mount a curbed entry is refused under, None out of reach.
-
-    A deny written at the top level reaches wherever the ask does. One
-    written under a mount reaches only lines beneath that root, so it
-    answers a session-wide ask exactly where the ask's own entry already
-    lies under that root, and a mount-scoped ask nested inside it.
-
-    Args:
-        entry (str): one path entry of the ask rule.
-        rule (CommandRule): the ask rule the entry belongs to.
-        other (CommandRule): the candidate deny.
-    """
-    if not other.mount or other.mount == rule.mount:
-        return rule.mount
-    if not rule.mount:
-        return other.mount if _entry_under(other.mount, entry) else None
-    return rule.mount if _entry_under(other.mount, rule.mount) else None
-
-
-def _curb_commands(rule: CommandRule,
-                   other: CommandRule) -> tuple[tuple[str, ...], bool] | None:
-    """The command spellings a curbed entry is refused for, and whether
-    the ask keeps the entry for the spellings left over.
-
-    A deny naming no command covers every one the ask names. Otherwise
-    only the ask's spellings the deny's patterns match are refused, and
-    an ask naming none is every command, so the deny's own list is the
-    overlap. What the deny does not name stays an ask, which is what
-    makes the refusal land without swallowing the rest of the ask.
-
-    Args:
-        rule (CommandRule): the ask rule.
-        other (CommandRule): the candidate deny.
-    """
-    if not other.commands:
-        return rule.commands, False
-    if not rule.commands:
-        return other.commands, True
-    covered = tuple(spelling for spelling in rule.commands if any(
-        pattern_matches(pat, spelling.split()) for pat in other.commands))
-    if not covered:
-        return None
-    return covered, len(covered) < len(rule.commands)
-
-
-def _curb_scope(
-        entry: str, rule: CommandRule,
-        other: CommandRule) -> tuple[str, tuple[str, ...], bool] | None:
-    """How a deny curbs one ask entry: the mount and commands the moved
-    refusal carries, and whether the ask keeps the entry as well.
-
-    The deny has to reach the entry on every axis, but it need not reach
-    all of it: a mount-scoped deny against a session-wide ask, or a
-    command-specific deny against an ask that names none, overlaps only
-    part of what the ask covers. Refusing the overlap and leaving the
-    rest an ask is the composition; reading the whole pairing as "no
-    cover", which is what comparing the two scopes for equality did, let
-    the deeper ask answer a prompt where the target refused.
-
-    Args:
-        entry (str): one path entry of the ask rule.
-        rule (CommandRule): the ask rule the entry belongs to.
-        other (CommandRule): the candidate deny.
-    """
-    if not _covers_entry(entry, rule, other):
-        return None
-    mount = _curb_mount(entry, rule, other)
-    if mount is None:
-        return None
-    commands = _curb_commands(rule, other)
-    if commands is None:
-        return None
-    spellings, partial = commands
-    return mount, spellings, partial
-
-
-def _curb_asks(
-    asks: tuple[CommandRule, ...], denies: tuple[CommandRule, ...]
-) -> tuple[tuple[CommandRule, ...], tuple[CommandRule, ...]]:
-    """One side's ask rules, with what the other side denies moved over.
+def _curb_asks(asks: tuple[CommandRule, ...],
+               other: AdmissionRules) -> tuple[CommandRule, ...]:
+    """The other side's denies, restated at one side's ask entries.
 
     The composition the join owes: where one side asks and the other
-    denies, the answer is the deny, since a deny is the stricter of the
-    two. Dropping the entry instead would answer *allow* there, and
-    keeping it answers *ask*; both lift the other side's refusal, so
-    the entry moves into the deny list, at its own depth, where the
-    verb tie-break lets the refusal win. An entry no deny covers stays
-    an ask, so a carve-out the other side never spoke about survives.
+    denies, the answer is the deny, since a deny is the stricter of
+    the two. ``rule_at`` reads competing rules by anchor depth, deny
+    before ask only at equal depth, so a deeper ask would outrank the
+    shallower deny and turn the refusal into a prompt. Each such deny
+    is restated at the ask's own depth, in the scope the two rules
+    share (the commands and the mount both speak about), where the
+    verb tie-break lets the refusal win; the ask itself stays whole,
+    so outside that scope it still asks. A top-level ``cat`` ask
+    meeting a deny written under one mount is refused inside that
+    mount, an all-command ask meeting a ``cat`` deny is refused for
+    ``cat`` and asked for the rest, and a ``git`` ask meeting a
+    ``git push`` deny is refused for the push alone. Nothing is
+    dropped, since dropping an entry would answer *allow* and lift the
+    question its own side asked; and nothing is refused that the deny
+    did not already refuse, since the restated rule reads a subset of
+    its lines.
+
+    A deny the other side's own deeper ask already outranks at that
+    entry is not restated: that side's answer there was a question,
+    not a refusal, so there is nothing to keep. That is what makes
+    joining a rule set with itself a no-op, its carve-outs included.
 
     Args:
         asks (tuple[CommandRule, ...]): one side's ask rules.
-        denies (tuple[CommandRule, ...]): the other side's deny rules.
+        other (AdmissionRules): the other side's rules, whose denies
+            are restated and whose asks may stand in the way.
 
     Returns:
-        The ask rules that still ask, and the deny rules the curbed
-        entries became.
+        The deny rules to add, each carrying the reason of the deny it
+        restates; empty when nothing would be lifted.
     """
-    kept: list[CommandRule] = []
-    refused: list[CommandRule] = []
-    # The list itself is returned when nothing moved, so a table that
-    # adds no refusal leaves the session on the very objects it had.
-    if not denies:
-        return asks, ()
+    copies: list[CommandRule] = []
     for rule in asks:
-        if not rule.paths or not denies:
-            kept.append(rule)
-            continue
-        stays: list[str] = []
-        moved: dict[tuple[str, str, tuple[str, ...]], list[str]] = {}
         for entry in rule.paths:
-            found = next(
-                ((d, scope)
-                 for d, scope in ((d, _curb_scope(entry, rule, d))
-                                  for d in denies) if scope is not None), None)
-            if found is None:
-                stays.append(entry)
-                continue
-            blocker, (mount, spellings, partial) = found
-            moved.setdefault((blocker.reason, mount, spellings),
-                             []).append(entry)
-            # A deny narrower than the ask answers only its own slice, so
-            # the entry keeps asking for the commands it left alone.
-            if partial:
-                stays.append(entry)
-        if not moved:
-            kept.append(rule)
-            continue
-        if stays:
-            kept.append(replace(rule, paths=tuple(stays)))
-        for (reason, mount, spellings), entries in moved.items():
-            refused.append(
-                CommandRule(reason=reason,
-                            commands=spellings,
-                            paths=tuple(entries),
-                            mount=mount))
-    return (asks if not refused else tuple(kept)), tuple(refused)
+            for deny in other.deny:
+                commands = _shared_commands(rule.commands, deny.commands)
+                mount = _shared_mount(rule.mount, deny.mount)
+                if commands is None or mount is None:
+                    continue
+                floor = _reach_above(deny, entry)
+                if floor is None or any(
+                        _shields(ask, entry, floor, commands)
+                        for ask in other.ask):
+                    continue
+                copy = CommandRule(reason=deny.reason,
+                                   commands=commands,
+                                   paths=(entry, ),
+                                   mount=mount)
+                if copy not in copies:
+                    copies.append(copy)
+    return tuple(copies)
 
 
 def _merge_commands(base: AdmissionRules | None,
@@ -913,8 +886,8 @@ def _merge_commands(base: AdmissionRules | None,
     The union is not a concatenation. Two rule sets read together are
     read by anchor depth, so an ask from one side can outrank a deny
     from the other and answer a refusal with a prompt; :func:`_curb_asks`
-    composes those pairings the other way first, in both directions,
-    so a deny from either side stays a deny.
+    restates each such deny at the ask's depth, in both directions, so
+    a deny from either side stays a deny.
 
     Args:
         base (AdmissionRules | None): the session's rules.
@@ -924,12 +897,12 @@ def _merge_commands(base: AdmissionRules | None,
         return base
     if base is None:
         return table
-    base_ask, base_refused = _curb_asks(base.ask, table.deny)
-    table_ask, table_refused = _curb_asks(table.ask, base.deny)
-    deny = _append_rules(_append_rules(base.deny, base_refused),
-                         _append_rules(table.deny, table_refused))
+    deny = _append_rules(
+        _append_rules(base.deny, table.deny),
+        _append_rules(_curb_asks(base.ask, table), _curb_asks(table.ask,
+                                                              base)))
     merged = AdmissionRules(allow=_merge_allow(base.allow, table.allow),
-                            ask=_append_rules(base_ask, table_ask),
+                            ask=_append_rules(base.ask, table.ask),
                             deny=deny)
     return base if merged == base else merged
 

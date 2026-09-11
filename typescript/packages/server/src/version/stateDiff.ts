@@ -85,7 +85,8 @@ function sessionDelta(before: AnyDict, after: AnyDict): AnyDict {
       if (!isEmpty(delta)) out[key] = delta
       continue
     }
-    out[key] = { from: was, to: now }
+    // A field one table lacks reads as null, as the python side renders it.
+    out[key] = { from: was ?? null, to: now ?? null }
   }
   return out
 }

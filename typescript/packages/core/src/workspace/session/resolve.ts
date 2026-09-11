@@ -14,7 +14,8 @@
 
 import { checkRules } from './validate.ts'
 import { PolicyError } from '../../policy/errors.ts'
-import { intersectPatterns, patternMatches } from '../../policy/match/pattern.ts'
+import { intersectPatterns, patternMatches, splitPattern } from '../../policy/match/pattern.ts'
+import { WILDCARD } from '../../policy/constants.ts'
 import type { CommandRule, AdmissionRules, HideReason, ProfileScript } from '../../policy/types.ts'
 import type { HiddenPaths, HiddenVars, MountMode, ShowEntry, ShownPaths } from '../../types.ts'
 import { weakerMode } from '../../types.ts'
@@ -655,182 +656,139 @@ function mergeAllow(
 }
 
 /**
- * Both rule sets as one: ask and deny rules union, the allow list
- * intersects; the session's own object when the table adds nothing.
+ * The mount both rules speak inside, spelled as the deeper was. An
+ * empty mount is the whole session, so the other's stands; two mounts
+ * share the deeper when one lies under the other, and nothing when
+ * neither does, since no line's subject sits in both.
  */
+function sharedMount(mine: string, other: string): string | null {
+  if (mine === '' || other === '') return mine === '' ? other : mine
+  const a = rootOf(mine)
+  const b = rootOf(other)
+  if (a === b || b === '/' || a.startsWith(`${b}/`)) return mine
+  if (a === '/' || b.startsWith(`${a}/`)) return other
+  return null
+}
+
 /**
- * Whether a deny would answer an ask's path entry more shallowly.
- *
- * The one way concatenating two rule sets can *lift* a restriction.
- * `ruleAt` reads competing rules by anchor depth, deny before ask only
- * at equal depth, so a deeper ask outranks a shallower deny: a target
- * denying `cat /vault/*` and a table asking `cat /vault/public/*` would
- * answer the deeper ask and turn a refusal into a prompt. Every other
- * pairing composes correctly on its own, since a deny that wins is the
- * stricter answer and an ask that wins over nothing is stricter than
- * allowing.
- *
- * Three questions, and the deny has to answer all of them, because what
- * is done with a covered entry is refuse it: a deny that does not
- * really reach there would refuse a line neither side refuses. It must
- * apply wherever the ask does (its mount is the whole session or the
- * ask's own), its command patterns must cover the ask's (none means
- * every command; otherwise each of the ask's spellings must match one
- * of the deny's, so a `git *` deny covers a `git push` ask), and it
- * must reach the entry from higher up -- the hide law's own covering
- * test, since a rule's path entries are the same grammar, with a
- * pathless deny reaching every entry from depth 0.
+ * The command patterns both rules speak about, null when no line can
+ * match both. No pattern on a side means every command, so the other
+ * side's list stands; two lists meet token by token
+ * (`intersectPatterns`, so a `git` ask and a `git push` deny share
+ * `git push`), and an empty meeting means the two rules never read the
+ * same line.
  */
-function coversEntry(entry: string, rule: CommandRule, other: CommandRule): boolean {
+function sharedCommands(
+  mine: readonly string[],
+  other: readonly string[],
+): readonly string[] | null {
+  if (mine.length === 0 || other.length === 0) return mine.length === 0 ? other : mine
+  const shared = intersectPatterns(mine, other)
+  return shared.length === 0 ? null : shared
+}
+
+/**
+ * How deep a deny reaches an ask's path entry from above it: the anchor
+ * depth of its deepest entry covering the ask's from higher up (the
+ * hide law's own covering test, since a rule's path entries are the
+ * same grammar); 0 for a pathless deny, which every placed entry
+ * outranks; null when the deny does not reach the entry, or reaches it
+ * at the entry's own depth, where the verb tie-break already lets it
+ * win.
+ */
+function reachAbove(deny: CommandRule, entry: string): number | null {
   const depth = anchorDepth(entry)
-  const paths = other.paths ?? []
-  if (paths.length === 0) return depth > 0
-  return paths.some(
-    (path) => anchorDepth(path) < depth && hideDepth(classifyPaths([path]), entry) !== null,
-  )
-}
-
-function entryUnder(mount: string, entry: string): boolean {
-  const root = mount.replace(/\/+$/, '')
-  return entry === root || entry.startsWith(`${root}/`)
-}
-
-/**
- * The mount a curbed entry is refused under, null out of reach.
- *
- * A deny written at the top level reaches wherever the ask does. One
- * written under a mount reaches only lines beneath that root, so it answers
- * a session-wide ask exactly where the ask's own entry already lies under
- * that root, and a mount-scoped ask nested inside it.
- */
-function curbMount(entry: string, rule: CommandRule, other: CommandRule): string | null {
-  const denyMount = other.mount ?? ''
-  const askMount = rule.mount ?? ''
-  if (denyMount === '' || denyMount === askMount) return askMount
-  if (askMount === '') return entryUnder(denyMount, entry) ? denyMount : null
-  return entryUnder(denyMount, askMount) ? askMount : null
+  const paths = deny.paths ?? []
+  if (paths.length === 0) return depth > 0 ? 0 : null
+  let best: number | null = null
+  for (const path of paths) {
+    const at = anchorDepth(path)
+    if (at >= depth || hideDepth(classifyPaths([path]), entry) === null) continue
+    if (best === null || at > best) best = at
+  }
+  return best
 }
 
 /**
- * The command spellings a curbed entry is refused for, and whether the ask
- * keeps the entry for the spellings left over.
- *
- * A deny naming no command covers every one the ask names. Otherwise only
- * the ask's spellings the deny's patterns match are refused, and an ask
- * naming none is every command, so the deny's own list is the overlap. What
- * the deny does not name stays an ask, which is what makes the refusal land
- * without swallowing the rest of the ask.
+ * Whether a side's own ask already outranks its deny at an entry, so
+ * that side's answer there is a question and not a refusal. The ask has
+ * to cover the entry from below the deny's reach (the entry's own depth
+ * counts; a tie with the deny does not, since the deny wins it) and
+ * speak about every command the two rules share, because a narrower
+ * ask leaves the deny answering the rest. Its mount needs no check: a
+ * rule's entries lie under its mount, so a line the entry names touches
+ * it.
  */
-function curbCommands(rule: CommandRule, other: CommandRule): [readonly string[], boolean] | null {
-  const denied = other.commands ?? []
-  const asked = rule.commands ?? []
-  if (denied.length === 0) return [asked, false]
-  if (asked.length === 0) return [denied, true]
-  const covered = asked.filter((spelling) =>
-    denied.some((pat) => patternMatches(pat, spelling.split(' '))),
-  )
-  if (covered.length === 0) return null
-  return [covered, covered.length < asked.length]
-}
-
-/**
- * How a deny curbs one ask entry: the mount and commands the moved refusal
- * carries, and whether the ask keeps the entry as well.
- *
- * The deny has to reach the entry on every axis, but it need not reach all
- * of it: a mount-scoped deny against a session-wide ask, or a
- * command-specific deny against an ask that names none, overlaps only part
- * of what the ask covers. Refusing the overlap and leaving the rest an ask
- * is the composition; reading the whole pairing as "no cover", which is what
- * comparing the two scopes for equality did, let the deeper ask answer a
- * prompt where the target refused.
- */
-function curbScope(
+function shields(
+  ask: CommandRule,
   entry: string,
-  rule: CommandRule,
-  other: CommandRule,
-): [string, readonly string[], boolean] | null {
-  if (!coversEntry(entry, rule, other)) return null
-  const mount = curbMount(entry, rule, other)
-  if (mount === null) return null
-  const commands = curbCommands(rule, other)
-  if (commands === null) return null
-  return [mount, commands[0], commands[1]]
+  floor: number,
+  commands: readonly string[],
+): boolean {
+  const own = ask.commands ?? []
+  const spellings = commands.length > 0 ? commands : [WILDCARD]
+  if (
+    own.length > 0 &&
+    !spellings.every((spelling) => own.some((pat) => patternMatches(pat, splitPattern(spelling))))
+  ) {
+    return false
+  }
+  return (ask.paths ?? []).some(
+    (path) => anchorDepth(path) > floor && hideDepth(classifyPaths([path]), entry) !== null,
+  )
 }
 
 /**
- * One side's ask rules, with what the other side denies moved over.
+ * The other side's denies, restated at one side's ask entries.
  *
  * The composition the join owes: where one side asks and the other
  * denies, the answer is the deny, since a deny is the stricter of the
- * two. Dropping the entry instead would answer *allow* there, and
- * keeping it answers *ask*; both lift the other side's refusal, so the
- * entry moves into the deny list, at its own depth, where the verb
- * tie-break lets the refusal win. An entry no deny covers stays an ask,
- * so a carve-out the other side never spoke about survives.
+ * two. `ruleAt` reads competing rules by anchor depth, deny before ask
+ * only at equal depth, so a deeper ask would outrank the shallower deny
+ * and turn the refusal into a prompt. Each such deny is restated at the
+ * ask's own depth, in the scope the two rules share (the commands and
+ * the mount both speak about), where the verb tie-break lets the
+ * refusal win; the ask itself stays whole, so outside that scope it
+ * still asks. A top-level `cat` ask meeting a deny written under one
+ * mount is refused inside that mount, an all-command ask meeting a
+ * `cat` deny is refused for `cat` and asked for the rest, and a `git`
+ * ask meeting a `git push` deny is refused for the push alone. Nothing
+ * is dropped, since dropping an entry would answer *allow* and lift the
+ * question its own side asked; and nothing is refused that the deny did
+ * not already refuse, since the restated rule reads a subset of its
+ * lines.
+ *
+ * A deny the other side's own deeper ask already outranks at that entry
+ * is not restated: that side's answer there was a question, not a
+ * refusal, so there is nothing to keep. That is what makes joining a
+ * rule set with itself a no-op, its carve-outs included.
+ *
+ * Returns the deny rules to add, each carrying the reason of the deny
+ * it restates; empty when nothing would be lifted.
  */
-function curbAsks(
-  asks: readonly CommandRule[],
-  denies: readonly CommandRule[],
-): [readonly CommandRule[], readonly CommandRule[]] {
-  const kept: CommandRule[] = []
-  const refused: CommandRule[] = []
-  // The list itself is returned when nothing moved, so a table that
-  // adds no refusal leaves the session on the very objects it had.
-  if (denies.length === 0) return [asks, refused]
+function curbAsks(asks: readonly CommandRule[], other: AdmissionRules): readonly CommandRule[] {
+  const copies: CommandRule[] = []
   for (const rule of asks) {
-    const entries = rule.paths ?? []
-    if (entries.length === 0 || denies.length === 0) {
-      kept.push(rule)
-      continue
-    }
-    const stays: string[] = []
-    const moved = new Map<
-      string,
-      { reason: string; mount: string; commands: readonly string[]; paths: string[] }
-    >()
-    for (const entry of entries) {
-      let blocker: CommandRule | undefined
-      let scope: [string, readonly string[], boolean] | null = null
-      for (const d of denies) {
-        const found = curbScope(entry, rule, d)
-        if (found !== null) {
-          blocker = d
-          scope = found
-          break
+    for (const entry of rule.paths ?? []) {
+      for (const deny of other.deny) {
+        const commands = sharedCommands(rule.commands ?? [], deny.commands ?? [])
+        const mount = sharedMount(rule.mount ?? '', deny.mount ?? '')
+        if (commands === null || mount === null) continue
+        const floor = reachAbove(deny, entry)
+        if (floor === null || other.ask.some((ask) => shields(ask, entry, floor, commands))) {
+          continue
         }
+        const copy: CommandRule = {
+          reason: deny.reason,
+          ...(commands.length > 0 ? { commands } : {}),
+          paths: [entry],
+          ...(mount !== '' ? { mount } : {}),
+        }
+        if (!copies.some((have) => sameRule(have, copy))) copies.push(copy)
       }
-      if (blocker === undefined || scope === null) {
-        stays.push(entry)
-        continue
-      }
-      const [mount, commands, partial] = scope
-      const key = JSON.stringify([blocker.reason, mount, commands])
-      const held = moved.get(key)
-      if (held === undefined) {
-        moved.set(key, { reason: blocker.reason, mount, commands, paths: [entry] })
-      } else {
-        held.paths.push(entry)
-      }
-      // A deny narrower than the ask answers only its own slice, so the
-      // entry keeps asking for the commands it left alone.
-      if (partial) stays.push(entry)
-    }
-    if (moved.size === 0) {
-      kept.push(rule)
-      continue
-    }
-    if (stays.length > 0) kept.push({ ...rule, paths: stays })
-    for (const group of moved.values()) {
-      refused.push({
-        reason: group.reason,
-        ...(group.commands.length > 0 ? { commands: group.commands } : {}),
-        paths: group.paths,
-        ...(group.mount !== '' ? { mount: group.mount } : {}),
-      })
     }
   }
-  return [refused.length === 0 ? asks : kept, refused]
+  return copies
 }
 
 /**
@@ -839,9 +797,9 @@ function curbAsks(
  *
  * The union is not a concatenation. Two rule sets read together are
  * read by anchor depth, so an ask from one side can outrank a deny from
- * the other and answer a refusal with a prompt; `curbAsks` composes
- * those pairings the other way first, in both directions, so a deny
- * from either side stays a deny.
+ * the other and answer a refusal with a prompt; `curbAsks` restates
+ * each such deny at the ask's depth, in both directions, so a deny from
+ * either side stays a deny.
  */
 function mergeCommands(
   base: AdmissionRules | null,
@@ -850,12 +808,10 @@ function mergeCommands(
   if (table === null) return base
   if (base === null) return table
   const allow = mergeAllow(base.allow, table.allow)
-  const [baseAsk, baseRefused] = curbAsks(base.ask, table.deny)
-  const [tableAsk, tableRefused] = curbAsks(table.ask, base.deny)
-  const ask = appendRules(baseAsk, tableAsk)
+  const ask = appendRules(base.ask, table.ask)
   const deny = appendRules(
-    appendRules(base.deny, baseRefused),
-    appendRules(table.deny, tableRefused),
+    appendRules(base.deny, table.deny),
+    appendRules(curbAsks(base.ask, table), curbAsks(table.ask, base)),
   )
   if (allow === base.allow && ask === base.ask && deny === base.deny) return base
   return { allow, ask, deny }

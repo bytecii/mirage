@@ -685,10 +685,17 @@ Invoke the venv's `pre-commit` binary directly (not via `uv --directory python r
   other side simply never mentioned. And the rule lists are **not** a
   concatenation: two rule sets read together are read by anchor depth, so a
   deeper ask from one side outranks a shallower deny from the other and answers
-  a refusal with a prompt. `_curb_asks`/`curbAsks` moves those entries into the
-  deny list first, in both directions, where the verb tie-break lets the
-  refusal win; an entry no deny covers stays an ask, since dropping it would
-  answer _allow_ and lift the question its own side asked.
+  a refusal with a prompt. `_curb_asks`/`curbAsks` restates each such deny at
+  the ask's own depth, in the scope the two rules share (the commands and the
+  mount both speak about), in both directions, where the verb tie-break lets
+  the refusal win; the ask stays whole, so outside that scope it still asks (a
+  top-level `cat` ask meeting a deny written under one mount is refused inside
+  that mount alone, an all-command ask meeting a `cat` deny is refused for
+  `cat` alone). A deny the other side's own deeper ask already outranks is not
+  restated, since that side's answer there was a question, which is what makes
+  joining a rule set with itself a no-op, carve-outs included; and nothing is
+  dropped, since dropping an entry would answer _allow_ and lift the question
+  its own side asked.
 - **The record client is a substrate, not a session detail.** Sessions, the
   namespace node table and workspace metadata are three tables that persist the
   same way, so the keyed-record clients live in `workspace/record/`

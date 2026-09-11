@@ -109,6 +109,52 @@ async def test_state_diff_reports_a_field_beyond_env_grants_and_cwd(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_state_diff_reports_every_restored_session_field(tmp_path):
+    # A checkout lands the whole table (hides, rules, standing
+    # decisions, the profile name), so a diff reading only env, grants
+    # and cwd called a session unmodified right before a checkout
+    # changed what it may do.
+    ws = _ws()
+    store = await VersionStore.open(LocalBackend(str(tmp_path)), "ws")
+    ws.create_session("narrow",
+                      permissions={
+                          "commands": {
+                              "deny": [{
+                                  "reason": "sealed",
+                                  "commands": {
+                                      "cat": ["/m/vault/*"]
+                                  }
+                              }]
+                          },
+                          "paths": {
+                              "hide": ["/m/secret"]
+                          },
+                      })
+    await ws.flush_sessions()
+    v1 = await commit(store, ws, "main", "v1")
+    await ws.set_session_profile("narrow",
+                                 {"paths": {
+                                     "hide": ["/m/secret", "/m/keys"]
+                                 }})
+    await ws.flush_sessions()
+    v2 = await commit(store, ws, "main", "v2")
+
+    delta = (await state_diff(store, v1, v2))["sessions"]["modified"]["narrow"]
+
+    # A dict-shaped field reports which of its keys moved.
+    moved = delta["hidden_paths"]["modified"]["paths"]
+    assert moved["from"] == ["/m/secret"]
+    assert sorted(moved["to"]) == ["/m/keys", "/m/secret"]
+    # The later table carries no rules block at all, so every key of
+    # the earlier one reads as deleted.
+    gone = delta["commands"]["deleted"]
+    assert [r["reason"] for r in gone["deny"]] == ["sealed"]
+    # Bookkeeping is not a change: the generation moved with every
+    # flush and the id keys the tables.
+    assert not {"generation", "created_at", "session_id"} & delta.keys()
+
+
+@pytest.mark.asyncio
 async def test_state_diff_accepts_branch_refs(tmp_path):
     ws = _ws()
     store = await VersionStore.open(LocalBackend(str(tmp_path)), "ws")

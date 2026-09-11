@@ -170,6 +170,43 @@ describe('stateDiff + restore', () => {
     )
   })
 
+  // A checkout lands the whole table (hides, rules, standing
+  // decisions, the profile name), so a diff reading only env, grants
+  // and cwd called a session unmodified right before a checkout
+  // changed what it may do.
+  it('reports every restored session field', async () => {
+    ws.createSession('narrow', {
+      permissions: parseSessionProfile({
+        commands: { deny: [{ reason: 'sealed', commands: { cat: ['/m/vault/*'] } }] },
+        paths: { hide: ['/m/secret'] },
+      }),
+    })
+    await ws.flushSessions()
+    const v1 = await commitState(store, await toStateDict(ws), 'main', 'v1')
+    await ws.setSessionProfile(
+      'narrow',
+      parseSessionProfile({ paths: { hide: ['/m/secret', '/m/keys'] } }),
+    )
+    await ws.flushSessions()
+    const v2 = await commitState(store, await toStateDict(ws), 'main', 'v2')
+
+    const diff = await stateDiff(store, v1, v2)
+    const delta = ((diff.sessions as AnyDict).modified as AnyDict).narrow as AnyDict
+
+    // A dict-shaped field reports which of its keys moved.
+    const moved = ((delta.hidden_paths as AnyDict).modified as AnyDict).paths as AnyDict
+    expect(moved.from).toEqual(['/m/secret'])
+    expect([...(moved.to as string[])].sort()).toEqual(['/m/keys', '/m/secret'])
+    // The later table carries no rules block at all, so every key of
+    // the earlier one reads as deleted.
+    const gone = (delta.commands as AnyDict).deleted as AnyDict
+    expect((gone.deny as AnyDict[]).map((r) => r.reason)).toEqual(['sealed'])
+    // Bookkeeping is not a change: the generation moved with every
+    // flush and the id keys the tables.
+    for (const key of ['generation', 'created_at', 'session_id'])
+      expect(delta).not.toHaveProperty(key)
+  })
+
   it('rejects bad scopes', async () => {
     await ws.execute('echo one > /m/a.txt')
     const v1 = await commitState(store, await toStateDict(ws), 'main', 'v1')

@@ -16,8 +16,15 @@ import { describe, expect, it } from 'vitest'
 
 import { DEFAULT_ASK_REASON } from '../../policy/constants.ts'
 import { PolicyError } from '../../policy/errors.ts'
+import { decide } from '../../policy/match/decide.ts'
 import { matchOp, ruleScope } from '../../policy/match/rule.ts'
-import type { AdmissionRules, CommandRule, OpsContext } from '../../policy/types.ts'
+import {
+  Outcome,
+  type AdmissionRules,
+  type CommandContext,
+  type CommandRule,
+  type OpsContext,
+} from '../../policy/types.ts'
 import { MountMode, PathSpec } from '../../types.ts'
 import { pathHidden, pathVisible } from '../../utils/hidden.ts'
 import { parseSessionProfile, type SessionProfile } from '../../policy/profile.ts'
@@ -778,6 +785,32 @@ describe('narrowRestored', () => {
     return session
   }
 
+  const registry = { isMountRoot: () => false }
+  const subject = (virtual: string): PathSpec =>
+    new PathSpec({
+      virtual,
+      directory: virtual.slice(0, virtual.lastIndexOf('/')) || '/',
+      resourcePath: virtual,
+      resolved: true,
+      rawPath: virtual,
+    })
+  /** One classified line, the way the door hands it to the law. */
+  const line = (command: string, paths: string[], words: string[] = []): CommandContext => {
+    const specs = paths.map(subject)
+    return {
+      command,
+      paths: specs,
+      operands: specs,
+      argv: [...words, ...paths],
+      cwd: '/',
+      registry,
+      tokens: [command, ...words, ...paths],
+    }
+  }
+  /** What the session's joined rules say about one line. */
+  const answer = (session: Session, command: string, paths: string[], words: string[] = []) =>
+    decide(line(command, paths, words), session.commands).outcome
+
   // `ruleAt` reads competing rules by anchor depth, deny before ask
   // only at equal depth, so concatenating the two lists let a deeper
   // ask from the table outrank a shallower deny on the session: a
@@ -806,14 +839,17 @@ describe('narrowRestored', () => {
         'source',
       ),
     )
-    // The table's entry moved to the deny list at its own depth, where
-    // the verb tie-break lets the refusal win, and carries the reason
-    // of the deny that curbed it.
+    // The deny is restated at the table entry's own depth, where the
+    // verb tie-break lets the refusal win, carrying its own reason; the
+    // ask stays whole.
     expect(session.commands?.deny.map((r) => [r.reason, r.paths])).toEqual([
       ['vault is sealed', ['/vault/*']],
       ['vault is sealed', ['/vault/public/*']],
     ])
-    expect(session.commands?.ask).toEqual([])
+    expect(session.commands?.ask.map((r) => [r.reason, r.paths])).toEqual([
+      ['public needs a nod', ['/vault/public/*']],
+    ])
+    expect(answer(session, 'cat', ['/vault/public/x'])).toBe(Outcome.DENY)
   })
 
   // Only the covered part moves: a carve-out the other side never
@@ -841,12 +877,14 @@ describe('narrowRestored', () => {
       ),
     )
     expect(session.commands?.ask.map((r) => [r.reason, r.paths])).toEqual([
-      ['a nod, please', ['/notes/*']],
+      ['a nod, please', ['/vault/public/*', '/notes/*']],
     ])
-    expect(session.commands?.deny.map((r) => [r.reason, r.paths])).toContainEqual([
-      'vault is sealed',
-      ['/vault/public/*'],
+    expect(session.commands?.deny.map((r) => [r.reason, r.paths])).toEqual([
+      ['vault is sealed', ['/vault/*']],
+      ['vault is sealed', ['/vault/public/*']],
     ])
+    expect(answer(session, 'cat', ['/vault/public/x'])).toBe(Outcome.DENY)
+    expect(answer(session, 'cat', ['/notes/x'])).toBe(Outcome.ASK)
   })
 
   // A deny deeper than the ask already wins on its own subtree and
@@ -875,6 +913,9 @@ describe('narrowRestored', () => {
     )
     expect(session.commands?.ask.map((r) => [r.reason, r.paths])).toEqual([
       ['a nod, please', ['/vault/*']],
+    ])
+    expect(session.commands?.deny.map((r) => [r.reason, r.paths])).toEqual([
+      ['the key is sealed', ['/vault/public/key/*']],
     ])
   })
 
@@ -905,24 +946,26 @@ describe('narrowRestored', () => {
     expect(session.commands?.ask.map((r) => [r.reason, r.paths])).toEqual([
       ['a nod, please', ['/vault/public/*']],
     ])
+    expect(session.commands?.deny.map((r) => [r.reason, r.paths])).toEqual([
+      ['vault is sealed', ['/vault/*']],
+    ])
+    expect(answer(session, 'cat', ['/vault/public/x'])).toBe(Outcome.ASK)
   })
 
-  // A deny written under a mount and an ask written at the top level
-  // overlap wherever the ask's entry already lies under that mount, so
-  // comparing the two scopes for equality read the pairing as "no cover"
-  // and let the deeper ask answer a prompt where the target refused.
-  it('curbs a session-wide ask under a mount deny', () => {
+  // A deny written under a mount section applies only to lines working
+  // inside that mount, and a top-level ask applies everywhere, so the
+  // two overlap inside the mount: there the deeper ask outranked the
+  // deny and answered the refusal with a prompt. The deny is restated
+  // at the ask's depth, still scoped to its mount.
+  it('restates a mount-scoped deny inside its mount', () => {
     const session = ruled(
       {
+        commands: { allow: ['cat', 'echo'] },
         mounts: {
           '/vault': {
-            mode: 'r',
-            commands: {
-              deny: [{ reason: 'vault is sealed', commands: { cat: ['/vault/*'] } }],
-            },
+            commands: { deny: [{ reason: 'vault is sealed', commands: { cat: ['/vault/*'] } }] },
           },
         },
-        commands: { allow: ['cat', 'echo'] },
       },
       'target',
     )
@@ -932,30 +975,33 @@ describe('narrowRestored', () => {
         {
           commands: {
             allow: ['cat', 'echo'],
-            ask: [{ reason: 'public needs a nod', commands: { cat: ['/vault/public/*'] } }],
+            ask: [{ reason: 'a nod, please', commands: { cat: ['/vault/public/*'] } }],
           },
         },
         'source',
       ),
     )
-    // The moved entry carries the deny's own mount, which is where the
-    // refusal reaches.
-    expect(session.commands?.deny.map((r) => [r.reason, r.paths, r.mount])).toEqual([
-      ['vault is sealed', ['/vault/*'], '/vault'],
-      ['vault is sealed', ['/vault/public/*'], '/vault'],
+    expect(
+      session.commands?.deny.map((r) => [r.reason, r.commands, r.paths, r.mount ?? '']),
+    ).toEqual([
+      ['vault is sealed', ['cat'], ['/vault/*'], '/vault'],
+      ['vault is sealed', ['cat'], ['/vault/public/*'], '/vault'],
     ])
-    expect(session.commands?.ask).toEqual([])
+    expect(session.commands?.ask.map((r) => [r.reason, r.paths])).toEqual([
+      ['a nod, please', ['/vault/public/*']],
+    ])
+    expect(answer(session, 'cat', ['/vault/public/x'])).toBe(Outcome.DENY)
   })
 
-  // An ask naming no command is every command, so a deny naming one
-  // overlaps only that command: the entry is refused for it and stays a
-  // question for the rest, where reading the pairing as "no cover"
-  // lifted the refusal entirely.
-  it('splits an all-command ask at a command deny', () => {
+  // An ask naming paths alone speaks about every command, so it
+  // overlaps a `cat` deny on `cat` lines and nothing else: the deny is
+  // restated for `cat` at the ask's depth, and the other commands are
+  // still asked about, since neither side refused them.
+  it('restates a deny for the commands the ask shares with it', () => {
     const session = ruled(
       {
         commands: {
-          allow: ['cat', 'ls', 'echo'],
+          allow: ['cat', 'rm', 'echo'],
           deny: [{ reason: 'vault is sealed', commands: { cat: ['/vault/*'] } }],
         },
       },
@@ -966,21 +1012,108 @@ describe('narrowRestored', () => {
       ruled(
         {
           commands: {
-            allow: ['cat', 'ls', 'echo'],
-            ask: [{ reason: 'public needs a nod', paths: ['/vault/public/*'] }],
+            allow: ['cat', 'rm', 'echo'],
+            ask: [{ reason: 'a nod, please', paths: ['/vault/public/*'] }],
           },
         },
         'source',
       ),
     )
-    expect(session.commands?.deny.map((r) => [r.reason, r.paths, r.commands])).toEqual([
-      ['vault is sealed', ['/vault/*'], ['cat']],
-      ['vault is sealed', ['/vault/public/*'], ['cat']],
+    expect(session.commands?.deny.map((r) => [r.reason, r.commands, r.paths])).toEqual([
+      ['vault is sealed', ['cat'], ['/vault/*']],
+      ['vault is sealed', ['cat'], ['/vault/public/*']],
     ])
-    // Every other command still only asks about the same entry.
-    expect(session.commands?.ask.map((r) => [r.reason, r.paths, r.commands])).toEqual([
-      ['public needs a nod', ['/vault/public/*'], []],
+    expect(session.commands?.ask.map((r) => [r.reason, r.commands ?? [], r.paths])).toEqual([
+      ['a nod, please', [], ['/vault/public/*']],
     ])
+    expect(answer(session, 'cat', ['/vault/public/x'])).toBe(Outcome.DENY)
+    expect(answer(session, 'rm', ['/vault/public/x'])).toBe(Outcome.ASK)
+  })
+
+  // Two command patterns meet token by token: a `git` ask and a
+  // `git push` deny share `git push`, so the push is refused and every
+  // other git verb is still asked about.
+  it('restates a deny at the verb the ask shares with it', () => {
+    const session = ruled(
+      {
+        commands: {
+          allow: ['git', 'echo'],
+          deny: [{ reason: 'no pushing from the vault', commands: { 'git push': ['/vault/*'] } }],
+        },
+      },
+      'target',
+    )
+    narrowRestored(
+      session,
+      ruled(
+        {
+          commands: {
+            allow: ['git', 'echo'],
+            ask: [{ reason: 'a nod, please', commands: { git: ['/vault/public/*'] } }],
+          },
+        },
+        'source',
+      ),
+    )
+    expect(session.commands?.deny.map((r) => [r.reason, r.commands, r.paths])).toEqual([
+      ['no pushing from the vault', ['git push'], ['/vault/*']],
+      ['no pushing from the vault', ['git push'], ['/vault/public/*']],
+    ])
+    expect(answer(session, 'git', ['/vault/public/x'], ['push'])).toBe(Outcome.DENY)
+    expect(answer(session, 'git', ['/vault/public/x'], ['pull'])).toBe(Outcome.ASK)
+  })
+
+  // A deny the other side's own deeper ask already outranks is not
+  // restated: that side's answer at the entry was a question, so there
+  // is no refusal to keep, and restating it would refuse a line neither
+  // side refuses.
+  it('leaves a deny the other side carved out itself', () => {
+    const session = ruled(
+      {
+        commands: {
+          allow: ['cat', 'echo'],
+          deny: [{ reason: 'vault is sealed', commands: { cat: ['/vault/*'] } }],
+          ask: [{ reason: 'public needs a nod', commands: { cat: ['/vault/public/*'] } }],
+        },
+      },
+      'target',
+    )
+    narrowRestored(
+      session,
+      ruled(
+        {
+          commands: {
+            allow: ['cat', 'echo'],
+            ask: [{ reason: 'reports need a nod', commands: { cat: ['/vault/public/reports/*'] } }],
+          },
+        },
+        'source',
+      ),
+    )
+    expect(session.commands?.deny.map((r) => [r.reason, r.paths])).toEqual([
+      ['vault is sealed', ['/vault/*']],
+    ])
+    expect(answer(session, 'cat', ['/vault/public/reports/q'])).toBe(Outcome.ASK)
+    expect(answer(session, 'cat', ['/vault/other'])).toBe(Outcome.DENY)
+  })
+
+  // Joining a rule set with itself is a no-op, carve-outs included: a
+  // checkout feeds live tables back through the restore, and a
+  // document's own deeper ask over its own deny is its answer, not a
+  // lifted refusal.
+  it('joins a rule set with itself as a no-op', () => {
+    const doc = {
+      commands: {
+        allow: ['cat', 'echo'],
+        deny: [{ reason: 'vault is sealed', commands: { cat: ['/vault/*'] } }],
+        ask: [{ reason: 'public needs a nod', commands: { cat: ['/vault/public/*'] } }],
+      },
+    }
+    const session = ruled(doc, 'target')
+    const before = session.commands
+    narrowRestored(session, ruled(doc, 'source'))
+    expect(session.commands).toBe(before)
+    expect(answer(session, 'cat', ['/vault/public/x'])).toBe(Outcome.ASK)
   })
 
   // A table whose show list spells one path twice keeps what was in
