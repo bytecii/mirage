@@ -752,20 +752,95 @@ def _covers_entry(entry: str, rule: CommandRule, other: CommandRule) -> bool:
         rule (CommandRule): the ask rule the entry belongs to.
         other (CommandRule): the candidate deny.
     """
-    if other.mount and other.mount != rule.mount:
-        return False
-    if other.commands and not all(
-            any(
-                pattern_matches(pat, spelling.split())
-                for pat in other.commands)
-            for spelling in (rule.commands or ("*", ))):
-        return False
     depth = anchor_depth(entry)
     if not other.paths:
         return depth > 0
     return any(
         anchor_depth(path) < depth and hide_depth(classify_paths((
             path, )), entry) is not None for path in other.paths)
+
+
+def _entry_under(mount: str, entry: str) -> bool:
+    root = mount.rstrip("/")
+    return entry == root or entry.startswith(root + "/")
+
+
+def _curb_mount(entry: str, rule: CommandRule,
+                other: CommandRule) -> str | None:
+    """The mount a curbed entry is refused under, None out of reach.
+
+    A deny written at the top level reaches wherever the ask does. One
+    written under a mount reaches only lines beneath that root, so it
+    answers a session-wide ask exactly where the ask's own entry already
+    lies under that root, and a mount-scoped ask nested inside it.
+
+    Args:
+        entry (str): one path entry of the ask rule.
+        rule (CommandRule): the ask rule the entry belongs to.
+        other (CommandRule): the candidate deny.
+    """
+    if not other.mount or other.mount == rule.mount:
+        return rule.mount
+    if not rule.mount:
+        return other.mount if _entry_under(other.mount, entry) else None
+    return rule.mount if _entry_under(other.mount, rule.mount) else None
+
+
+def _curb_commands(rule: CommandRule,
+                   other: CommandRule) -> tuple[tuple[str, ...], bool] | None:
+    """The command spellings a curbed entry is refused for, and whether
+    the ask keeps the entry for the spellings left over.
+
+    A deny naming no command covers every one the ask names. Otherwise
+    only the ask's spellings the deny's patterns match are refused, and
+    an ask naming none is every command, so the deny's own list is the
+    overlap. What the deny does not name stays an ask, which is what
+    makes the refusal land without swallowing the rest of the ask.
+
+    Args:
+        rule (CommandRule): the ask rule.
+        other (CommandRule): the candidate deny.
+    """
+    if not other.commands:
+        return rule.commands, False
+    if not rule.commands:
+        return other.commands, True
+    covered = tuple(spelling for spelling in rule.commands if any(
+        pattern_matches(pat, spelling.split()) for pat in other.commands))
+    if not covered:
+        return None
+    return covered, len(covered) < len(rule.commands)
+
+
+def _curb_scope(
+        entry: str, rule: CommandRule,
+        other: CommandRule) -> tuple[str, tuple[str, ...], bool] | None:
+    """How a deny curbs one ask entry: the mount and commands the moved
+    refusal carries, and whether the ask keeps the entry as well.
+
+    The deny has to reach the entry on every axis, but it need not reach
+    all of it: a mount-scoped deny against a session-wide ask, or a
+    command-specific deny against an ask that names none, overlaps only
+    part of what the ask covers. Refusing the overlap and leaving the
+    rest an ask is the composition; reading the whole pairing as "no
+    cover", which is what comparing the two scopes for equality did, let
+    the deeper ask answer a prompt where the target refused.
+
+    Args:
+        entry (str): one path entry of the ask rule.
+        rule (CommandRule): the ask rule the entry belongs to.
+        other (CommandRule): the candidate deny.
+    """
+    if not _covers_entry(entry, rule, other):
+        return None
+    mount = _curb_mount(entry, rule, other)
+    if mount is None:
+        return None
+    commands = _curb_commands(rule, other)
+    if commands is None:
+        return None
+    spellings, partial = commands
+    return mount, spellings, partial
 
 
 def _curb_asks(
@@ -800,25 +875,33 @@ def _curb_asks(
             kept.append(rule)
             continue
         stays: list[str] = []
-        moved: dict[str, list[str]] = {}
+        moved: dict[tuple[str, str, tuple[str, ...]], list[str]] = {}
         for entry in rule.paths:
-            blocker = next(
-                (d for d in denies if _covers_entry(entry, rule, d)), None)
-            if blocker is None:
+            found = next(
+                ((d, scope)
+                 for d, scope in ((d, _curb_scope(entry, rule, d))
+                                  for d in denies) if scope is not None), None)
+            if found is None:
                 stays.append(entry)
-            else:
-                moved.setdefault(blocker.reason, []).append(entry)
+                continue
+            blocker, (mount, spellings, partial) = found
+            moved.setdefault((blocker.reason, mount, spellings),
+                             []).append(entry)
+            # A deny narrower than the ask answers only its own slice, so
+            # the entry keeps asking for the commands it left alone.
+            if partial:
+                stays.append(entry)
         if not moved:
             kept.append(rule)
             continue
         if stays:
             kept.append(replace(rule, paths=tuple(stays)))
-        for reason, entries in moved.items():
+        for (reason, mount, spellings), entries in moved.items():
             refused.append(
                 CommandRule(reason=reason,
-                            commands=rule.commands,
+                            commands=spellings,
                             paths=tuple(entries),
-                            mount=rule.mount))
+                            mount=mount))
     return (asks if not refused else tuple(kept)), tuple(refused)
 
 

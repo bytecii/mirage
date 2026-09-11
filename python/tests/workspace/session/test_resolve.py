@@ -882,6 +882,92 @@ def test_narrow_restored_does_not_curb_across_commands():
             ] == [("a nod, please", ("/vault/public/*", ))]
 
 
+# A deny written under a mount and an ask written at the top level
+# overlap wherever the ask's entry already lies under that mount, so
+# comparing the two scopes for equality read the pairing as "no cover"
+# and let the deeper ask answer a prompt where the target refused.
+def test_narrow_restored_curbs_a_session_wide_ask_under_a_mount_deny():
+    session = _ruled(
+        {
+            "mounts": {
+                "/vault": {
+                    "mode": "r",
+                    "commands": {
+                        "deny": [{
+                            "reason": "vault is sealed",
+                            "commands": {
+                                "cat": ["/vault/*"]
+                            }
+                        }]
+                    },
+                }
+            },
+            "commands": {
+                "allow": ["cat", "echo"]
+            },
+        }, "target")
+    table = _ruled(
+        {
+            "commands": {
+                "allow": ["cat", "echo"],
+                "ask": [{
+                    "reason": "public needs a nod",
+                    "commands": {
+                        "cat": ["/vault/public/*"]
+                    }
+                }],
+            }
+        }, "source")
+    narrow_restored(session, table)
+    assert session.commands is not None
+    # The moved entry carries the deny's own mount, which is where the
+    # refusal reaches.
+    assert [(r.reason, r.paths, r.mount) for r in session.commands.deny] == [
+        ("vault is sealed", ("/vault/*", ), "/vault"),
+        ("vault is sealed", ("/vault/public/*", ), "/vault"),
+    ]
+    assert session.commands.ask == ()
+
+
+# An ask naming no command is every command, so a deny naming one
+# overlaps only that command: the entry is refused for it and stays a
+# question for the rest, where reading the pairing as "no cover" lifted
+# the refusal entirely.
+def test_narrow_restored_splits_an_all_command_ask_at_a_command_deny():
+    session = _ruled(
+        {
+            "commands": {
+                "allow": ["cat", "ls", "echo"],
+                "deny": [{
+                    "reason": "vault is sealed",
+                    "commands": {
+                        "cat": ["/vault/*"]
+                    }
+                }],
+            }
+        }, "target")
+    table = _ruled(
+        {
+            "commands": {
+                "allow": ["cat", "ls", "echo"],
+                "ask": [{
+                    "reason": "public needs a nod",
+                    "paths": ["/vault/public/*"]
+                }],
+            }
+        }, "source")
+    narrow_restored(session, table)
+    assert session.commands is not None
+    assert [(r.reason, r.paths, r.commands)
+            for r in session.commands.deny] == [
+                ("vault is sealed", ("/vault/*", ), ("cat", )),
+                ("vault is sealed", ("/vault/public/*", ), ("cat", )),
+            ]
+    # Every other command still only asks about the same entry.
+    assert [(r.reason, r.paths, r.commands) for r in session.commands.ask
+            ] == [("public needs a nod", ("/vault/public/*", ), ())]
+
+
 # A table whose show list spells one path twice keeps what was in
 # force, not what was written last: `shown_mode` takes the weaker of
 # two entries at a depth, so matching against the raw list paired the

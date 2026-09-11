@@ -682,24 +682,80 @@ function mergeAllow(
  * pathless deny reaching every entry from depth 0.
  */
 function coversEntry(entry: string, rule: CommandRule, other: CommandRule): boolean {
-  if (other.mount !== undefined && other.mount !== '' && other.mount !== (rule.mount ?? '')) {
-    return false
-  }
-  const denied = other.commands ?? []
-  if (
-    denied.length > 0 &&
-    !(rule.commands ?? ['*']).every((spelling) =>
-      denied.some((pat) => patternMatches(pat, spelling.split(' '))),
-    )
-  ) {
-    return false
-  }
   const depth = anchorDepth(entry)
   const paths = other.paths ?? []
   if (paths.length === 0) return depth > 0
   return paths.some(
     (path) => anchorDepth(path) < depth && hideDepth(classifyPaths([path]), entry) !== null,
   )
+}
+
+function entryUnder(mount: string, entry: string): boolean {
+  const root = mount.replace(/\/+$/, '')
+  return entry === root || entry.startsWith(`${root}/`)
+}
+
+/**
+ * The mount a curbed entry is refused under, null out of reach.
+ *
+ * A deny written at the top level reaches wherever the ask does. One
+ * written under a mount reaches only lines beneath that root, so it answers
+ * a session-wide ask exactly where the ask's own entry already lies under
+ * that root, and a mount-scoped ask nested inside it.
+ */
+function curbMount(entry: string, rule: CommandRule, other: CommandRule): string | null {
+  const denyMount = other.mount ?? ''
+  const askMount = rule.mount ?? ''
+  if (denyMount === '' || denyMount === askMount) return askMount
+  if (askMount === '') return entryUnder(denyMount, entry) ? denyMount : null
+  return entryUnder(denyMount, askMount) ? askMount : null
+}
+
+/**
+ * The command spellings a curbed entry is refused for, and whether the ask
+ * keeps the entry for the spellings left over.
+ *
+ * A deny naming no command covers every one the ask names. Otherwise only
+ * the ask's spellings the deny's patterns match are refused, and an ask
+ * naming none is every command, so the deny's own list is the overlap. What
+ * the deny does not name stays an ask, which is what makes the refusal land
+ * without swallowing the rest of the ask.
+ */
+function curbCommands(rule: CommandRule, other: CommandRule): [readonly string[], boolean] | null {
+  const denied = other.commands ?? []
+  const asked = rule.commands ?? []
+  if (denied.length === 0) return [asked, false]
+  if (asked.length === 0) return [denied, true]
+  const covered = asked.filter((spelling) =>
+    denied.some((pat) => patternMatches(pat, spelling.split(' '))),
+  )
+  if (covered.length === 0) return null
+  return [covered, covered.length < asked.length]
+}
+
+/**
+ * How a deny curbs one ask entry: the mount and commands the moved refusal
+ * carries, and whether the ask keeps the entry as well.
+ *
+ * The deny has to reach the entry on every axis, but it need not reach all
+ * of it: a mount-scoped deny against a session-wide ask, or a
+ * command-specific deny against an ask that names none, overlaps only part
+ * of what the ask covers. Refusing the overlap and leaving the rest an ask
+ * is the composition; reading the whole pairing as "no cover", which is what
+ * comparing the two scopes for equality did, let the deeper ask answer a
+ * prompt where the target refused.
+ */
+function curbScope(
+  entry: string,
+  rule: CommandRule,
+  other: CommandRule,
+): [string, readonly string[], boolean] | null {
+  if (!coversEntry(entry, rule, other)) return null
+  const mount = curbMount(entry, rule, other)
+  if (mount === null) return null
+  const commands = curbCommands(rule, other)
+  if (commands === null) return null
+  return [mount, commands[0], commands[1]]
 }
 
 /**
@@ -729,28 +785,48 @@ function curbAsks(
       continue
     }
     const stays: string[] = []
-    const moved = new Map<string, string[]>()
+    const moved = new Map<
+      string,
+      { reason: string; mount: string; commands: readonly string[]; paths: string[] }
+    >()
     for (const entry of entries) {
-      const blocker = denies.find((d) => coversEntry(entry, rule, d))
-      if (blocker === undefined) {
-        stays.push(entry)
-      } else {
-        const held = moved.get(blocker.reason)
-        if (held === undefined) moved.set(blocker.reason, [entry])
-        else held.push(entry)
+      let blocker: CommandRule | undefined
+      let scope: [string, readonly string[], boolean] | null = null
+      for (const d of denies) {
+        const found = curbScope(entry, rule, d)
+        if (found !== null) {
+          blocker = d
+          scope = found
+          break
+        }
       }
+      if (blocker === undefined || scope === null) {
+        stays.push(entry)
+        continue
+      }
+      const [mount, commands, partial] = scope
+      const key = JSON.stringify([blocker.reason, mount, commands])
+      const held = moved.get(key)
+      if (held === undefined) {
+        moved.set(key, { reason: blocker.reason, mount, commands, paths: [entry] })
+      } else {
+        held.paths.push(entry)
+      }
+      // A deny narrower than the ask answers only its own slice, so the
+      // entry keeps asking for the commands it left alone.
+      if (partial) stays.push(entry)
     }
     if (moved.size === 0) {
       kept.push(rule)
       continue
     }
     if (stays.length > 0) kept.push({ ...rule, paths: stays })
-    for (const [reason, paths] of moved) {
+    for (const group of moved.values()) {
       refused.push({
-        reason,
-        ...(rule.commands !== undefined ? { commands: rule.commands } : {}),
-        paths,
-        ...(rule.mount !== undefined ? { mount: rule.mount } : {}),
+        reason: group.reason,
+        ...(group.commands.length > 0 ? { commands: group.commands } : {}),
+        paths: group.paths,
+        ...(group.mount !== '' ? { mount: group.mount } : {}),
       })
     }
   }

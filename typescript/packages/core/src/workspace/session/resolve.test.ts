@@ -907,6 +907,82 @@ describe('narrowRestored', () => {
     ])
   })
 
+  // A deny written under a mount and an ask written at the top level
+  // overlap wherever the ask's entry already lies under that mount, so
+  // comparing the two scopes for equality read the pairing as "no cover"
+  // and let the deeper ask answer a prompt where the target refused.
+  it('curbs a session-wide ask under a mount deny', () => {
+    const session = ruled(
+      {
+        mounts: {
+          '/vault': {
+            mode: 'r',
+            commands: {
+              deny: [{ reason: 'vault is sealed', commands: { cat: ['/vault/*'] } }],
+            },
+          },
+        },
+        commands: { allow: ['cat', 'echo'] },
+      },
+      'target',
+    )
+    narrowRestored(
+      session,
+      ruled(
+        {
+          commands: {
+            allow: ['cat', 'echo'],
+            ask: [{ reason: 'public needs a nod', commands: { cat: ['/vault/public/*'] } }],
+          },
+        },
+        'source',
+      ),
+    )
+    // The moved entry carries the deny's own mount, which is where the
+    // refusal reaches.
+    expect(session.commands?.deny.map((r) => [r.reason, r.paths, r.mount])).toEqual([
+      ['vault is sealed', ['/vault/*'], '/vault'],
+      ['vault is sealed', ['/vault/public/*'], '/vault'],
+    ])
+    expect(session.commands?.ask).toEqual([])
+  })
+
+  // An ask naming no command is every command, so a deny naming one
+  // overlaps only that command: the entry is refused for it and stays a
+  // question for the rest, where reading the pairing as "no cover"
+  // lifted the refusal entirely.
+  it('splits an all-command ask at a command deny', () => {
+    const session = ruled(
+      {
+        commands: {
+          allow: ['cat', 'ls', 'echo'],
+          deny: [{ reason: 'vault is sealed', commands: { cat: ['/vault/*'] } }],
+        },
+      },
+      'target',
+    )
+    narrowRestored(
+      session,
+      ruled(
+        {
+          commands: {
+            allow: ['cat', 'ls', 'echo'],
+            ask: [{ reason: 'public needs a nod', paths: ['/vault/public/*'] }],
+          },
+        },
+        'source',
+      ),
+    )
+    expect(session.commands?.deny.map((r) => [r.reason, r.paths, r.commands])).toEqual([
+      ['vault is sealed', ['/vault/*'], ['cat']],
+      ['vault is sealed', ['/vault/public/*'], ['cat']],
+    ])
+    // Every other command still only asks about the same entry.
+    expect(session.commands?.ask.map((r) => [r.reason, r.paths, r.commands])).toEqual([
+      ['public needs a nod', ['/vault/public/*'], []],
+    ])
+  })
+
   // A table whose show list spells one path twice keeps what was in
   // force, not what was written last: `shownMode` takes the weaker of
   // two entries at a depth, so matching against the raw list paired the

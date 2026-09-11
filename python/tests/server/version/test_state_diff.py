@@ -21,6 +21,7 @@ from mirage.server.version.api import commit
 from mirage.server.version.backend import LocalBackend
 from mirage.server.version.state_diff import state_diff
 from mirage.server.version.store import VersionStore
+from mirage.types import HiddenPaths
 from mirage.workspace.session.state import seed_var
 
 
@@ -86,6 +87,25 @@ async def test_state_diff_reports_grant_changes_with_direction(tmp_path):
     backward_grants = backward["sessions"]["modified"]["narrow"]["mount_modes"]
     assert forward_grants["modified"]["/m"] == {"from": "write", "to": "read"}
     assert backward_grants["modified"]["/m"] == {"from": "read", "to": "write"}
+
+
+# A restore lands the whole session table, so a version that differs
+# only in a field the diff never named read as unmodified right up to
+# the checkout that changed the session's access rules.
+@pytest.mark.asyncio
+async def test_state_diff_reports_a_field_beyond_env_grants_and_cwd(tmp_path):
+    ws = _ws()
+    store = await VersionStore.open(LocalBackend(str(tmp_path)), "ws")
+    session = ws.create_session("narrow", mounts={"/m": "write"})
+    await ws.flush_sessions()
+    v1 = await commit(store, ws, "main", "v1")
+    session.hidden_paths = HiddenPaths(paths=("/m/secret", ))
+    await ws.flush_sessions()
+    v2 = await commit(store, ws, "main", "v2")
+
+    diff = await state_diff(store, v1, v2)
+    assert "narrow" in diff["sessions"]["modified"]
+    assert "hidden_paths" in diff["sessions"]["modified"]["narrow"]
 
 
 @pytest.mark.asyncio

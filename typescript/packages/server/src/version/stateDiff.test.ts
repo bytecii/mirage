@@ -90,6 +90,24 @@ describe('stateDiff + restore', () => {
     expect(commands).not.toContain('echo one > /m/a.txt')
   })
 
+  // A restore lands the whole session table, so a version that differs
+  // only in a field the diff never named read as unmodified right up to
+  // the checkout that changed the session's access rules.
+  it('reports a field beyond env, grants and cwd', async () => {
+    const session = ws.createSession('narrow', { mounts: { '/m': 'read' } })
+    await ws.flushSessions()
+    const v1 = await commitState(store, await toStateDict(ws), 'main', 'v1')
+
+    session.hiddenPaths = { paths: ['/m/secret'], patterns: [] }
+    await ws.flushSessions()
+    const v2 = await commitState(store, await toStateDict(ws), 'main', 'v2')
+
+    const diff = await stateDiff(store, v1, v2)
+    const modified = (diff.sessions as AnyDict).modified as AnyDict
+    expect(Object.keys(modified)).toContain('narrow')
+    expect(Object.keys(modified.narrow as AnyDict)).toContain('hidden_paths')
+  })
+
   it('restores a single path, leaving other files and categories alone', async () => {
     await ws.execute('echo one > /m/a.txt')
     await ws.execute('echo keep > /m/b.txt')
