@@ -32,7 +32,7 @@ export default tseslint.config(
   },
   {
     ...tseslint.configs.disableTypeChecked,
-    files: ['packages/core/src/runtime/js/quickjs/*.js'],
+    files: ['packages/core/src/runtime/js/quickjs/js/*.js'],
     languageOptions: {
       globals: {
         std: 'readonly',

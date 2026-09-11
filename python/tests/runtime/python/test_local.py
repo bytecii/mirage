@@ -36,7 +36,7 @@ async def test_filesystem_operations(tmp_path, operation, expected):
     (tmp_path / 'sub').mkdir()
     (tmp_path / 'sub' / 'inner.txt').write_text('inner\n')
     fixture = (Path(__file__).resolve().parents[4] / 'integ' / 'fixtures' /
-               'runtime' / 'fs' / f'{operation}.py')
+               'runtime' / 'fs' / 'py' / f'{operation}.py')
     runtime = LocalRuntime()
     try:
         result = await runtime.run(

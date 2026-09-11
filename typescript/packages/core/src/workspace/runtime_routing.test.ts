@@ -27,7 +27,7 @@ import type { EvalResult } from '../runtime/types.ts'
 import { POLICY_EVAL_TIMEOUT, evaluatorOf, runtimeForLanguage } from '../runtime/routing/index.ts'
 import type { RunArgs, RunResult } from '../runtime/types.ts'
 import { MontyRuntime } from '../runtime/python/monty/index.ts'
-import { QuickJsRuntime } from '../runtime/js/quickjs.ts'
+import { QuickJsRuntime } from '../runtime/js/quickjs/runtime.ts'
 import {
   DenyResult,
   parseVerdict,

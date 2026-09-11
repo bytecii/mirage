@@ -14,9 +14,9 @@
 
 import { Runtime } from './base.ts'
 import { isLineExecutor, type LineExecutor } from './mixin.ts'
-import { QuickJsRuntime } from './js/quickjs.ts'
+import { QuickJsRuntime } from './js/quickjs/runtime.ts'
 import { MontyRuntime } from './python/monty/index.ts'
-import { PyodideRuntime } from './python/pyodide.ts'
+import { PyodideRuntime } from './python/pyodide/runtime.ts'
 import type { RuntimeOptions } from './types.ts'
 import { compareCodePoints } from '../utils/sort.ts'
 

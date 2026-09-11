@@ -171,12 +171,12 @@
       "steps": [
         {
           "command": "python3 -c",
-          "script": "fs/list.py",
+          "script": "fs/py/list.py",
           "expect": { "exit": 0, "stdout": "seed.txt\nsub\n" }
         },
         {
           "command": "python3 -c",
-          "script": "fs/stat.py",
+          "script": "fs/py/stat.py",
           "expect": { "exit": 0, "stdout": "file 5 32768\ndir 16384\nmissing\n" }
         }
       ]
@@ -336,12 +336,12 @@
       "steps": [
         {
           "command": "js -e",
-          "script": "fs/list.js",
+          "script": "fs/js/list.js",
           "expect": { "exit": 0, "stdout": "seed.txt\nsub\n" }
         },
         {
           "command": "js -e",
-          "script": "fs/stat.js",
+          "script": "fs/js/stat.js",
           "expect": { "exit": 0, "stdout": "file 5 32768\ndir 16384\nmissing\n" }
         }
       ]
@@ -439,12 +439,12 @@
       "steps": [
         {
           "command": "python3 -c",
-          "script": "fs/list.py",
+          "script": "fs/py/list.py",
           "expect": { "exit": 0, "stdout": "seed.txt\nsub\n" }
         },
         {
           "command": "python3 -c",
-          "script": "fs/stat.py",
+          "script": "fs/py/stat.py",
           "expect": { "exit": 0, "stdout": "file 5 32768\ndir 16384\nmissing\n" }
         }
       ]

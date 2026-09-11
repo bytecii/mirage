@@ -558,7 +558,7 @@
       "steps": [
         {
           "command": "js -e",
-          "script": "fs/list.js",
+          "script": "fs/js/list.js",
           "expect": {
             "exit": 0,
             "stdout": "seed.txt\nsub\n"
@@ -586,7 +586,7 @@
       "steps": [
         {
           "command": "js -e",
-          "script": "fs/stat.js",
+          "script": "fs/js/stat.js",
           "expect": {
             "exit": 0,
             "stdout": "file 5 32768\ndir 16384\nmissing\n"
@@ -614,7 +614,7 @@
       "steps": [
         {
           "command": "js -e",
-          "script": "fs/glob.js",
+          "script": "fs/js/glob.js",
           "expect": {
             "exit": 0,
             "stdout": "unsupported\n"

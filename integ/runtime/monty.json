@@ -691,7 +691,7 @@
       "steps": [
         {
           "command": "python3 -c",
-          "script": "fs/list.py",
+          "script": "fs/py/list.py",
           "expect": {
             "exit": 0,
             "stdout": "seed.txt\nsub\n"
@@ -722,7 +722,7 @@
       "steps": [
         {
           "command": "python3 -c",
-          "script": "fs/stat.py",
+          "script": "fs/py/stat.py",
           "expect": {
             "exit": 0,
             "stdout": "file 5 32768\ndir 16384\nmissing\n"
@@ -753,7 +753,7 @@
       "steps": [
         {
           "command": "python3 -c",
-          "script": "fs/stat.py",
+          "script": "fs/py/stat.py",
           "expect": {
             "exit": 1,
             "stderr_contains": "PermissionError"
@@ -781,7 +781,7 @@
       "steps": [
         {
           "command": "python3 -c",
-          "script": "fs/glob.py",
+          "script": "fs/py/glob.py",
           "expect": {
             "exit": 1,
             "stderr_contains": "No module named 'glob'"
