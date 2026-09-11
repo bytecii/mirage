@@ -63,10 +63,10 @@
         "gapps-tabs"
       ],
       "clear_cache": true,
-      "command": "cat /docs/owned/*.gdoc.json | jq -c '.tabs[1].childTabs[0].tabProperties | {tabId, title, parentTabId, nestingLevel}'",
+      "command": "cat /docs/owned/*.gdoc.json | jq -c '.tabs[1].childTabs[0].tabProperties | {tabId, title, index, parentTabId, nestingLevel}'",
       "expect": {
         "exit": 0,
-        "stdout": "{\"tabId\":\"t.2\",\"title\":\"Archive\",\"parentTabId\":\"t.1\",\"nestingLevel\":1}\n",
+        "stdout": "{\"tabId\":\"t.2\",\"title\":\"Archive\",\"index\":0,\"parentTabId\":\"t.1\",\"nestingLevel\":1}\n",
         "stderr": ""
       }
     },
@@ -207,6 +207,20 @@
       "expect": {
         "exit": 0,
         "stdout": "false\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gapp_tabs_index_counts_within_the_parent",
+      "seq": 521015,
+      "targets": [
+        "gapps-tabs"
+      ],
+      "clear_cache": true,
+      "command": "cat /docs/owned/*.gdoc.json | jq -c '[.tabs[0].tabProperties.index, .tabs[1].tabProperties.index, .tabs[1].childTabs[0].tabProperties.index]'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[0,1,0]\n",
         "stderr": ""
       }
     }
