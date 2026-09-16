@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import functools
-from collections.abc import Awaitable, Mapping
+from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Protocol, cast
 
@@ -51,6 +51,9 @@ class ExecContext:
 
     Args:
         stdin (ByteSource | None): Piped standard input, if any.
+        value_occurrences (Sequence[tuple[str, str]]): The parser's
+            per-occurrence value record, which the flag bag beside it
+            cannot hold; see ``CommandOpts.value_occurrences``.
         cwd (str): The session's working directory, as a virtual path;
             ``execute_cmd`` promotes it to the PathSpec handlers read.
         dispatch (DispatchFn | None): The workspace op dispatch.
@@ -74,6 +77,7 @@ class ExecContext:
     """
 
     stdin: ByteSource | None = None
+    value_occurrences: Sequence[tuple[str, str]] = ()
     cwd: str = "/"
     dispatch: DispatchFn | None = None
     session_id: str | None = None
@@ -105,6 +109,14 @@ class CommandOpts:
         stdin (ByteSource | None): Piped standard input, if any.
         flags (Mapping[str, FlagValue]): The parsed command-line flag
             bag — only real flags, no injected context.
+        value_occurrences (Sequence[tuple[str, str]]): Every scalar
+            value-flag occurrence the line carried, as (dest, raw value)
+            in scan order. The bag beside it keeps one value per dest,
+            so a repeated option throws the earlier value away; GNU
+            validates each value where the scan meets it and answers for
+            the leftmost bad one, which is the value this is here to
+            preserve. Read by the two commands that need it (nl, shuf)
+            and ignored by every other.
         cwd (PathSpec): The session's working directory, promoted by the
             dispatcher — the mount-relative key rides ``resource_path``
             for operand defaulting. Always a PathSpec (the TS twin keeps
@@ -150,6 +162,7 @@ class CommandOpts:
 
     stdin: ByteSource | None = None
     flags: Mapping[str, FlagValue] = field(default_factory=dict)
+    value_occurrences: Sequence[tuple[str, str]] = ()
     cwd: PathSpec = ROOT_CWD
     mount_prefix: str = ""
     filetype_fns: Mapping[str, "CommandFn"] | None = None

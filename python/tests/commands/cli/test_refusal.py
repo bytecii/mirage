@@ -15,7 +15,8 @@
 from mirage.commands.cli.refusal import (ARGPARSE_EXIT, clap_missing_operands,
                                          clap_supplied, git_unknown_option,
                                          leaf_refusal)
-from mirage.commands.spec.types import CommandSpec, Operand, Option, UsageStyle
+from mirage.commands.spec.types import (CommandSpec, Operand, Option,
+                                        OptionError, UsageStyle)
 from mirage.workspace.executor.command.types import ParsedCommand
 
 ARGPARSE_MESSAGE = b"gws gmail: unrecognized option '--nosuch'\n"
@@ -28,18 +29,12 @@ def _parsed(invalid: list[str]) -> ParsedCommand:
         invalid (list[str]): offending tokens as the flat parser
             reports them.
     """
-    return ParsedCommand(flag_kwargs={},
-                         paths=[],
-                         texts=(),
-                         warnings=[],
-                         invalid_options=invalid,
-                         ambiguous_options=[],
-                         option_error_kinds=[],
-                         needs_value_options=[],
-                         invalid_value_options=[],
-                         invalid_int_options=[],
-                         invalid_float_options=[],
-                         missing_required_options=[])
+    return ParsedCommand(
+        flag_kwargs={},
+        paths=[],
+        texts=(),
+        warnings=[],
+        option_errors=[OptionError("unknown", token) for token in invalid])
 
 
 # Pinned against git 2.50.1: `git status --nosuch` and `git status -Z`.

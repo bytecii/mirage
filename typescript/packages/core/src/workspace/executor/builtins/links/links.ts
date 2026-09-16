@@ -123,7 +123,7 @@ export function acceptsLine(
   const spec = SPECS[name]
   if (spec === undefined) return true
   const parsed = parseCommand(spec, [...args], cwd)
-  if (parsed.invalidOptions.length > 0 || parsed.ambiguousOptions.length > 0) {
+  if (parsed.optionErrors.some((e) => e.kind === 'unknown' || e.kind === 'ambiguous')) {
     return false
   }
   if (name === 'unlink') {

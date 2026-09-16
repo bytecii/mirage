@@ -20,7 +20,8 @@ from pydantic import BaseModel
 from mirage.commands.cli.types import CLIInvocation, CLISpec
 from mirage.commands.errors import CommandTimeoutError
 from mirage.commands.spec.parser import parse_command
-from mirage.commands.spec.types import CommandSpec, Operand, Option
+from mirage.commands.spec.types import (CommandSpec, Operand, Option,
+                                        OptionError)
 from mirage.io import IOResult
 from mirage.io.types import materialize
 from mirage.policy import Action, Deny, Policy
@@ -609,7 +610,7 @@ def test_env_satisfies_a_required_option_before_it_is_refused():
     spec = CommandSpec(options=(Option(
         long="--version", type="str", env="X_VERSION", required=True), ))
     filled = parse_flags([], spec, "x", "/", env={"X_VERSION": "9"})
-    assert filled.missing_required_options == []
+    assert filled.option_errors == []
     assert option_error("x", filled) is None
 
 
@@ -617,7 +618,7 @@ def test_an_unset_variable_leaves_the_refusal_standing():
     spec = CommandSpec(options=(Option(
         long="--version", type="str", env="X_VERSION", required=True), ))
     same = parse_flags([], spec, "x", "/", env={})
-    assert same.missing_required_options == ["--version"]
+    assert same.option_errors == [OptionError("missing_required", "--version")]
     assert option_error("x", same) is not None
 
 

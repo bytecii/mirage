@@ -102,15 +102,43 @@ ParsedFlagValue: TypeAlias = str | bool | int | list[str]
 FlagValue: TypeAlias = (ParsedFlagValue | PathSpec | list[PathSpec]
                         | list[str | PathSpec])
 
-# The one key in a flag bag that is not an option's dest: the parser's
-# per-occurrence record of the scalar value flags the line carried,
-# flattened to [dest, value, dest, value, ...] the way a ``pair``
-# option's list is. ``parse_to_kwargs`` writes it and only when the bag
-# lost something (one dest typed twice); ``FlagView.value_occurrences``
-# is the one reader. The leading dashes make it unspellable as a dest --
-# ``flag_kwarg_name`` strips them off every real one -- so no option can
-# ever collide with it.
-VALUE_OCCURRENCES_KEY = "--value-occurrences"
+# What one option problem is, and the eight shapes the parser can find.
+# One kind per problem and one list for all of them, because the answer
+# GNU gives is positional, not categorical: getopt validates each word
+# as it reaches it and the FIRST refusal on the line is the one printed,
+# so `tee --output-error=bogus --bogus` names the value and the reversed
+# line names the unknown option. Categories only reappear at the
+# renderer, which words each kind differently.
+#
+# ``missing_required`` is the one entry with no word behind it -- an
+# option absent from the line -- so the parser appends it after every
+# positional one and it can only win when nothing else did.
+OptionErrorKind = Literal["unknown", "unexpected_value", "ambiguous",
+                          "needs_value", "invalid_int", "invalid_float",
+                          "invalid_choice", "missing_required"]
+
+
+@dataclass(frozen=True, slots=True)
+class OptionError:
+    """One GNU-shaped option problem, reported by the parser.
+
+    Args:
+        kind (OptionErrorKind): which refusal the renderer should word.
+        option (str): what GNU names -- the token as typed for an
+            unknown long ('--bogus'), the offending cluster character
+            for an unknown short ('Y'), and the canonical dashed
+            spelling for everything the spec does declare ('--total').
+        value (str): the rejected value, empty when the kind carries
+            none.
+        candidates (tuple[str, ...]): the spellings an ambiguous prefix
+            matched, or the values a choices set allows, in declaration
+            order; empty for every other kind.
+    """
+
+    kind: OptionErrorKind
+    option: str
+    value: str = ""
+    candidates: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

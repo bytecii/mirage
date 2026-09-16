@@ -15,7 +15,7 @@
 from collections.abc import Awaitable, Sequence
 from typing import NamedTuple, Protocol
 
-from mirage.commands.spec.types import FlagValue
+from mirage.commands.spec.types import FlagValue, OptionError
 from mirage.io import IOResult
 from mirage.io.types import ByteSource
 from mirage.shell.call_stack import CallStack
@@ -45,14 +45,9 @@ class ParsedCommand(NamedTuple):
     texts: list[str]
     flag_kwargs: dict[str, FlagValue]
     warnings: list[str]
-    invalid_options: list[str]
-    ambiguous_options: list[tuple[str, tuple[str, ...]]]
-    option_error_kinds: list[str]
-    needs_value_options: list[str]
-    invalid_value_options: list[tuple[str, str, tuple[str, ...]]]
-    invalid_int_options: list[tuple[str, str]]
-    invalid_float_options: list[tuple[str, str]]
-    missing_required_options: list[str]
+    # Every option problem the line earned, in the order it reached
+    # them; the renderer answers with the first, which is GNU's rule.
+    option_errors: list[OptionError]
     old_option_needs_value: str | None = None
     # Only a CLI reads these two: the display names of required operand
     # slots the line left empty, and the dests it actually typed in scan
@@ -61,3 +56,6 @@ class ParsedCommand(NamedTuple):
     # and not list because a NamedTuple default is one shared object.
     missing_required_operands: Sequence[str] = ()
     typed_dests: Sequence[str] = ()
+    # The parser's per-occurrence value record, for the commands whose
+    # own diagnostics have to answer for a value the bag dropped.
+    value_occurrences: Sequence[tuple[str, str]] = ()

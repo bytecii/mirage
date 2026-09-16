@@ -25,7 +25,7 @@ import {
   USAGE_EXIT,
   USAGE_HINT_PREFIX,
 } from './constants.ts'
-import { CommandName } from './types.ts'
+import { CommandName, type OptionError } from './types.ts'
 
 /** GNU usage-error exit code for a command. */
 export function usageExitCode(cmdName: string): number {
@@ -409,6 +409,39 @@ export function missingRequiredError(cmdName: string, option: string): [Uint8Arr
   const line = `${cmdName}: option '${option}' is required\n`
   const hint = `Try '${cmdName} --help' for more information.\n`
   return [new TextEncoder().encode(line + hint), usageExitCode(cmdName)]
+}
+
+/**
+ * One reported option problem, worded as its kind demands.
+ *
+ * The single place that maps an `OptionError` kind onto a message: the
+ * parser decides WHICH problem answers (the first the line reached) and
+ * this decides how it reads, so a caller never re-derives either.
+ * Mirrors Python's `render_option_error`.
+ */
+export function renderOptionError(cmdName: string, error: OptionError): [Uint8Array, number] {
+  const value = error.value ?? ''
+  const candidates = error.candidates ?? []
+  switch (error.kind) {
+    case 'ambiguous':
+      return ambiguousOptionError(cmdName, error.option, candidates)
+    case 'unexpected_value':
+      // A boolean long handed a value is not an unrecognized option, and
+      // getopt_long words it differently (`grep --byte-offset=2`).
+      return unexpectedValueError(cmdName, error.option)
+    case 'unknown':
+      return unknownOptionError(cmdName, error.option)
+    case 'needs_value':
+      return missingValueError(cmdName, error.option)
+    case 'invalid_int':
+      return invalidIntError(cmdName, error.option, value)
+    case 'invalid_float':
+      return invalidFloatError(cmdName, error.option, value)
+    case 'invalid_choice':
+      return invalidArgumentError(cmdName, error.option, value, candidates)
+    case 'missing_required':
+      return missingRequiredError(cmdName, error.option)
+  }
 }
 
 /**

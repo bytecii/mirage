@@ -22,7 +22,7 @@ from mirage.commands.spec.constants import (ARG_PLACEHOLDER, FLOAT_VALUE,
                                             INT_VALUE, NUMERIC_SHORT,
                                             flag_kwarg_name)
 from mirage.commands.spec.oldstyle import expand_old_style
-from mirage.commands.spec.types import (VALUE_OCCURRENCES_KEY, CommandSpec,
+from mirage.commands.spec.types import (CommandSpec, OptionError,
                                         ParsedFlagValue, ValueType)
 from mirage.utils.path import resolve_path
 
@@ -42,35 +42,14 @@ class ParsedArgs:
     # moved it, and None when the session cwd still applies. Only a spec
     # declaring operand_base ever fills this.
     word_bases: list[str | None] = field(default_factory=list)
-    # GNU-shaped option errors, reported (never raised) by the parser:
-    # undeclared options ('--bogus' or the offending cluster char 'Y'),
-    # abbreviated longs matching several options (typed prefix, matched
-    # spellings in declaration order), declared value flags that ran out
-    # of line ('--max-depth', 'm'), values outside a declared choices set
-    # (canonical spelling, value, allowed values), non-integer values on
-    # int-typed options (canonical spelling, value), and absent required
-    # options (canonical spelling).
-    invalid_options: list[str] = field(default_factory=list)
-    ambiguous_options: list[tuple[str,
-                                  tuple[str,
-                                        ...]]] = field(default_factory=list)
-    # "invalid" / "unexpected_value" / "ambiguous" tags in scan encounter
-    # order, so the refusal names the FIRST offending token like GNU (grep
-    # --c --bogus reports --c; reversed reports --bogus). needs_value is
-    # absent by construction: it only fires on the line's final token, so
-    # it can never precede another scan error. "unexpected_value" is a
-    # boolean long handed a value, which getopt_long refuses in its own
-    # words rather than as an unrecognized option; its entry in
-    # invalid_options is the option's canonical spelling with the typed
-    # value ("--byte-offset=2"), so the two tags share one list and the
-    # renderer tells them apart by the tag.
-    option_error_kinds: list[str] = field(default_factory=list)
-    needs_value_options: list[str] = field(default_factory=list)
-    invalid_value_options: list[tuple[str, str, tuple[str, ...]]] = field(
-        default_factory=list)
-    invalid_int_options: list[tuple[str, str]] = field(default_factory=list)
-    invalid_float_options: list[tuple[str, str]] = field(default_factory=list)
-    missing_required_options: list[str] = field(default_factory=list)
+    # GNU-shaped option errors, reported (never raised) by the parser,
+    # in the order the line reached them: the scan appends as it walks
+    # argv and each declared value is validated where it is consumed, so
+    # the renderer takes entry zero and gets GNU's answer without a
+    # precedence table of its own. The one exception rides at the end by
+    # construction: an option the line never carried has no position, so
+    # ``missing_required`` is appended after the scan.
+    option_errors: list[OptionError] = field(default_factory=list)
     # Display names of required operand slots the line left empty, in
     # declaration order. Reported rather than raised, like every other
     # entry here, so the dialect that words it is the caller's choice.
@@ -88,7 +67,7 @@ class ParsedArgs:
     # the order GNU validates in). Parser bookkeeping, not grammar: no
     # spec field switches it on, an accumulating (``multiple``) option
     # is absent because its own list already is the record, and every
-    # command is free to ignore it -- all of them but nl do.
+    # command is free to ignore it -- all of them but nl and shuf do.
     value_occurrences: list[tuple[str, str]] = field(default_factory=list)
     # The old-style cluster letter whose argument ran off the end of the
     # line (`tar xzf` with no archive). Its own report because GNU tar
@@ -114,6 +93,7 @@ class ParsedArgs:
 def _set_value_flag(
     flags: dict[str, ParsedFlagValue],
     occurrences: list[tuple[str, str]],
+    errors: list[OptionError],
     cs: CompiledSpec,
     spelling: str,
     value: str,
@@ -131,15 +111,27 @@ def _set_value_flag(
     on the parse result remembers it. An accumulating dest needs no
     entry -- its list already is the per-occurrence record.
 
+    The value is validated HERE rather than in a pass over the dest
+    tables afterwards, because a pass answers in spec order and GNU
+    answers in line order: getopt validates each value the moment it
+    hands it over, so ``head -c abc -n xyz`` names the bytes and the
+    reversed line names the lines. Appending to the one ``errors`` list
+    as the scan walks argv is what makes that position the answer.
+
     Args:
         flags (dict): parsed flag bag, updated in place.
         occurrences (list): per-occurrence (dest, raw value) record,
             appended to in place.
+        errors (list): the line's option errors in scan order, appended
+            to in place.
         cs (CompiledSpec): compiled spec tables.
         spelling (str): dashed spelling as typed.
         value (str): the flag's value.
     """
     name = cs.dest_of(spelling)
+    error = _value_error(cs, name, value)
+    if error is not None:
+        errors.append(error)
     if name in cs.multiple_dests:
         prev = flags.get(name)
         if isinstance(prev, list):
@@ -310,10 +302,7 @@ def parse_command(
     word_bases: list[str | None] = [None] * len(argv)
     raw_bases: list[str] = []
     warnings: list[str] = []
-    invalid_options: list[str] = []
-    ambiguous_options: list[tuple[str, tuple[str, ...]]] = []
-    option_error_kinds: list[str] = []
-    needs_value_options: list[str] = []
+    option_errors: list[OptionError] = []
     # Free-text commands (echo/python/bash-style TEXT rest) keep unknown
     # dash tokens verbatim; elsewhere they are dropped with a warning so a
     # stray flag never corrupts pattern/path classification.
@@ -351,8 +340,9 @@ def parse_command(
                 if len(expansions) == 1:
                     spelling = expansions[0]
                 elif len(expansions) > 1:
-                    ambiguous_options.append((typed, expansions))
-                    option_error_kinds.append("ambiguous")
+                    option_errors.append(
+                        OptionError("ambiguous", typed,
+                                    candidates=tuple(expansions)))
                     i += 1
                     continue
             etok = spelling if eq == -1 else spelling + tok[eq:]
@@ -363,9 +353,9 @@ def parse_command(
             elif is_pair and eq == -1 and i + 2 < len(filtered_argv):
                 # Two tokens, both recorded under the one dest, so the
                 # command reads the accumulated list in twos.
-                _set_value_flag(flags, occurrences, cs, spelling,
+                _set_value_flag(flags, occurrences, option_errors, cs, spelling,
                                 filtered_argv[i + 1])
-                _set_value_flag(flags, occurrences, cs, spelling,
+                _set_value_flag(flags, occurrences, option_errors, cs, spelling,
                                 filtered_argv[i + 2])
                 # The first token names the value and is always textual;
                 # the option's own kind describes the second.
@@ -374,7 +364,7 @@ def parse_command(
                 i += 3
             elif (not is_pair and etok in cs.long_value_spellings
                   and i + 1 < len(filtered_argv)):
-                _set_value_flag(flags, occurrences, cs, etok,
+                _set_value_flag(flags, occurrences, option_errors, cs, etok,
                                 filtered_argv[i + 1])
                 word_kinds[orig_indices[i + 1]] = cs.kind_of[etok]
                 if cs.dest_of(etok) == cs.base_dest:
@@ -383,22 +373,22 @@ def parse_command(
                 i += 2
             elif is_pair:
                 if eq == -1:
-                    needs_value_options.append(spelling)
+                    option_errors.append(
+                        OptionError("needs_value", spelling))
                 else:
                     # A two-token option has no `=` form (jq refuses
                     # `--arg=name` as an unknown option).
-                    invalid_options.append(tok)
-                    option_error_kinds.append("invalid")
+                    option_errors.append(OptionError("unknown", tok))
                 i += 1
             else:
                 if eq != -1 and (spelling in cs.long_value_spellings
                                  or spelling in cs.long_optional_spellings):
-                    _set_value_flag(flags, occurrences, cs, spelling,
+                    _set_value_flag(flags, occurrences, option_errors, cs, spelling,
                                     tok[eq + 1:])
                     base = _rebase(flags, cs, spelling, tok[eq + 1:], base)
                 elif etok in cs.long_value_spellings:
                     # Declared value flag at end of line with no argument.
-                    needs_value_options.append(etok)
+                    option_errors.append(OptionError("needs_value", etok))
                 elif lenient_dash_operands:
                     raw_args.append(tok)
                     raw_indices.append(orig_indices[i])
@@ -417,11 +407,10 @@ def parse_command(
                     # --byte-offset -- and because the programs that
                     # word this as an unknown option quote the value
                     # along with it.
-                    invalid_options.append(spelling + tok[eq:])
-                    option_error_kinds.append("unexpected_value")
+                    option_errors.append(
+                        OptionError("unexpected_value", spelling + tok[eq:]))
                 else:
-                    invalid_options.append(tok)
-                    option_error_kinds.append("invalid")
+                    option_errors.append(OptionError("unknown", tok))
                 i += 1
             continue
 
@@ -433,7 +422,7 @@ def parse_command(
             matched_optional = False
             for vf in cs.attach_spellings:
                 if tok.startswith(vf) and len(tok) > len(vf):
-                    _set_value_flag(flags, occurrences, cs, vf, tok[len(vf):])
+                    _set_value_flag(flags, occurrences, option_errors, cs, vf, tok[len(vf):])
                     base = _rebase(flags, cs, vf, tok[len(vf):], base)
                     i += 1
                     matched_optional = True
@@ -443,7 +432,7 @@ def parse_command(
             matched_value = False
             for vf in cs.value_spellings:
                 if tok == vf and i + 1 < len(filtered_argv):
-                    _set_value_flag(flags, occurrences, cs, vf,
+                    _set_value_flag(flags, occurrences, option_errors, cs, vf,
                                     filtered_argv[i + 1])
                     word_kinds[orig_indices[i + 1]] = cs.kind_of[vf]
                     if cs.dest_of(vf) == cs.base_dest:
@@ -453,7 +442,7 @@ def parse_command(
                     matched_value = True
                     break
                 if tok.startswith(vf) and len(tok) > len(vf):
-                    _set_value_flag(flags, occurrences, cs, vf, tok[len(vf):])
+                    _set_value_flag(flags, occurrences, option_errors, cs, vf, tok[len(vf):])
                     base = _rebase(flags, cs, vf, tok[len(vf):], base)
                     i += 1
                     matched_value = True
@@ -483,14 +472,14 @@ def parse_command(
                 if attached is not None:
                     for name in cluster_bools:
                         _set_bool_flag(flags, cs, name)
-                    _set_value_flag(flags, occurrences, cs, vflag, attached)
+                    _set_value_flag(flags, occurrences, option_errors, cs, vflag, attached)
                     base = _rebase(flags, cs, vflag, attached, base)
                     i += 1
                     continue
                 if i + 1 < len(filtered_argv):
                     for name in cluster_bools:
                         _set_bool_flag(flags, cs, name)
-                    _set_value_flag(flags, occurrences, cs, vflag,
+                    _set_value_flag(flags, occurrences, option_errors, cs, vflag,
                                     filtered_argv[i + 1])
                     word_kinds[orig_indices[i + 1]] = cs.kind_of[vflag]
                     if cs.dest_of(vflag) == cs.base_dest:
@@ -513,7 +502,7 @@ def parse_command(
                 else:
                     assert mixed is not None
                     needy = mixed[1][1:]
-                needs_value_options.append(needy)
+                option_errors.append(OptionError("needs_value", needy))
             else:
                 # GNU reports the first offending character, not the token.
                 bad = tok[1:2]
@@ -522,8 +511,7 @@ def parse_command(
                             and f"-{ch}" not in cs.value_spellings):
                         bad = ch
                         break
-                invalid_options.append(bad)
-                option_error_kinds.append("invalid")
+                option_errors.append(OptionError("unknown", bad))
             i += 1
             continue
 
@@ -573,39 +561,29 @@ def parse_command(
             else:
                 flags[dest_name] = default
 
-    # Int-typed values are refused before choices, argparse's order
-    # (type conversion runs before the choices test). The bare boolean
-    # form of an optional-value flag is exempt, like choices.
-    invalid_int_options: list[tuple[str, str]] = []
-    for dest_name in cs.int_dests:
-        value = flags.get(dest_name)
-        candidates = value if isinstance(
+    # Every value the LINE carried was validated where the scan
+    # consumed it, so this pass answers only for the two sources that
+    # arrive after the scan: an option's declared variable and its
+    # declared default. Both land behind every word, which is where
+    # their refusal belongs too. The bare boolean form of an
+    # optional-value flag is exempt here as it is there -- it holds a
+    # bool, so it contributes no candidate.
+    supplied = set(typed_dests)
+    for dest_name, value in flags.items():
+        if dest_name in supplied:
+            continue
+        parts = value if isinstance(
             value, list) else ([value] if isinstance(value, str) else [])
-        for part in candidates:
-            if not INT_VALUE.match(part):
-                invalid_int_options.append((dest_name, part))
-    invalid_float_options: list[tuple[str, str]] = []
-    for dest_name in cs.float_dests:
-        value = flags.get(dest_name)
-        candidates = value if isinstance(
-            value, list) else ([value] if isinstance(value, str) else [])
-        for part in candidates:
-            if not FLOAT_VALUE.match(part):
-                invalid_float_options.append((dest_name, part))
+        for part in parts:
+            error = _value_error(cs, dest_name, part)
+            if error is not None:
+                option_errors.append(error)
 
-    invalid_value_options: list[tuple[str, str, tuple[str, ...]]] = []
-    for dest_name, allowed in cs.choices_by_dest.items():
-        value = flags.get(dest_name)
-        # The bare boolean form of an optional-value flag is exempt.
-        candidates = value if isinstance(
-            value, list) else ([value] if isinstance(value, str) else [])
-        for part in candidates:
-            if part not in allowed:
-                invalid_value_options.append((dest_name, part, allowed))
-
-    missing_required_options = [
-        dest_name for dest_name in cs.required_dests if dest_name not in flags
-    ]
+    # An option absent from the line has no position, so it is appended
+    # last and can only win when no word earned a refusal of its own.
+    option_errors.extend(
+        OptionError("missing_required", dest_name)
+        for dest_name in cs.required_dests if dest_name not in flags)
 
     positional: tuple[ValueType, ...] = tuple(
         op.type for op in spec.positional
@@ -712,14 +690,7 @@ def parse_command(
         warnings=warnings,
         word_kinds=word_kinds,
         word_bases=word_bases,
-        invalid_options=invalid_options,
-        ambiguous_options=ambiguous_options,
-        option_error_kinds=option_error_kinds,
-        needs_value_options=needs_value_options,
-        invalid_value_options=invalid_value_options,
-        invalid_int_options=invalid_int_options,
-        invalid_float_options=invalid_float_options,
-        missing_required_options=missing_required_options,
+        option_errors=option_errors,
         missing_required_operands=missing_required_operands,
         typed_dests=typed_dests,
         value_occurrences=occurrences,
@@ -727,45 +698,33 @@ def parse_command(
     )
 
 
-def _shadowed_occurrences(
-        occurrences: list[tuple[str, str]]) -> list[str] | None:
-    """The occurrence record to carry in the kwargs bag, or None.
+def occurrences_to_kwargs(parsed: ParsedArgs) -> list[tuple[str, str]]:
+    """The value record in the kwarg-name space the bag uses.
 
-    The bag is a faithful record of a line that typed each scalar option
-    at most once: one value per dest, in scan order. Only a repeat makes
-    it lie -- the earlier value is gone and the dest's position is the
-    later occurrence's -- so only a repeat needs the record carried
-    alongside, and every other command line's bag stays exactly what it
-    was. Flattened to [dest, value, ...] because a bag value is a str, a
-    bool, an int or a list of str, which is the same reason a ``pair``
-    option flattens its (name, value) list.
+    The parser works in canonical dashed dests ('--number-width') and a
+    command reads kwarg names ('number_width'); ``parse_to_kwargs``
+    translates the bag, and this translates the record beside it, so the
+    two halves of one parse never reach a handler in different spaces.
 
     Args:
-        occurrences (list): (dest, raw value) pairs in scan order.
-
-    Returns:
-        list[str] | None: the flattened record when one dest occurred
-            more than once, else None.
+        parsed (ParsedArgs): one parsed command line.
     """
-    seen: set[str] = set()
-    for dest, _ in occurrences:
-        if dest in seen:
-            break
-        seen.add(dest)
-    else:
-        return None
-    flat: list[str] = []
-    for dest, value in occurrences:
-        flat.append(flag_kwarg_name(dest))
-        flat.append(value)
-    return flat
+    return [(flag_kwarg_name(dest), value)
+            for dest, value in parsed.value_occurrences]
 
 
 def parse_to_kwargs(parsed: ParsedArgs) -> dict[str, ParsedFlagValue]:
-    result: dict[str, ParsedFlagValue] = {}
-    for key, value in parsed.flags.items():
-        result[flag_kwarg_name(key)] = value
-    shadowed = _shadowed_occurrences(parsed.value_occurrences)
-    if shadowed is not None:
-        result[VALUE_OCCURRENCES_KEY] = shadowed
-    return result
+    """The flag bag a command receives, keyed by kwarg name.
+
+    Only options: the per-occurrence value record rides
+    ``CommandOpts.value_occurrences``, not a pseudo-key in here, so the
+    bag stays a mapping of dests and ``FlagView`` keeps its promise that
+    every key it answers for is one the spec declares.
+
+    Args:
+        parsed (ParsedArgs): one parsed command line.
+    """
+    return {
+        flag_kwarg_name(key): value
+        for key, value in parsed.flags.items()
+    }

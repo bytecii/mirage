@@ -82,6 +82,11 @@ interface RunOnMountOpts {
   stdin?: ByteSource | null
   resolveHint?: PathSpec | null
   mount?: MountEntry | null
+  /**
+   * The parser's per-occurrence value record, forwarded beside the bag
+   * because the bag cannot hold it.
+   */
+  valueOccurrences?: readonly [string, string][]
 }
 
 /** The 126 result for a command no runtime accepted. */
@@ -299,6 +304,7 @@ export async function runOnMount(
   try {
     const [initialStdout, io] = await mount.executeCmd(cmdName, paths, texts, flags, {
       stdin: opts.stdin ?? null,
+      valueOccurrences: opts.valueOccurrences ?? [],
       cwd: session.cwd,
       dispatch,
       sessionId: session.sessionId,

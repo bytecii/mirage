@@ -19,13 +19,7 @@ import { specOf } from '../../../../commands/spec/builtins.ts'
 import { parseCommand, parseToKwargs } from '../../../../commands/spec/parser.ts'
 import { FlagView } from '../../../../commands/spec/flag_view.ts'
 import { type ParsedArgs } from '../../../../commands/spec/parser.ts'
-import {
-  ambiguousOptionError,
-  missingValueError,
-  unexpectedValueError,
-  unknownOptionError,
-  usageHint,
-} from '../../../../commands/spec/usage.ts'
+import { renderOptionError, usageHint } from '../../../../commands/spec/usage.ts'
 import { type ByteSource, materialize } from '../../../../io/types.ts'
 import { type FileStat, FileType, PathSpec, wordText } from '../../../../types.ts'
 import {
@@ -99,32 +93,18 @@ export function parseFlags(fl: FlagView): LnFlags {
   })
 }
 
-/** The GNU option error the parser reported, if any. */
+/**
+ * The GNU option error the parser reported, if any.
+ *
+ * The FIRST one, which is the one the line reached first; ln renders
+ * through the same function the command tier uses, so the two cannot
+ * word one problem differently.
+ */
 export function optionRefusal(parsed: ParsedArgs): [string, number] | null {
-  const dec = new TextDecoder()
-  const ambiguousFirst = parsed.ambiguousOptions[0]
-  if (parsed.optionErrorKinds[0] === 'ambiguous' && ambiguousFirst !== undefined) {
-    const [msg, code] = ambiguousOptionError('ln', ...ambiguousFirst)
-    return [dec.decode(msg), code]
-  }
-  const invalid = parsed.invalidOptions[0]
-  if (invalid !== undefined) {
-    const [msg, code] =
-      parsed.optionErrorKinds[0] === 'unexpected_value'
-        ? unexpectedValueError('ln', invalid)
-        : unknownOptionError('ln', invalid)
-    return [dec.decode(msg), code]
-  }
-  if (ambiguousFirst !== undefined) {
-    const [msg, code] = ambiguousOptionError('ln', ...ambiguousFirst)
-    return [dec.decode(msg), code]
-  }
-  const needsValue = parsed.needsValueOptions[0]
-  if (needsValue !== undefined) {
-    const [msg, code] = missingValueError('ln', needsValue)
-    return [dec.decode(msg), code]
-  }
-  return null
+  const error = parsed.optionErrors[0]
+  if (error === undefined) return null
+  const [msg, code] = renderOptionError('ln', error)
+  return [new TextDecoder().decode(msg), code]
 }
 
 // The operands as classified, and -t's value as typed. The spec parse

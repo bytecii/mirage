@@ -16,9 +16,10 @@ import pytest
 
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
-from mirage.commands.spec.parser import parse_command, parse_to_kwargs
-from mirage.commands.spec.types import (VALUE_OCCURRENCES_KEY, CommandSpec,
-                                        Operand, Option)
+from mirage.commands.spec.parser import (occurrences_to_kwargs, parse_command,
+                                         parse_to_kwargs)
+from mirage.commands.spec.types import (CommandSpec, Operand, Option,
+                                        OptionError)
 
 
 def test_grep_positional_pattern_then_path():
@@ -145,7 +146,7 @@ def test_unknown_long_flag_reported_as_invalid():
     assert "--bogus" not in parsed.flags
     assert parsed.texts() == ["pat"]
     assert parsed.paths() == ["/a.txt"]
-    assert parsed.invalid_options == ["--bogus=x"]
+    assert parsed.option_errors == [OptionError("unknown", "--bogus=x")]
     assert parsed.warnings == []
 
 
@@ -177,23 +178,23 @@ def test_cluster_with_unknown_char_reports_offending_char():
     assert "-n" not in parsed.flags
     assert parsed.texts() == ["pat"]
     assert parsed.paths() == ["/a.txt"]
-    assert parsed.invalid_options == ["x"]
+    assert parsed.option_errors == [OptionError("unknown", "x")]
 
 
 def test_unknown_long_flag_reported_bare():
     parsed = parse_command(SPECS["grep"], ["--bogus", "pat", "/a.txt"], "/")
     assert parsed.texts() == ["pat"]
     assert parsed.paths() == ["/a.txt"]
-    assert parsed.invalid_options == ["--bogus"]
+    assert parsed.option_errors == [OptionError("unknown", "--bogus")]
 
 
 def test_missing_value_reported_short_and_long():
     parsed = parse_command(SPECS["grep"], ["-m"], "/")
-    assert parsed.needs_value_options == ["m"]
+    assert parsed.option_errors == [OptionError("needs_value", "m")]
     parsed = parse_command(SPECS["du"], ["--max-depth"], "/")
-    assert parsed.needs_value_options == ["--max-depth"]
+    assert parsed.option_errors == [OptionError("needs_value", "--max-depth")]
     parsed = parse_command(SPECS["grep"], ["-ne"], "/")
-    assert parsed.needs_value_options == ["e"]
+    assert parsed.option_errors == [OptionError("needs_value", "e")]
 
 
 def test_text_rest_keeps_unknown_dash_tokens():
@@ -369,34 +370,36 @@ def test_count_flag_accumulates_occurrences():
 
 def test_choices_violation_is_reported_not_raised():
     parsed = parse_command(SPECS["tee"], ["--output-error=bogus", "/f"], "/")
-    assert parsed.invalid_value_options == [
-        ("--output-error", "bogus", ("warn", "warn-nopipe", "exit",
-                                     "exit-nopipe")),
+    assert parsed.option_errors == [
+        OptionError("invalid_choice", "--output-error", "bogus",
+                    ("warn", "warn-nopipe", "exit", "exit-nopipe")),
     ]
     ok = parse_command(SPECS["tee"], ["--output-error=warn", "/f"], "/")
-    assert ok.invalid_value_options == []
+    assert ok.option_errors == []
 
 
 def test_choices_exempt_bare_optional_value_form():
     parsed = parse_command(SPECS["tee"], ["--output-error", "/f"], "/")
     assert parsed.flags["--output-error"] is True
-    assert parsed.invalid_value_options == []
+    assert parsed.option_errors == []
 
 
 def test_choices_check_every_value_of_a_multiple_flag():
     spec = CommandSpec(options=(
         Option(short="-m", type="str", multiple=True, choices=("x", "y")), ))
     parsed = parse_command(spec, ["-m", "x", "-m", "z"], "/")
-    assert parsed.invalid_value_options == [("-m", "z", ("x", "y"))]
+    assert parsed.option_errors == [
+        OptionError("invalid_choice", "-m", "z", ("x", "y"))
+    ]
 
 
 def test_required_option_reported_when_absent():
     spec = CommandSpec(
         options=(Option(long="--out", type="str", required=True), ))
     missing = parse_command(spec, [], "/")
-    assert missing.missing_required_options == ["--out"]
+    assert missing.option_errors == [OptionError("missing_required", "--out")]
     present = parse_command(spec, ["--out", "x"], "/")
-    assert present.missing_required_options == []
+    assert present.option_errors == []
 
 
 def test_default_lands_as_if_typed_and_satisfies_required():
@@ -404,7 +407,7 @@ def test_default_lands_as_if_typed_and_satisfies_required():
         Option(long="--mode", type="str", required=True, default="fast"), ))
     parsed = parse_command(spec, [], "/")
     assert parsed.flags["--mode"] == "fast"
-    assert parsed.missing_required_options == []
+    assert parsed.option_errors == []
     typed = parse_command(spec, ["--mode", "slow"], "/")
     assert typed.flags["--mode"] == "slow"
 
@@ -435,8 +438,7 @@ def test_unique_long_prefix_expands_like_getopt_long():
                                 Option(long="--count")))
     parsed = parse_command(spec, ["--rec", "x"], "/")
     assert parsed.flags["--recursive"] is True
-    assert parsed.invalid_options == []
-    assert parsed.ambiguous_options == []
+    assert parsed.option_errors == []
 
 
 def test_ambiguous_long_prefix_reports_possibilities_in_order():
@@ -445,9 +447,10 @@ def test_ambiguous_long_prefix_reports_possibilities_in_order():
                  Option(long="--color", value_optional=True, type="str"),
                  Option(long="--count")))
     parsed = parse_command(spec, ["--c"], "/")
-    assert parsed.ambiguous_options == [("--c", ("--context", "--color",
-                                                 "--count"))]
-    assert parsed.invalid_options == []
+    assert parsed.option_errors == [
+        OptionError("ambiguous", "--c",
+                    candidates=("--context", "--color", "--count"))
+    ]
 
 
 def test_exact_long_wins_over_a_longer_spelling():
@@ -455,7 +458,7 @@ def test_exact_long_wins_over_a_longer_spelling():
                                 Option(long="--binary-files", type="str")))
     parsed = parse_command(spec, ["--binary"], "/")
     assert parsed.flags["--binary"] is True
-    assert parsed.ambiguous_options == []
+    assert parsed.option_errors == []
 
 
 def test_abbreviated_long_carries_an_attached_value():
@@ -482,9 +485,9 @@ def test_free_text_commands_keep_exact_only_long_matching():
 def test_int_typed_value_is_reported_not_raised():
     spec = CommandSpec(options=(Option(long="--port", type="int"), ))
     parsed = parse_command(spec, ["--port", "abc"], "/")
-    assert parsed.invalid_int_options == [("--port", "abc")]
+    assert parsed.option_errors == [OptionError("invalid_int", "--port", "abc")]
     ok = parse_command(spec, ["--port", "-42"], "/")
-    assert ok.invalid_int_options == []
+    assert ok.option_errors == []
     assert ok.flags["--port"] == "-42"
 
 
@@ -492,7 +495,7 @@ def test_int_typed_multiple_checks_every_value():
     spec = CommandSpec(
         options=(Option(long="--id", multiple=True, type="int"), ))
     parsed = parse_command(spec, ["--id", "1", "--id", "x"], "/")
-    assert parsed.invalid_int_options == [("--id", "x")]
+    assert parsed.option_errors == [OptionError("invalid_int", "--id", "x")]
 
 
 def test_typed_values_reject_unicode_digits():
@@ -501,15 +504,15 @@ def test_typed_values_reject_unicode_digits():
     # report the same strings invalid.
     int_spec = CommandSpec(options=(Option(long="--port", type="int"), ))
     parsed = parse_command(int_spec, ["--port", "١٢"], "/")
-    assert parsed.invalid_int_options == [("--port", "١٢")]
+    assert parsed.option_errors == [OptionError("invalid_int", "--port", "١٢")]
     float_spec = CommandSpec(options=(Option(long="--q", type="float"), ))
     parsed = parse_command(float_spec, ["--q", "٣.٥"], "/")
-    assert parsed.invalid_float_options == [("--q", "٣.٥")]
+    assert parsed.option_errors == [OptionError("invalid_float", "--q", "٣.٥")]
 
 
 def test_synonym_spellings_resolve_a_shared_prefix_like_glibc():
     parsed = parse_command(SPECS["grep"], ["--colo", "pat", "/a.txt"], "/")
-    assert parsed.ambiguous_options == []
+    assert parsed.option_errors == []
     assert parsed.flags["--color"] is True
     attached = parse_command(SPECS["grep"], ["--colo=never", "pat", "/a.txt"],
                              "/")
@@ -523,30 +526,72 @@ def test_ambiguity_lists_synonyms_like_gnu():
                  Option(long="--colour", value_optional=True, type="str"),
                  Option(long="--count")))
     parsed = parse_command(spec, ["--c"], "/")
-    assert parsed.ambiguous_options == [("--c", ("--context", "--color",
-                                                 "--colour", "--count"))]
+    assert parsed.option_errors == [
+        OptionError("ambiguous", "--c",
+                    candidates=("--context", "--color", "--colour", "--count"))
+    ]
 
 
-def test_option_error_kinds_keep_scan_order():
+def test_option_errors_keep_scan_order():
     spec = CommandSpec(options=(Option(long="--context", type="str"),
                                 Option(long="--count")))
     parsed = parse_command(spec, ["--c", "--bogus"], "/")
-    assert parsed.option_error_kinds == ["ambiguous", "invalid"]
+    assert [e.kind for e in parsed.option_errors] == ["ambiguous", "unknown"]
     flipped = parse_command(spec, ["--bogus", "--c"], "/")
-    assert flipped.option_error_kinds == ["invalid", "ambiguous"]
+    assert [e.kind for e in flipped.option_errors] == ["unknown", "ambiguous"]
+
+
+def test_a_refused_value_keeps_its_place_among_the_scan_errors():
+    """GNU stops at the first bad WORD, whichever half found it.
+
+    getopt hands each value over as it reaches it, so a refused value
+    to the left of an unknown option outranks it and the reversed line
+    answers the other way (`tee --output-error=bogus --bogus`).
+    """
+    spec = CommandSpec(options=(Option(long="--mode", type="str",
+                                       choices=("a", "b")), ))
+    first = parse_command(spec, ["--mode=z", "--bogus"], "/")
+    assert [e.kind for e in first.option_errors] == ["invalid_choice",
+                                                    "unknown"]
+    second = parse_command(spec, ["--bogus", "--mode=z"], "/")
+    assert [e.kind for e in second.option_errors] == ["unknown",
+                                                     "invalid_choice"]
+
+
+def test_two_typed_values_are_refused_in_line_order():
+    spec = CommandSpec(options=(Option(short="-c", type="int"),
+                                Option(short="-n", type="int")))
+    assert parse_command(spec, ["-c", "abc", "-n", "xyz"],
+                         "/").option_errors[0] == OptionError(
+                             "invalid_int", "-c", "abc")
+    assert parse_command(spec, ["-n", "xyz", "-c", "abc"],
+                         "/").option_errors[0] == OptionError(
+                             "invalid_int", "-n", "xyz")
+
+
+def test_a_missing_required_option_is_appended_after_every_word():
+    """It has no position on the line, so it can only win alone."""
+    spec = CommandSpec(options=(Option(long="--out", type="str",
+                                       required=True), ))
+    assert parse_command(spec, ["--bogus"], "/").option_errors == [
+        OptionError("unknown", "--bogus"),
+        OptionError("missing_required", "--out"),
+    ]
 
 
 def test_float_typed_value_is_reported_not_raised():
     spec = CommandSpec(options=(Option(long="--ratio", type="float"), ))
     parsed = parse_command(spec, ["--ratio", "5x"], "/")
-    assert parsed.invalid_float_options == [("--ratio", "5x")]
+    assert parsed.option_errors == [OptionError("invalid_float", "--ratio", "5x")]
     for good in ("2.5", "-3", ".5", "1e3", "+0.25"):
         ok = parse_command(spec, ["--ratio", good], "/")
-        assert ok.invalid_float_options == []
+        assert ok.option_errors == []
         assert ok.flags["--ratio"] == good
     for bad in ("inf", "nan", "1_000", "5x", "."):
         refused = parse_command(spec, ["--ratio", bad], "/")
-        assert refused.invalid_float_options == [("--ratio", bad)]
+        assert refused.option_errors == [
+            OptionError("invalid_float", "--ratio", bad)
+        ]
 
 
 def test_pair_option_consumes_two_tokens():
@@ -576,12 +621,12 @@ def test_pair_option_value_is_never_taken_as_a_path():
 
 def test_pair_option_short_of_a_token_needs_a_value():
     parsed = parse_command(SPECS["jq"], ["--arg", "v"], "/")
-    assert parsed.needs_value_options == ["--arg"]
+    assert parsed.option_errors == [OptionError("needs_value", "--arg")]
 
 
 def test_pair_option_has_no_equals_form():
     parsed = parse_command(SPECS["jq"], ["--arg=v", "hello", "."], "/")
-    assert parsed.invalid_options == ["--arg=v"]
+    assert parsed.option_errors == [OptionError("unknown", "--arg=v")]
 
 
 def test_pair_option_can_carry_a_path_value():
@@ -657,7 +702,7 @@ def test_tar_old_style_missing_argument_is_reported_not_raised():
 
 def test_tar_old_style_undeclared_letter_reports_the_char():
     parsed = parse_command(SPECS["tar"], ["xQz", "/data/a.tgz"], "/")
-    assert parsed.invalid_options == ["Q"]
+    assert parsed.option_errors == [OptionError("unknown", "Q")]
     assert parsed.old_option_needs_value is None
 
 
@@ -772,13 +817,13 @@ PYTHON_LIKE = CommandSpec(
 
 def test_remainder_rejects_an_unknown_flag_before_the_operand():
     parsed = parse_command(PYTHON_LIKE, ["-z", "-c", "print(1)"], "/")
-    assert parsed.invalid_options == ["z"]
+    assert parsed.option_errors == [OptionError("unknown", "z")]
 
 
 def test_remainder_keeps_dash_words_after_the_operand_verbatim():
     parsed = parse_command(PYTHON_LIKE, ["s.py", "--foo", "-z"], "/")
     assert parsed.texts() == ["s.py", "--foo", "-z"]
-    assert parsed.invalid_options == []
+    assert parsed.option_errors == []
 
 
 def test_remainder_consumes_the_marker_that_hands_off_the_line():
@@ -848,33 +893,31 @@ def test_value_occurrences_skip_boolean_flags():
     assert parsed.value_occurrences == []
 
 
-def test_the_kwargs_bag_is_unchanged_when_no_scalar_option_repeats():
-    """The record rides the bag only when the bag lost something.
+def test_the_kwargs_bag_holds_options_and_nothing_else():
+    """The record rides CommandOpts, not a pseudo-key in the bag.
 
-    Every command parses through this machinery, so an unconditional
-    extra key would land in every handler's flag bag. A line that typed
-    each scalar option once has lost nothing: the bag is already the
-    record, in scan order.
+    Every command parses through this machinery and reads the bag
+    through a spec-bound FlagView, so a key that is not an option's dest
+    would be one no accessor can name.
     """
-    parsed = parse_command(SPECS["nl"], ["-w", "3", "-v", "5"], "/")
-    assert parse_to_kwargs(parsed) == {
-        "number_width": "3",
-        "starting_line_number": "5",
-    }
-
-
-def test_the_kwargs_bag_carries_the_record_once_a_scalar_repeats():
     parsed = parse_command(SPECS["nl"], ["-w", "abc", "-w", "3"], "/")
-    assert parse_to_kwargs(parsed) == {
-        "number_width": "3",
-        VALUE_OCCURRENCES_KEY: ["number_width", "abc", "number_width", "3"],
-    }
+    assert parse_to_kwargs(parsed) == {"number_width": "3"}
 
 
-def test_the_record_in_the_bag_is_read_back_as_typed_pairs():
+def test_the_record_is_translated_into_the_bag_s_kwarg_names():
+    """The parser works in dests, a command reads kwarg names."""
+    parsed = parse_command(SPECS["nl"], ["-w", "abc", "-w", "3"], "/")
+    assert parsed.value_occurrences == [("--number-width", "abc"),
+                                        ("--number-width", "3")]
+    assert occurrences_to_kwargs(parsed) == [("number_width", "abc"),
+                                             ("number_width", "3")]
+
+
+def test_the_record_is_read_back_as_typed_pairs():
     parsed = parse_command(SPECS["nl"], ["-w", "abc", "-v", "xyz", "-w", "3"],
                            "/")
-    fl = FlagView(parse_to_kwargs(parsed), spec=SPECS["nl"])
+    fl = FlagView({}, spec=SPECS["nl"],
+                  occurrences=occurrences_to_kwargs(parsed))
     assert fl.value_occurrences("number_width", "starting_line_number") == [
         ("number_width", "abc"),
         ("starting_line_number", "xyz"),
@@ -886,12 +929,10 @@ def test_the_record_in_the_bag_is_read_back_as_typed_pairs():
     ]
 
 
-def test_occurrences_fall_back_to_the_bag_when_nothing_repeated():
+def test_a_view_built_without_the_record_falls_back_to_the_bag():
     """Without a repeat each dest sits at its own occurrence's position."""
     parsed = parse_command(SPECS["nl"], ["-v", "xyz", "-w", "abc"], "/")
-    kwargs = parse_to_kwargs(parsed)
-    assert VALUE_OCCURRENCES_KEY not in kwargs
-    fl = FlagView(kwargs, spec=SPECS["nl"])
+    fl = FlagView(parse_to_kwargs(parsed), spec=SPECS["nl"])
     assert fl.value_occurrences("number_width", "starting_line_number") == [
         ("starting_line_number", "xyz"),
         ("number_width", "abc"),
@@ -899,14 +940,14 @@ def test_occurrences_fall_back_to_the_bag_when_nothing_repeated():
 
 
 def test_a_repeat_elsewhere_does_not_disturb_another_option_family():
-    """grep's accumulating options are untouched by the record's arrival."""
+    """grep's accumulating options are untouched by the record."""
     parsed = parse_command(SPECS["grep"],
                            ["-e", "a", "-e", "b", "-m", "1", "-m", "2", "x"],
                            "/")
     kwargs = parse_to_kwargs(parsed)
     assert kwargs["e"] == ["a", "b"]
     assert kwargs["m"] == "2"
-    assert kwargs[VALUE_OCCURRENCES_KEY] == ["m", "1", "m", "2"]
+    assert occurrences_to_kwargs(parsed) == [("m", "1"), ("m", "2")]
 
 
 # A boolean long handed a value is reported as its own kind, not as an
@@ -915,21 +956,24 @@ def test_a_repeat_elsewhere_does_not_disturb_another_option_family():
 # because GNU names the canonical one even for an abbreviation.
 def test_boolean_long_with_a_value_is_its_own_report():
     parsed = parse_command(SPECS["grep"], ["--byte-offset=2", "x"], "/")
-    assert parsed.invalid_options == ["--byte-offset=2"]
-    assert parsed.option_error_kinds == ["unexpected_value"]
+    assert parsed.option_errors == [
+        OptionError("unexpected_value", "--byte-offset=2")
+    ]
 
 
 def test_boolean_long_with_a_value_expands_an_abbreviation():
     """Measured: `grep --byte=2` answers for `--byte-offset`."""
     parsed = parse_command(SPECS["grep"], ["--byte=2", "x"], "/")
-    assert parsed.invalid_options == ["--byte-offset=2"]
-    assert parsed.option_error_kinds == ["unexpected_value"]
+    assert parsed.option_errors == [
+        OptionError("unexpected_value", "--byte-offset=2")
+    ]
 
 
 def test_boolean_long_with_an_empty_value_is_still_refused():
     parsed = parse_command(SPECS["grep"], ["--line-buffered=", "x"], "/")
-    assert parsed.invalid_options == ["--line-buffered="]
-    assert parsed.option_error_kinds == ["unexpected_value"]
+    assert parsed.option_errors == [
+        OptionError("unexpected_value", "--line-buffered=")
+    ]
 
 
 def test_an_undeclared_long_with_a_value_stays_unrecognized():
@@ -939,22 +983,20 @@ def test_an_undeclared_long_with_a_value_stays_unrecognized():
     quoted, which is a different GNU message from the one above.
     """
     parsed = parse_command(SPECS["grep"], ["--bogus=2", "x"], "/")
-    assert parsed.invalid_options == ["--bogus=2"]
-    assert parsed.option_error_kinds == ["invalid"]
+    assert parsed.option_errors == [OptionError("unknown", "--bogus=2")]
 
 
 def test_an_optional_value_long_still_takes_its_value():
     """A control: only a BOOLEAN long refuses `=value`."""
     parsed = parse_command(SPECS["nl"], ["--number-width=3"], "/")
-    assert parsed.invalid_options == []
-    assert parsed.option_error_kinds == []
+    assert parsed.option_errors == []
 
 
 @pytest.mark.parametrize("argv,kinds", [
-    (["--bogus", "--byte-offset=2"], ["invalid", "unexpected_value"]),
-    (["--byte-offset=2", "--bogus"], ["unexpected_value", "invalid"]),
+    (["--bogus", "--byte-offset=2"], ["unknown", "unexpected_value"]),
+    (["--byte-offset=2", "--bogus"], ["unexpected_value", "unknown"]),
 ])
 def test_the_two_reports_keep_scan_order(argv, kinds):
     """GNU stops at the first offending token, so order decides."""
     parsed = parse_command(SPECS["grep"], [*argv, "x"], "/")
-    assert parsed.option_error_kinds == kinds
+    assert [e.kind for e in parsed.option_errors] == kinds

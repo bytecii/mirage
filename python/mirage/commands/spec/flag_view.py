@@ -12,11 +12,10 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from mirage.commands.spec.constants import flag_kwarg_name
-from mirage.commands.spec.types import (VALUE_OCCURRENCES_KEY, CommandSpec,
-                                        FlagValue)
+from mirage.commands.spec.types import CommandSpec, FlagValue
 from mirage.types import PathSpec
 
 
@@ -33,13 +32,20 @@ class FlagView:
             not declare raise KeyError. A missing key is otherwise
             indistinguishable from "flag not passed", so a typo in the name
             would silently read as False/None.
+        occurrences (Sequence[tuple[str, str]]): the parser's
+            per-occurrence value record, which the bag cannot hold;
+            ``opts.value_occurrences`` is where a command reads it from.
+            Empty is the honest answer for a view built without one, and
+            only the two commands that ask for it supply one.
     """
 
     def __init__(self,
                  flags: Mapping[str, FlagValue] | None,
-                 spec: CommandSpec | None = None) -> None:
+                 spec: CommandSpec | None = None,
+                 occurrences: Sequence[tuple[str, str]] = ()) -> None:
         self._flags = flags if flags is not None else {}
         self._allowed = spec_flag_names(spec) if spec is not None else None
+        self._occurrences = occurrences
 
     def _key(self, name: str) -> str:
         if self._allowed is not None and name not in self._allowed:
@@ -73,14 +79,14 @@ class FlagView:
         value per scalar option -- the LAST occurrence of a repeated
         one. GNU validates each value the moment getopt hands it over,
         so a command that has to answer for the leftmost bad value
-        (``nl -w abc -w 3`` refuses ``abc``) needs the occurrences the
-        bag threw away. The parser records every scalar value-flag
-        occurrence as it scans, and ``parse_to_kwargs`` carries that
-        record in the bag under ``VALUE_OCCURRENCES_KEY`` -- but only
-        when the bag actually lost something, i.e. when one dest was
-        typed twice. When it is absent the bag IS the record: every dest
-        occurred once, so its bag position is that occurrence and
-        ``typed_order`` reproduces the line exactly.
+        (``nl -w abc -w 3`` refuses ``abc``, ``shuf -i 1-x -n abc``
+        refuses the range) needs the occurrences the bag threw away.
+
+        A view built without the record falls back to the bag, which is
+        the same answer whenever no scalar dest was typed twice: each
+        dest then sits at its own occurrence's position, in scan order.
+        That is what the ~200 views constructed from a bag alone get,
+        and it is only wrong for the repeat the record exists to carry.
 
         Args:
             names (str): flag names to report the occurrences of.
@@ -94,12 +100,9 @@ class FlagView:
                 and so does not appear.
         """
         wanted = {self._key(n) for n in names}
-        packed = self._flags.get(VALUE_OCCURRENCES_KEY)
-        if isinstance(packed, list):
-            return [(dest, value)
-                    for dest, value in zip(packed[0::2], packed[1::2])
-                    if isinstance(dest, str) and isinstance(value, str)
-                    and dest in wanted]
+        if self._occurrences:
+            return [(dest, value) for dest, value in self._occurrences
+                    if dest in wanted]
         recorded: list[tuple[str, str]] = []
         for dest in self.typed_order(*names):
             value = self._flags.get(dest)

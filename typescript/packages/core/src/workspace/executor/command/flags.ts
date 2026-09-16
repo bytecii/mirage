@@ -12,18 +12,12 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { parseCommand, parseToKwargs } from '../../../commands/spec/parser.ts'
 import {
-  ambiguousOptionError,
-  invalidArgumentError,
-  invalidFloatError,
-  invalidIntError,
-  missingRequiredError,
-  missingValueError,
-  oldOptionError,
-  unexpectedValueError,
-  unknownOptionError,
-} from '../../../commands/spec/usage.ts'
+  occurrencesToKwargs,
+  parseCommand,
+  parseToKwargs,
+} from '../../../commands/spec/parser.ts'
+import { oldOptionError, renderOptionError } from '../../../commands/spec/usage.ts'
 import type { CommandSpec } from '../../../commands/spec/types.ts'
 import type { ParsedCommand } from './types.ts'
 import { PathSpec } from '../../../types.ts'
@@ -142,17 +136,11 @@ export function parseFlags(
       texts,
       flagKwargs,
       warnings: parsed.warnings,
-      invalidOptions: parsed.invalidOptions,
-      ambiguousOptions: parsed.ambiguousOptions,
-      optionErrorKinds: parsed.optionErrorKinds,
-      needsValueOptions: parsed.needsValueOptions,
-      invalidValueOptions: parsed.invalidValueOptions,
-      invalidIntOptions: parsed.invalidIntOptions,
-      invalidFloatOptions: parsed.invalidFloatOptions,
-      missingRequiredOptions: parsed.missingRequiredOptions,
+      optionErrors: parsed.optionErrors,
       oldOptionNeedsValue: parsed.oldOptionNeedsValue,
       missingRequiredOperands: parsed.missingRequiredOperands,
       typedDests: parsed.typedDests,
+      valueOccurrences: occurrencesToKwargs(parsed),
     }
   }
 
@@ -167,64 +155,35 @@ export function parseFlags(
     texts,
     flagKwargs: {},
     warnings: [],
-    invalidOptions: [],
-    ambiguousOptions: [],
-    optionErrorKinds: [],
-    needsValueOptions: [],
-    invalidValueOptions: [],
-    invalidIntOptions: [],
-    invalidFloatOptions: [],
-    missingRequiredOptions: [],
+    optionErrors: [],
     oldOptionNeedsValue: null,
     missingRequiredOperands: [],
     typedDests: [],
+    valueOccurrences: [],
   }
 }
 
-// GNU-shaped refusal for option errors the parser reported. find is
-// exempt: its expression tokens are validated by parseFindExpression,
-// which raises the GNU predicate error itself. Takes the whole
-// ParsedCommand, mirroring Python's `option_error(cmd_name, parsed)`.
+// GNU-shaped refusal for the FIRST option error the parser reported, and
+// nothing else: getopt validates each word as it reaches it and the line
+// stops at the first refusal, so the answer is positional rather than
+// categorical (`tee --output-error=bogus --bogus` names the value and the
+// reversed line names the unknown option). The parser appends in scan
+// order, which is why there is no precedence table here — the one it
+// replaced could only answer in category order and had to special-case
+// scan order for two of them.
+//
+// find is exempt: its expression tokens are validated by
+// parseFindExpression, which raises the GNU predicate error itself. Takes
+// the whole ParsedCommand, mirroring Python's `option_error(cmd_name, parsed)`.
 export function optionError(cmdName: string, parsed: ParsedCommand): [Uint8Array, number] | null {
   if (cmdName === 'find') return null
-  // An old-style cluster short of an argument outranks every scan error
-  // below: tar counts the cluster's needs before argp validates a letter,
-  // so `tar Qf` and `tar fQ` both name f, not Q.
+  // An old-style cluster short of an argument outranks every scan error:
+  // tar counts the cluster's needs before argp validates a letter, so
+  // `tar Qf` and `tar fQ` both name f, not Q.
   if (parsed.oldOptionNeedsValue !== null) {
     return oldOptionError(cmdName, parsed.oldOptionNeedsValue)
   }
-  // Scan-order between unknown and ambiguous options: GNU stops at the
-  // first offending token, so `grep --c --bogus` reports the ambiguity
-  // and the reversed line reports --bogus.
-  const ambiguousFirst = parsed.ambiguousOptions[0]
-  if (parsed.optionErrorKinds[0] === 'ambiguous' && ambiguousFirst !== undefined) {
-    return ambiguousOptionError(cmdName, ...ambiguousFirst)
-  }
-  if (parsed.invalidOptions.length > 0) {
-    // Two reports share invalidOptions and the tag tells them apart: a
-    // boolean long handed a value is not an unrecognized option, and
-    // getopt_long words it differently (`grep --byte-offset=2`).
-    if (parsed.optionErrorKinds[0] === 'unexpected_value') {
-      return unexpectedValueError(cmdName, parsed.invalidOptions[0] ?? '')
-    }
-    return unknownOptionError(cmdName, parsed.invalidOptions[0] ?? '')
-  }
-  if (ambiguousFirst !== undefined) return ambiguousOptionError(cmdName, ...ambiguousFirst)
-  if (parsed.needsValueOptions.length > 0) {
-    return missingValueError(cmdName, parsed.needsValueOptions[0] ?? '')
-  }
-  // Numeric-typed values before choices, argparse's order (choices are
-  // checked against the converted value), matching the walk's finishNode:
-  // a non-numeric value on an int/float option that also declares choices
-  // reports the conversion failure, not the choice list.
-  const badInt = parsed.invalidIntOptions[0]
-  if (badInt !== undefined) return invalidIntError(cmdName, ...badInt)
-  const badFloat = parsed.invalidFloatOptions[0]
-  if (badFloat !== undefined) return invalidFloatError(cmdName, ...badFloat)
-  const badValue = parsed.invalidValueOptions[0]
-  if (badValue !== undefined) return invalidArgumentError(cmdName, ...badValue)
-  if (parsed.missingRequiredOptions.length > 0) {
-    return missingRequiredError(cmdName, parsed.missingRequiredOptions[0] ?? '')
-  }
-  return null
+  const error = parsed.optionErrors[0]
+  if (error === undefined) return null
+  return renderOptionError(cmdName, error)
 }

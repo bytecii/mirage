@@ -19,7 +19,7 @@ from mirage.commands.spec.constants import (OLD_OPTION_EXIT, OPERAND_EXIT,
                                             READ_FAIL_EXIT,
                                             READ_FAIL_EXIT_ISDIR, USAGE_EXIT,
                                             USAGE_HINT_PREFIX)
-from mirage.commands.spec.types import CommandName
+from mirage.commands.spec.types import CommandName, OptionError
 from mirage.utils.errors import fs_strerror
 
 
@@ -474,6 +474,38 @@ def missing_required_error(cmd_name: str, option: str) -> tuple[bytes, int]:
     line = f"{cmd_name}: option '{option}' is required\n"
     hint = f"Try '{cmd_name} --help' for more information.\n"
     return (line + hint).encode(), usage_exit_code(cmd_name)
+
+
+def render_option_error(cmd_name: str,
+                        error: OptionError) -> tuple[bytes, int]:
+    """One reported option problem, worded as its kind demands.
+
+    The single place that maps an ``OptionError`` kind onto a message:
+    the parser decides WHICH problem answers (the first the line reached)
+    and this decides how it reads, so a caller never re-derives either.
+
+    Args:
+        cmd_name (str): command name for the message and exit code.
+        error (OptionError): the problem to word.
+    """
+    if error.kind == "ambiguous":
+        return ambiguous_option_error(cmd_name, error.option, error.candidates)
+    if error.kind == "unexpected_value":
+        # A boolean long handed a value is not an unrecognized option,
+        # and getopt_long words it differently (`grep --byte-offset=2`).
+        return unexpected_value_error(cmd_name, error.option)
+    if error.kind == "unknown":
+        return unknown_option_error(cmd_name, error.option)
+    if error.kind == "needs_value":
+        return missing_value_error(cmd_name, error.option)
+    if error.kind == "invalid_int":
+        return invalid_int_error(cmd_name, error.option, error.value)
+    if error.kind == "invalid_float":
+        return invalid_float_error(cmd_name, error.option, error.value)
+    if error.kind == "invalid_choice":
+        return invalid_argument_error(cmd_name, error.option, error.value,
+                                      error.candidates)
+    return missing_required_error(cmd_name, error.option)
 
 
 def usage_hint(cmd_name: str) -> str:

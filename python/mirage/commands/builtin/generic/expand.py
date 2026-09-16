@@ -1,4 +1,4 @@
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from mirage.commands.builtin.utils.operands import (materialized_read,
@@ -234,7 +234,8 @@ def parse_tab_stops(occurrences: list[str]) -> TabStops:
     return TabStops(tuple(acc.stops), acc.extend, acc.increment)
 
 
-def parse_flags(flags: Mapping[str, FlagValue]) -> ExpandFlags:
+def parse_flags(flags: Mapping[str, FlagValue],
+                occurrences: Sequence[tuple[str, str]] = ()) -> ExpandFlags:
     """Read expand's flags once, refusing a tab list GNU refuses.
 
     Args:
@@ -243,7 +244,8 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> ExpandFlags:
     Raises:
         ValueError: the stderr text to print, exit 1.
     """
-    fl = FlagView(flags, spec=SPECS["expand"])
+    fl = FlagView(flags, spec=SPECS["expand"],
+                  occurrences=occurrences)
     return ExpandFlags(
         tabs=parse_tab_stops([raw for _, raw in fl.value_occurrences("tabs")]),
         initial_only=fl.as_bool("initial"),
@@ -399,7 +401,8 @@ async def expand_generic(
             ``stream(path)``.
     """
     try:
-        parsed = parse_flags(opts.flags)
+        parsed = parse_flags(opts.flags,
+                             opts.value_occurrences)
     except ValueError as exc:
         return None, IOResult(exit_code=1, stderr=f"{exc}\n".encode())
     readable, err = await split_readable(paths, stat, "expand")

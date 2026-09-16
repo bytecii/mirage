@@ -135,6 +135,8 @@ def leaf_refusal(style: UsageStyle, argparse_message: bytes,
         return argparse_message, CLAP_EXIT
     if style is not UsageStyle.GIT:
         return argparse_message, ARGPARSE_EXIT
-    if parsed.invalid_options:
-        return git_unknown_option(parsed.invalid_options[0]), USAGE_EXIT
+    unknown = next(
+        (e for e in parsed.option_errors if e.kind == "unknown"), None)
+    if unknown is not None:
+        return git_unknown_option(unknown.option), USAGE_EXIT
     return argparse_message, USAGE_EXIT

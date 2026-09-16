@@ -42,6 +42,11 @@ import { CommandSpec, Option, type FlagValue } from './spec/types.ts'
  */
 export interface ExecContext {
   stdin?: ByteSource | null
+  /**
+   * The parser's per-occurrence value record, which the flag bag beside
+   * it cannot hold; see `CommandOpts.valueOccurrences`.
+   */
+  valueOccurrences?: readonly [string, string][]
   cwd?: string
   dispatch?: DispatchFn
   sessionId?: string
@@ -67,6 +72,15 @@ export interface ExecContext {
 export interface CommandOpts {
   stdin: ByteSource | null
   flags: Record<string, FlagValue>
+  /**
+   * Every scalar value-flag occurrence the line carried, as [dest, raw
+   * value] in scan order. The bag beside it keeps one value per dest, so
+   * a repeated option throws the earlier value away; GNU validates each
+   * value where the scan meets it and answers for the leftmost bad one,
+   * which is the value this is here to preserve. Read by the two
+   * commands that need it (nl, shuf) and ignored by every other.
+   */
+  valueOccurrences?: readonly [string, string][]
   filetypeFns: Record<string, CommandFn> | null
   mountPrefix?: string
   cwd: string

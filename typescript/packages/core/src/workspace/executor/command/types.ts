@@ -14,7 +14,7 @@
 
 import type { ByteSource, IOResult } from '../../../io/types.ts'
 import type { ExecutionNode } from '../../types.ts'
-import type { FlagValue } from '../../../commands/spec/types.ts'
+import type { FlagValue, OptionError } from '../../../commands/spec/types.ts'
 import type { PathSpec } from '../../../types.ts'
 
 export type Result = [ByteSource | null, IOResult, ExecutionNode]
@@ -32,14 +32,9 @@ export interface ParsedCommand {
   texts: string[]
   flagKwargs: Record<string, FlagValue>
   warnings: string[]
-  invalidOptions: string[]
-  ambiguousOptions: [string, readonly string[]][]
-  optionErrorKinds: string[]
-  needsValueOptions: string[]
-  invalidValueOptions: [string, string, readonly string[]][]
-  invalidIntOptions: [string, string][]
-  invalidFloatOptions: [string, string][]
-  missingRequiredOptions: string[]
+  // Every option problem the line earned, in the order it reached them;
+  // the renderer answers with the first, which is GNU's rule.
+  optionErrors: readonly OptionError[]
   oldOptionNeedsValue: string | null
   // Only a CLI reads these two: the display names of required operand
   // slots the line left empty, and the dests it actually typed in scan
@@ -47,4 +42,7 @@ export interface ParsedCommand {
   // dialect, which is why they carry names and order at all.
   missingRequiredOperands: readonly string[]
   typedDests: readonly string[]
+  // The parser's per-occurrence value record, for the commands whose own
+  // diagnostics have to answer for a value the bag dropped.
+  valueOccurrences: readonly [string, string][]
 }

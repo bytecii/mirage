@@ -15,13 +15,12 @@
 from collections import defaultdict, deque
 from collections.abc import Mapping
 
-from mirage.commands.spec import (CommandSpec, flag_kwarg_name, parse_command,
-                                  parse_to_kwargs)
+from mirage.commands.spec import (CommandSpec, flag_kwarg_name,
+                                  occurrences_to_kwargs,
+                                  parse_command, parse_to_kwargs)
 from mirage.commands.spec.types import FlagValue
 from mirage.commands.spec.usage import (  # yapf: disable
-    ambiguous_option_error, invalid_argument_error, invalid_float_error,
-    invalid_int_error, missing_required_error, missing_value_error,
-    old_option_error, unexpected_value_error, unknown_option_error)
+    old_option_error, render_option_error)
 from mirage.types import PathSpec
 from mirage.workspace.executor.command.types import ParsedCommand
 
@@ -201,23 +200,30 @@ def parse_flags(
                 paths.append(take_spelling(spellings, scope_map, value))
             else:
                 texts.append(value)
-        return ParsedCommand(
-            paths, texts, flag_kwargs, parsed.warnings, parsed.invalid_options,
-            parsed.ambiguous_options, parsed.option_error_kinds,
-            parsed.needs_value_options, parsed.invalid_value_options,
-            parsed.invalid_int_options, parsed.invalid_float_options,
-            parsed.missing_required_options, parsed.old_option_needs_value,
-            parsed.missing_required_operands, parsed.typed_dests)
+        return ParsedCommand(paths, texts, flag_kwargs, parsed.warnings,
+                             parsed.option_errors,
+                             parsed.old_option_needs_value,
+                             parsed.missing_required_operands,
+                             parsed.typed_dests,
+                             occurrences_to_kwargs(parsed))
 
     # No spec: separate by type
     paths = [item for item in parts if isinstance(item, PathSpec)]
     texts = [item for item in parts if not isinstance(item, PathSpec)]
-    return ParsedCommand(paths, texts, {}, [], [], [], [], [], [], [], [], [])
+    return ParsedCommand(paths, texts, {}, [], [])
 
 
 def option_error(cmd_name: str,
                  parsed: ParsedCommand) -> tuple[bytes, int] | None:
-    """GNU-shaped refusal for option errors the parser reported.
+    """GNU-shaped refusal for the first option error the parser reported.
+
+    The FIRST, and nothing else: getopt validates each word as it
+    reaches it and the line stops at the first refusal, so the answer is
+    positional rather than categorical (``tee --output-error=bogus
+    --bogus`` names the value and the reversed line names the unknown
+    option). The parser appends in scan order, which is why there is no
+    precedence table here -- the one it replaced could only answer in
+    category order and had to special-case scan order for two of them.
 
     find is exempt: its expression tokens are validated by
     parse_find_expression, which raises the GNU predicate error itself.
@@ -228,44 +234,11 @@ def option_error(cmd_name: str,
     """
     if cmd_name == "find":
         return None
-    # An old-style cluster short of an argument outranks every scan error
-    # below: tar counts the cluster's needs before argp validates a
+    # An old-style cluster short of an argument outranks every scan
+    # error: tar counts the cluster's needs before argp validates a
     # letter, so `tar Qf` and `tar fQ` both name f, not Q.
     if parsed.old_option_needs_value is not None:
         return old_option_error(cmd_name, parsed.old_option_needs_value)
-    # Scan-order between unknown and ambiguous options: GNU stops at the
-    # first offending token, so `grep --c --bogus` reports the ambiguity
-    # and the reversed line reports --bogus.
-    if (parsed.option_error_kinds
-            and parsed.option_error_kinds[0] == "ambiguous"):
-        token, candidates = parsed.ambiguous_options[0]
-        return ambiguous_option_error(cmd_name, token, candidates)
-    if parsed.invalid_options:
-        # Two reports share invalid_options and the tag tells them apart:
-        # a boolean long handed a value is not an unrecognized option,
-        # and getopt_long words it differently (`grep --byte-offset=2`).
-        if parsed.option_error_kinds[:1] == ["unexpected_value"]:
-            return unexpected_value_error(cmd_name, parsed.invalid_options[0])
-        return unknown_option_error(cmd_name, parsed.invalid_options[0])
-    if parsed.ambiguous_options:
-        token, candidates = parsed.ambiguous_options[0]
-        return ambiguous_option_error(cmd_name, token, candidates)
-    if parsed.needs_value_options:
-        return missing_value_error(cmd_name, parsed.needs_value_options[0])
-    # Numeric-typed values before choices, argparse's order (choices are
-    # checked against the converted value), matching the walk's
-    # _finish_node: a non-numeric value on an int/float option that also
-    # declares choices reports the conversion failure, not the choice list.
-    if parsed.invalid_int_options:
-        option, value = parsed.invalid_int_options[0]
-        return invalid_int_error(cmd_name, option, value)
-    if parsed.invalid_float_options:
-        option, value = parsed.invalid_float_options[0]
-        return invalid_float_error(cmd_name, option, value)
-    if parsed.invalid_value_options:
-        option, value, choices = parsed.invalid_value_options[0]
-        return invalid_argument_error(cmd_name, option, value, choices)
-    if parsed.missing_required_options:
-        return missing_required_error(cmd_name,
-                                      parsed.missing_required_options[0])
-    return None
+    if not parsed.option_errors:
+        return None
+    return render_option_error(cmd_name, parsed.option_errors[0])

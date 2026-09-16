@@ -2,6 +2,7 @@ import pytest
 
 from mirage.commands.builtin.generic.tee import TeeFlags, parse_flags, tee
 from mirage.commands.spec import SPECS, parse_command
+from mirage.commands.spec.types import OptionError
 from mirage.io.stream import materialize
 from mirage.types import PathSpec
 
@@ -52,9 +53,9 @@ def test_a_bare_output_error_means_warn():
 def test_bad_output_error_mode_is_reported_by_the_parser():
     parsed = parse_command(SPECS["tee"], ["--output-error=bogus", "/f.txt"],
                            cwd="/")
-    assert parsed.invalid_value_options == [
-        ("--output-error", "bogus", ("warn", "warn-nopipe", "exit",
-                                     "exit-nopipe")),
+    assert parsed.option_errors == [
+        OptionError("invalid_choice", "--output-error", "bogus",
+                    ("warn", "warn-nopipe", "exit", "exit-nopipe")),
     ]
 
 

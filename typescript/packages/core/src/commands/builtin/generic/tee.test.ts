@@ -53,8 +53,13 @@ describe('parseFlags', () => {
     // bad mode and the executor refuses with GNU's ARGMATCH shape before
     // tee runs, so parseFlags no longer rejects.
     const parsed = parseCommand(specOf('tee'), ['--output-error=bogus', '/f'], '/')
-    expect(parsed.invalidValueOptions).toEqual([
-      ['--output-error', 'bogus', ['warn', 'warn-nopipe', 'exit', 'exit-nopipe']],
+    expect(parsed.optionErrors).toEqual([
+      {
+        kind: 'invalid_choice',
+        option: '--output-error',
+        value: 'bogus',
+        candidates: ['warn', 'warn-nopipe', 'exit', 'exit-nopipe'],
+      },
     ])
   })
 })

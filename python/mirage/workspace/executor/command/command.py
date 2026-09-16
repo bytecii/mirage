@@ -324,12 +324,14 @@ async def handle_command(
                                            links=namespace,
                                            options=glob_options(session))
             cross_scopes = [p for p in expanded if isinstance(p, PathSpec)]
-        run_single = functools.partial(run_on_mount,
-                                       registry,
-                                       session,
-                                       dispatch,
-                                       namespace,
-                                       routing_decision=routing_decision)
+        run_single = functools.partial(
+            run_on_mount,
+            registry,
+            session,
+            dispatch,
+            namespace,
+            routing_decision=routing_decision,
+            value_occurrences=cross_parsed.value_occurrences)
         cross_ns = namespace_view_of(registry, namespace, dispatch)
         # A per-operand native run is single-mount by construction, so a
         # traversal operand holding nested mounts has to fan out inside
@@ -494,7 +496,9 @@ async def handle_command(
                                     flag_kwargs,
                                     stdin=stdin,
                                     mount=mount,
-                                    routing_decision=routing_decision)
+                                    routing_decision=routing_decision,
+                                    value_occurrences=single_parsed
+                                    .value_occurrences)
     if cmd_name == "find":
         stdout = await _finish_find(stdout,
                                     io,

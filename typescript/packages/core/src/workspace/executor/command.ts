@@ -375,7 +375,10 @@ export async function handleCommand(
       ...(executeFn !== undefined ? { executeFn } : {}),
     }
     const runSingle: RunSingle = (name, ps, ts, fk, opts) =>
-      runOnMount(runCtx, name, ps, ts, fk, opts ?? {})
+      runOnMount(runCtx, name, ps, ts, fk, {
+        ...(opts ?? {}),
+        valueOccurrences: csParsed.valueOccurrences,
+      })
     const csNs = namespaceViewOf(registry, namespace ?? null, dispatch)
     // A per-operand native run is single-mount by construction, so a
     // traversal operand holding nested mounts has to fan out inside it,
@@ -593,6 +596,7 @@ export async function handleCommand(
     stdin,
     mount,
     resolveHint: routingScopes[0] ?? null,
+    valueOccurrences: parsedLine.valueOccurrences,
   })
   let stdout = rawStdout
   if (cmdName === 'find') {

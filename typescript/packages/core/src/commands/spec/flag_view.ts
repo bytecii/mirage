@@ -14,7 +14,7 @@
 
 import { flagKwargName } from './constants.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
-import { VALUE_OCCURRENCES_KEY, type CommandSpec, type FlagValue } from './types.ts'
+import type { CommandSpec, FlagValue } from './types.ts'
 
 /**
  * Collect the kwarg names a spec's options can produce.
@@ -49,10 +49,21 @@ export function specFlagNames(spec: CommandSpec): ReadonlySet<string> {
 export class FlagView {
   private readonly flags: Readonly<Record<string, FlagValue>>
   private readonly allowed: ReadonlySet<string> | null
+  /**
+   * The parser's per-occurrence value record, which the bag cannot
+   * hold. Empty is the honest answer for a view built without one, and
+   * only the two commands that ask for it supply one.
+   */
+  private readonly occurrences: readonly [string, string][]
 
-  constructor(flags?: Readonly<Record<string, FlagValue>>, spec?: CommandSpec) {
+  constructor(
+    flags?: Readonly<Record<string, FlagValue>>,
+    spec?: CommandSpec,
+    occurrences: readonly [string, string][] = [],
+  ) {
     this.flags = flags ?? {}
     this.allowed = spec === undefined ? null : specFlagNames(spec)
+    this.occurrences = occurrences
   }
 
   private key(name: string): string {
@@ -89,13 +100,15 @@ export class FlagView {
    * per scalar option — the LAST occurrence of a repeated one. GNU
    * validates each value the moment getopt hands it over, so a command
    * that has to answer for the leftmost bad value (`nl -w abc -w 3`
-   * refuses `abc`) needs the occurrences the bag threw away. The parser
-   * records every scalar value-flag occurrence as it scans, and
-   * `parseToKwargs` carries that record in the bag under
-   * `VALUE_OCCURRENCES_KEY` — but only when the bag actually lost
-   * something, i.e. when one dest was typed twice. When it is absent the
-   * bag IS the record: every dest occurred once, so its bag position is
-   * that occurrence and `typedOrder` reproduces the line exactly.
+   * refuses `abc`, `shuf -i 1-x -n abc` refuses the range) needs the
+   * occurrences the bag threw away; `opts.valueOccurrences` is where a
+   * command reads that record from.
+   *
+   * A view built without the record falls back to the bag, which is the
+   * same answer whenever no scalar dest was typed twice: each dest then
+   * sits at its own occurrence's position, in scan order. That is what
+   * the ~300 views constructed from a bag alone get, and it is only
+   * wrong for the repeat the record exists to carry.
    *
    * Values are raw argv text: a PATH-typed option's value is the word as
    * typed, not the resolved path, and the bare boolean form of an
@@ -104,14 +117,8 @@ export class FlagView {
    */
   valueOccurrences(...names: string[]): [string, string][] {
     const wanted = new Set(names.map((n) => this.key(n)))
-    const packed = this.flags[VALUE_OCCURRENCES_KEY]
-    if (Array.isArray(packed)) {
-      const pairs: [string, string][] = []
-      for (let i = 0; i + 1 < packed.length; i += 2) {
-        const dest = packed[i] ?? ''
-        if (wanted.has(dest)) pairs.push([dest, packed[i + 1] ?? ''])
-      }
-      return pairs
+    if (this.occurrences.length > 0) {
+      return this.occurrences.filter(([dest]) => wanted.has(dest)).map(([d, v]) => [d, v])
     }
     const recorded: [string, string][] = []
     for (const dest of this.typedOrder(...names)) {

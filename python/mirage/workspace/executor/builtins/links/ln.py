@@ -23,10 +23,7 @@ from mirage.commands.spec import SPECS, parse_command
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.parser import ParsedArgs, parse_to_kwargs
 from mirage.commands.spec.types import FlagValue
-from mirage.commands.spec.usage import (ambiguous_option_error,
-                                        missing_value_error,
-                                        unexpected_value_error,
-                                        unknown_option_error, usage_hint)
+from mirage.commands.spec.usage import render_option_error, usage_hint
 from mirage.context import path_allowed
 from mirage.io.stream import materialize
 from mirage.runtime.types import DispatchFn
@@ -126,29 +123,18 @@ def parse_flags(fl: FlagView) -> LnFlags:
 def option_refusal(parsed: ParsedArgs) -> tuple[str, int] | None:
     """The GNU option error the parser reported, if any.
 
+    The FIRST one, which is the one the line reached first; ln renders
+    through the same function the command tier uses, so the two cannot
+    word one problem differently.
+
     Args:
         parsed (ParsedArgs): the spec parse of the line.
     """
-    if (parsed.option_error_kinds
-            and parsed.option_error_kinds[0] == "ambiguous"
-            and parsed.ambiguous_options):
-        token, candidates = parsed.ambiguous_options[0]
-        msg, code = ambiguous_option_error("ln", token, candidates)
-        return msg.decode(), code
-    if parsed.invalid_options:
-        if parsed.option_error_kinds[:1] == ["unexpected_value"]:
-            msg, code = unexpected_value_error("ln", parsed.invalid_options[0])
-        else:
-            msg, code = unknown_option_error("ln", parsed.invalid_options[0])
-        return msg.decode(), code
-    if parsed.ambiguous_options:
-        token, candidates = parsed.ambiguous_options[0]
-        msg, code = ambiguous_option_error("ln", token, candidates)
-        return msg.decode(), code
-    if parsed.needs_value_options:
-        msg, code = missing_value_error("ln", parsed.needs_value_options[0])
-        return msg.decode(), code
-    return None
+    if not parsed.option_errors:
+        return None
+    msg, code = render_option_error("ln", parsed.option_errors[0])
+    return msg.decode(), code
+
 
 
 def operand_words(

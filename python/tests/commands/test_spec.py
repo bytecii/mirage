@@ -13,7 +13,8 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.commands.spec import (SPECS, CommandSpec, Operand, Option,
-                                  ParsedArgs, parse_command, parse_to_kwargs)
+                                  OptionError, ParsedArgs, parse_command,
+                                  parse_to_kwargs)
 
 
 def test_parse_simple_path_args():
@@ -161,7 +162,7 @@ def test_clustered_flags_with_unknown_short_reported_as_invalid():
                            cwd="/")
     assert parsed.texts() == ["Base3\\|base3"]
     assert parsed.paths() == ["/r2/Review"]
-    assert parsed.invalid_options == ["I"]
+    assert parsed.option_errors == [OptionError("unknown", "I")]
 
 
 def test_clustered_flags_with_all_known_short_classifies_correctly():

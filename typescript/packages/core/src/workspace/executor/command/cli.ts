@@ -255,7 +255,11 @@ export async function handleCli(
   let msg: Uint8Array | null = null
   let code = 0
   if (refusal !== null) {
-    ;[msg, code] = leafRefusal(style, refusal[0], parsed.invalidOptions)
+    ;[msg, code] = leafRefusal(
+      style,
+      refusal[0],
+      parsed.optionErrors.filter((e) => e.kind === 'unknown').map((e) => e.option),
+    )
   } else if (parsed.missingRequiredOperands.length > 0 && style === UsageStyle.CLAP) {
     // Only clap names the empty slots. Under every other style a required
     // operand stays the leaf's own business, worded by the command, which is

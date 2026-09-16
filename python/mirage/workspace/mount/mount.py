@@ -621,6 +621,7 @@ class MountEntry:
                 command=cmd_name,
                 stdin=stdin,
                 flags=flags,
+                value_occurrences=context.value_occurrences,
                 cwd=PathSpec(
                     virtual=cwd,
                     directory=cwd,

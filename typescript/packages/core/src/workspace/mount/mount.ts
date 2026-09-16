@@ -516,6 +516,7 @@ export class MountEntry {
       const cmdOpts: CommandOpts = {
         stdin: context.stdin ?? null,
         flags,
+        valueOccurrences: context.valueOccurrences ?? [],
         filetypeFns: isFiletypeCmd ? null : filetypeFns,
         mountPrefix,
         command: cmdName,
