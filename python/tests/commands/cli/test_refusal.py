@@ -12,11 +12,17 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import pytest
+
 from mirage.commands.cli.refusal import (ARGPARSE_EXIT, clap_missing_operands,
                                          clap_supplied, git_unknown_option,
                                          leaf_refusal)
+from mirage.commands.cli.specs import cli_spec_for
 from mirage.commands.spec.types import (CommandSpec, Operand, Option,
                                         OptionError, UsageStyle)
+from mirage.resource.ram import RAMResource
+from mirage.types import MountMode
+from mirage.workspace import Workspace
 from mirage.workspace.executor.command.types import ParsedCommand
 
 ARGPARSE_MESSAGE = b"gws gmail: unrecognized option '--nosuch'\n"
@@ -147,3 +153,53 @@ def test_clap_exits_two_like_argparse_but_for_its_own_reason():
     msg, code = leaf_refusal(UsageStyle.CLAP, ARGPARSE_MESSAGE, _parsed([]))
     assert msg == ARGPARSE_MESSAGE
     assert code == 2
+
+
+# The four CLI-tier options that declare `choices` render through the
+# same gnulib ARGMATCH block a coreutils command does, because a leaf
+# parses with the ordinary spec machinery. What a CLI adds is the
+# display path in place of a command name and argparse's exit 2, which
+# an installed CLI always takes -- it is never a GNU tool with a pinned
+# exit of its own. The expectation is CHOSEN rather than measured:
+# none of these is a GNU program.
+_CLI_CHOICE_REFUSALS = [
+    ("gh", {
+        "token": "t"
+    }, "gh issue list --state=x", "gh issue list", "--state",
+     ("open", "closed", "all")),
+    ("gh", {
+        "token": "t"
+    }, "gh pr list --state=x", "gh pr list", "--state",
+     ("open", "closed", "merged", "all")),
+    ("hf", {
+        "token": "t"
+    }, "hf download --repo-type=x owner/repo file", "hf download",
+     "--repo-type", ("model", "dataset", "space")),
+    ("hf", {
+        "token": "t"
+    }, "hf repo create --space_sdk=x owner/repo", "hf repo create",
+     "--space_sdk", ("gradio", "streamlit", "docker", "static")),
+    ("himalaya", {
+        "imap_host": "h",
+        "smtp_host": "h",
+        "username": "u",
+        "password": "p",
+    }, "himalaya message reply --posting-style=x 1",
+     "himalaya message reply", "--posting-style", ("top", "bottom")),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name,config,line,path,option,choices",
+                         _CLI_CHOICE_REFUSALS)
+async def test_a_cli_leaf_refuses_a_choice_in_the_argmatch_block(
+        name, config, line, path, option, choices):
+    ws = Workspace({"/": RAMResource()}, mode=MountMode.WRITE)
+    ws.register_cli(name, cli_spec_for(name), config=config)
+    result = await ws.execute(line)
+    valid = "\n".join(f"  - '{c}'" for c in choices)
+    assert (await result.materialize_stderr()).decode() == (
+        f"{path}: invalid argument 'x' for '{option}'\n"
+        f"Valid arguments are:\n{valid}\n"
+        f"Try '{path} --help' for more information.\n")
+    assert result.exit_code == 2
