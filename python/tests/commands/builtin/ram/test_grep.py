@@ -155,12 +155,20 @@ async def test_grep_v_dash_f_empty_file_matches_all(workspace):
 
 @pytest.mark.asyncio
 async def test_usage_error_is_exit_2_with_newline(workspace):
-    # GNU parity: grep/rg/zgrep without a pattern report usage on stderr
-    # and exit 2 (grep and rg do; zgrep prints usage with exit 2 here for
-    # consistency across the family).
-    for cmd in ("grep", "rg", "zgrep"):
+    # Three programs, three voices, all measured: GNU grep 3.11 prints its
+    # own synopsis and the help hint, ripgrep 14.1.0 prints one sentence
+    # and no synopsis, and GNU zgrep's own message carries a shell-script
+    # line number and the interpreter's absolute path, which mirage drops.
+    # All three exit 2.
+    expected = {
+        "grep": ("Usage: grep [OPTION]... PATTERNS [FILE]...\n"
+                 "Try 'grep --help' for more information.\n"),
+        "rg": "rg: ripgrep requires at least one pattern to execute a "
+              "search\n",
+        "zgrep": "zgrep: missing pattern; try `zgrep --help' for help\n",
+    }
+    for cmd, usage in expected.items():
         io = await workspace.execute(cmd)
         assert io.exit_code == 2
         stderr = io.stderr if isinstance(io.stderr, bytes) else b""
-        usage = f"{cmd}: usage: {cmd} [flags] pattern [path]\n"
         assert stderr == usage.encode()

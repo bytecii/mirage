@@ -40,6 +40,7 @@ from mirage.core.slack.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
+from mirage.commands.spec.usage import missing_pattern_error
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ async def rg(accessor: SlackAccessor, paths: list[PathSpec], texts: list[str],
     fl = FlagView(opts.flags, spec=SPECS["rg"])
     pattern_str = pattern_arg(texts, fl)
     if pattern_str is None:
-        raise UsageError("rg: usage: rg [flags] pattern [path]")
+        raise UsageError(missing_pattern_error("rg"))
 
     # Same gate as slack grep, from the same table: only a lone concrete
     # operand with no reshaping flag may be answered by the search API.

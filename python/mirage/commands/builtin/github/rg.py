@@ -28,6 +28,7 @@ from mirage.core.github.readdir import readdir as _readdir
 from mirage.core.github.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
+from mirage.commands.spec.usage import missing_pattern_error
 
 
 @command("rg", resource="github", spec=SPECS["rg"])
@@ -36,7 +37,7 @@ async def rg(accessor: GitHubAccessor, paths: list[PathSpec], texts: list[str],
     fl = FlagView(opts.flags, spec=SPECS["rg"])
     pattern_str = pattern_arg(texts, fl)
     if pattern_str is None:
-        raise UsageError("rg: usage: rg [flags] pattern [path]")
+        raise UsageError(missing_pattern_error("rg"))
 
     if paths:
         paths[0]

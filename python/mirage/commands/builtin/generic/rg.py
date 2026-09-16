@@ -29,6 +29,7 @@ from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import FS_ERRORS, WALK_ERRORS, fs_strerror
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.utils.path import respell_raw
+from mirage.commands.spec.usage import missing_pattern_error
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +134,7 @@ async def rg(
         read_stream = cache_aware_bound_stream(read_stream)
     fl = FlagView(opts.flags, spec=SPECS["rg"])
     pattern, never_match = await resolve_pattern(
-        texts, fl, read_bytes, "rg: usage: rg [flags] pattern [path]")
+        texts, fl, read_bytes, missing_pattern_error("rg"))
     f = parse_flags(fl, never_match)
 
     if paths:
@@ -292,7 +293,7 @@ async def rg(
         return stream, io
 
     source = resolve_source(stdin,
-                            "rg: usage: rg [flags] pattern [path]",
+                            missing_pattern_error("rg"),
                             error_cls=UsageError)
     pat = compile_pattern(pattern, f.ignore_case, f.fixed_string, f.whole_word)
     io = IOResult(exit_code=1)

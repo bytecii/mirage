@@ -476,6 +476,39 @@ def missing_required_error(cmd_name: str, option: str) -> tuple[bytes, int]:
     return (line + hint).encode(), usage_exit_code(cmd_name)
 
 
+def missing_pattern_error(cmd_name: str) -> str:
+    """What a search command answers when the line carried no pattern.
+
+    Three programs, three voices, all measured. GNU grep 3.11 prints its
+    own synopsis and the help hint. ripgrep 14.1.0 prints one sentence
+    and no synopsis at all. GNU zgrep is a shell script, so its message
+    carries the script's line number and the interpreter's absolute path
+    (``/usr/bin/zgrep: 188: 1: missing pattern; try `/usr/bin/zgrep
+    --help' for help``); mirage keeps the wording and drops those two
+    artifacts, the way tar's hint drops a ``--usage`` mirage does not
+    serve. All three exit 2, which the callers already do.
+
+    grep also answers this when the line DID carry a pattern and there
+    is nothing to read -- no operand and no stdin. Real grep reads the
+    terminal there and mirage has none, so the condition is mirage's;
+    the synopsis is still the accurate thing to print, since what is
+    missing is an operand the synopsis names.
+
+    Args:
+        cmd_name (str): the search command as invoked.
+
+    Returns:
+        str: the message, newline-separated and with no trailing
+            newline, the shape every caller here renders.
+    """
+    if cmd_name == "rg":
+        return "rg: ripgrep requires at least one pattern to execute a search"
+    if cmd_name == "zgrep":
+        return "zgrep: missing pattern; try `zgrep --help' for help"
+    return (f"Usage: {cmd_name} [OPTION]... PATTERNS [FILE]...\n"
+            f"{usage_hint(cmd_name)}")
+
+
 def render_option_error(cmd_name: str,
                         error: OptionError) -> tuple[bytes, int]:
     """One reported option problem, worded as its kind demands.

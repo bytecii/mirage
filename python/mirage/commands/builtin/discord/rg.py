@@ -39,6 +39,7 @@ from mirage.core.discord.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
+from mirage.commands.spec.usage import missing_pattern_error
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ async def rg(accessor: DiscordAccessor, paths: list[PathSpec],
     fl = FlagView(opts.flags, spec=SPECS["rg"])
     pattern_str = pattern_arg(texts, fl)
     if pattern_str is None:
-        raise UsageError("rg: usage: rg [flags] pattern [path]")
+        raise UsageError(missing_pattern_error("rg"))
 
     pushdown_warnings: list[str] = []
     # Output-shaping flags, a glob operand and a multi-operand line all need

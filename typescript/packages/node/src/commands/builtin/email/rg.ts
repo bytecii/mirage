@@ -18,6 +18,7 @@ import { resolveGlobOf } from '@struktoai/mirage-core/commands/builtin/generic_b
 import { compilePattern, patternArg } from '@struktoai/mirage-core/commands/builtin/grep_pattern'
 import { pushdownOperand, searchQuery } from '@struktoai/mirage-core/commands/builtin/grep_pushdown'
 import { grepLines } from '@struktoai/mirage-core/commands/builtin/grep_scan'
+import { missingPatternError } from '@struktoai/mirage-core/commands/spec/usage'
 import type { GrepLinesOptions } from '@struktoai/mirage-core/commands/builtin/grep_scan'
 import { command } from '@struktoai/mirage-core/commands/config'
 import type { CommandFnResult, CommandOpts } from '@struktoai/mirage-core/commands/config'
@@ -58,7 +59,7 @@ async function rgCommand(
   if (pattern === null) {
     return [
       null,
-      new IOResult({ exitCode: 2, stderr: ENC.encode('rg: usage: rg [flags] pattern [path]\n') }),
+      new IOResult({ exitCode: 2, stderr: ENC.encode(`${missingPatternError('rg')}\n`) }),
     ]
   }
   const fl = new FlagView(opts.flags, specOf('rg'))

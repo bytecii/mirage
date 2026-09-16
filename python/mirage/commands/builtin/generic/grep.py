@@ -27,6 +27,7 @@ from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import WALK_ERRORS, fs_strerror
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
 from mirage.utils.path import respell_one
+from mirage.commands.spec.usage import missing_pattern_error
 
 
 def binary_mode(fl: FlagView) -> str:
@@ -154,14 +155,14 @@ async def grep(
         read_stream = cache_aware_bound_stream(read_stream)
     fl = FlagView(opts.flags, spec=SPECS["grep"])
     pattern, never_match = await resolve_pattern(
-        texts, fl, read_bytes, "grep: usage: grep [flags] pattern [path]")
+        texts, fl, read_bytes, missing_pattern_error("grep"))
     f = parse_flags(fl, never_match)
     pat = compile_pattern(pattern, f.ignore_case, f.fixed_string, f.whole_word,
                           f.basic_regexp)
     io = IOResult(exit_code=1)
     if not paths:
         source = resolve_source(stdin,
-                                "grep: usage: grep [flags] pattern [path]",
+                                missing_pattern_error("grep"),
                                 error_cls=UsageError)
         return grep_input(source, pat, f, "(standard input)", f.with_filename
                           and not f.no_filename, io), io

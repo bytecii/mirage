@@ -21,6 +21,7 @@ import { fsStrerror, isFsError, isWalkError } from '../../../utils/errors.ts'
 import { respellRaw } from '../../../utils/path.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
+import { missingPatternError } from '../../spec/usage.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { compilePattern, resolvePattern } from '../grep_pattern.ts'
 import {
@@ -128,7 +129,7 @@ export async function rgGeneric(
   if (exprText === null) {
     return [
       null,
-      new IOResult({ exitCode: 2, stderr: ENC.encode('rg: usage: rg [flags] pattern [path]\n') }),
+      new IOResult({ exitCode: 2, stderr: ENC.encode(`${missingPatternError('rg')}\n`) }),
     ]
   }
   const flags = parseFlags(new FlagView(opts.flags, specOf('rg')))
@@ -142,7 +143,7 @@ export async function rgGeneric(
   if (first === undefined) {
     let source: AsyncIterable<Uint8Array>
     try {
-      source = resolveSource(opts.stdin, 'rg: usage: rg [flags] pattern [path]')
+      source = resolveSource(opts.stdin, missingPatternError('rg'))
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(`${msg}\n`) })]

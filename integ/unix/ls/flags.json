@@ -573,6 +573,126 @@
       ]
     },
     {
+      "id": "ls_block_size_invalid_word",
+      "seq": 960123,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "ls -go --block-size=x --time-style=+x /data/lsf/file10.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "ls: invalid --block-size argument 'x'\n"
+      },
+      "flags": [
+        "g",
+        "o",
+        "block-size",
+        "time-style"
+      ]
+    },
+    {
+      "id": "ls_block_size_empty",
+      "seq": 960124,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "ls -go --block-size= --time-style=+x /data/lsf/file10.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "ls: invalid --block-size argument ''\n"
+      },
+      "flags": [
+        "g",
+        "o",
+        "block-size",
+        "time-style"
+      ]
+    },
+    {
+      "id": "ls_block_size_zero",
+      "seq": 960125,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "ls -go --block-size=0 --time-style=+x /data/lsf/file10.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "ls: invalid --block-size argument '0'\n"
+      },
+      "flags": [
+        "g",
+        "o",
+        "block-size",
+        "time-style"
+      ]
+    },
+    {
       "id": "ls_u_and_c_are_accepted",
       "seq": 960123,
       "targets": [

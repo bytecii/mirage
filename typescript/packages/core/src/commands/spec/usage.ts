@@ -412,6 +412,33 @@ export function missingRequiredError(cmdName: string, option: string): [Uint8Arr
 }
 
 /**
+ * What a search command answers when the line carried no pattern.
+ *
+ * Three programs, three voices, all measured. GNU grep 3.11 prints its
+ * own synopsis and the help hint. ripgrep 14.1.0 prints one sentence and
+ * no synopsis at all. GNU zgrep is a shell script, so its message carries
+ * the script's line number and the interpreter's absolute path
+ * (``/usr/bin/zgrep: 188: 1: missing pattern; try `/usr/bin/zgrep --help'
+ * for help``); mirage keeps the wording and drops those two artifacts,
+ * the way tar's hint drops a `--usage` mirage does not serve. All three
+ * exit 2, which the callers already do.
+ *
+ * grep also answers this when the line DID carry a pattern and there is
+ * nothing to read — no operand and no stdin. Real grep reads the terminal
+ * there and mirage has none, so the condition is mirage's; the synopsis
+ * is still the accurate thing to print, since what is missing is an
+ * operand the synopsis names.
+ *
+ * Returns the message newline-separated with no trailing newline, the
+ * shape every caller renders. Mirrors Python's `missing_pattern_error`.
+ */
+export function missingPatternError(cmdName: string): string {
+  if (cmdName === 'rg') return 'rg: ripgrep requires at least one pattern to execute a search'
+  if (cmdName === 'zgrep') return "zgrep: missing pattern; try `zgrep --help' for help"
+  return `Usage: ${cmdName} [OPTION]... PATTERNS [FILE]...\n${usageHint(cmdName)}`
+}
+
+/**
  * One reported option problem, worded as its kind demands.
  *
  * The single place that maps an `OptionError` kind onto a message: the

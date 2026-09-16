@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { specOf } from '../../spec/builtins.ts'
+import { missingPatternError } from '../../spec/usage.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
@@ -112,7 +113,7 @@ export async function zgrepGeneric(
       null,
       new IOResult({
         exitCode: 2,
-        stderr: ENC.encode('zgrep: usage: zgrep [flags] pattern [path]\n'),
+        stderr: ENC.encode(`${missingPatternError('zgrep')}\n`),
       }),
     ]
   }

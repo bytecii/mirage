@@ -13,6 +13,7 @@ from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
+from mirage.commands.spec.usage import missing_pattern_error
 
 
 async def _read_plain(
@@ -140,7 +141,7 @@ async def zgrep(
     fl = FlagView(flags, spec=SPECS["zgrep"])
     pattern, never_match = await resolve_pattern(
         texts, fl, partial(_read_plain, read_bytes),
-        "zgrep: usage: zgrep [flags] pattern [path]")
+        missing_pattern_error("zgrep"))
     f = parse_flags(fl, never_match)
     compiled = build_pattern_str(pattern, f.fixed, f.whole_word,
                                  f.basic_regexp)

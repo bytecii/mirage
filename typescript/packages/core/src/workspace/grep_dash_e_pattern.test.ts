@@ -152,13 +152,22 @@ describe('grep -e pattern flag', () => {
     await ws.close()
   })
 
-  it('usage errors are exit 2 with a usage message (GNU parity)', async () => {
+  // Three programs, three voices, all measured: GNU grep 3.11 prints its
+  // own synopsis and the help hint, ripgrep 14.1.0 prints one sentence,
+  // and GNU zgrep's own message carries a shell-script line number and
+  // the interpreter's absolute path, which mirage drops.
+  it('usage errors are exit 2 in each program\'s own words', async () => {
     const ws = await makeWs()
-    for (const cmd of ['grep', 'rg', 'zgrep']) {
+    const expected: Record<string, string> = {
+      grep: "Usage: grep [OPTION]... PATTERNS [FILE]...\nTry 'grep --help' for more information.\n",
+      rg: 'rg: ripgrep requires at least one pattern to execute a search\n',
+      zgrep: "zgrep: missing pattern; try `zgrep --help' for help\n",
+    }
+    for (const [cmd, message] of Object.entries(expected)) {
       const io = await ws.execute(cmd)
       expect(io.exitCode).toBe(2)
       const stderr = io.stderr instanceof Uint8Array ? new TextDecoder().decode(io.stderr) : ''
-      expect(stderr).toBe(`${cmd}: usage: ${cmd} [flags] pattern [path]\n`)
+      expect(stderr).toBe(message)
     }
     await ws.close()
   })

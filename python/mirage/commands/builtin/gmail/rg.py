@@ -34,6 +34,7 @@ from mirage.core.gmail.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
+from mirage.commands.spec.usage import missing_pattern_error
 
 
 @command("rg", resource="gmail", spec=SPECS["rg"])
@@ -42,7 +43,7 @@ async def rg(accessor: GmailAccessor, paths: list[PathSpec], texts: list[str],
     fl = FlagView(opts.flags, spec=SPECS["rg"])
     pattern_str = pattern_arg(texts, fl)
     if pattern_str is None:
-        raise UsageError("rg: usage: rg [flags] pattern [path]")
+        raise UsageError(missing_pattern_error("rg"))
     # Same gate as gmail grep, from the same table: only a lone concrete
     # operand with no reshaping flag may be answered by the search API.
     operand = pushdown_operand(paths, opts.flags, pattern_str, SEARCH_HONORED)

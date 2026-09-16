@@ -14,6 +14,7 @@
 
 import { guardInput } from '../utils/limit.ts'
 import { specOf } from '../../spec/builtins.ts'
+import { missingPatternError } from '../../spec/usage.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { fsStrerror, isWalkError } from '../../../utils/errors.ts'
 import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
@@ -155,7 +156,7 @@ export async function grepGeneric(
       null,
       new IOResult({
         exitCode: 2,
-        stderr: ENC.encode(resolution.error ?? `${name}: usage: ${name} [flags] pattern [path]\n`),
+        stderr: ENC.encode(resolution.error ?? `${missingPatternError(name)}\n`),
       }),
     ]
   let f: FlagSet
@@ -178,7 +179,7 @@ export async function grepGeneric(
   if (first === undefined) {
     try {
       const source = guardInput(
-        resolveSource(opts.stdin, `${name}: usage: ${name} [flags] pattern [path]`),
+        resolveSource(opts.stdin, missingPatternError(name)),
         opts,
       )
       return [

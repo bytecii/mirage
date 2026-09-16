@@ -37,6 +37,7 @@ from mirage.core.email.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
+from mirage.commands.spec.usage import missing_pattern_error
 
 
 @command("rg", resource="email", spec=SPECS["rg"])
@@ -45,7 +46,7 @@ async def rg(accessor: EmailAccessor, paths: list[PathSpec], texts: list[str],
     fl = FlagView(opts.flags, spec=SPECS["rg"])
     pattern_str = pattern_arg(texts, fl)
     if pattern_str is None:
-        raise UsageError("rg: usage: rg [flags] pattern [path]")
+        raise UsageError(missing_pattern_error("rg"))
     i = fl.as_bool("i")
     n = fl.as_bool("n")
     args_l = fl.as_bool("args_l")

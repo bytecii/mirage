@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { mountPrefixOf } from '../../../utils/key_prefix.ts'
+import { missingPatternError } from '../../spec/usage.ts'
 import type { DiscordAccessor } from '../../../accessor/discord.ts'
 import type { IndexCacheStore } from '../../../cache/index/store.ts'
 import { DiscordApiError } from '../../../core/discord/client.ts'
@@ -56,7 +57,7 @@ async function rgCommand(
   if (pattern === null) {
     return [
       null,
-      new IOResult({ exitCode: 2, stderr: ENC.encode('rg: usage: rg [flags] pattern [path]\n') }),
+      new IOResult({ exitCode: 2, stderr: ENC.encode(`${missingPatternError('rg')}\n`) }),
     ]
   }
   const fl = new FlagView(opts.flags, specOf('rg'))
