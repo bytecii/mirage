@@ -1,6 +1,6 @@
 import random
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -11,6 +11,7 @@ from mirage.commands.quote import quote_text
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
+from mirage.commands.spec.usage import usage_hint
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 
@@ -119,7 +120,10 @@ class ShufFlags:
     echo: bool = False
     zero_terminated: bool = False
     with_replacement: bool = False
-    input_range: str | None = None
+    # Already scanned into bounds: the range is validated where the
+    # option occurs, so what survives the parse is a pair, not a word
+    # still to be read.
+    input_range: tuple[int, int] | None = None
     output: PathSpec | None = None
 
 
@@ -219,8 +223,52 @@ def emit_count(available: int, count: int | None,
     return min(count, available)
 
 
-def parse_flags(flags: Mapping[str, FlagValue]) -> ShufFlags:
-    """Read shuf's flags once, refusing a head count GNU refuses.
+def _option_error(fl: FlagView) -> str | None:
+    """GNU's first `-i`/`-n` refusal, reading the line left to right.
+
+    GNU validates each value inside the getopt loop, so the answer is
+    whichever option came FIRST: ``shuf -i 1-x -n abc`` names the range
+    and the reversed line names the count. Reading the bag instead
+    fixes an order of its own, which is why this walks the occurrence
+    record (the same thing nl does, and for the same reason: a repeated
+    scalar is not in the bag twice).
+
+    ``-i`` additionally refuses a SECOND occurrence outright, before
+    looking at its value, which is why ``shuf -i 1-2 -i 3-x`` reports
+    the repeat rather than the bad range. ``-n`` has no such check:
+    it simply overwrites, so only its own values are validated.
+
+    The ``-e``/``-i`` conflict is checked after the walk, because GNU
+    checks it after the loop -- an in-loop refusal beats it whichever
+    order the two were typed in. Measured on GNU coreutils 9.4.
+
+    Args:
+        fl (FlagView): spec-bound view over shuf's flag bag.
+
+    Returns:
+        str | None: the single stderr line, without its newline, or
+            None when GNU accepts the line.
+    """
+    seen_range = False
+    for dest, raw in fl.value_occurrences("head_count", "input_range"):
+        if dest == "input_range":
+            if seen_range:
+                return "shuf: multiple -i options specified"
+            seen_range = True
+            bounds = parse_input_range(raw)
+            if isinstance(bounds, RangeRefusal):
+                return range_error(raw, bounds)
+        elif _UNSIGNED.fullmatch(raw) is None:
+            return f"shuf: invalid line count: '{quote_text(raw)}'"
+    if seen_range and fl.as_bool("echo"):
+        return ("shuf: cannot combine -e and -i options\n"
+                f"{usage_hint('shuf')}")
+    return None
+
+
+def parse_flags(flags: Mapping[str, FlagValue],
+                occurrences: Sequence[tuple[str, str]] = ()) -> ShufFlags:
+    """Read shuf's flags once, refusing what GNU refuses.
 
     GNU quotes the WHOLE ``-n`` argument, not just the unparsed
     remainder the way expand and cut do, and never appends an
@@ -239,22 +287,27 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> ShufFlags:
 
     Args:
         flags (Mapping[str, FlagValue]): the dispatcher's flag bag.
+        occurrences (Sequence[tuple[str, str]]): the parser's
+            per-occurrence value record, which is what puts the
+            refusals in the order GNU emits them.
 
     Raises:
-        ValueError: the single stderr line to print, exit 1.
+        ValueError: the stderr text to print, exit 1.
     """
-    fl = FlagView(flags, spec=SPECS["shuf"])
+    fl = FlagView(flags, spec=SPECS["shuf"], occurrences=occurrences)
+    error = _option_error(fl)
+    if error is not None:
+        raise ValueError(error)
     count_raw = fl.as_str("head_count")
-    if count_raw is not None and _UNSIGNED.fullmatch(count_raw) is None:
-        raise ValueError(
-            f"shuf: invalid line count: '{quote_text(count_raw)}'")
+    range_raw = fl.as_str("input_range")
+    bounds = parse_input_range(range_raw) if range_raw is not None else None
     outputs = fl.as_paths("output")
     return ShufFlags(
         count=min(int(count_raw), SIZE_MAX) if count_raw is not None else None,
         echo=fl.as_bool("echo"),
         zero_terminated=fl.as_bool("zero_terminated"),
         with_replacement=fl.as_bool("repeat"),
-        input_range=fl.as_str("input_range"),
+        input_range=bounds if isinstance(bounds, tuple) else None,
         output=outputs[0] if outputs else None,
     )
 
@@ -359,17 +412,14 @@ async def shuf(
     echo: bool = False,
     zero_terminated: bool = False,
     with_replacement: bool = False,
-    input_range: str | None = None,
+    input_range: tuple[int, int] | None = None,
     output: PathSpec | None = None,
     write_bytes: Callable[[PathSpec, bytes], Awaitable[None]] | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     sep = "\x00" if zero_terminated else "\n"
 
     if input_range is not None:
-        bounds = parse_input_range(input_range)
-        if isinstance(bounds, RangeRefusal):
-            raise ValueError(range_error(input_range, bounds))
-        low, high = bounds
+        low, high = input_range
         need = _need(high - low + 1, count, with_replacement)
         result = _range_lines(low, high, need, with_replacement)
         rendered = _render(result, sep)

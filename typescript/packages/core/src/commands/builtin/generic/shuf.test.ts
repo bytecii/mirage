@@ -14,6 +14,8 @@
 
 import { describe, expect, it } from 'vitest'
 import { materialize } from '../../../io/types.ts'
+import { specOf } from '../../spec/builtins.ts'
+import { occurrencesToKwargs, parseCommand, parseToKwargs } from '../../spec/parser.ts'
 import type { FlagValue } from '../../spec/types.ts'
 import type { CommandOpts } from '../../config.ts'
 import {
@@ -245,9 +247,10 @@ describe('shuf -i takes a prefix on either bound', () => {
 // fields rather than querying the bag inline.
 describe('shuf parseFlags is the one flag read', () => {
   it('returns the struct for a line GNU accepts', () => {
+    // No `-e` beside `-i`: GNU refuses that combination outright, so a
+    // fixture carrying both would be asserting a line shuf never runs.
     const parsed = parseFlags({
       head_count: '+2',
-      echo: true,
       zero_terminated: true,
       repeat: true,
       input_range: '1-3',
@@ -255,10 +258,10 @@ describe('shuf parseFlags is the one flag read', () => {
     })
     expect(parsed).toEqual({
       count: 2n,
-      echo: true,
+      echo: false,
       zeroTerminated: true,
       withReplacement: true,
-      inputRange: '1-3',
+      inputRange: [1n, 3n],
       output: '/data/out.txt',
     })
   })
@@ -497,4 +500,65 @@ describe('shuf decides the emitted count before anything is built', () => {
       expect(emitCount(available, count, repeat)).toBe(expected)
     },
   )
+})
+
+// Both halves of shuf's parse, as the real parser fills them. The rules
+// below are about the order the options were TYPED, so a hand-written
+// bag would assume the very thing being asserted.
+function shufLine(...argv: string[]): [Record<string, FlagValue>, [string, string][]] {
+  const parsed = parseCommand(specOf('shuf'), argv, '/')
+  return [parseToKwargs(parsed), occurrencesToKwargs(parsed)]
+}
+
+// GNU validates each value inside the getopt loop, so the option that
+// answers is whichever came first on the LINE, not whichever the parser
+// happens to reach first. Measured on GNU coreutils 9.4.
+describe('shuf refuses the first bad option on the line', () => {
+  it.each<[string[], string]>([
+    [
+      ['-i', '1-x', '-n', 'abc'],
+      "shuf: invalid input range: '1-x'\n",
+    ],
+    [
+      ['-n', 'abc', '-i', '1-x'],
+      "shuf: invalid line count: 'abc'\n",
+    ],
+    // A valid value on the left does not shield the bad one on the right.
+    [
+      ['-n', '1', '-i', '1-x'],
+      "shuf: invalid input range: '1-x'\n",
+    ],
+    [
+      ['-i', '1-2', '-n', 'abc'],
+      "shuf: invalid line count: 'abc'\n",
+    ],
+    // A repeated `-n` overwrites and every occurrence is validated, so
+    // the LEFTMOST bad one answers although the bag no longer holds it.
+    [
+      ['-n', 'abc', '-n', '1'],
+      "shuf: invalid line count: 'abc'\n",
+    ],
+    [
+      ['-n', '1', '-n', 'abc'],
+      "shuf: invalid line count: 'abc'\n",
+    ],
+    // `-i` is the one option shuf refuses a SECOND occurrence of, and it
+    // does so before reading its value, so a repeat outranks a bad range
+    // on the right. Both spellings fold onto the one option.
+    [['-i', '1-2', '-i', '3-4'], 'shuf: multiple -i options specified\n'],
+    [['-i', '1-2', '-i', '3-x'], 'shuf: multiple -i options specified\n'],
+    [['--input-range=1-2', '-i', '3-4'], 'shuf: multiple -i options specified\n'],
+  ])('refuses %j', (argv, expected) => {
+    expect(parseFlags(...shufLine(...argv))).toBe(expected)
+  })
+
+  // GNU checks the -e/-i conflict after the loop, so a bad value beats it.
+  it('refuses -e with -i after every in-loop check', () => {
+    expect(parseFlags(...shufLine('-i', '1-2', '-e', 'a'))).toBe(
+      "shuf: cannot combine -e and -i options\nTry 'shuf --help' for more information.\n",
+    )
+    expect(parseFlags(...shufLine('-e', '-i', '1-x'))).toBe(
+      "shuf: invalid input range: '1-x'\n",
+    )
+  })
 })

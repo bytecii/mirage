@@ -17,6 +17,7 @@ import { C_SPACE } from '../constants.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { type FlagValue } from '../../spec/types.ts'
 import { quoteText } from '../../quote.ts'
+import { usageHint } from '../../spec/usage.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import { mountKey } from '../../../utils/key_prefix.ts'
@@ -262,7 +263,9 @@ export interface ShufFlags {
   readonly echo: boolean
   readonly zeroTerminated: boolean
   readonly withReplacement: boolean
-  readonly inputRange: string | null
+  // Already scanned into bounds: the range is validated where the option
+  // occurs, so what survives the parse is a pair, not a word still to be read.
+  readonly inputRange: readonly [bigint, bigint] | null
   // The raw `-o` word. The python executor promotes a PATH-typed flag to a
   // PathSpec and reads it with as_paths; this bag carries the resolved
   // virtual-path string, so asStr is the twin and the PathSpec is built at
@@ -270,7 +273,42 @@ export interface ShufFlags {
   readonly output: string | null
 }
 
-// Read shuf's flags once, refusing a head count GNU refuses.
+// GNU's first `-i`/`-n` refusal, reading the line left to right.
+//
+// GNU validates each value inside the getopt loop, so the answer is whichever
+// option came FIRST: `shuf -i 1-x -n abc` names the range and the reversed
+// line names the count. Reading the bag instead fixes an order of its own,
+// which is why this walks the occurrence record (the same thing nl does, and
+// for the same reason: a repeated scalar is not in the bag twice).
+//
+// `-i` additionally refuses a SECOND occurrence outright, before looking at
+// its value, which is why `shuf -i 1-2 -i 3-x` reports the repeat rather than
+// the bad range. `-n` has no such check: it simply overwrites, so only its own
+// values are validated.
+//
+// The `-e`/`-i` conflict is checked after the walk, because GNU checks it
+// after the loop — an in-loop refusal beats it whichever order the two were
+// typed in. Measured on GNU coreutils 9.4. Returns the stderr text, newline
+// included, or null when GNU accepts the line.
+function optionError(fl: FlagView): string | null {
+  let seenRange = false
+  for (const [dest, raw] of fl.valueOccurrences('head_count', 'input_range')) {
+    if (dest === 'input_range') {
+      if (seenRange) return 'shuf: multiple -i options specified\n'
+      seenRange = true
+      const bounds = parseInputRange(raw)
+      if (typeof bounds === 'string') return rangeError(raw, bounds)
+    } else if (!UNSIGNED.test(raw)) {
+      return `shuf: invalid line count: '${quoteText(raw)}'\n`
+    }
+  }
+  if (seenRange && fl.asBool('echo')) {
+    return `shuf: cannot combine -e and -i options\n${usageHint('shuf')}\n`
+  }
+  return null
+}
+
+// Read shuf's flags once, refusing what GNU refuses.
 //
 // GNU quotes the WHOLE `-n` argument, not just the unparsed remainder the way
 // expand and cut do, and never appends an out-of-range clause to it.
@@ -282,19 +320,23 @@ export interface ShufFlags {
 // what `-i` does with the same overflow: `xstrtoumax` answering
 // LONGINT_OVERFLOW is fatal for `-i` and is quietly read as SIZE_MAX for `-n`,
 // so `shuf -n 99999999999999999999999999` exits 0. Measured, ground truth SH6.
-export function parseFlags(bag: Record<string, FlagValue>): ShufFlags | string {
-  const fl = new FlagView(bag, specOf('shuf'))
+export function parseFlags(
+  bag: Record<string, FlagValue>,
+  occurrences: readonly [string, string][] = [],
+): ShufFlags | string {
+  const fl = new FlagView(bag, specOf('shuf'), occurrences)
+  const refusal = optionError(fl)
+  if (refusal !== null) return refusal
   const countValue = fl.asStr('head_count')
-  if (countValue !== undefined && !UNSIGNED.test(countValue)) {
-    return `shuf: invalid line count: '${quoteText(countValue)}'\n`
-  }
   const count = countValue === undefined ? null : BigInt(countValue)
+  const rangeValue = fl.asStr('input_range')
+  const bounds = rangeValue === undefined ? null : parseInputRange(rangeValue)
   return {
     count: count === null || count <= SIZE_MAX ? count : SIZE_MAX,
     echo: fl.asBool('echo'),
     zeroTerminated: fl.asBool('zero_terminated'),
     withReplacement: fl.asBool('repeat'),
-    inputRange: fl.asStr('input_range') ?? null,
+    inputRange: bounds === null || typeof bounds === 'string' ? null : bounds,
     output: fl.asStr('output') ?? null,
   }
 }
@@ -306,7 +348,7 @@ export async function shufGeneric(
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
   write: (p: PathSpec, data: Uint8Array) => Promise<void>,
 ): Promise<CommandFnResult> {
-  const parsed = parseFlags(opts.flags)
+  const parsed = parseFlags(opts.flags, opts.valueOccurrences ?? [])
   if (typeof parsed === 'string') {
     return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(parsed) })]
   }
@@ -328,20 +370,7 @@ export async function shufGeneric(
   // range it names can hold 2**64 values (SH5).
   let out: string[] | null = null
   if (inputRange !== null) {
-    // `-i` takes two unsigned bounds with the low one no greater than the
-    // high one. Every other shape is one message, so a negative low bound
-    // (`-2-1`) and a decreasing range (`3-1`) are refused here rather than
-    // read as a range; shuf has no decreasing-range diagnostic of its own.
-    // The one shape that reads differently is a bound past UINTMAX_MAX, which
-    // earns gnulib's overflow clause (SH1).
-    const bounds = parseInputRange(inputRange)
-    if (typeof bounds === 'string') {
-      return [
-        null,
-        new IOResult({ exitCode: 1, stderr: ENC.encode(rangeError(inputRange, bounds)) }),
-      ]
-    }
-    const [low, high] = bounds
+    const [low, high] = inputRange
     const need = emitCount(high - low + 1n, nFlag, repeat)
     if (need > MAX_OUTPUT_LINES) {
       return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${MEMORY_EXHAUSTED}\n`) })]

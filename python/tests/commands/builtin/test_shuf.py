@@ -16,6 +16,9 @@ import asyncio
 
 import pytest
 
+from mirage.commands.spec import (SPECS, occurrences_to_kwargs,
+                                  parse_command, parse_to_kwargs)
+from mirage.commands.spec.types import ParsedFlagValue
 from mirage.resource.ram import RAMResource
 from mirage.types import MountMode, PathSpec
 from mirage.workspace import Workspace
@@ -24,6 +27,21 @@ from mirage.commands.builtin.generic.shuf import (  # isort: skip
     MAX_OUTPUT_LINES, MEMORY_EXHAUSTED, NO_WRITE_OP, SIZE_MAX, UINTMAX_MAX,
     RangeRefusal, emit_count, parse_flags, parse_input_range, range_error,
     shuf)
+
+
+def _shuf_line(
+    *argv: str
+) -> tuple[dict[str, ParsedFlagValue], list[tuple[str, str]]]:
+    """Both halves of shuf's parse, as the real parser fills them.
+
+    The rules under test are about the order the options were TYPED, so
+    a hand-written bag would assume the very thing being asserted.
+
+    Args:
+        argv (str): the words after `shuf`.
+    """
+    parsed = parse_command(SPECS["shuf"], list(argv), "/")
+    return parse_to_kwargs(parsed), occurrences_to_kwargs(parsed)
 
 
 def _ws():
@@ -137,22 +155,21 @@ def test_shuf_input_range_refusal_is_uniform(raw):
     decreasing-range diagnostic of its own, so cut's is not borrowed.
     """
     with pytest.raises(ValueError) as refusal:
-        asyncio.run(
-            shuf([], [], read_bytes=_unused_read_bytes, input_range=raw))
+        parse_flags({"input_range": raw})
     assert str(refusal.value) == f"shuf: invalid input range: '{raw}'"
 
 
 def test_shuf_input_range_single_element_is_valid():
     """GNU `-i 2-2` is a one-element range, not a degenerate one."""
     rendered, io = asyncio.run(
-        shuf([], [], read_bytes=_unused_read_bytes, input_range="2-2"))
+        shuf([], [], read_bytes=_unused_read_bytes, input_range=(2, 2)))
     assert io.exit_code == 0
     assert rendered == b"2\n"
 
 
 def test_shuf_input_range_stays_valid():
     rendered, io = asyncio.run(
-        shuf([], [], read_bytes=_unused_read_bytes, input_range="1-3"))
+        shuf([], [], read_bytes=_unused_read_bytes, input_range=(1, 3)))
     assert io.exit_code == 0
     assert sorted(rendered.decode().strip().split("\n")) == ["1", "2", "3"]
 
@@ -179,9 +196,62 @@ def test_shuf_head_count_refuses_a_trailing_newline(raw, quoted):
                                         ("2-2\n", "2-2\\n")])
 def test_shuf_input_range_refuses_a_trailing_newline(raw, quoted):
     with pytest.raises(ValueError) as refusal:
-        asyncio.run(
-            shuf([], [], read_bytes=_unused_read_bytes, input_range=raw))
+        parse_flags({"input_range": raw})
     assert str(refusal.value) == f"shuf: invalid input range: '{quoted}'"
+
+
+# GNU validates each value inside the getopt loop, so the option that
+# answers is whichever came first on the LINE, not whichever the parser
+# happens to reach first. Measured on GNU coreutils 9.4.
+@pytest.mark.parametrize("argv,expected", [
+    (("-i", "1-x", "-n", "abc"), "shuf: invalid input range: '1-x'"),
+    (("-n", "abc", "-i", "1-x"), "shuf: invalid line count: 'abc'"),
+    # A valid value on the left does not shield the bad one on the right.
+    (("-n", "1", "-i", "1-x"), "shuf: invalid input range: '1-x'"),
+    (("-i", "1-2", "-n", "abc"), "shuf: invalid line count: 'abc'"),
+])
+def test_shuf_refuses_the_first_bad_option_on_the_line(argv, expected):
+    with pytest.raises(ValueError) as refusal:
+        parse_flags(*_shuf_line(*argv))
+    assert str(refusal.value) == expected
+
+
+# A repeated `-n` overwrites and every occurrence is validated, so the
+# LEFTMOST bad one answers even though the bag no longer holds it.
+@pytest.mark.parametrize("argv,expected", [
+    (("-n", "abc", "-n", "1"), "shuf: invalid line count: 'abc'"),
+    (("-n", "1", "-n", "abc"), "shuf: invalid line count: 'abc'"),
+])
+def test_shuf_head_count_answers_for_the_value_the_bag_dropped(
+        argv, expected):
+    with pytest.raises(ValueError) as refusal:
+        parse_flags(*_shuf_line(*argv))
+    assert str(refusal.value) == expected
+
+
+# `-i` is the one option shuf refuses a SECOND occurrence of, and it does
+# so before reading its value, so a repeat outranks a bad range on the
+# right. Both spellings fold onto the one option.
+@pytest.mark.parametrize("argv", [
+    ("-i", "1-2", "-i", "3-4"),
+    ("-i", "1-2", "-i", "3-x"),
+    ("--input-range=1-2", "-i", "3-4"),
+])
+def test_shuf_refuses_a_second_input_range(argv):
+    with pytest.raises(ValueError) as refusal:
+        parse_flags(*_shuf_line(*argv))
+    assert str(refusal.value) == "shuf: multiple -i options specified"
+
+
+def test_shuf_refuses_e_with_i_after_every_in_loop_check():
+    """GNU checks the conflict after the loop, so a bad value beats it."""
+    with pytest.raises(ValueError) as refusal:
+        parse_flags(*_shuf_line("-i", "1-2", "-e", "a"))
+    assert str(refusal.value) == ("shuf: cannot combine -e and -i options\n"
+                                  "Try 'shuf --help' for more information.")
+    with pytest.raises(ValueError) as refusal:
+        parse_flags(*_shuf_line("-e", "-i", "1-x"))
+    assert str(refusal.value) == "shuf: invalid input range: '1-x'"
 
 
 @pytest.mark.parametrize("raw", ["2", "+2", "0"])
@@ -328,8 +398,7 @@ def test_shuf_input_range_overflow_earns_the_clause(raw):
     """
     assert parse_input_range(raw) is RangeRefusal.OVERFLOW
     with pytest.raises(ValueError) as refusal:
-        asyncio.run(
-            shuf([], [], read_bytes=_unused_read_bytes, input_range=raw))
+        parse_flags({"input_range": raw})
     assert str(refusal.value) == (f"shuf: invalid input range: '{raw}'"
                                   ": Value too large for defined data type")
 
@@ -355,8 +424,7 @@ def test_shuf_input_range_span_limit_is_the_plain_message():
     raw = f"0-{SIZE_MAX}"
     assert parse_input_range(raw) is RangeRefusal.INVALID
     with pytest.raises(ValueError) as refusal:
-        asyncio.run(
-            shuf([], [], read_bytes=_unused_read_bytes, input_range=raw))
+        parse_flags({"input_range": raw})
     assert str(refusal.value) == f"shuf: invalid input range: '{raw}'"
     assert parse_input_range(f"+0-{SIZE_MAX}") is RangeRefusal.INVALID
     assert parse_input_range(f"0-{SIZE_MAX - 1}") == (0, SIZE_MAX - 1)
@@ -388,8 +456,7 @@ def test_shuf_range_error_renders_the_clause_only_when_earned():
 ])
 def test_shuf_input_range_emits_a_large_bound_exactly(low):
     rendered, io = asyncio.run(
-        shuf([], [], read_bytes=_unused_read_bytes,
-             input_range=f"{low}-{low}"))
+        shuf([], [], read_bytes=_unused_read_bytes, input_range=(low, low)))
     assert io.exit_code == 0
     assert rendered == f"{low}\n".encode()
 
@@ -405,10 +472,13 @@ def test_shuf_input_range_emits_a_large_bound_exactly(low):
     "1-100000000",
 ])
 def test_shuf_samples_a_huge_range_without_enumerating_it(raw):
+    bounds = parse_input_range(raw)
+    assert isinstance(bounds, tuple)
     rendered, io = asyncio.run(
-        shuf([], [], read_bytes=_unused_read_bytes, input_range=raw, count=3))
+        shuf([], [], read_bytes=_unused_read_bytes, input_range=bounds,
+             count=3))
     assert io.exit_code == 0
-    low, high = parse_input_range(raw)
+    low, high = bounds
     values = [int(line) for line in rendered.decode().split("\n")[:-1]]
     assert len(values) == 3
     assert len(set(values)) == 3
@@ -420,7 +490,7 @@ def test_shuf_head_count_zero_on_a_huge_range_emits_nothing():
     rendered, io = asyncio.run(
         shuf([], [],
              read_bytes=_unused_read_bytes,
-             input_range=f"1-{UINTMAX_MAX}",
+             input_range=(1, UINTMAX_MAX),
              count=0))
     assert io.exit_code == 0
     assert rendered == b""
@@ -430,7 +500,7 @@ def test_shuf_repeat_draws_from_a_huge_range_without_enumerating_it():
     rendered, io = asyncio.run(
         shuf([], [],
              read_bytes=_unused_read_bytes,
-             input_range=f"1-{UINTMAX_MAX}",
+             input_range=(1, UINTMAX_MAX),
              count=4,
              with_replacement=True))
     assert io.exit_code == 0
@@ -443,20 +513,20 @@ def test_shuf_repeat_draws_from_a_huge_range_without_enumerating_it():
 # rather than left to whatever the host survives.
 @pytest.mark.parametrize("kwargs", [
     {
-        "input_range": f"1-{UINTMAX_MAX}"
+        "input_range": (1, UINTMAX_MAX)
     },
     {
-        "input_range": "1-1000000000000"
+        "input_range": (1, 1000000000000)
     },
     {
-        "input_range": f"1-{MAX_OUTPUT_LINES + 1}"
+        "input_range": (1, MAX_OUTPUT_LINES + 1)
     },
     {
-        "input_range": f"1-{UINTMAX_MAX}",
+        "input_range": (1, UINTMAX_MAX),
         "with_replacement": True
     },
     {
-        "input_range": "1-3",
+        "input_range": (1, 3),
         "count": MAX_OUTPUT_LINES + 1,
         "with_replacement": True
     },
