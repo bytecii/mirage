@@ -515,33 +515,15 @@ function shufLine(...argv: string[]): [Record<string, FlagValue>, [string, strin
 // happens to reach first. Measured on GNU coreutils 9.4.
 describe('shuf refuses the first bad option on the line', () => {
   it.each<[string[], string]>([
-    [
-      ['-i', '1-x', '-n', 'abc'],
-      "shuf: invalid input range: '1-x'\n",
-    ],
-    [
-      ['-n', 'abc', '-i', '1-x'],
-      "shuf: invalid line count: 'abc'\n",
-    ],
+    [['-i', '1-x', '-n', 'abc'], "shuf: invalid input range: '1-x'\n"],
+    [['-n', 'abc', '-i', '1-x'], "shuf: invalid line count: 'abc'\n"],
     // A valid value on the left does not shield the bad one on the right.
-    [
-      ['-n', '1', '-i', '1-x'],
-      "shuf: invalid input range: '1-x'\n",
-    ],
-    [
-      ['-i', '1-2', '-n', 'abc'],
-      "shuf: invalid line count: 'abc'\n",
-    ],
+    [['-n', '1', '-i', '1-x'], "shuf: invalid input range: '1-x'\n"],
+    [['-i', '1-2', '-n', 'abc'], "shuf: invalid line count: 'abc'\n"],
     // A repeated `-n` overwrites and every occurrence is validated, so
     // the LEFTMOST bad one answers although the bag no longer holds it.
-    [
-      ['-n', 'abc', '-n', '1'],
-      "shuf: invalid line count: 'abc'\n",
-    ],
-    [
-      ['-n', '1', '-n', 'abc'],
-      "shuf: invalid line count: 'abc'\n",
-    ],
+    [['-n', 'abc', '-n', '1'], "shuf: invalid line count: 'abc'\n"],
+    [['-n', '1', '-n', 'abc'], "shuf: invalid line count: 'abc'\n"],
     // `-i` is the one option shuf refuses a SECOND occurrence of, and it
     // does so before reading its value, so a repeat outranks a bad range
     // on the right. Both spellings fold onto the one option.
@@ -557,8 +539,6 @@ describe('shuf refuses the first bad option on the line', () => {
     expect(parseFlags(...shufLine('-i', '1-2', '-e', 'a'))).toBe(
       "shuf: cannot combine -e and -i options\nTry 'shuf --help' for more information.\n",
     )
-    expect(parseFlags(...shufLine('-e', '-i', '1-x'))).toBe(
-      "shuf: invalid input range: '1-x'\n",
-    )
+    expect(parseFlags(...shufLine('-e', '-i', '1-x'))).toBe("shuf: invalid input range: '1-x'\n")
   })
 })

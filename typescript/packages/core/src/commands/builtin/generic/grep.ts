@@ -178,10 +178,7 @@ export async function grepGeneric(
   const first = paths[0]
   if (first === undefined) {
     try {
-      const source = guardInput(
-        resolveSource(opts.stdin, missingPatternError(name)),
-        opts,
-      )
+      const source = guardInput(resolveSource(opts.stdin, missingPatternError(name)), opts)
       return [
         grepInput(source, pat, f, '(standard input)', f.withFilename && !f.noFilename, io),
         io,

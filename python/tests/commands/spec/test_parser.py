@@ -448,7 +448,8 @@ def test_ambiguous_long_prefix_reports_possibilities_in_order():
                  Option(long="--count")))
     parsed = parse_command(spec, ["--c"], "/")
     assert parsed.option_errors == [
-        OptionError("ambiguous", "--c",
+        OptionError("ambiguous",
+                    "--c",
                     candidates=("--context", "--color", "--count"))
     ]
 
@@ -485,7 +486,9 @@ def test_free_text_commands_keep_exact_only_long_matching():
 def test_int_typed_value_is_reported_not_raised():
     spec = CommandSpec(options=(Option(long="--port", type="int"), ))
     parsed = parse_command(spec, ["--port", "abc"], "/")
-    assert parsed.option_errors == [OptionError("invalid_int", "--port", "abc")]
+    assert parsed.option_errors == [
+        OptionError("invalid_int", "--port", "abc")
+    ]
     ok = parse_command(spec, ["--port", "-42"], "/")
     assert ok.option_errors == []
     assert ok.flags["--port"] == "-42"
@@ -527,7 +530,8 @@ def test_ambiguity_lists_synonyms_like_gnu():
                  Option(long="--count")))
     parsed = parse_command(spec, ["--c"], "/")
     assert parsed.option_errors == [
-        OptionError("ambiguous", "--c",
+        OptionError("ambiguous",
+                    "--c",
                     candidates=("--context", "--color", "--colour", "--count"))
     ]
 
@@ -548,14 +552,14 @@ def test_a_refused_value_keeps_its_place_among_the_scan_errors():
     to the left of an unknown option outranks it and the reversed line
     answers the other way (`tee --output-error=bogus --bogus`).
     """
-    spec = CommandSpec(options=(Option(long="--mode", type="str",
-                                       choices=("a", "b")), ))
+    spec = CommandSpec(
+        options=(Option(long="--mode", type="str", choices=("a", "b")), ))
     first = parse_command(spec, ["--mode=z", "--bogus"], "/")
-    assert [e.kind for e in first.option_errors] == ["invalid_choice",
-                                                    "unknown"]
+    assert [e.kind
+            for e in first.option_errors] == ["invalid_choice", "unknown"]
     second = parse_command(spec, ["--bogus", "--mode=z"], "/")
-    assert [e.kind for e in second.option_errors] == ["unknown",
-                                                     "invalid_choice"]
+    assert [e.kind
+            for e in second.option_errors] == ["unknown", "invalid_choice"]
 
 
 def test_two_typed_values_are_refused_in_line_order():
@@ -571,8 +575,8 @@ def test_two_typed_values_are_refused_in_line_order():
 
 def test_a_missing_required_option_is_appended_after_every_word():
     """It has no position on the line, so it can only win alone."""
-    spec = CommandSpec(options=(Option(long="--out", type="str",
-                                       required=True), ))
+    spec = CommandSpec(
+        options=(Option(long="--out", type="str", required=True), ))
     assert parse_command(spec, ["--bogus"], "/").option_errors == [
         OptionError("unknown", "--bogus"),
         OptionError("missing_required", "--out"),
@@ -582,7 +586,9 @@ def test_a_missing_required_option_is_appended_after_every_word():
 def test_float_typed_value_is_reported_not_raised():
     spec = CommandSpec(options=(Option(long="--ratio", type="float"), ))
     parsed = parse_command(spec, ["--ratio", "5x"], "/")
-    assert parsed.option_errors == [OptionError("invalid_float", "--ratio", "5x")]
+    assert parsed.option_errors == [
+        OptionError("invalid_float", "--ratio", "5x")
+    ]
     for good in ("2.5", "-3", ".5", "1e3", "+0.25"):
         ok = parse_command(spec, ["--ratio", good], "/")
         assert ok.option_errors == []
@@ -916,7 +922,8 @@ def test_the_record_is_translated_into_the_bag_s_kwarg_names():
 def test_the_record_is_read_back_as_typed_pairs():
     parsed = parse_command(SPECS["nl"], ["-w", "abc", "-v", "xyz", "-w", "3"],
                            "/")
-    fl = FlagView({}, spec=SPECS["nl"],
+    fl = FlagView({},
+                  spec=SPECS["nl"],
                   occurrences=occurrences_to_kwargs(parsed))
     assert fl.value_occurrences("number_width", "starting_line_number") == [
         ("number_width", "abc"),

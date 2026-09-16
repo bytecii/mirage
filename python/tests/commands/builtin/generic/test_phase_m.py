@@ -9,8 +9,8 @@ from mirage.commands.builtin.generic.tr import tr
 from mirage.commands.builtin.generic.uniq import uniq
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.parser import (occurrences_to_kwargs,
-                                         parse_command, parse_to_kwargs)
+from mirage.commands.spec.parser import (occurrences_to_kwargs, parse_command,
+                                         parse_to_kwargs)
 from mirage.commands.spec.types import ParsedFlagValue
 from mirage.types import PathSpec
 
@@ -244,7 +244,7 @@ def test_nl_positive_options_accept_one_and_a_leading_plus(dest):
 
 
 def _nl_line(
-    *argv: str
+        *argv: str
 ) -> tuple[dict[str, ParsedFlagValue], list[tuple[str, str]]]:
     """Both halves of nl's parse, as the real parser fills them.
 

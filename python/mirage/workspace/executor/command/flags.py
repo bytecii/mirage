@@ -16,11 +16,11 @@ from collections import defaultdict, deque
 from collections.abc import Mapping
 
 from mirage.commands.spec import (CommandSpec, flag_kwarg_name,
-                                  occurrences_to_kwargs,
-                                  parse_command, parse_to_kwargs)
+                                  occurrences_to_kwargs, parse_command,
+                                  parse_to_kwargs)
 from mirage.commands.spec.types import FlagValue
-from mirage.commands.spec.usage import (  # yapf: disable
-    old_option_error, render_option_error)
+from mirage.commands.spec.usage import old_option_error  # yapf: disable
+from mirage.commands.spec.usage import render_option_error
 from mirage.types import PathSpec
 from mirage.workspace.executor.command.types import ParsedCommand
 
@@ -204,8 +204,7 @@ def parse_flags(
                              parsed.option_errors,
                              parsed.old_option_needs_value,
                              parsed.missing_required_operands,
-                             parsed.typed_dests,
-                             occurrences_to_kwargs(parsed))
+                             parsed.typed_dests, occurrences_to_kwargs(parsed))
 
     # No spec: separate by type
     paths = [item for item in parts if isinstance(item, PathSpec)]

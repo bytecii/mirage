@@ -26,6 +26,7 @@ from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.usage import missing_pattern_error
 from mirage.core.gmail.read import read as gmail_read
 from mirage.core.gmail.readdir import readdir as _readdir
 from mirage.core.gmail.scope import NATIVE_KINDS, detect_scope
@@ -34,7 +35,6 @@ from mirage.core.gmail.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
-from mirage.commands.spec.usage import missing_pattern_error
 
 
 @command("rg", resource="gmail", spec=SPECS["rg"])

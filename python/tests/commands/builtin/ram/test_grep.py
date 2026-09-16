@@ -163,9 +163,11 @@ async def test_usage_error_is_exit_2_with_newline(workspace):
     expected = {
         "grep": ("Usage: grep [OPTION]... PATTERNS [FILE]...\n"
                  "Try 'grep --help' for more information.\n"),
-        "rg": "rg: ripgrep requires at least one pattern to execute a "
-              "search\n",
-        "zgrep": "zgrep: missing pattern; try `zgrep --help' for help\n",
+        "rg":
+        "rg: ripgrep requires at least one pattern to execute a "
+        "search\n",
+        "zgrep":
+        "zgrep: missing pattern; try `zgrep --help' for help\n",
     }
     for cmd, usage in expected.items():
         io = await workspace.execute(cmd)

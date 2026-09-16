@@ -384,9 +384,15 @@ describe('parseCommand — unknown dash tokens warn and drop', () => {
   })
 
   it('reports missing values for declared flags', () => {
-    expect(parseCommand(specOf('grep'), ['-m'], '/').optionErrors).toEqual([{ kind: 'needs_value', option: 'm' }])
-    expect(parseCommand(specOf('du'), ['--max-depth'], '/').optionErrors).toEqual([{ kind: 'needs_value', option: '--max-depth' }])
-    expect(parseCommand(specOf('grep'), ['-ne'], '/').optionErrors).toEqual([{ kind: 'needs_value', option: 'e' }])
+    expect(parseCommand(specOf('grep'), ['-m'], '/').optionErrors).toEqual([
+      { kind: 'needs_value', option: 'm' },
+    ])
+    expect(parseCommand(specOf('du'), ['--max-depth'], '/').optionErrors).toEqual([
+      { kind: 'needs_value', option: '--max-depth' },
+    ])
+    expect(parseCommand(specOf('grep'), ['-ne'], '/').optionErrors).toEqual([
+      { kind: 'needs_value', option: 'e' },
+    ])
   })
 
   it('keeps dash tokens for TEXT-rest commands', () => {
@@ -694,9 +700,7 @@ describe('choices violations are reported, never thrown', () => {
         candidates: ['warn', 'warn-nopipe', 'exit', 'exit-nopipe'],
       },
     ])
-    expect(parseCommand(specOf('tee'), ['--output-error=warn', '/f'], '/').optionErrors).toEqual(
-      [],
-    )
+    expect(parseCommand(specOf('tee'), ['--output-error=warn', '/f'], '/').optionErrors).toEqual([])
   })
 
   it('exempts the bare optional-value form', () => {
@@ -728,7 +732,9 @@ describe('required and default', () => {
     const spec = new CommandSpec({
       options: [new Option({ long: '--out', type: 'str', required: true })],
     })
-    expect(parseCommand(spec, [], '/').optionErrors).toEqual([{ kind: 'missing_required', option: '--out' }])
+    expect(parseCommand(spec, [], '/').optionErrors).toEqual([
+      { kind: 'missing_required', option: '--out' },
+    ])
     expect(parseCommand(spec, ['--out', 'x'], '/').optionErrors).toEqual([])
   })
 
@@ -910,12 +916,12 @@ describe('synonym long spellings', () => {
     const spec = new CommandSpec({
       options: [new Option({ long: '--mode', type: 'str', choices: ['a', 'b'] })],
     })
-    expect(parseCommand(spec, ['--mode=z', '--bogus'], '/').optionErrors.map((e) => e.kind)).toEqual(
-      ['invalid_choice', 'unknown'],
-    )
-    expect(parseCommand(spec, ['--bogus', '--mode=z'], '/').optionErrors.map((e) => e.kind)).toEqual(
-      ['unknown', 'invalid_choice'],
-    )
+    expect(
+      parseCommand(spec, ['--mode=z', '--bogus'], '/').optionErrors.map((e) => e.kind),
+    ).toEqual(['invalid_choice', 'unknown'])
+    expect(
+      parseCommand(spec, ['--bogus', '--mode=z'], '/').optionErrors.map((e) => e.kind),
+    ).toEqual(['unknown', 'invalid_choice'])
   })
 
   it('refuses two typed values in line order', () => {
@@ -987,11 +993,15 @@ describe('two-token options', () => {
   })
 
   it('needs a value when a token is missing', () => {
-    expect(parseCommand(specOf('jq'), ['--arg', 'v'], '/').optionErrors).toEqual([{ kind: 'needs_value', option: '--arg' }])
+    expect(parseCommand(specOf('jq'), ['--arg', 'v'], '/').optionErrors).toEqual([
+      { kind: 'needs_value', option: '--arg' },
+    ])
   })
 
   it('has no equals form', () => {
-    expect(parseCommand(specOf('jq'), ['--arg=v', 'hello', '.'], '/').optionErrors).toEqual([{ kind: 'unknown', option: '--arg=v' }])
+    expect(parseCommand(specOf('jq'), ['--arg=v', 'hello', '.'], '/').optionErrors).toEqual([
+      { kind: 'unknown', option: '--arg=v' },
+    ])
   })
 })
 
@@ -1218,7 +1228,9 @@ describe('options an environment variable supplies', () => {
       options: [new Option({ long: '--version', type: 'str', env: 'X_VERSION', required: true })],
     })
     expect(parseCommand(spec, [], '/', { X_VERSION: '9' }).optionErrors).toEqual([])
-    expect(parseCommand(spec, [], '/', {}).optionErrors).toEqual([{ kind: 'missing_required', option: '--version' }])
+    expect(parseCommand(spec, [], '/', {}).optionErrors).toEqual([
+      { kind: 'missing_required', option: '--version' },
+    ])
   })
 
   it('is coerced and choice-checked like a typed value', () => {

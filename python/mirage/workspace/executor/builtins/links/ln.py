@@ -136,7 +136,6 @@ def option_refusal(parsed: ParsedArgs) -> tuple[str, int] | None:
     return msg.decode(), code
 
 
-
 def operand_words(
         args: list[str | PathSpec]) -> tuple[list[str | PathSpec], str | None]:
     """The operands as classified, and ``-t``'s value as typed.

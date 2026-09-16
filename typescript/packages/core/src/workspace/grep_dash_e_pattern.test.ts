@@ -156,7 +156,7 @@ describe('grep -e pattern flag', () => {
   // own synopsis and the help hint, ripgrep 14.1.0 prints one sentence,
   // and GNU zgrep's own message carries a shell-script line number and
   // the interpreter's absolute path, which mirage drops.
-  it('usage errors are exit 2 in each program\'s own words', async () => {
+  it("usage errors are exit 2 in each program's own words", async () => {
     const ws = await makeWs()
     const expected: Record<string, string> = {
       grep: "Usage: grep [OPTION]... PATTERNS [FILE]...\nTry 'grep --help' for more information.\n",

@@ -169,8 +169,8 @@ _CLI_CHOICE_REFUSALS = [
      ("open", "closed", "all")),
     ("gh", {
         "token": "t"
-    }, "gh pr list --state=x", "gh pr list", "--state",
-     ("open", "closed", "merged", "all")),
+    }, "gh pr list --state=x", "gh pr list", "--state", ("open", "closed",
+                                                         "merged", "all")),
     ("hf", {
         "token": "t"
     }, "hf download --repo-type=x owner/repo file", "hf download",
@@ -184,8 +184,8 @@ _CLI_CHOICE_REFUSALS = [
         "smtp_host": "h",
         "username": "u",
         "password": "p",
-    }, "himalaya message reply --posting-style=x 1",
-     "himalaya message reply", "--posting-style", ("top", "bottom")),
+    }, "himalaya message reply --posting-style=x 1", "himalaya message reply",
+     "--posting-style", ("top", "bottom")),
 ]
 
 

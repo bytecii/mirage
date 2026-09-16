@@ -16,8 +16,8 @@ import asyncio
 
 import pytest
 
-from mirage.commands.spec import (SPECS, occurrences_to_kwargs,
-                                  parse_command, parse_to_kwargs)
+from mirage.commands.spec import (SPECS, occurrences_to_kwargs, parse_command,
+                                  parse_to_kwargs)
 from mirage.commands.spec.types import ParsedFlagValue
 from mirage.resource.ram import RAMResource
 from mirage.types import MountMode, PathSpec
@@ -30,7 +30,7 @@ from mirage.commands.builtin.generic.shuf import (  # isort: skip
 
 
 def _shuf_line(
-    *argv: str
+        *argv: str
 ) -> tuple[dict[str, ParsedFlagValue], list[tuple[str, str]]]:
     """Both halves of shuf's parse, as the real parser fills them.
 
@@ -203,13 +203,15 @@ def test_shuf_input_range_refuses_a_trailing_newline(raw, quoted):
 # GNU validates each value inside the getopt loop, so the option that
 # answers is whichever came first on the LINE, not whichever the parser
 # happens to reach first. Measured on GNU coreutils 9.4.
-@pytest.mark.parametrize("argv,expected", [
-    (("-i", "1-x", "-n", "abc"), "shuf: invalid input range: '1-x'"),
-    (("-n", "abc", "-i", "1-x"), "shuf: invalid line count: 'abc'"),
-    # A valid value on the left does not shield the bad one on the right.
-    (("-n", "1", "-i", "1-x"), "shuf: invalid input range: '1-x'"),
-    (("-i", "1-2", "-n", "abc"), "shuf: invalid line count: 'abc'"),
-])
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (("-i", "1-x", "-n", "abc"), "shuf: invalid input range: '1-x'"),
+        (("-n", "abc", "-i", "1-x"), "shuf: invalid line count: 'abc'"),
+        # A valid value on the left does not shield the bad one on the right.
+        (("-n", "1", "-i", "1-x"), "shuf: invalid input range: '1-x'"),
+        (("-i", "1-2", "-n", "abc"), "shuf: invalid line count: 'abc'"),
+    ])
 def test_shuf_refuses_the_first_bad_option_on_the_line(argv, expected):
     with pytest.raises(ValueError) as refusal:
         parse_flags(*_shuf_line(*argv))
@@ -222,8 +224,7 @@ def test_shuf_refuses_the_first_bad_option_on_the_line(argv, expected):
     (("-n", "abc", "-n", "1"), "shuf: invalid line count: 'abc'"),
     (("-n", "1", "-n", "abc"), "shuf: invalid line count: 'abc'"),
 ])
-def test_shuf_head_count_answers_for_the_value_the_bag_dropped(
-        argv, expected):
+def test_shuf_head_count_answers_for_the_value_the_bag_dropped(argv, expected):
     with pytest.raises(ValueError) as refusal:
         parse_flags(*_shuf_line(*argv))
     assert str(refusal.value) == expected
@@ -475,7 +476,9 @@ def test_shuf_samples_a_huge_range_without_enumerating_it(raw):
     bounds = parse_input_range(raw)
     assert isinstance(bounds, tuple)
     rendered, io = asyncio.run(
-        shuf([], [], read_bytes=_unused_read_bytes, input_range=bounds,
+        shuf([], [],
+             read_bytes=_unused_read_bytes,
+             input_range=bounds,
              count=3))
     assert io.exit_code == 0
     low, high = bounds

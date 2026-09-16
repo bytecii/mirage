@@ -22,13 +22,13 @@ from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.usage import missing_pattern_error
 from mirage.core.github.constants import SCOPE_ERROR
 from mirage.core.github.read import read as github_read
 from mirage.core.github.readdir import readdir as _readdir
 from mirage.core.github.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.commands.spec.usage import missing_pattern_error
 
 
 @command("rg", resource="github", spec=SPECS["rg"])

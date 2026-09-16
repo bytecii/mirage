@@ -12,11 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  occurrencesToKwargs,
-  parseCommand,
-  parseToKwargs,
-} from '../../../commands/spec/parser.ts'
+import { occurrencesToKwargs, parseCommand, parseToKwargs } from '../../../commands/spec/parser.ts'
 import { oldOptionError, renderOptionError } from '../../../commands/spec/usage.ts'
 import type { CommandSpec } from '../../../commands/spec/types.ts'
 import type { ParsedCommand } from './types.ts'

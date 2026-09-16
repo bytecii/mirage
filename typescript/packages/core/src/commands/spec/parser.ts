@@ -532,7 +532,14 @@ export function parseCommand(
         }
         if (i + 1 < filteredArgv.length) {
           for (const name of mixed.bools) setBoolFlag(flags, cs, name)
-          setValueFlag(flags, occurrences, optionErrors, cs, mixed.valueFlag, filteredArgv[i + 1] ?? '')
+          setValueFlag(
+            flags,
+            occurrences,
+            optionErrors,
+            cs,
+            mixed.valueFlag,
+            filteredArgv[i + 1] ?? '',
+          )
           wordKinds[origIndices[i + 1] ?? -1] = cs.kindOf.get(mixed.valueFlag) ?? null
           if (cs.destOf(mixed.valueFlag) === cs.baseDest) {
             wordBases[origIndices[i + 1] ?? -1] = base

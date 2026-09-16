@@ -28,6 +28,7 @@ from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.usage import missing_pattern_error
 from mirage.core.slack.formatters import (build_query,
                                           format_file_grep_results,
                                           format_grep_results)
@@ -40,7 +41,6 @@ from mirage.core.slack.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
-from mirage.commands.spec.usage import missing_pattern_error
 
 logger = logging.getLogger(__name__)
 

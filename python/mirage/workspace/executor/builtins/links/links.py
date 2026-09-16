@@ -138,8 +138,7 @@ def accepts_line(name: str, args: tuple[str, ...], items: list[str | PathSpec],
     if spec is None:
         return True
     parsed = parse_command(spec, list(args), cwd)
-    if any(e.kind in ("unknown", "ambiguous")
-           for e in parsed.option_errors):
+    if any(e.kind in ("unknown", "ambiguous") for e in parsed.option_errors):
         return False
     if name == "unlink":
         return sum(1 for i in items if isinstance(i, PathSpec)) <= 1

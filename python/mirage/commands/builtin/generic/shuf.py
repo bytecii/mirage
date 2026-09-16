@@ -266,8 +266,10 @@ def _option_error(fl: FlagView) -> str | None:
     return None
 
 
-def parse_flags(flags: Mapping[str, FlagValue],
-                occurrences: Sequence[tuple[str, str]] = ()) -> ShufFlags:
+def parse_flags(
+    flags: Mapping[str, FlagValue],
+    occurrences: Sequence[tuple[str, str]] = ()
+) -> ShufFlags:
     """Read shuf's flags once, refusing what GNU refuses.
 
     GNU quotes the WHOLE ``-n`` argument, not just the unparsed

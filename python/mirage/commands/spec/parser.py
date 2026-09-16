@@ -90,6 +90,30 @@ class ParsedArgs:
         return self.flags.get(name, default)
 
 
+def _value_error(cs: CompiledSpec, dest: str,
+                 value: str) -> OptionError | None:
+    """The refusal a declared option's value earns, or None.
+
+    argparse's order, which is also GNU's: the type conversion runs
+    before the choices test, so a non-numeric value on an int option
+    that also declares choices reports the conversion failure rather
+    than the candidate list.
+
+    Args:
+        cs (CompiledSpec): compiled spec tables.
+        dest (str): the option's canonical dashed spelling.
+        value (str): the value as typed.
+    """
+    if dest in cs.int_dests and not INT_VALUE.match(value):
+        return OptionError("invalid_int", dest, value)
+    if dest in cs.float_dests and not FLOAT_VALUE.match(value):
+        return OptionError("invalid_float", dest, value)
+    allowed = cs.choices_by_dest.get(dest)
+    if allowed is not None and value not in allowed:
+        return OptionError("invalid_choice", dest, value, allowed)
+    return None
+
+
 def _set_value_flag(
     flags: dict[str, ParsedFlagValue],
     occurrences: list[tuple[str, str]],
@@ -341,7 +365,8 @@ def parse_command(
                     spelling = expansions[0]
                 elif len(expansions) > 1:
                     option_errors.append(
-                        OptionError("ambiguous", typed,
+                        OptionError("ambiguous",
+                                    typed,
                                     candidates=tuple(expansions)))
                     i += 1
                     continue
@@ -353,10 +378,10 @@ def parse_command(
             elif is_pair and eq == -1 and i + 2 < len(filtered_argv):
                 # Two tokens, both recorded under the one dest, so the
                 # command reads the accumulated list in twos.
-                _set_value_flag(flags, occurrences, option_errors, cs, spelling,
-                                filtered_argv[i + 1])
-                _set_value_flag(flags, occurrences, option_errors, cs, spelling,
-                                filtered_argv[i + 2])
+                _set_value_flag(flags, occurrences, option_errors, cs,
+                                spelling, filtered_argv[i + 1])
+                _set_value_flag(flags, occurrences, option_errors, cs,
+                                spelling, filtered_argv[i + 2])
                 # The first token names the value and is always textual;
                 # the option's own kind describes the second.
                 word_kinds[orig_indices[i + 1]] = "str"
@@ -373,8 +398,7 @@ def parse_command(
                 i += 2
             elif is_pair:
                 if eq == -1:
-                    option_errors.append(
-                        OptionError("needs_value", spelling))
+                    option_errors.append(OptionError("needs_value", spelling))
                 else:
                     # A two-token option has no `=` form (jq refuses
                     # `--arg=name` as an unknown option).
@@ -383,8 +407,8 @@ def parse_command(
             else:
                 if eq != -1 and (spelling in cs.long_value_spellings
                                  or spelling in cs.long_optional_spellings):
-                    _set_value_flag(flags, occurrences, option_errors, cs, spelling,
-                                    tok[eq + 1:])
+                    _set_value_flag(flags, occurrences, option_errors, cs,
+                                    spelling, tok[eq + 1:])
                     base = _rebase(flags, cs, spelling, tok[eq + 1:], base)
                 elif etok in cs.long_value_spellings:
                     # Declared value flag at end of line with no argument.
@@ -422,7 +446,8 @@ def parse_command(
             matched_optional = False
             for vf in cs.attach_spellings:
                 if tok.startswith(vf) and len(tok) > len(vf):
-                    _set_value_flag(flags, occurrences, option_errors, cs, vf, tok[len(vf):])
+                    _set_value_flag(flags, occurrences, option_errors, cs, vf,
+                                    tok[len(vf):])
                     base = _rebase(flags, cs, vf, tok[len(vf):], base)
                     i += 1
                     matched_optional = True
@@ -442,7 +467,8 @@ def parse_command(
                     matched_value = True
                     break
                 if tok.startswith(vf) and len(tok) > len(vf):
-                    _set_value_flag(flags, occurrences, option_errors, cs, vf, tok[len(vf):])
+                    _set_value_flag(flags, occurrences, option_errors, cs, vf,
+                                    tok[len(vf):])
                     base = _rebase(flags, cs, vf, tok[len(vf):], base)
                     i += 1
                     matched_value = True
@@ -472,15 +498,16 @@ def parse_command(
                 if attached is not None:
                     for name in cluster_bools:
                         _set_bool_flag(flags, cs, name)
-                    _set_value_flag(flags, occurrences, option_errors, cs, vflag, attached)
+                    _set_value_flag(flags, occurrences, option_errors, cs,
+                                    vflag, attached)
                     base = _rebase(flags, cs, vflag, attached, base)
                     i += 1
                     continue
                 if i + 1 < len(filtered_argv):
                     for name in cluster_bools:
                         _set_bool_flag(flags, cs, name)
-                    _set_value_flag(flags, occurrences, option_errors, cs, vflag,
-                                    filtered_argv[i + 1])
+                    _set_value_flag(flags, occurrences, option_errors, cs,
+                                    vflag, filtered_argv[i + 1])
                     word_kinds[orig_indices[i + 1]] = cs.kind_of[vflag]
                     if cs.dest_of(vflag) == cs.base_dest:
                         word_bases[orig_indices[i + 1]] = base
@@ -568,9 +595,9 @@ def parse_command(
     # their refusal belongs too. The bare boolean form of an
     # optional-value flag is exempt here as it is there -- it holds a
     # bool, so it contributes no candidate.
-    supplied = set(typed_dests)
+    line_dests = set(typed_dests)
     for dest_name, value in flags.items():
-        if dest_name in supplied:
+        if dest_name in line_dests:
             continue
         parts = value if isinstance(
             value, list) else ([value] if isinstance(value, str) else [])
@@ -724,7 +751,4 @@ def parse_to_kwargs(parsed: ParsedArgs) -> dict[str, ParsedFlagValue]:
     Args:
         parsed (ParsedArgs): one parsed command line.
     """
-    return {
-        flag_kwarg_name(key): value
-        for key, value in parsed.flags.items()
-    }
+    return {flag_kwarg_name(key): value for key, value in parsed.flags.items()}

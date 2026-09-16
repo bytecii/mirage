@@ -39,10 +39,12 @@ class FlagView:
             only the two commands that ask for it supply one.
     """
 
-    def __init__(self,
-                 flags: Mapping[str, FlagValue] | None,
-                 spec: CommandSpec | None = None,
-                 occurrences: Sequence[tuple[str, str]] = ()) -> None:
+    def __init__(
+        self,
+        flags: Mapping[str, FlagValue] | None,
+        spec: CommandSpec | None = None,
+        occurrences: Sequence[tuple[str, str]] = ()
+    ) -> None:
         self._flags = flags if flags is not None else {}
         self._allowed = spec_flag_names(spec) if spec is not None else None
         self._occurrences = occurrences

@@ -24,12 +24,12 @@ from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.usage import missing_pattern_error
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import FS_ERRORS, WALK_ERRORS, fs_strerror
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.utils.path import respell_raw
-from mirage.commands.spec.usage import missing_pattern_error
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,8 +133,8 @@ async def rg(
     if read_stream is not None:
         read_stream = cache_aware_bound_stream(read_stream)
     fl = FlagView(opts.flags, spec=SPECS["rg"])
-    pattern, never_match = await resolve_pattern(
-        texts, fl, read_bytes, missing_pattern_error("rg"))
+    pattern, never_match = await resolve_pattern(texts, fl, read_bytes,
+                                                 missing_pattern_error("rg"))
     f = parse_flags(fl, never_match)
 
     if paths:
