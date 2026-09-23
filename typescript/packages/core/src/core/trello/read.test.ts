@@ -186,6 +186,24 @@ describe('trello read', () => {
     })
   })
 
+  // `sanitizeName` kept a leading dot, so a board titled `.plan` rendered
+  // `.plan__b1`: the kit drops a dot-led name from the listing and classifies
+  // it as hidden, so the board was neither listed nor readable, with no error.
+  it('lists and reads a board whose title is dot-led', async () => {
+    const t = new FakeTransport((path) => {
+      if (path === '/organizations/w1/boards') return [{ id: 'b1', name: '.plan' }]
+      if (path === '/boards/b1') return { id: 'b1', name: '.plan' }
+      return LISTINGS[path] ?? []
+    })
+    const accessor = new TrelloAccessor(t)
+    const listed = await readdir(accessor, spec('/workspaces/Acme__w1/boards'))
+    expect(listed).toEqual(['/workspaces/Acme__w1/boards/plan__b1'])
+    const boardJson = spec(`${listed[0] ?? ''}/board.json`)
+    expect((await stat(accessor, boardJson)).name).toBe('board.json')
+    const bytes = await read(accessor, boardJson)
+    expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({ board_name: '.plan' })
+  })
+
   it('resolves a prefixed mount path through the classifier', async () => {
     const t = new FakeTransport((path) => {
       if (path === '/members/me/organizations') return [{ id: 'w1', displayName: 'Acme' }]

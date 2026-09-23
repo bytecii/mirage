@@ -211,3 +211,26 @@ async def test_a_workspace_outside_workspace_id_is_absent_to_read(index):
             PathSpec.from_str_path("/workspaces/Engineering__ws1"
                                    "/workspace.json"), index)
     assert json.loads(scoped)["workspace_id"] == "ws1"
+
+
+@pytest.mark.asyncio
+async def test_a_dot_led_board_title_is_listed_and_addressable(index):
+    """``sanitize_name`` kept a leading dot, so a board titled ``.plan``
+    rendered ``.plan__b1``: the kit drops a dot-led name from the listing
+    and classifies it as hidden, so the board was neither listed nor
+    readable, with no error anywhere."""
+    accessor = TrelloAccessor(TrelloConfig(api_key="key", api_token="token"))
+    board = {"id": "b1", "name": ".plan"}
+    with patch("mirage.core.trello.readdir.list_workspaces",
+               AsyncMock(return_value=[WS1])), \
+            patch("mirage.core.trello.readdir.list_workspace_boards",
+                  AsyncMock(return_value=[board])), \
+            patch("mirage.core.trello.read.get_board",
+                  AsyncMock(return_value=board)):
+        boards = PathSpec.from_str_path("/workspaces/Engineering__ws1/boards")
+        listed = await readdir(accessor, boards, index)
+        assert listed == ["/workspaces/Engineering__ws1/boards/plan__b1"]
+        board_json = PathSpec.from_str_path(listed[0] + "/board.json")
+        assert (await stat(accessor, board_json, index)).name == "board.json"
+        payload = json.loads(await read(accessor, board_json, index))
+    assert payload["board_name"] == ".plan"
