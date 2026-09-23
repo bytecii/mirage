@@ -21,6 +21,7 @@ from mirage.accessor.mongodb import MongoDBAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.core.mongodb.client import (find_documents, iter_documents,
                                         iter_inserts)
+from mirage.core.mongodb.readdir import entity_guard
 from mirage.core.mongodb.scope import detect_scope
 from mirage.core.mongodb.types import PRIMARY_KEY
 from mirage.types import PathSpec
@@ -77,6 +78,7 @@ async def read_tail(
     scope = detect_scope(path)
     if scope.kind != "documents":
         raise enoent(path)
+    await entity_guard(accessor, scope, path.virtual)
     limit = min(n, accessor.config.max_doc_limit)
     docs = await find_documents(
         accessor.client,
@@ -107,6 +109,11 @@ async def read_stream(
     scope = detect_scope(path)
     if scope.kind != "documents":
         raise enoent(path)
+    # The entity guard is what applies the mount's `databases` filter;
+    # this stream is the read_stream op, which a caller reaches without
+    # a stat first (a redirect, a runtime's open), so it proves the
+    # collection itself rather than trusting the names in the path.
+    await entity_guard(accessor, scope, path.virtual)
     elide = _elision_paths(accessor.config, scope.slots["database"],
                            scope.slots["name"])
     async for doc in iter_documents(
@@ -129,6 +136,7 @@ async def watch_stream(
     scope = detect_scope(path)
     if scope.kind != "documents":
         raise enoent(path)
+    await entity_guard(accessor, scope, path.virtual)
     elide = _elision_paths(accessor.config, scope.slots["database"],
                            scope.slots["name"])
     async for doc in iter_inserts(accessor.client, scope.slots["database"],

@@ -27,6 +27,7 @@ from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.core.postgres import client
 from mirage.core.postgres.read import read as postgres_read
+from mirage.core.postgres.readdir import entity_exists
 from mirage.core.postgres.scope import detect_scope
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
@@ -50,7 +51,8 @@ async def tail(accessor: PostgresAccessor, paths: list[PathSpec],
         if (len(paths) == 1 and not has_unresolved_glob(paths)
                 and scope.kind == "entity_rows" and counts.byte_count is None
                 and counts.from_byte is None and counts.lines is not None
-                and not parsed.follow):
+                and not parsed.follow
+                and await entity_exists(accessor, scope, paths[0].virtual)):
             schema = scope.slots["schema"]
             entity = scope.slots["entity"]
             limit = min(counts.lines, accessor.config.default_row_limit)

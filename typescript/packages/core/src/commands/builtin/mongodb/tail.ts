@@ -18,6 +18,7 @@ import { findDocuments } from '../../../core/mongodb/client.ts'
 import { resolveGlobOf } from '../generic_bind/index.ts'
 import { MONGODB_IO } from './io.ts'
 import { streamAny } from '../../../core/mongodb/read.ts'
+import { documentsExist } from '../../../core/mongodb/readdir.ts'
 import { detectScope } from '../../../core/mongodb/scope.ts'
 import {
   applyElision,
@@ -85,11 +86,15 @@ async function tailCommand(
   // position to measure against: a follow reads the collection whole.
   const following = followFlags(fl)
   const follow = typeof following !== 'string' && following.follow
+  // The change stream queries the collection by the names in the path, so it
+  // runs only for one the mount can see; anything else takes the generic,
+  // which stats it through the same guard and reports it.
   if (
     follow &&
     resolved.length === 1 &&
     first !== undefined &&
-    detectScope(first).kind === 'documents'
+    detectScope(first).kind === 'documents' &&
+    (await documentsExist(accessor, detectScope(first), first.virtual))
   ) {
     return [watchStream(accessor, first), new IOResult()]
   }

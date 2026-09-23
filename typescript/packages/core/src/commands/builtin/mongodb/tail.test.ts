@@ -44,10 +44,18 @@ import { MONGODB_TAIL } from './tail.ts'
 
 const DEC = new TextDecoder()
 const ENC = new TextEncoder()
-const STUB_DRIVER = stubMongoDriver()
+// The change stream proves its collection through the entity guard first, so
+// the catalog holds the database and collections the tests name.
+const STUB_DRIVER = stubMongoDriver({
+  listDatabases: () => Promise.resolve(['app', 'secret']),
+  listCollections: () => Promise.resolve(['users', 'orders']),
+})
 
-function makeAccessor(): MongoDBAccessor {
-  return new MongoDBAccessor(STUB_DRIVER, resolveMongoDBConfig({ uri: 'mongodb://h' }))
+function makeAccessor(databases?: string[]): MongoDBAccessor {
+  return new MongoDBAccessor(
+    STUB_DRIVER,
+    resolveMongoDBConfig({ uri: 'mongodb://h', ...(databases === undefined ? {} : { databases }) }),
+  )
 }
 
 function docs(name: string): PathSpec {
@@ -68,10 +76,11 @@ async function run(
   paths: PathSpec[],
   flags: Record<string, FlagValue>,
   signal?: AbortSignal,
+  accessor: MongoDBAccessor = makeAccessor(),
 ): Promise<AsyncIterable<Uint8Array> | Uint8Array | null> {
   const cmd = MONGODB_TAIL[0]
   if (cmd === undefined) throw new Error('tail not registered')
-  const result = await cmd.fn(makeAccessor(), paths, [], {
+  const result = await cmd.fn(accessor, paths, [], {
     stdin: null,
     flags,
     filetypeFns: null,
@@ -110,6 +119,22 @@ describe('mongodb tail pushdown', () => {
       expect(clientModule.findDocuments).not.toHaveBeenCalled()
     },
   )
+
+  // The change stream queried the collection by the names in the path, so a
+  // database `databases` leaves out was followed while `ls` and `cat` said it
+  // was not there.
+  it('does not follow a collection outside databases', async () => {
+    vi.mocked(streamModule.watchStream).mockImplementation(() => lines())
+    const virtual = '/mongo/secret/collections/users/documents.jsonl'
+    const secret = new PathSpec({
+      virtual,
+      directory: '/mongo/secret/collections/users/',
+      resolved: true,
+      vfsPath: mountKey(virtual, '/mongo'),
+    })
+    await run([secret], { follow: true }, undefined, makeAccessor(['app']))
+    expect(streamModule.watchStream).not.toHaveBeenCalled()
+  })
 
   it('reads every collection whole when a follow polls more than one', async () => {
     // The pushed-down suffix moves with the collection and has no byte

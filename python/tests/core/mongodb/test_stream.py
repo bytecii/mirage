@@ -39,6 +39,15 @@ def index():
     return RAMIndexCacheStore()
 
 
+@pytest.fixture(autouse=True)
+def visible_collections(monkeypatch):
+    # Every documents stream proves its collection through the entity
+    # guard first; these tests are about rendering, so the catalog says
+    # yes. The scope tests at the bottom replace it.
+    monkeypatch.setattr("mirage.core.mongodb.readdir.entity_exists",
+                        AsyncMock(return_value=True))
+
+
 @pytest.fixture
 def accessor():
     return MongoDBAccessor(config=MongoDBConfig(
@@ -340,3 +349,28 @@ async def test_watch_stream_applies_elision(index):
     assert parsed["title"] == "live"
     assert "vector" not in parsed
     assert parsed["_id"] == {"$oid": str(oid)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("opener", ["read", "watch", "tail"])
+async def test_a_collection_outside_the_scope_is_enoent_to_every_stream(
+        monkeypatch, opener):
+    """The documents streams went straight to the collection the path
+    names, so a database ``databases`` leaves out streamed while ``ls``
+    and ``stat`` said it was not there."""
+    accessor = MongoDBAccessor(config=MongoDBConfig(
+        uri="mongodb://localhost:27017", databases=["db1"]))
+    exists = AsyncMock(return_value=False)
+    monkeypatch.setattr("mirage.core.mongodb.readdir.entity_exists", exists)
+    fetched = AsyncMock(side_effect=AssertionError("queried the collection"))
+    path = _path("/secret/collections/coll1/documents.jsonl")
+    with patch("mirage.core.mongodb.stream.iter_documents", new=fetched), \
+            patch("mirage.core.mongodb.stream.iter_inserts", new=fetched), \
+            patch("mirage.core.mongodb.stream.find_documents", new=fetched):
+        with pytest.raises(FileNotFoundError):
+            if opener == "tail":
+                await read_tail(accessor, path, 5)
+            else:
+                stream = read_stream if opener == "read" else watch_stream
+                await _collect(stream(accessor, path))
+    exists.assert_awaited_once()
