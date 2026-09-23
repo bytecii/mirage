@@ -51,6 +51,7 @@ async def resolve_pattern(
     flags: FlagView,
     read_bytes: Callable[[PathSpec], Awaitable[bytes]],
     usage: str,
+    file_key: str = "f",
 ) -> tuple[str, bool]:
     """Resolve the search pattern from -e/positional/-f flag arguments.
 
@@ -60,6 +61,7 @@ async def resolve_pattern(
         read_bytes (Callable[[PathSpec], Awaitable[bytes]]): bound
             whole-file reader used for -f pattern files.
         usage (str): usage error message when no pattern was supplied.
+        file_key (str): canonical option key for pattern files.
 
     Returns:
         tuple[str, bool]: (newline-separated pattern list, never_match) where
@@ -68,7 +70,7 @@ async def resolve_pattern(
     """
     pattern = pattern_arg(texts, flags)
 
-    pattern_file = flags.raw("f")
+    pattern_file = flags.raw(file_key)
     if isinstance(pattern_file, (PathSpec, list)):
         raw = (pattern_file
                if isinstance(pattern_file, list) else [pattern_file])

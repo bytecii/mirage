@@ -329,6 +329,7 @@
       "type": "str"
     },
     {
+      "long": "--file",
       "multiple": true,
       "short": "-f",
       "type": "path"

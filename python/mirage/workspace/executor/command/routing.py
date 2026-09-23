@@ -85,9 +85,21 @@ def path_flag_scopes(cmd_name: str, argv: list[str],
     if spec is None:
         return []
     parsed = parse_command(spec, argv, cwd, cmd_name)
+    key = {
+        "grep": "--file",
+        "sed": "-f",
+        "awk": "-f",
+        "jq": "--from-file"
+    }.get(cmd_name)
+    program = parsed.flags.get(key) if key is not None else None
+    program_paths = program if isinstance(program, list) else [program]
+    flag_paths = list(parsed.path_flag_values)
+    for value in program_paths:
+        if isinstance(value, str) and value in flag_paths:
+            flag_paths.remove(value)
     return [
         PathSpec(virtual=value, directory=value, vfs_path="", raw_path=value)
-        for value in parsed.path_flag_values
+        for value in flag_paths
     ]
 
 

@@ -43,7 +43,7 @@ SPECS: dict[str, CommandSpec] = {
             Option(short="-B", type="str"),
             Option(short="-C", type="str"),
             Option(short="-e", type="str", multiple=True),
-            Option(short="-f", type="path", multiple=True),
+            Option(short="-f", long="--file", type="path", multiple=True),
             Option(short="-a", long="--text"),
             Option(short="-b", long="--byte-offset"),
             Option(long="--include", type="str", multiple=True),

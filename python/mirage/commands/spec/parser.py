@@ -975,7 +975,11 @@ def parse_command(
             flags[flag_name] = paired
             path_flag_values.extend(paired[1::2])
         elif isinstance(value, list):
-            resolved_list = [resolve_path(part, cwd) for part in value]
+            resolved_list = [
+                "-" if part == "-" and cmd_name in ("grep", "sed", "awk")
+                and flag_name in ("-f", "--file") else resolve_path(part, cwd)
+                for part in value
+            ]
             flags[flag_name] = resolved_list
             path_flag_values.extend(resolved_list)
         elif isinstance(value, str):
