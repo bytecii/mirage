@@ -38,6 +38,7 @@ it('refuses descriptor access when fallback contexts overlap', async () => {
       expect(() => files.set('/fd/63', new Uint8Array())).toThrow()
       expect(files.delete('/fd/63')).toBe(false)
       expect(() => files.allocateInput()).toThrow()
+      return Promise.resolve()
     })
   } finally {
     doneResolve()
