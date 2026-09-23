@@ -23,6 +23,7 @@ import { estimateSize, fetchRows } from './client.ts'
 import { buildDatabaseJson, buildEntitySchemaJson } from './_schema_json.ts'
 import { buildEntitySemanticJson } from './semantic.ts'
 import { detectScope } from './scope.ts'
+import { stat } from './stat.ts'
 
 export interface ReadOptions {
   limit?: number | null
@@ -81,7 +82,7 @@ const kitRead = makeRead<PostgresAccessor>(
     entity_schema: readEntitySchema,
     entity_semantic: readEntitySemantic,
   },
-  { entity_rows: readEntityRows },
+  { windowed: { entity_rows: readEntityRows }, stat },
 )
 
 export async function read(

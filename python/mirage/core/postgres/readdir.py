@@ -36,6 +36,13 @@ async def entity_guard(accessor: PostgresAccessor, match: ScopeMatch,
     kind = match.slots["kind"]
     pool = await accessor.pool()
     async with pool.acquire() as conn:
+        # An entity guard answers for its schema too: it replaces the
+        # listing chain wherever it runs, so a table under a schema the
+        # mount's `schemas` leaves out would otherwise read, stat and
+        # list as if the mount could see it.
+        if schema not in await client.list_schemas(conn,
+                                                   accessor.config.schemas):
+            raise enoent(virtual)
         if kind == "tables":
             names = await client.list_tables(conn, schema)
         else:

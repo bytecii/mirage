@@ -18,6 +18,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('./client.ts', () => ({
   estimateSize: vi.fn(),
   fetchRows: vi.fn(),
+  // A read proves the entity directory first, through the guards stat runs,
+  // so the catalog those guards consult is faked too.
+  listSchemas: vi.fn(),
+  listTables: vi.fn(),
+  listViews: vi.fn(),
+  listMatviews: vi.fn(),
 }))
 
 vi.mock('./_schema_json.ts', () => ({
@@ -55,6 +61,13 @@ describe('read', () => {
     vi.mocked(client.fetchRows).mockReset()
     vi.mocked(_schema.buildDatabaseJson).mockReset()
     vi.mocked(_schema.buildEntitySchemaJson).mockReset()
+    // `listSchemas`'s contract over a catalog holding two schemas.
+    vi.mocked(client.listSchemas).mockImplementation((_accessor, allow) =>
+      Promise.resolve(['public', 'secret'].filter((s) => allow == null || allow.includes(s))),
+    )
+    vi.mocked(client.listTables).mockResolvedValue(['users'])
+    vi.mocked(client.listViews).mockResolvedValue([])
+    vi.mocked(client.listMatviews).mockResolvedValue([])
   })
 
   it('serializes database.json with 2-space indent', async () => {
@@ -168,5 +181,37 @@ describe('read', () => {
       }),
     )
     expect(decode(out)).toBe('{"ts":"2026-04-30T00:00:00.000Z"}\n')
+  })
+
+  // `schemas` hid the schema from `ls` while `cat` of a table under it fetched
+  // its rows: the read addressed the database by the names in the path and
+  // never asked whether the mount could see them.
+  it('refuses a table under a schema outside schemas', async () => {
+    vi.mocked(client.estimateSize).mockResolvedValue([1, 10])
+    vi.mocked(client.fetchRows).mockResolvedValue([{ id: 1 }])
+    const accessor = makeAccessor({ dsn: 'postgres://h/db', schemas: ['public'] })
+    for (const name of ['rows.jsonl', 'schema.json']) {
+      await expect(
+        read(
+          accessor,
+          new PathSpec({
+            virtual: `/pg/secret/tables/users/${name}`,
+            directory: '/pg/secret/tables/users/',
+            vfsPath: mountKey(`/pg/secret/tables/users/${name}`, '/pg'),
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'ENOENT' })
+    }
+    expect(client.fetchRows).not.toHaveBeenCalled()
+    expect(_schema.buildEntitySchemaJson).not.toHaveBeenCalled()
+    const out = await read(
+      accessor,
+      new PathSpec({
+        virtual: '/pg/public/tables/users/rows.jsonl',
+        directory: '/pg/public/tables/users/',
+        vfsPath: mountKey('/pg/public/tables/users/rows.jsonl', '/pg'),
+      }),
+    )
+    expect(decode(out)).toBe('{"id":1}\n')
   })
 })

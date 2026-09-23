@@ -23,6 +23,7 @@ from mirage.core.postgres._schema_json import (build_database_json,
                                                build_entity_schema_json)
 from mirage.core.postgres.scope import detect_scope
 from mirage.core.postgres.semantic import build_entity_semantic_json
+from mirage.core.postgres.stat import stat
 from mirage.types import PathSpec
 
 
@@ -104,4 +105,5 @@ read = make_read(detect_scope, {
     "entity_schema": _read_entity_schema,
     "entity_semantic": _read_entity_semantic,
 },
-                 windowed={"entity_rows": _read_entity_rows})
+                 windowed={"entity_rows": _read_entity_rows},
+                 stat=stat)

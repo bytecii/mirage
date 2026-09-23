@@ -37,6 +37,13 @@ export async function entityGuard(
 ): Promise<void> {
   const schema = match.slots.schema ?? ''
   const kind = match.slots.kind ?? ''
+  // An entity guard answers for its schema too: it replaces the listing
+  // chain wherever it runs, so a table under a schema the mount's `schemas`
+  // leaves out would otherwise read, stat and list as if the mount could see
+  // it.
+  if (!(await listSchemas(accessor, accessor.config.schemas)).includes(schema)) {
+    throw enoent(virtual)
+  }
   let names: string[]
   if (kind === 'tables') {
     names = await listTables(accessor, schema)

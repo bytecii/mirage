@@ -32,12 +32,14 @@ async def _fake_acquire():
 
 def _accessor(max_read_rows: int = 10_000,
               max_read_bytes: int = 10 * 1024 * 1024,
-              default_row_limit: int = 1000) -> PostgresAccessor:
+              default_row_limit: int = 1000,
+              schemas: list[str] | None = None) -> PostgresAccessor:
     a = PostgresAccessor(
         PostgresConfig(dsn="postgres://localhost/db",
                        max_read_rows=max_read_rows,
                        max_read_bytes=max_read_bytes,
-                       default_row_limit=default_row_limit))
+                       default_row_limit=default_row_limit,
+                       schemas=schemas))
     pool = MagicMock()
     pool.acquire = lambda: _fake_acquire()
     a.pool = AsyncMock(return_value=pool)
@@ -47,6 +49,28 @@ def _accessor(max_read_rows: int = 10_000,
 @pytest.fixture
 def index():
     return RAMIndexCacheStore()
+
+
+async def _catalog_schemas(conn, allowlist):
+    # `client.list_schemas`'s contract over a catalog holding two schemas.
+    return [
+        s for s in ("public", "secret") if allowlist is None or s in allowlist
+    ]
+
+
+@pytest.fixture(autouse=True)
+def catalog():
+    # A read proves the entity directory first, through the guards stat
+    # runs, so the entity has to exist in a schema the mount can see.
+    with patch("mirage.core.postgres.client.list_schemas",
+               AsyncMock(side_effect=_catalog_schemas)), \
+            patch("mirage.core.postgres.client.list_tables",
+                  AsyncMock(return_value=["users"])), \
+            patch("mirage.core.postgres.client.list_views",
+                  AsyncMock(return_value=["v1"])), \
+            patch("mirage.core.postgres.client.list_matviews",
+                  AsyncMock(return_value=[])):
+        yield
 
 
 @pytest.mark.asyncio
@@ -216,3 +240,28 @@ async def test_read_view_rows_uses_view_kind_in_error():
                 PathSpec(vfs_path="public/views/v1/rows.jsonl",
                          virtual="/public/views/v1/rows.jsonl",
                          directory="/public/views/v1/rows.jsonl"))
+
+
+@pytest.mark.asyncio
+async def test_a_table_under_a_schema_outside_schemas_is_enoent_to_read():
+    """``schemas`` hid the schema from ``ls`` while ``cat`` of a table
+    under it fetched its rows: the read addressed the database by the
+    names in the path and never asked whether the mount could see them."""
+    accessor = _accessor(schemas=["public"])
+    with patch("mirage.core.postgres.read.client") as mc:
+        mc.estimate_size = AsyncMock(return_value=(1, 10))
+        mc.fetch_rows = AsyncMock(return_value=[{"id": 1}])
+        for name in ("rows.jsonl", "schema.json"):
+            with pytest.raises(FileNotFoundError):
+                await read(
+                    accessor,
+                    PathSpec(vfs_path=f"secret/tables/users/{name}",
+                             virtual=f"/secret/tables/users/{name}",
+                             directory="/secret/tables/users"))
+        mc.fetch_rows.assert_not_awaited()
+        out = await read(
+            accessor,
+            PathSpec(vfs_path="public/tables/users/rows.jsonl",
+                     virtual="/public/tables/users/rows.jsonl",
+                     directory="/public/tables/users"))
+    assert json.loads(out) == {"id": 1}
