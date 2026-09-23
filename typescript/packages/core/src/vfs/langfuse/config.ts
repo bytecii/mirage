@@ -12,13 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  parseConfigWithSchema,
-  redactConfigWithSchema,
-  secretStr,
-  z,
-} from '@struktoai/mirage-core/vfs/secrets'
-import type { ConfigOf, RedactedConfig } from '@struktoai/mirage-core/vfs/secrets'
+import { parseConfigWithSchema, redactConfigWithSchema, secretStr, z } from '../secrets.ts'
+import type { ConfigOf, RedactedConfig } from '../secrets.ts'
 
 const LangfuseConfigSchema = z.object({
   publicKey: z.string(),
@@ -37,13 +32,6 @@ export function redactLangfuseConfig(config: LangfuseConfig): LangfuseConfigReda
   return redactConfigWithSchema(LangfuseConfigSchema, config) as unknown as LangfuseConfigRedacted
 }
 
-/**
- * Translate a python-style config blob to this one's camelCase.
- *
- * No rename map: every field's camelCase spelling is what `snakeToCamel`
- * already produces, and restating those only creates a second place to be
- * wrong. Mirrors node's `normalizeLangfuseConfig`.
- */
 export function normalizeLangfuseConfig(input: Record<string, unknown>): LangfuseConfig {
   return parseConfigWithSchema(LangfuseConfigSchema, input)
 }

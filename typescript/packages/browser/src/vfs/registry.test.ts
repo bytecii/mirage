@@ -16,6 +16,8 @@ import type { OAuthClientMetadata } from '@modelcontextprotocol/sdk/shared/auth.
 import { describe, expect, it } from 'vitest'
 import { tokenUrl } from '@struktoai/mirage-core/core/google/client'
 import type { TokenManager } from '@struktoai/mirage-core/core/google/client'
+import { VFSName } from '@struktoai/mirage-core/types'
+import { TrelloVFS } from '@struktoai/mirage-core/vfs/trello/trello'
 import { buildVfs, knownVfsNames, register } from './registry.ts'
 
 describe('browser VFS registry', () => {
@@ -34,6 +36,22 @@ describe('browser VFS registry', () => {
       const { accessor } = vfs as unknown as { accessor: { tokenManager: TokenManager } }
       expect(tokenUrl(accessor.tokenManager.config), name).toBe(`${base}/token`)
     }
+  })
+
+  // The browser kept its own copy of the Box config after node grew the
+  // client-credentials grant, and zod strips a key its schema does not
+  // declare: `enterprise_id` vanished before the token manager ran, which
+  // then refused the mount for lacking the very credentials it was given.
+  it('keeps the box client-credentials grant', async () => {
+    const vfs = await buildVfs('box', {
+      client_id: 'id',
+      client_secret: 'secret',
+      enterprise_id: 'ent',
+    })
+    expect(vfs.kind).toBe('box')
+    expect((vfs as unknown as { config: { enterpriseId?: string } }).config.enterpriseId).toBe(
+      'ent',
+    )
   })
 
   // Every entry used to hand-roll `normalizeFields` with a rename map that
@@ -235,5 +253,26 @@ describe('browser VFS registry', () => {
     expect(knownVfsNames()).toContain('mock-fs')
     const r = await buildVfs('mock-fs', {})
     expect(r.kind).toBe('ram')
+  })
+})
+
+describe('browser registry: trello', () => {
+  it('builds trello VFS with apiKey/apiToken', async () => {
+    const r = await buildVfs('trello', { apiKey: 'k', apiToken: 't' })
+    expect(r.kind).toBe(VFSName.TRELLO)
+    expect(r).toBeInstanceOf(TrelloVFS)
+  })
+
+  it('accepts snake_case config (api_key, api_token, workspace_id, board_ids)', async () => {
+    const r = (await buildVfs('trello', {
+      api_key: 'k',
+      api_token: 't',
+      workspace_id: 'w1',
+      board_ids: ['b1', 'b2'],
+    })) as TrelloVFS
+    expect(r.config.apiKey).toBe('k')
+    expect(r.config.apiToken).toBe('t')
+    expect(r.config.workspaceId).toBe('w1')
+    expect(r.config.boardIds).toEqual(['b1', 'b2'])
   })
 })

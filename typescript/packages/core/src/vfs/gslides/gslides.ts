@@ -12,27 +12,23 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { GSlidesAccessor } from '@struktoai/mirage-core/accessor/gslides'
-import { makeResolveGlob } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
-import { GSLIDES_COMMANDS } from '@struktoai/mirage-core/commands/builtin/gslides/index'
-import type { RegisteredCommand } from '@struktoai/mirage-core/commands/config'
-import { TokenManager } from '@struktoai/mirage-core/core/google/client'
-import { read as gslidesRead } from '@struktoai/mirage-core/core/gslides/read'
-import { readdir as gslidesReaddir } from '@struktoai/mirage-core/core/gslides/readdir'
-import { stat as gslidesStat } from '@struktoai/mirage-core/core/gslides/stat'
-import { GSLIDES_OPS } from '@struktoai/mirage-core/ops/gslides/index'
-import type { RegisteredOp } from '@struktoai/mirage-core/ops/registry'
-import { BaseVFS } from '@struktoai/mirage-core/vfs/base'
-import type { VFS } from '@struktoai/mirage-core/vfs/base'
-import { GSLIDES_PROMPT, GSLIDES_WRITE_PROMPT } from '@struktoai/mirage-core/vfs/gslides/prompt'
-import { PathSpec, VFSName } from '@struktoai/mirage-core/types'
-import type { FileStat } from '@struktoai/mirage-core/types'
-import { mountKey, mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
-import {
-  redactGSlidesConfig,
-  type GSlidesConfig,
-  type GSlidesConfigRedacted,
-} from '@struktoai/mirage-core/vfs/gslides/config'
+import { GSlidesAccessor } from '../../accessor/gslides.ts'
+import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+import { GSLIDES_COMMANDS } from '../../commands/builtin/gslides/index.ts'
+import type { RegisteredCommand } from '../../commands/config.ts'
+import { TokenManager } from '../../core/google/client.ts'
+import { read as gslidesRead } from '../../core/gslides/read.ts'
+import { readdir as gslidesReaddir } from '../../core/gslides/readdir.ts'
+import { stat as gslidesStat } from '../../core/gslides/stat.ts'
+import { GSLIDES_OPS } from '../../ops/gslides/index.ts'
+import type { RegisteredOp } from '../../ops/registry.ts'
+import { BaseVFS } from '../base.ts'
+import type { VFS } from '../base.ts'
+import { GSLIDES_PROMPT, GSLIDES_WRITE_PROMPT } from './prompt.ts'
+import { PathSpec, VFSName } from '../../types.ts'
+import type { FileStat } from '../../types.ts'
+import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
+import { redactGSlidesConfig, type GSlidesConfig, type GSlidesConfigRedacted } from './config.ts'
 
 const gslidesResolveGlob = makeResolveGlob(gslidesReaddir)
 

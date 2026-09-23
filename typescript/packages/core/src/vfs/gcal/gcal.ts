@@ -12,27 +12,23 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { GCalAccessor } from '@struktoai/mirage-core/accessor/gcal'
-import { GCAL_COMMANDS } from '@struktoai/mirage-core/commands/builtin/gcal/index'
-import { makeResolveGlob } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
-import type { RegisteredCommand } from '@struktoai/mirage-core/commands/config'
-import { read as gcalRead } from '@struktoai/mirage-core/core/gcal/read'
-import { readdir as gcalReaddir } from '@struktoai/mirage-core/core/gcal/readdir'
-import { stat as gcalStat } from '@struktoai/mirage-core/core/gcal/stat'
-import { TokenManager } from '@struktoai/mirage-core/core/google/client'
-import { GCAL_OPS } from '@struktoai/mirage-core/ops/gcal/index'
-import type { RegisteredOp } from '@struktoai/mirage-core/ops/registry'
-import { BaseVFS } from '@struktoai/mirage-core/vfs/base'
-import type { VFS } from '@struktoai/mirage-core/vfs/base'
-import { GCAL_PROMPT, GCAL_WRITE_PROMPT } from '@struktoai/mirage-core/vfs/gcal/prompt'
-import { PathSpec, VFSName } from '@struktoai/mirage-core/types'
-import type { FileStat } from '@struktoai/mirage-core/types'
-import { mountKey, mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
-import {
-  redactGCalConfig,
-  type GCalConfig,
-  type GCalConfigRedacted,
-} from '@struktoai/mirage-core/vfs/gcal/config'
+import { GCalAccessor } from '../../accessor/gcal.ts'
+import { GCAL_COMMANDS } from '../../commands/builtin/gcal/index.ts'
+import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+import type { RegisteredCommand } from '../../commands/config.ts'
+import { read as gcalRead } from '../../core/gcal/read.ts'
+import { readdir as gcalReaddir } from '../../core/gcal/readdir.ts'
+import { stat as gcalStat } from '../../core/gcal/stat.ts'
+import { TokenManager } from '../../core/google/client.ts'
+import { GCAL_OPS } from '../../ops/gcal/index.ts'
+import type { RegisteredOp } from '../../ops/registry.ts'
+import { BaseVFS } from '../base.ts'
+import type { VFS } from '../base.ts'
+import { GCAL_PROMPT, GCAL_WRITE_PROMPT } from './prompt.ts'
+import { PathSpec, VFSName } from '../../types.ts'
+import type { FileStat } from '../../types.ts'
+import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
+import { redactGCalConfig, type GCalConfig, type GCalConfigRedacted } from './config.ts'
 
 const gcalResolveGlob = makeResolveGlob(gcalReaddir)
 

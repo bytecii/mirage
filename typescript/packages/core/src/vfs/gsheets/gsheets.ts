@@ -12,27 +12,23 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { GSheetsAccessor } from '@struktoai/mirage-core/accessor/gsheets'
-import { makeResolveGlob } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
-import { GSHEETS_COMMANDS } from '@struktoai/mirage-core/commands/builtin/gsheets/index'
-import type { RegisteredCommand } from '@struktoai/mirage-core/commands/config'
-import { TokenManager } from '@struktoai/mirage-core/core/google/client'
-import { read as gsheetsRead } from '@struktoai/mirage-core/core/gsheets/read'
-import { readdir as gsheetsReaddir } from '@struktoai/mirage-core/core/gsheets/readdir'
-import { stat as gsheetsStat } from '@struktoai/mirage-core/core/gsheets/stat'
-import { GSHEETS_OPS } from '@struktoai/mirage-core/ops/gsheets/index'
-import type { RegisteredOp } from '@struktoai/mirage-core/ops/registry'
-import { BaseVFS } from '@struktoai/mirage-core/vfs/base'
-import type { VFS } from '@struktoai/mirage-core/vfs/base'
-import { GSHEETS_PROMPT, GSHEETS_WRITE_PROMPT } from '@struktoai/mirage-core/vfs/gsheets/prompt'
-import { PathSpec, VFSName } from '@struktoai/mirage-core/types'
-import type { FileStat } from '@struktoai/mirage-core/types'
-import { mountKey, mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
-import {
-  redactGSheetsConfig,
-  type GSheetsConfig,
-  type GSheetsConfigRedacted,
-} from '@struktoai/mirage-core/vfs/gsheets/config'
+import { GSheetsAccessor } from '../../accessor/gsheets.ts'
+import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+import { GSHEETS_COMMANDS } from '../../commands/builtin/gsheets/index.ts'
+import type { RegisteredCommand } from '../../commands/config.ts'
+import { TokenManager } from '../../core/google/client.ts'
+import { read as gsheetsRead } from '../../core/gsheets/read.ts'
+import { readdir as gsheetsReaddir } from '../../core/gsheets/readdir.ts'
+import { stat as gsheetsStat } from '../../core/gsheets/stat.ts'
+import { GSHEETS_OPS } from '../../ops/gsheets/index.ts'
+import type { RegisteredOp } from '../../ops/registry.ts'
+import { BaseVFS } from '../base.ts'
+import type { VFS } from '../base.ts'
+import { GSHEETS_PROMPT, GSHEETS_WRITE_PROMPT } from './prompt.ts'
+import { PathSpec, VFSName } from '../../types.ts'
+import type { FileStat } from '../../types.ts'
+import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
+import { redactGSheetsConfig, type GSheetsConfig, type GSheetsConfigRedacted } from './config.ts'
 
 const gsheetsResolveGlob = makeResolveGlob(gsheetsReaddir)
 

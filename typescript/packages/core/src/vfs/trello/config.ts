@@ -12,13 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import {
-  parseConfigWithSchema,
-  redactConfigWithSchema,
-  secretStr,
-  z,
-} from '@struktoai/mirage-core/vfs/secrets'
-import type { ConfigOf, RedactedConfig } from '@struktoai/mirage-core/vfs/secrets'
+import { parseConfigWithSchema, redactConfigWithSchema, secretStr, z } from '../secrets.ts'
+import type { ConfigOf, RedactedConfig } from '../secrets.ts'
 
 const TrelloConfigSchema = z.object({
   apiKey: secretStr(),

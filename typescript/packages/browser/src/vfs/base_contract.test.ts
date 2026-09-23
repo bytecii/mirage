@@ -17,7 +17,7 @@ import { RAMIndexCacheStore } from '@struktoai/mirage-core/cache/index/ram'
 import { BaseVFS } from '@struktoai/mirage-core/vfs/base'
 import { describe, expect, it } from 'vitest'
 import * as browserPkg from '../index.ts'
-import { TrelloVFS } from './trello/trello.ts'
+import { SlackVFS } from './slack/slack.ts'
 
 type Ctor = new (...args: never[]) => unknown
 
@@ -48,14 +48,14 @@ describe('every exported VFS inherits the BaseVFS contract', () => {
 
 describe('a browser VFS honors the mount index config', () => {
   it('setIndex rebuilds the index with the ttl the mount asked for', () => {
-    const r = new TrelloVFS({ apiKey: 'k', apiToken: 't' })
+    const r = new SlackVFS({ proxyUrl: '/api/slack' })
     r.setIndex({ type: IndexType.RAM, ttl: 5 })
     expect(r.index).toBeInstanceOf(RAMIndexCacheStore)
     expect((r.index as unknown as { ttl: number }).ttl).toBe(5)
   })
 
   it('close closes the index exactly once', async () => {
-    const r = new TrelloVFS({ apiKey: 'k', apiToken: 't' })
+    const r = new SlackVFS({ proxyUrl: '/api/slack' })
     let closes = 0
     const index = r.index
     index.close = () => {

@@ -12,29 +12,25 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { GDriveAccessor } from '@struktoai/mirage-core/accessor/gdrive'
-import { GDRIVE_COMMANDS } from '@struktoai/mirage-core/commands/builtin/gdrive/index'
-import { makeResolveGlob } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
-import type { RegisteredCommand } from '@struktoai/mirage-core/commands/config'
-import { read as gdriveRead } from '@struktoai/mirage-core/core/gdrive/read'
-import { readdir as gdriveReaddir } from '@struktoai/mirage-core/core/gdrive/readdir'
-import { stat as gdriveStat } from '@struktoai/mirage-core/core/gdrive/stat'
-import { buildDeltaHook } from '@struktoai/mirage-core/core/gdrive/watch'
-import { TokenManager } from '@struktoai/mirage-core/core/google/client'
-import { GDRIVE_OPS } from '@struktoai/mirage-core/ops/gdrive/index'
-import type { RegisteredOp } from '@struktoai/mirage-core/ops/registry'
-import { BaseVFS } from '@struktoai/mirage-core/vfs/base'
-import type { VFS } from '@struktoai/mirage-core/vfs/base'
-import { GDRIVE_PROMPT } from '@struktoai/mirage-core/vfs/gdrive/prompt'
-import { PathSpec, VFSName } from '@struktoai/mirage-core/types'
-import type { FileStat } from '@struktoai/mirage-core/types'
-import { mountKey, mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
-import { type DeltaHook } from '@struktoai/mirage-core/watch/index'
-import {
-  redactGDriveConfig,
-  type GDriveConfig,
-  type GDriveConfigRedacted,
-} from '@struktoai/mirage-core/vfs/gdrive/config'
+import { GDriveAccessor } from '../../accessor/gdrive.ts'
+import { GDRIVE_COMMANDS } from '../../commands/builtin/gdrive/index.ts'
+import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+import type { RegisteredCommand } from '../../commands/config.ts'
+import { read as gdriveRead } from '../../core/gdrive/read.ts'
+import { readdir as gdriveReaddir } from '../../core/gdrive/readdir.ts'
+import { stat as gdriveStat } from '../../core/gdrive/stat.ts'
+import { TokenManager } from '../../core/google/client.ts'
+import { GDRIVE_OPS } from '../../ops/gdrive/index.ts'
+import type { RegisteredOp } from '../../ops/registry.ts'
+import { BaseVFS } from '../base.ts'
+import type { VFS } from '../base.ts'
+import { GDRIVE_PROMPT } from './prompt.ts'
+import { PathSpec, VFSName } from '../../types.ts'
+import type { FileStat } from '../../types.ts'
+import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
+import { redactGDriveConfig, type GDriveConfig, type GDriveConfigRedacted } from './config.ts'
+import { buildDeltaHook } from '../../core/gdrive/watch.ts'
+import { type DeltaHook } from '../../watch/index.ts'
 
 const gdriveResolveGlob = makeResolveGlob(gdriveReaddir)
 

@@ -12,27 +12,23 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { GDocsAccessor } from '@struktoai/mirage-core/accessor/gdocs'
-import { GDOCS_COMMANDS } from '@struktoai/mirage-core/commands/builtin/gdocs/index'
-import { makeResolveGlob } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
-import type { RegisteredCommand } from '@struktoai/mirage-core/commands/config'
-import { read as gdocsRead } from '@struktoai/mirage-core/core/gdocs/read'
-import { readdir as gdocsReaddir } from '@struktoai/mirage-core/core/gdocs/readdir'
-import { stat as gdocsStat } from '@struktoai/mirage-core/core/gdocs/stat'
-import { TokenManager } from '@struktoai/mirage-core/core/google/client'
-import { GDOCS_OPS } from '@struktoai/mirage-core/ops/gdocs/index'
-import type { RegisteredOp } from '@struktoai/mirage-core/ops/registry'
-import { BaseVFS } from '@struktoai/mirage-core/vfs/base'
-import type { VFS } from '@struktoai/mirage-core/vfs/base'
-import { GDOCS_PROMPT, GDOCS_WRITE_PROMPT } from '@struktoai/mirage-core/vfs/gdocs/prompt'
-import { PathSpec, VFSName } from '@struktoai/mirage-core/types'
-import type { FileStat } from '@struktoai/mirage-core/types'
-import { mountKey, mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
-import {
-  redactGDocsConfig,
-  type GDocsConfig,
-  type GDocsConfigRedacted,
-} from '@struktoai/mirage-core/vfs/gdocs/config'
+import { GDocsAccessor } from '../../accessor/gdocs.ts'
+import { GDOCS_COMMANDS } from '../../commands/builtin/gdocs/index.ts'
+import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+import type { RegisteredCommand } from '../../commands/config.ts'
+import { read as gdocsRead } from '../../core/gdocs/read.ts'
+import { readdir as gdocsReaddir } from '../../core/gdocs/readdir.ts'
+import { stat as gdocsStat } from '../../core/gdocs/stat.ts'
+import { TokenManager } from '../../core/google/client.ts'
+import { GDOCS_OPS } from '../../ops/gdocs/index.ts'
+import type { RegisteredOp } from '../../ops/registry.ts'
+import { BaseVFS } from '../base.ts'
+import type { VFS } from '../base.ts'
+import { GDOCS_PROMPT, GDOCS_WRITE_PROMPT } from './prompt.ts'
+import { PathSpec, VFSName } from '../../types.ts'
+import type { FileStat } from '../../types.ts'
+import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
+import { redactGDocsConfig, type GDocsConfig, type GDocsConfigRedacted } from './config.ts'
 
 const gdocsResolveGlob = makeResolveGlob(gdocsReaddir)
 

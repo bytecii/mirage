@@ -1034,6 +1034,9 @@
         "endpoint": {
           "required": false
         },
+        "enterpriseId": {
+          "required": false
+        },
         "onRefreshTokenRotated": {
           "required": false
         },

@@ -18,8 +18,8 @@ import {
   secretSchema,
   secretStr,
   z,
-} from '@struktoai/mirage-core/vfs/secrets'
-import type { ConfigOf, RedactedConfig } from '@struktoai/mirage-core/vfs/secrets'
+} from '../secrets.ts'
+import type { ConfigOf, RedactedConfig } from '../secrets.ts'
 
 export interface DropboxConfig {
   clientId: string

@@ -12,11 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { TRELLO_OPS } from '@struktoai/mirage-core/ops/trello/index'
-import { PathSpec, VFSName } from '@struktoai/mirage-core/types'
-import { mountKey } from '@struktoai/mirage-core/utils/key_prefix'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { buildVfs } from '../registry.ts'
+import { TRELLO_OPS } from '../../ops/trello/index.ts'
+import { PathSpec, VFSName } from '../../types.ts'
+import { mountKey } from '../../utils/key_prefix.ts'
 import { redactTrelloConfig } from './config.ts'
 import { TrelloVFS } from './trello.ts'
 
@@ -26,7 +25,7 @@ function jsonResponse(body: unknown): Response {
   })
 }
 
-describe('TrelloVFS (browser)', () => {
+describe('TrelloVFS', () => {
   const originalFetch = globalThis.fetch
 
   beforeEach(() => {
@@ -148,7 +147,7 @@ describe('TrelloVFS (browser)', () => {
   })
 })
 
-describe('redactTrelloConfig (browser)', () => {
+describe('redactTrelloConfig', () => {
   it('redacts apiKey/apiToken, keeps workspace metadata', () => {
     expect(redactTrelloConfig({ apiKey: 'k', apiToken: 't' })).toEqual({
       apiKey: '<REDACTED>',
@@ -169,26 +168,5 @@ describe('redactTrelloConfig (browser)', () => {
       boardIds: ['b1'],
       baseUrl: 'https://x',
     })
-  })
-})
-
-describe('browser registry: trello', () => {
-  it('builds trello VFS with apiKey/apiToken', async () => {
-    const r = await buildVfs('trello', { apiKey: 'k', apiToken: 't' })
-    expect(r.kind).toBe(VFSName.TRELLO)
-    expect(r).toBeInstanceOf(TrelloVFS)
-  })
-
-  it('accepts snake_case config (api_key, api_token, workspace_id, board_ids)', async () => {
-    const r = (await buildVfs('trello', {
-      api_key: 'k',
-      api_token: 't',
-      workspace_id: 'w1',
-      board_ids: ['b1', 'b2'],
-    })) as TrelloVFS
-    expect(r.config.apiKey).toBe('k')
-    expect(r.config.apiToken).toBe('t')
-    expect(r.config.workspaceId).toBe('w1')
-    expect(r.config.boardIds).toEqual(['b1', 'b2'])
   })
 })

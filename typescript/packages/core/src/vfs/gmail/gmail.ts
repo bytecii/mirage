@@ -12,27 +12,23 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { GmailAccessor } from '@struktoai/mirage-core/accessor/gmail'
-import { makeResolveGlob } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
-import { GMAIL_COMMANDS } from '@struktoai/mirage-core/commands/builtin/gmail/index'
-import type { RegisteredCommand } from '@struktoai/mirage-core/commands/config'
-import { read as gmailRead } from '@struktoai/mirage-core/core/gmail/read'
-import { readdir as gmailReaddir } from '@struktoai/mirage-core/core/gmail/readdir'
-import { stat as gmailStat } from '@struktoai/mirage-core/core/gmail/stat'
-import { TokenManager } from '@struktoai/mirage-core/core/google/client'
-import { GMAIL_OPS } from '@struktoai/mirage-core/ops/gmail/index'
-import type { RegisteredOp } from '@struktoai/mirage-core/ops/registry'
-import { BaseVFS } from '@struktoai/mirage-core/vfs/base'
-import type { VFS } from '@struktoai/mirage-core/vfs/base'
-import { GMAIL_PROMPT, GMAIL_WRITE_PROMPT } from '@struktoai/mirage-core/vfs/gmail/prompt'
-import { PathSpec, VFSName } from '@struktoai/mirage-core/types'
-import type { FileStat } from '@struktoai/mirage-core/types'
-import { mountKey, mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
-import {
-  redactGmailConfig,
-  type GmailConfig,
-  type GmailConfigRedacted,
-} from '@struktoai/mirage-core/vfs/gmail/config'
+import { GmailAccessor } from '../../accessor/gmail.ts'
+import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+import { GMAIL_COMMANDS } from '../../commands/builtin/gmail/index.ts'
+import type { RegisteredCommand } from '../../commands/config.ts'
+import { read as gmailRead } from '../../core/gmail/read.ts'
+import { readdir as gmailReaddir } from '../../core/gmail/readdir.ts'
+import { stat as gmailStat } from '../../core/gmail/stat.ts'
+import { TokenManager } from '../../core/google/client.ts'
+import { GMAIL_OPS } from '../../ops/gmail/index.ts'
+import type { RegisteredOp } from '../../ops/registry.ts'
+import { BaseVFS } from '../base.ts'
+import type { VFS } from '../base.ts'
+import { GMAIL_PROMPT, GMAIL_WRITE_PROMPT } from './prompt.ts'
+import { PathSpec, VFSName } from '../../types.ts'
+import type { FileStat } from '../../types.ts'
+import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
+import { redactGmailConfig, type GmailConfig, type GmailConfigRedacted } from './config.ts'
 
 const gmailResolveGlob = makeResolveGlob(gmailReaddir)
 

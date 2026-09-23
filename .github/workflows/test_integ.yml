@@ -115,7 +115,7 @@ jobs:
               - 'typescript/packages/core/src/core/jaeger/**'
               - 'typescript/packages/core/src/accessor/langfuse.ts'
               - 'typescript/packages/core/src/accessor/jaeger.ts'
-              - 'typescript/packages/node/src/vfs/langfuse/**'
+              - 'typescript/packages/core/src/vfs/langfuse/**'
               - 'typescript/packages/node/src/vfs/jaeger/**'
               - '.github/workflows/test_integ.yml'
               - '.github/actions/setup-node-pnpm/action.yml'

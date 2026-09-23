@@ -209,8 +209,8 @@ const REGISTRY: Record<string, VFSFactory> = {
     return new DiscordVFS(normalizeDiscordConfig(config))
   },
   trello: async (config) => {
-    const { TrelloVFS } = await import('./trello/trello.ts')
-    const { normalizeTrelloConfig } = await import('./trello/config.ts')
+    const { TrelloVFS } = await import('@struktoai/mirage-core/vfs/trello/trello')
+    const { normalizeTrelloConfig } = await import('@struktoai/mirage-core/vfs/trello/config')
     return new TrelloVFS(normalizeTrelloConfig(config))
   },
   wandb: async (config) => {
@@ -219,7 +219,7 @@ const REGISTRY: Record<string, VFSFactory> = {
     return new WandbVFS(normalizeWandbConfig(config))
   },
   linear: async (config) => {
-    const { LinearVFS } = await import('./linear/linear.ts')
+    const { LinearVFS } = await import('@struktoai/mirage-core/vfs/linear/linear')
     const { normalizeLinearConfig } = await import('@struktoai/mirage-core/core/linear/config')
     return new LinearVFS(normalizeLinearConfig(config))
   },
@@ -229,8 +229,8 @@ const REGISTRY: Record<string, VFSFactory> = {
     return new NotionVFS(normalizeNotionConfig(config))
   },
   langfuse: async (config) => {
-    const { LangfuseVFS } = await import('./langfuse/langfuse.ts')
-    const { normalizeLangfuseConfig } = await import('./langfuse/config.ts')
+    const { LangfuseVFS } = await import('@struktoai/mirage-core/vfs/langfuse/langfuse')
+    const { normalizeLangfuseConfig } = await import('@struktoai/mirage-core/vfs/langfuse/config')
     return new LangfuseVFS(normalizeLangfuseConfig(config))
   },
   jaeger: async (config) => {
@@ -244,27 +244,27 @@ const REGISTRY: Record<string, VFSFactory> = {
     return GitHubVFS.create(normalizeGitHubConfig(config))
   },
   gcal: async (config) => {
-    const { GCalVFS } = await import('./gcal/gcal.ts')
+    const { GCalVFS } = await import('@struktoai/mirage-core/vfs/gcal/gcal')
     const { normalizeGCalConfig } = await import('@struktoai/mirage-core/vfs/gcal/config')
     return new GCalVFS(normalizeGCalConfig(config))
   },
   gdocs: async (config) => {
-    const { GDocsVFS } = await import('./gdocs/gdocs.ts')
+    const { GDocsVFS } = await import('@struktoai/mirage-core/vfs/gdocs/gdocs')
     const { normalizeGDocsConfig } = await import('@struktoai/mirage-core/vfs/gdocs/config')
     return new GDocsVFS(normalizeGDocsConfig(config))
   },
   gsheets: async (config) => {
-    const { GSheetsVFS } = await import('./gsheets/gsheets.ts')
+    const { GSheetsVFS } = await import('@struktoai/mirage-core/vfs/gsheets/gsheets')
     const { normalizeGSheetsConfig } = await import('@struktoai/mirage-core/vfs/gsheets/config')
     return new GSheetsVFS(normalizeGSheetsConfig(config))
   },
   gslides: async (config) => {
-    const { GSlidesVFS } = await import('./gslides/gslides.ts')
+    const { GSlidesVFS } = await import('@struktoai/mirage-core/vfs/gslides/gslides')
     const { normalizeGSlidesConfig } = await import('@struktoai/mirage-core/vfs/gslides/config')
     return new GSlidesVFS(normalizeGSlidesConfig(config))
   },
   gdrive: async (config) => {
-    const { GDriveVFS } = await import('./gdrive/gdrive.ts')
+    const { GDriveVFS } = await import('@struktoai/mirage-core/vfs/gdrive/gdrive')
     const { normalizeGDriveConfig } = await import('@struktoai/mirage-core/vfs/gdrive/config')
     return new GDriveVFS(normalizeGDriveConfig(config))
   },
@@ -284,17 +284,17 @@ const REGISTRY: Record<string, VFSFactory> = {
     return new Mem0VFS(normalizeMem0Config(config))
   },
   dropbox: async (config) => {
-    const { DropboxVFS } = await import('./dropbox/dropbox.ts')
+    const { DropboxVFS } = await import('@struktoai/mirage-core/vfs/dropbox/dropbox')
     const { normalizeDropboxConfig } = await import('./dropbox/config.ts')
     return new DropboxVFS(normalizeDropboxConfig(config))
   },
   box: async (config) => {
-    const { BoxVFS } = await import('./box/box.ts')
-    const { normalizeBoxConfig } = await import('./box/config.ts')
+    const { BoxVFS } = await import('@struktoai/mirage-core/vfs/box/box')
+    const { normalizeBoxConfig } = await import('@struktoai/mirage-core/vfs/box/config')
     return new BoxVFS(normalizeBoxConfig(config))
   },
   gmail: async (config) => {
-    const { GmailVFS } = await import('./gmail/gmail.ts')
+    const { GmailVFS } = await import('@struktoai/mirage-core/vfs/gmail/gmail')
     const { normalizeGmailConfig } = await import('@struktoai/mirage-core/vfs/gmail/config')
     return new GmailVFS(normalizeGmailConfig(config))
   },
