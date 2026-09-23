@@ -182,7 +182,7 @@ async def grep(
         read_stream if read_stream is not None else read_bytes, stdin)
     fl = FlagView(opts.flags, spec=SPECS["grep"])
     pattern, never_match = await resolve_pattern(texts, fl, read_bytes,
-                                                 GREP_NO_PATTERN)
+                                                 GREP_NO_PATTERN, "file")
     f = parse_flags(fl, never_match)
     pat = compile_pattern(pattern, f.ignore_case, f.fixed_string, f.whole_word,
                           f.basic_regexp)

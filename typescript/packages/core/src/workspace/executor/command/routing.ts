@@ -79,7 +79,19 @@ export function defaultCwdOperand(
 export function pathFlagScopes(cmdName: string, argv: string[], cwd: string): PathSpec[] {
   const spec = SPECS[cmdName]
   if (spec === undefined) return []
-  return parseCommand(spec, argv, cwd, cmdName).pathFlagValues.map(
+  const parsed = parseCommand(spec, argv, cwd, cmdName)
+  const key = (
+    { grep: '--file', sed: '-f', awk: '-f', jq: '--from-file' } as Record<string, string>
+  )[cmdName]
+  const program = key === undefined ? undefined : parsed.flags[key]
+  const programPaths = Array.isArray(program) ? program : [program]
+  const flagPaths = [...parsed.pathFlagValues]
+  for (const value of programPaths) {
+    if (typeof value !== 'string') continue
+    const index = flagPaths.indexOf(value)
+    if (index >= 0) flagPaths.splice(index, 1)
+  }
+  return flagPaths.map(
     (value) =>
       new PathSpec({
         virtual: value,

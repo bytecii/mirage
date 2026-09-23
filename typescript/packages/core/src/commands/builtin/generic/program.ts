@@ -1,0 +1,71 @@
+import { mergePatternList } from '../grep_pattern.ts'
+import { resolveSource } from '../utils/stream.ts'
+import { specOf } from '../../spec/index.ts'
+import { FlagView } from '../../spec/flag_view.ts'
+import type { FlagValue } from '../../spec/types.ts'
+import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
+import type { DispatchFn } from '../../../runtime/types.ts'
+import { PathSpec } from '../../../types.ts'
+import { fsErrorLine, isFsError } from '../../../utils/errors.ts'
+
+export const PROGRAM_FILE_COMMANDS = new Set(['grep', 'sed', 'awk', 'jq'])
+
+/** Read program files once before input routing or traversal fan-out.
+ * Lower to the inline form so every native sub-run sees the same program,
+ * including when reading it consumed stdin. Pinned against debian:stable-slim.
+ */
+export async function prepareProgram(
+  name: string,
+  texts: string[],
+  bag: Record<string, FlagValue>,
+  stdin: ByteSource | null,
+  dispatch: DispatchFn,
+): Promise<[string[], Record<string, FlagValue>, ByteSource | null, IOResult | null]> {
+  const fl = new FlagView(bag, specOf(name))
+  const key = name === 'jq' ? 'from_file' : name === 'grep' ? 'file' : 'f'
+  const files = fl.asList(key)
+  if (files.length === 0) return [texts, bag, stdin, null]
+  const source = resolveSource(stdin)
+  let consumed = false
+  const pieces: Uint8Array[] = []
+  for (const file of files) {
+    const path = PathSpec.fromStrPath(file)
+    try {
+      if (name !== 'jq' && (file === '-' || file === '/dev/stdin')) {
+        pieces.push(await materialize(source))
+        consumed = true
+      } else {
+        const [data] = await dispatch('read', path)
+        pieces.push(await materialize(data as ByteSource))
+      }
+    } catch (err) {
+      if (!isFsError(err)) throw err
+      let line = fsErrorLine(name, path, err)
+      if (name === 'sed') line = line.replace('sed: ', "sed: couldn't open file ")
+      return [
+        texts,
+        bag,
+        stdin,
+        new IOResult({
+          exitCode: name === 'sed' ? 4 : 2,
+          stderr: new TextEncoder().encode(line),
+        }),
+      ]
+    }
+  }
+  const out = Object.fromEntries(Object.entries(bag).filter(([name]) => name !== key))
+  const dec = new TextDecoder()
+  if (name === 'grep') {
+    const expressions = fl.asList('e')
+    let pattern = expressions.length > 0 ? expressions.join('\n') : null
+    for (const data of pieces) pattern = mergePatternList(pattern, data)
+    // An empty pattern-file list preserves grep's zero-pattern sentinel.
+    out.file = []
+    out.e = pattern === null ? [] : [pattern]
+  } else if (name === 'sed') {
+    out.e = [...fl.asList('e'), ...pieces.map((data) => dec.decode(data).replace(/\n$/, ''))]
+  } else {
+    texts = [pieces.map((data) => dec.decode(data)).join('\n'), ...texts]
+  }
+  return [texts, out, consumed ? source : stdin, null]
+}
