@@ -16,10 +16,6 @@ export const ARITH_OPEN_TOKEN = '(('
 
 export const QUOTES: ReadonlySet<string> = new Set(["'", '"'])
 
-export const NAME_CONT = /[A-Za-z0-9_]/
-
-export const DIGIT = /[0-9]/
-
 export const BASH_KEYWORDS: ReadonlySet<string> = new Set([
   'if',
   'then',

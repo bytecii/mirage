@@ -16,11 +16,6 @@ ARITH_OPEN_TOKEN = "(("
 
 QUOTES = (b"'", b'"')
 
-NAME_CONT = frozenset(
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_")
-
-DIGITS = frozenset(b"0123456789")
-
 BASH_KEYWORDS = frozenset({
     "if",
     "then",
