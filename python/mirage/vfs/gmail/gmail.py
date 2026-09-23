@@ -15,8 +15,10 @@
 from typing import Any
 
 from mirage.accessor.gmail import GmailAccessor
+from mirage.commands.builtin.gmail import COMMANDS
 from mirage.core.gmail.readdir import readdir
 from mirage.core.google.client import TokenManager
+from mirage.ops.gmail import OPS as GMAIL_VFS_OPS
 from mirage.types import PathSpec, VFSName
 from mirage.utils.glob_walk import make_resolve_glob
 from mirage.vfs.base import BaseVFS
@@ -47,9 +49,6 @@ class GmailVFS(BaseVFS):
         self.config = config
         self._token_manager = TokenManager(config)
         self.accessor = GmailAccessor(self.config, self._token_manager)
-        from mirage.commands.builtin.gmail import COMMANDS
-        from mirage.ops.gmail import OPS as GMAIL_VFS_OPS
-
         for fn in COMMANDS:
             self.register(fn)
         for fn in GMAIL_VFS_OPS:

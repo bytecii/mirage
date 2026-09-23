@@ -15,7 +15,9 @@
 from typing import Any
 
 from mirage.accessor.lancedb import LanceDBAccessor
+from mirage.commands.builtin.lancedb import COMMANDS
 from mirage.core.lancedb.readdir import readdir
+from mirage.ops.lancedb import OPS as LANCEDB_OPS
 from mirage.types import PathSpec, VFSName
 from mirage.utils.glob_walk import make_resolve_glob
 from mirage.vfs.base import BaseVFS
@@ -44,9 +46,6 @@ class LanceDBVFS(BaseVFS):
         self.config = config
         self.caches_reads = config.uri.startswith(_REMOTE_SCHEMES)
         self.accessor = LanceDBAccessor(self.config)
-        from mirage.commands.builtin.lancedb import COMMANDS
-        from mirage.ops.lancedb import OPS as LANCEDB_OPS
-
         for fn in COMMANDS:
             self.register(fn)
         for fn in LANCEDB_OPS:

@@ -15,6 +15,7 @@
 from typing import Any
 
 from mirage.accessor.dropbox import DropboxAccessor
+from mirage.commands.builtin.dropbox import COMMANDS
 from mirage.core.dropbox.client import DropboxTokenManager
 from mirage.core.dropbox.copy import copy
 from mirage.core.dropbox.mkdir import mkdir
@@ -26,6 +27,7 @@ from mirage.core.dropbox.stat import stat
 from mirage.core.dropbox.unlink import unlink
 from mirage.core.dropbox.watch import build_delta_hook
 from mirage.core.dropbox.write import write_bytes
+from mirage.ops.dropbox import OPS as DROPBOX_VFS_OPS
 from mirage.types import PathSpec, VFSName
 from mirage.utils.glob_walk import make_resolve_glob
 from mirage.vfs.base import BaseVFS
@@ -66,9 +68,6 @@ class DropboxVFS(BaseVFS):
         self.config = config
         self._token_manager = DropboxTokenManager(config)
         self.accessor = DropboxAccessor(config, self._token_manager)
-        from mirage.commands.builtin.dropbox import COMMANDS
-        from mirage.ops.dropbox import OPS as DROPBOX_VFS_OPS
-
         for fn in COMMANDS:
             self.register(fn)
         for op in DROPBOX_VFS_OPS:

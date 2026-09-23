@@ -15,7 +15,9 @@
 from typing import Any
 
 from mirage.accessor.qdrant import QdrantAccessor
+from mirage.commands.builtin.qdrant import COMMANDS
 from mirage.core.qdrant.readdir import readdir
+from mirage.ops.qdrant import OPS as QDRANT_OPS
 from mirage.types import PathSpec, VFSName
 from mirage.utils.glob_walk import make_resolve_glob
 from mirage.vfs.base import BaseVFS
@@ -39,9 +41,6 @@ class QdrantVFS(BaseVFS):
         super().__init__()
         self.config = config
         self.accessor = QdrantAccessor(self.config)
-        from mirage.commands.builtin.qdrant import COMMANDS
-        from mirage.ops.qdrant import OPS as QDRANT_OPS
-
         for fn in COMMANDS:
             self.register(fn)
         for fn in QDRANT_OPS:

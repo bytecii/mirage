@@ -15,7 +15,9 @@
 from typing import Any
 
 from mirage.accessor.langfuse import LangfuseAccessor
+from mirage.commands.builtin.langfuse import COMMANDS
 from mirage.core.langfuse.readdir import readdir
+from mirage.ops.langfuse import OPS as LANGFUSE_VFS_OPS
 from mirage.types import PathSpec, VFSName
 from mirage.utils.glob_walk import make_resolve_glob
 from mirage.vfs.base import BaseVFS
@@ -36,9 +38,6 @@ class LangfuseVFS(BaseVFS):
         super().__init__()
         self.config = config
         self.accessor = LangfuseAccessor(self.config)
-        from mirage.commands.builtin.langfuse import COMMANDS
-        from mirage.ops.langfuse import OPS as LANGFUSE_VFS_OPS
-
         for fn in COMMANDS:
             self.register(fn)
         for fn in LANGFUSE_VFS_OPS:

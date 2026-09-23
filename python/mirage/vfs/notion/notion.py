@@ -15,10 +15,12 @@
 from typing import Any
 
 from mirage.accessor.notion import NotionAccessor
+from mirage.commands.builtin.notion import COMMANDS
 from mirage.core.notion.config import NotionConfig
 from mirage.core.notion.read import read
 from mirage.core.notion.readdir import readdir
 from mirage.core.notion.stat import stat
+from mirage.ops.notion import OPS as NOTION_VFS_OPS
 from mirage.types import PathSpec, VFSName
 from mirage.utils.glob_walk import make_resolve_glob
 from mirage.vfs.base import BaseVFS
@@ -46,9 +48,6 @@ class NotionVFS(BaseVFS):
         super().__init__()
         self.config = config
         self.accessor = NotionAccessor(config)
-        from mirage.commands.builtin.notion import COMMANDS
-        from mirage.ops.notion import OPS as NOTION_VFS_OPS
-
         for fn in COMMANDS:
             self.register(fn)
         for op in NOTION_VFS_OPS:

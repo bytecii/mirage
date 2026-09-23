@@ -15,8 +15,10 @@
 from typing import Any
 
 from mirage.accessor.discord import DiscordAccessor
+from mirage.commands.builtin.discord import COMMANDS
 from mirage.core.discord.config import DiscordConfig
 from mirage.core.discord.readdir import readdir
+from mirage.ops.discord import OPS as DISCORD_VFS_OPS
 from mirage.types import PathSpec, VFSName
 from mirage.utils.glob_walk import make_resolve_glob
 from mirage.vfs.base import BaseVFS
@@ -41,9 +43,6 @@ class DiscordVFS(BaseVFS):
         super().__init__()
         self.config = config
         self.accessor = DiscordAccessor(self.config)
-        from mirage.commands.builtin.discord import COMMANDS
-        from mirage.ops.discord import OPS as DISCORD_VFS_OPS
-
         for fn in COMMANDS:
             self.register(fn)
         for fn in DISCORD_VFS_OPS:
