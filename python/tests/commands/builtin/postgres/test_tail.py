@@ -74,3 +74,46 @@ async def test_the_row_fast_path_refuses_a_table_outside_schemas(
     assert io.exit_code == 1
     assert b"No such file or directory" in await materialize(io.stderr)
     count.assert_not_awaited()
+
+
+@pytest.fixture
+def table(monkeypatch, catalog):
+    rows = [{"id": i} for i in range(1500)]
+
+    async def fetch_rows(conn, schema, entity, *, limit, offset):
+        return rows[offset:offset + limit]
+
+    monkeypatch.setattr("mirage.core.postgres.client.count_rows",
+                        AsyncMock(return_value=len(rows)))
+    monkeypatch.setattr("mirage.core.postgres.client.fetch_rows",
+                        AsyncMock(side_effect=fetch_rows))
+    return rows
+
+
+async def _tail(accessor: PostgresAccessor,
+                n: int) -> tuple[list[bytes], int, bytes]:
+    out, io = await tail(
+        accessor, [_path("/public/tables/users/rows.jsonl")], [],
+        CommandOpts(index=RAMIndexCacheStore(), flags={"n": str(n)}))
+    data = await materialize(out)
+    return data.splitlines(), io.exit_code, await materialize(io.stderr)
+
+
+@pytest.mark.asyncio
+async def test_tail_prints_every_row_asked_for_past_the_default(table):
+    """``default_row_limit`` clamped the suffix, so ``tail -n 1200`` of a
+    1500-row table printed the last 1000 rows with exit 0."""
+    lines, code, err = await _tail(_accessor(), 1200)
+    assert len(lines) == 1200
+    assert lines[-1] == b'{"id":1499}'
+    assert (code, err) == (0, b"")
+
+
+@pytest.mark.asyncio
+async def test_tail_past_the_read_ceiling_stops_and_says_so(table):
+    lines, code, err = await _tail(_accessor(max_read_rows=100), 1200)
+    assert len(lines) == 100
+    assert lines[-1] == b'{"id":1499}'
+    assert code == 1
+    assert err == (b"tail: /public/tables/users/rows.jsonl: stopped at 100 "
+                   b"rows (max_read_rows); the output is incomplete\n")

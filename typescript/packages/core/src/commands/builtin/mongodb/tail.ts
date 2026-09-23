@@ -14,7 +14,7 @@
 
 import type { MongoDBAccessor } from '../../../accessor/mongodb.ts'
 import type { IndexCacheStore } from '../../../cache/index/store.ts'
-import { findDocuments } from '../../../core/mongodb/client.ts'
+import { countDocuments, findDocuments } from '../../../core/mongodb/client.ts'
 import { resolveGlobOf } from '../generic_bind/index.ts'
 import { MONGODB_IO } from './io.ts'
 import { streamAny } from '../../../core/mongodb/read.ts'
@@ -33,6 +33,7 @@ import { specOf } from '../../spec/builtins.ts'
 import { followFlags, tailGeneric } from '../generic/tail.ts'
 import { parseN } from '../tail_counts.ts'
 import { FlagView } from '../../spec/flag_view.ts'
+import { noteAfter, rowCapNotice } from '../utils/limit.ts'
 
 const resolveGlob = resolveGlobOf(MONGODB_IO)
 
@@ -42,16 +43,27 @@ const ENC = new TextEncoder()
 // instead of streaming the whole collection; tailGeneric then trims the
 // already-small chunk. Falls back to a full stream for byte mode, +N mode,
 // and non-collection paths.
+// `maxDocLimit` is the most documents one read may return; a count past it
+// that the collection could fill prints the last `maxDocLimit` and says so,
+// where the ceiling used to stand in for the count in silence.
 async function* tailSource(
   accessor: MongoDBAccessor,
   p: PathSpec,
   index: IndexCacheStore | undefined,
   lines: number,
   pushdown: boolean,
+  notices: Uint8Array[],
 ): AsyncIterable<Uint8Array> {
   const scope = detectScope(p)
   if (pushdown && scope.kind === 'documents') {
-    const limit = Math.min(lines, accessor.config.maxDocLimit)
+    const cap = accessor.config.maxDocLimit
+    const limit = Math.min(lines, cap)
+    if (
+      lines > cap &&
+      (await countDocuments(accessor, scope.slots.database ?? '', scope.slots.name ?? '')) > cap
+    ) {
+      notices.push(rowCapNotice('tail', p.rawPath, cap, 'documents', 'max_doc_limit'))
+    }
     const docs = await findDocuments(
       accessor,
       scope.slots.database ?? '',
@@ -101,13 +113,18 @@ async function tailCommand(
   const nRaw = fl.asStr('n') ?? null
   const [lines, plusMode] = parseN(nRaw)
   const pushdown = fl.asStr('c') === undefined && !plusMode && lines > 0 && !follow
-  return tailGeneric(
+  const notices: Uint8Array[] = []
+  const result = await tailGeneric(
     resolved,
     texts,
     opts,
-    (p) => tailSource(accessor, p, opts.index ?? undefined, lines, pushdown),
+    (p) => tailSource(accessor, p, opts.index ?? undefined, lines, pushdown, notices),
     (p) => MONGODB_IO.stat(accessor, p, opts.index ?? undefined),
   )
+  if (result === null) return result
+  const [out, io] = result
+  if (out === null) return result
+  return [noteAfter(out, io, notices), io]
 }
 
 export const MONGODB_TAIL = command({

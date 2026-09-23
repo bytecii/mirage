@@ -25,8 +25,8 @@ vfs = PostgresVFS(PostgresConfig(
 | --- | --- | --- |
 | `dsn` | required | Postgres connection string. Redacted in snapshots. |
 | `schemas` | `None` | Optional list to limit which schemas appear in the tree. |
-| `default_row_limit` | `1000` | Default LIMIT applied to ad-hoc reads. |
-| `max_read_rows` | `10_000` | Hard ceiling per read. |
+| `default_row_limit` | `1000` | Rows a windowed read returns when it passes an offset but no limit. |
+| `max_read_rows` | `10_000` | Hard ceiling per read. A whole read past it is refused; `head -n` / `tail -n` past it print that many rows, then a notice on stderr, and exit 1. |
 | `max_read_bytes` | `10 MiB` | Hard ceiling per read. |
 | `default_search_limit` | `100` | Default LIMIT for search-style queries. |
 

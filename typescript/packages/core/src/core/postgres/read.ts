@@ -24,6 +24,7 @@ import { buildDatabaseJson, buildEntitySchemaJson } from './_schema_json.ts'
 import { buildEntitySemanticJson } from './semantic.ts'
 import { detectScope } from './scope.ts'
 import { stat } from './stat.ts'
+import type { PostgresConfigResolved } from '../../vfs/postgres/config.ts'
 
 export interface ReadOptions {
   limit?: number | null
@@ -108,18 +109,25 @@ async function readRows(
   let effectiveLimit: number
   let effectiveOffset: number
 
-  if (limit === null && offset === null) {
+  const whole = limit === null && offset === null
+  if (whole) {
     const [rows, width] = await estimateSize(accessor, schema, entity)
     const widthEffective = Math.max(width, 1)
     if (rows > cfg.maxReadRows || rows * widthEffective > cfg.maxReadBytes) {
-      throw new Error(
-        `${schema}/${kind}/${entity}/rows.jsonl too large to read entirely: ` +
-          `~${String(rows)} rows / ~${String(rows * widthEffective)} bytes ` +
-          `(thresholds: ${String(cfg.maxReadRows)} rows / ${String(cfg.maxReadBytes)} bytes); ` +
-          `use head, tail, wc, grep, or pass limit/offset`,
+      throw tooLarge(
+        cfg,
+        schema,
+        kind,
+        entity,
+        `~${String(rows)} rows / ~${String(rows * widthEffective)} bytes`,
       )
     }
-    effectiveLimit = rows !== 0 ? rows : cfg.defaultRowLimit
+    // The estimate only refuses; it never limits. It is planner statistics,
+    // which lag the table (a bulk load before the next ANALYZE), so taking it
+    // as the LIMIT returned fewer rows than exist, with nothing to say so. One
+    // row past the ceiling keeps the read bounded and refuses a table the
+    // estimate undercounted on the rows it really has.
+    effectiveLimit = cfg.maxReadRows + 1
     effectiveOffset = 0
   } else {
     effectiveLimit = limit ?? cfg.defaultRowLimit
@@ -130,9 +138,34 @@ async function readRows(
     limit: effectiveLimit,
     offset: effectiveOffset,
   })
+  if (whole && data.length > cfg.maxReadRows) {
+    throw tooLarge(cfg, schema, kind, entity, `more than ${String(cfg.maxReadRows)} rows`)
+  }
   if (data.length === 0) return new Uint8Array()
-  const lines = data.map((r) => JSON.stringify(r, jsonReplacer))
-  return new TextEncoder().encode(lines.join('\n') + '\n')
+  const body = new TextEncoder().encode(data.map(rowLine).join('\n') + '\n')
+  if (whole && body.byteLength > cfg.maxReadBytes) {
+    throw tooLarge(cfg, schema, kind, entity, `${String(body.byteLength)} bytes`)
+  }
+  return body
+}
+
+function tooLarge(
+  cfg: PostgresConfigResolved,
+  schema: string,
+  kind: string,
+  entity: string,
+  size: string,
+): Error {
+  return new Error(
+    `${schema}/${kind}/${entity}/rows.jsonl too large to read entirely: ${size} ` +
+      `(thresholds: ${String(cfg.maxReadRows)} rows / ${String(cfg.maxReadBytes)} bytes); ` +
+      `use head, tail, wc, grep, or pass limit/offset`,
+  )
+}
+
+/** One row as rows.jsonl spells it. Mirrors `row_line` in `core/postgres/read.py`. */
+function rowLine(row: Record<string, unknown>): string {
+  return JSON.stringify(row, jsonReplacer)
 }
 
 function jsonReplacer(_key: string, value: unknown): unknown {

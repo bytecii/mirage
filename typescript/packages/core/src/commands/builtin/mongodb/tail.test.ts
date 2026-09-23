@@ -39,6 +39,7 @@ import * as statModule from '../../../core/mongodb/stat.ts'
 import * as streamModule from '../../../core/mongodb/stream.ts'
 import { resolveMongoDBConfig } from '../../../vfs/mongodb/config.ts'
 import { FileStat, FileType, PathSpec } from '../../../types.ts'
+import { materialize } from '../../../io/types.ts'
 import type { FlagValue } from '../../spec/types.ts'
 import { MONGODB_TAIL } from './tail.ts'
 
@@ -134,6 +135,40 @@ describe('mongodb tail pushdown', () => {
     })
     await run([secret], { follow: true }, undefined, makeAccessor(['app']))
     expect(streamModule.watchStream).not.toHaveBeenCalled()
+  })
+
+  // `maxDocLimit` stood in for the count in silence: `tail -n 6000` of a larger
+  // collection printed 5000 lines and exited 0.
+  it('stops at maxDocLimit and says so', async () => {
+    vi.mocked(clientModule.findDocuments).mockResolvedValue([{ _id: 2 }, { _id: 1 }])
+    const accessor = new MongoDBAccessor(
+      stubMongoDriver({
+        listDatabases: () => Promise.resolve(['app']),
+        listCollections: () => Promise.resolve(['users']),
+        countDocuments: () => Promise.resolve(10),
+      }),
+      resolveMongoDBConfig({ uri: 'mongodb://h', maxDocLimit: 2 }),
+    )
+    const cmd = MONGODB_TAIL[0]
+    if (cmd === undefined) throw new Error('tail not registered')
+    const result = await cmd.fn(accessor, [docs('users')], [], {
+      stdin: null,
+      flags: { n: '5' },
+      filetypeFns: null,
+      cwd: '/',
+    })
+    if (result === null) throw new Error('tail returned nothing')
+    const [out, io] = result
+    expect(
+      DEC.decode(await materialize(out))
+        .trim()
+        .split('\n'),
+    ).toHaveLength(2)
+    expect(io.exitCode).toBe(1)
+    expect(DEC.decode(await materialize(io.stderr))).toBe(
+      'tail: /mongo/app/collections/users/documents.jsonl: stopped at 2 documents ' +
+        '(max_doc_limit); the output is incomplete\n',
+    )
   })
 
   it('reads every collection whole when a follow polls more than one', async () => {

@@ -265,3 +265,44 @@ async def test_a_table_under_a_schema_outside_schemas_is_enoent_to_read():
                      virtual="/public/tables/users/rows.jsonl",
                      directory="/public/tables/users"))
     assert json.loads(out) == {"id": 1}
+
+
+def _table(n: int):
+    rows = [{"id": i} for i in range(n)]
+
+    async def fetch_rows(conn, schema, entity, *, limit, offset):
+        return rows[offset:offset + limit]
+
+    return fetch_rows
+
+
+@pytest.mark.asyncio
+async def test_a_whole_read_is_not_truncated_by_a_stale_estimate():
+    """The estimate is planner statistics and lags the table; it used to
+    be the LIMIT, so a table loaded since the last ANALYZE read back as
+    only the rows the statistics knew about."""
+    accessor = _accessor(max_read_rows=100)
+    with patch("mirage.core.postgres.read.client") as mc:
+        mc.estimate_size = AsyncMock(return_value=(2, 10))
+        mc.fetch_rows = AsyncMock(side_effect=_table(40))
+        out = await read(
+            accessor,
+            PathSpec(vfs_path="public/tables/users/rows.jsonl",
+                     virtual="/public/tables/users/rows.jsonl",
+                     directory="/public/tables/users"))
+    assert len(out.decode().splitlines()) == 40
+
+
+@pytest.mark.asyncio
+async def test_a_table_the_estimate_undercounted_is_refused_on_its_rows():
+    accessor = _accessor(max_read_rows=10)
+    with patch("mirage.core.postgres.read.client") as mc:
+        mc.estimate_size = AsyncMock(return_value=(2, 10))
+        mc.fetch_rows = AsyncMock(side_effect=_table(40))
+        with pytest.raises(ValueError, match="more than 10 rows"):
+            await read(
+                accessor,
+                PathSpec(vfs_path="public/tables/users/rows.jsonl",
+                         virtual="/public/tables/users/rows.jsonl",
+                         directory="/public/tables/users"))
+    assert mc.fetch_rows.await_args.kwargs["limit"] == 11

@@ -20,6 +20,7 @@ from mirage.commands.builtin.generic_bind.adapter import (bound_op,
                                                           resolve_or_empty)
 from mirage.commands.builtin.mongodb.cat import stream_any
 from mirage.commands.builtin.mongodb.io import IO
+from mirage.commands.builtin.utils.limit import row_cap_notice
 from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
@@ -54,8 +55,15 @@ async def tail(accessor: MongoDBAccessor, paths: list[PathSpec],
     n_eff = counts.lines if counts.lines is not None else 10
     if (fast and counts.byte_count is None and counts.from_byte is None
             and counts.from_line is None and n_eff > 0):
-        data = await read_tail(accessor, resolved[0], n_eff, opts.index)
-        return generic_tail(data, n=n_eff, c=None, from_line=None), IOResult()
+        data, stopped = await read_tail(accessor, resolved[0], n_eff,
+                                        opts.index)
+        io = IOResult()
+        if stopped:
+            io = IOResult(exit_code=1,
+                          stderr=row_cap_notice("tail", resolved[0].raw_path,
+                                                accessor.config.max_doc_limit,
+                                                "documents", "max_doc_limit"))
+        return generic_tail(data, n=n_eff, c=None, from_line=None), io
     return await tail_generic(resolved, list(texts), opts,
                               bound_op(IO.stat, accessor, opts.index),
                               bound_op(stream_any, accessor, opts.index))

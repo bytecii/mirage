@@ -33,7 +33,7 @@ ws = Workspace({"/mongodb": vfs}, mode=MountMode.READ)
 | `databases`            | no       |         | List of database names to mount (omit for all)                             |
 | `default_doc_limit`    | no       | 1000    | Default doc cap for one-shot reads (not used by streaming `cat`)           |
 | `default_search_limit` | no       | 100     | Default result cap for collection/db-level `grep`                          |
-| `max_doc_limit`        | no       | 5000    | Hard cap for `head -n K` / `tail -n K`                                     |
+| `max_doc_limit`        | no       | 5000    | Most documents one `tail -n K` returns; past it, a notice and exit 1      |
 | `elide_fields`         | no       | `{}`    | `{"<db>.<coll>": ["field", "nested.path"]}`; listed fields are dropped from `documents.jsonl` |
 
 ## Filesystem Layout
@@ -139,7 +139,8 @@ memory ahead of the consumer.
 | Command                      | Behavior                                                          |
 | ---------------------------- | ----------------------------------------------------------------- |
 | `cat`                        | Streams the whole collection sorted by `_id`; pipe to `head` to cap |
-| `head -n K` / `tail -n K`    | K is capped at `max_doc_limit`; server-side sort + limit          |
+| `head -n K`                  | Streams from `_id` order and stops after K documents              |
+| `tail -n K`                  | Server-side sort + limit; a K past `max_doc_limit` stops there, notes it on stderr, exits 1 |
 | `tail -f`                    | Opens a change stream; yields each new insert as a JSONL line     |
 | `grep` (file level)          | Streams from `documents.jsonl`; supports `-m` for short-circuit   |
 | `grep` (collection/db level) | Server-side query, capped at `default_search_limit`               |
@@ -179,8 +180,11 @@ Scope detection is handled by `mirage/core/mongodb/scope.py`.
 
 ### head / tail / tail -f
 
-`head` and `tail` use server-side `sort` + `limit`; the requested count
-is capped at `max_doc_limit`. `tail -f` opens a Mongo change stream
+`tail` uses server-side `sort` + `limit`. A count past `max_doc_limit`
+prints the last `max_doc_limit` documents, then says on stderr that the
+output is incomplete and exits 1, rather than printing fewer lines than
+asked in silence. `head` streams in `_id` order and stops after the
+count. `tail -f` opens a Mongo change stream
 filtered to insert events and yields each new document as a JSONL line
 in the same format as `cat`:
 
@@ -341,7 +345,7 @@ Standard commands available on the mounted MongoDB tree:
 | --------------- | ----------------------------------------------------------------------- |
 | `ls`            | List databases, collections, views, and per-entity files                |
 | `cat`           | Stream `documents.jsonl` (or read `schema.json` / `database.json`)      |
-| `head` / `tail` | Smart: server-side sort + limit (capped at `max_doc_limit`)             |
+| `head` / `tail` | `head` streams and stops early; `tail` sorts and limits server-side, stopping loudly at `max_doc_limit` |
 | `tail -f`       | Live-follow new inserts via Mongo change stream                         |
 | `grep` / `rg`   | Smart: MongoDB query engine at collection/db scope, regex at file scope |
 | `jq`            | Query JSON; use `.[]` prefix when iterating JSONL files                 |

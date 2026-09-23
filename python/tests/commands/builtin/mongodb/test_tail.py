@@ -51,3 +51,25 @@ async def test_tail_does_not_query_a_collection_it_cannot_see(
     assert io.exit_code == 1
     assert b"No such file or directory" in await materialize(io.stderr)
     queried.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tail_past_max_doc_limit_stops_and_says_so(monkeypatch):
+    """``max_doc_limit`` stood in for the count in silence: ``tail -n
+    6000`` of a larger collection printed 5000 lines with exit 0."""
+    monkeypatch.setattr("mirage.core.mongodb.readdir.entity_exists",
+                        AsyncMock(return_value=True))
+    monkeypatch.setitem(tail.__wrapped__.__globals__, "read_tail",
+                        AsyncMock(return_value=(b'{"_id": 1}\n', True)))
+    accessor = MongoDBAccessor(
+        config=MongoDBConfig(uri="mongodb://localhost:27017", max_doc_limit=1))
+    path = "/db1/collections/coll1/documents.jsonl"
+    out, io = await tail(
+        accessor, [_path(path)], [],
+        CommandOpts(index=RAMIndexCacheStore(), flags={"n": "5"}))
+    assert await materialize(out) == b'{"_id": 1}\n'
+    assert io.exit_code == 1
+    assert await materialize(
+        io.stderr
+    ) == (f"tail: {path}: stopped at 1 documents (max_doc_limit); "
+          "the output is incomplete\n").encode()

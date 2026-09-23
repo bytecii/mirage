@@ -287,7 +287,8 @@ async def test_read_tail_returns_docs_in_ascending_order(accessor):
             new_callable=AsyncMock,
             return_value=list(docs),
     ) as fake:
-        data = await read_tail(accessor, _path(DOCS_PATH), 2)
+        data, stopped = await read_tail(accessor, _path(DOCS_PATH), 2)
+    assert not stopped
     lines = data.decode().splitlines()
     assert '"_id": 4' in lines[0]
     assert '"_id": 5' in lines[1]
@@ -298,14 +299,34 @@ async def test_read_tail_returns_docs_in_ascending_order(accessor):
 
 @pytest.mark.asyncio
 async def test_read_tail_caps_limit_at_max_doc_limit(accessor):
+    # A count past the ceiling fetches the ceiling; whether that stopped
+    # the read short depends on how many documents there are.
     with patch(
             "mirage.core.mongodb.stream.find_documents",
             new_callable=AsyncMock,
             return_value=[],
-    ) as fake:
-        data = await read_tail(accessor, _path(DOCS_PATH), 10**9)
-    assert data == b""
+    ) as fake, patch("mirage.core.mongodb.stream.count_documents",
+                     new=AsyncMock(return_value=3)):
+        data, stopped = await read_tail(accessor, _path(DOCS_PATH), 10**9)
+    assert (data, stopped) == (b"", False)
     assert fake.await_args.kwargs["limit"] == accessor.config.max_doc_limit
+
+
+@pytest.mark.asyncio
+async def test_read_tail_says_when_the_ceiling_stopped_it():
+    """``min(n, max_doc_limit)`` stood in for the count with nothing to
+    say so: ``tail -n 6000`` of a larger collection printed 5000 lines
+    and exited 0."""
+    acc = MongoDBAccessor(
+        config=MongoDBConfig(uri="mongodb://localhost:27017", max_doc_limit=2))
+    docs = [{"_id": 9, "n": 9}, {"_id": 8, "n": 8}]
+    with patch("mirage.core.mongodb.stream.find_documents",
+               new=AsyncMock(return_value=list(docs))), \
+            patch("mirage.core.mongodb.stream.count_documents",
+                  new=AsyncMock(return_value=10)):
+        data, stopped = await read_tail(acc, _path(DOCS_PATH), 5)
+    assert stopped
+    assert len(data.decode().splitlines()) == 2
 
 
 @pytest.mark.asyncio
@@ -321,7 +342,7 @@ async def test_read_tail_applies_elision(index):
             new_callable=AsyncMock,
             return_value=docs,
     ):
-        data = await read_tail(acc, _path(DOCS_PATH), 1)
+        data, _ = await read_tail(acc, _path(DOCS_PATH), 1)
     parsed = json.loads(data.decode().strip())
     assert parsed["title"] == "hi"
     assert "vector" not in parsed

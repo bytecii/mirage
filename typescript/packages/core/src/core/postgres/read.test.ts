@@ -214,4 +214,43 @@ describe('read', () => {
     )
     expect(decode(out)).toBe('{"id":1}\n')
   })
+
+  // The estimate is planner statistics and lags the table; it used to be the
+  // LIMIT, so a table loaded since the last ANALYZE read back as only the rows
+  // the statistics knew about.
+  it('does not truncate a whole read to a stale estimate', async () => {
+    const table = Array.from({ length: 40 }, (_, id) => ({ id }))
+    vi.mocked(client.estimateSize).mockResolvedValue([2, 10])
+    vi.mocked(client.fetchRows).mockImplementation((_a, _s, _e, window) =>
+      Promise.resolve(table.slice(window.offset, window.offset + window.limit)),
+    )
+    const out = await read(
+      makeAccessor({ dsn: 'postgres://h/db', maxReadRows: 100 }),
+      new PathSpec({
+        virtual: '/pg/public/tables/users/rows.jsonl',
+        directory: '/pg/public/tables/users/',
+        vfsPath: mountKey('/pg/public/tables/users/rows.jsonl', '/pg'),
+      }),
+    )
+    expect(decode(out).trim().split('\n')).toHaveLength(40)
+  })
+
+  it('refuses a table the estimate undercounted on the rows it has', async () => {
+    const table = Array.from({ length: 40 }, (_, id) => ({ id }))
+    vi.mocked(client.estimateSize).mockResolvedValue([2, 10])
+    vi.mocked(client.fetchRows).mockImplementation((_a, _s, _e, window) =>
+      Promise.resolve(table.slice(window.offset, window.offset + window.limit)),
+    )
+    await expect(
+      read(
+        makeAccessor({ dsn: 'postgres://h/db', maxReadRows: 10 }),
+        new PathSpec({
+          virtual: '/pg/public/tables/users/rows.jsonl',
+          directory: '/pg/public/tables/users/',
+          vfsPath: mountKey('/pg/public/tables/users/rows.jsonl', '/pg'),
+        }),
+      ),
+    ).rejects.toThrow(/more than 10 rows/)
+    expect(vi.mocked(client.fetchRows).mock.calls[0]?.[3]).toEqual({ limit: 11, offset: 0 })
+  })
 })

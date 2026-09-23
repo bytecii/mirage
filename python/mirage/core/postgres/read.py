@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from typing import Any
+
 import orjson
 
 from mirage.accessor.postgres import PostgresAccessor
@@ -25,6 +27,7 @@ from mirage.core.postgres.scope import detect_scope
 from mirage.core.postgres.semantic import build_entity_semantic_json
 from mirage.core.postgres.stat import stat
 from mirage.types import PathSpec
+from mirage.vfs.postgres.config import PostgresConfig
 
 
 def _entity_kind(match: ScopeMatch) -> str:
@@ -65,23 +68,44 @@ async def _read_entity_rows(accessor: PostgresAccessor, match: ScopeMatch,
                             offset=offset)
 
 
+def _too_large(cfg: PostgresConfig, schema: str, kind: str, entity: str,
+               size: str) -> ValueError:
+    return ValueError(f"{schema}/{kind}/{entity}/rows.jsonl too large to "
+                      f"read entirely: {size} (thresholds: "
+                      f"{cfg.max_read_rows} rows / {cfg.max_read_bytes} "
+                      "bytes); use head, tail, wc, grep, or pass "
+                      "limit/offset")
+
+
+def row_line(row: dict[str, Any]) -> str:
+    """One row as rows.jsonl spells it.
+
+    Args:
+        row (dict[str, Any]): a canonicalized row.
+    """
+    return orjson.dumps(row, default=str).decode()
+
+
 async def _read_rows(accessor: PostgresAccessor, schema: str, entity: str, *,
                      kind: str, limit: int | None,
                      offset: int | None) -> bytes:
     cfg = accessor.config
-    if limit is None and offset is None:
+    whole = limit is None and offset is None
+    if whole:
         pool = await accessor.pool()
         async with pool.acquire() as conn:
             rows, width = await client.estimate_size(conn, schema, entity)
         if (rows > cfg.max_read_rows
                 or rows * max(width, 1) > cfg.max_read_bytes):
-            raise ValueError(
-                f"{schema}/{kind}/{entity}/rows.jsonl too large to read "
-                f"entirely: ~{rows} rows / ~{rows * max(width, 1)} bytes "
-                f"(thresholds: {cfg.max_read_rows} rows / "
-                f"{cfg.max_read_bytes} bytes); use head, tail, wc, grep, "
-                f"or pass limit/offset")
-        effective_limit = rows or cfg.default_row_limit
+            raise _too_large(cfg, schema, kind, entity,
+                             f"~{rows} rows / ~{rows * max(width, 1)} bytes")
+        # The estimate only refuses; it never limits. It is planner
+        # statistics, which lag the table (a bulk load before the next
+        # ANALYZE), so taking it as the LIMIT returned fewer rows than
+        # exist, with nothing to say so. One row past the ceiling keeps
+        # the read bounded and refuses a table the estimate undercounted
+        # on the rows it really has.
+        effective_limit = cfg.max_read_rows + 1
         effective_offset = 0
     else:
         effective_limit = limit if limit is not None else cfg.default_row_limit
@@ -94,10 +118,15 @@ async def _read_rows(accessor: PostgresAccessor, schema: str, entity: str, *,
                                        entity,
                                        limit=effective_limit,
                                        offset=effective_offset)
+    if whole and len(data) > cfg.max_read_rows:
+        raise _too_large(cfg, schema, kind, entity,
+                         f"more than {cfg.max_read_rows} rows")
     if not data:
         return b""
-    lines = [orjson.dumps(r, default=str).decode() for r in data]
-    return ("\n".join(lines) + "\n").encode()
+    body = ("\n".join(row_line(r) for r in data) + "\n").encode()
+    if whole and len(body) > cfg.max_read_bytes:
+        raise _too_large(cfg, schema, kind, entity, f"{len(body)} bytes")
+    return body
 
 
 read = make_read(detect_scope, {
