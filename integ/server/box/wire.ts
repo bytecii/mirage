@@ -70,6 +70,27 @@ export function searchEntry(item: Item, ancestors: Item[]): JsonValue {
   }
 }
 
+// An event's `source` is the full item plus the chain that places it, the
+// shape the vendor sends on the user stream.
+export function eventSource(item: Item, ancestors: Item[]): JsonValue {
+  return {
+    ...(render(item) as Record<string, JsonValue>),
+    path_collection: {
+      total_count: ancestors.length,
+      entries: ancestors.map((a) => ({ type: 'folder', id: a.id, name: a.name })),
+    },
+  }
+}
+
+export function eventEntry(seq: number, eventType: string, source: string): JsonValue {
+  return {
+    type: 'event',
+    event_id: `event-${String(seq)}`,
+    event_type: eventType,
+    source: JSON.parse(source) as JsonValue,
+  }
+}
+
 // Real Box indexes content by whole words, so `foo` never matches `foobar`.
 // Modelling that is what lets the battery prove grep/rg push-down cannot
 // silently drop substring matches; a substring fake would agree with a full
