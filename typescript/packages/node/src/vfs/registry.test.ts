@@ -409,22 +409,25 @@ describe('VFSName coverage', () => {
   const BROWSER_ONLY = new Set(['opfs'])
   // `history` is an internal view mount, never named in user config.
   const INTERNAL = new Set(['history'])
-  // Config-mountable in python but not yet wired into a TypeScript registry.
-  // Listing them keeps the gap visible instead of hiding it behind a count.
-  const PYTHON_ONLY = new Set(['chroma', 'dify', 'lancedb', 'qdrant'])
 
   it('every VFS name is buildable or explicitly exempt', () => {
     // This is the guard a hardcoded entry count cannot give: adding a backend
     // to VFSName without a registry factory fails here, naming it.
     const known = new Set(BUILTIN_VFS_NAMES)
     const unreachable = Object.values(VFSName).filter(
-      (name) =>
-        !known.has(name) &&
-        !BROWSER_ONLY.has(name) &&
-        !INTERNAL.has(name) &&
-        !PYTHON_ONLY.has(name),
+      (name) => !known.has(name) && !BROWSER_ONLY.has(name) && !INTERNAL.has(name),
     )
     expect(unreachable).toEqual([])
+  })
+
+  // The other half of the exemption: a name that is exempt yet buildable
+  // hides nothing and says something false. chroma, dify, lancedb and
+  // qdrant sat in a "not yet wired" set long after their factories landed,
+  // and the filter above cannot notice, since it only ever subtracts.
+  it('exempts only names the registry cannot build', () => {
+    const known = new Set(BUILTIN_VFS_NAMES)
+    const exempt = [...BROWSER_ONLY, ...INTERNAL]
+    expect(exempt.filter((name) => known.has(name))).toEqual([])
   })
 
   it('every built-in registry factory has a VFSName', () => {
