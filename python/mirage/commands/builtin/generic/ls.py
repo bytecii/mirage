@@ -1,4 +1,5 @@
 import functools
+import logging
 import posixpath
 import string
 from collections.abc import Awaitable, Callable, Mapping
@@ -11,13 +12,14 @@ from mirage.commands.builtin.utils.identity import Identity, identity_of
 from mirage.commands.builtin.utils.output import (format_optional_records,
                                                   format_records)
 from mirage.commands.config import CommandOpts
-from mirage.commands.errors import UsageError
+from mirage.commands.errors import UsageError, is_entry_error
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.argmatch import ArgmatchKind, ArgmatchMatch, argmatch
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.commands.spec.usage import (argmatch_error, argmatch_line,
                                         usage_hint)
+from mirage.errors.classify import failure_text
 from mirage.io.types import IOResult
 from mirage.ops.types import ChildMounts, LinkView, MountView, StatPath
 from mirage.types import FileStat, FileType, LsSortBy, LsTimeKind, PathSpec
@@ -25,6 +27,8 @@ from mirage.utils.errors import fs_strerror
 from mirage.utils.key_prefix import rekey
 from mirage.utils.path import CycleError, respell_one
 from mirage.utils.width import char_width
+
+logger = logging.getLogger(__name__)
 
 Readdir = Callable[[PathSpec, IndexCacheStore | None], Awaitable[list[str]]]
 Stat = Callable[[PathSpec, IndexCacheStore | None], Awaitable[FileStat]]
@@ -752,6 +756,22 @@ async def _mount_row(
     return FileStat(name=name, type=FileType.DIRECTORY)
 
 
+def _stat_failed_row(entry: str) -> FileStat:
+    """The row for an entry the listing named but its stat could not describe.
+
+    GNU keeps it, since readdir is what named it, and ``?`` stands for
+    every fact only the stat knows; its type is a directory's when the
+    listing slash-marked it, and unknown otherwise.
+
+    Args:
+        entry (str): the entry path from the backend readdir.
+    """
+    return FileStat(
+        name=entry.rstrip("/").rsplit("/", 1)[-1],
+        type=(FileType.DIRECTORY if entry.endswith("/") else FileType.FILE),
+        extra={formatting.STAT_FAILED_KEY: True})
+
+
 async def _stat_entries(
     path: PathSpec,
     names: list[str],
@@ -763,8 +783,16 @@ async def _stat_entries(
     deref: bool = False,
     child_mounts: ChildMounts | None = None,
     stat_path: StatPath | None = None,
+    stat_needed: bool = True,
 ) -> tuple[list[FileStat], list[LsWarning]]:
     """Stat every name in a directory, plus the symlinks living there.
+
+    An entry whose stat fails keeps its row and never fails the whole
+    directory, whatever the error: a dropped connection on a mount
+    whose stat is a request costs that entry alone, as any failed stat
+    does in GNU's gobble_file. It is reported, and the exit is 1, only
+    when the listing prints something the stat supplies
+    (``stat_needed``). One entry at a time, as GNU's lstat loop goes.
 
     Args:
         path (PathSpec): the directory being listed.
@@ -790,6 +818,9 @@ async def _stat_entries(
         stat_path (StatPath | None): dispatcher-backed stat, which is
             the only way to learn a child mount's real type. See
             ``_mount_row``.
+        stat_needed (bool): the listing prints something an entry's
+            stat supplies, so a failed one is reported. See
+            ``stat_needed``.
     """
     stats: list[FileStat] = []
     warnings: list[LsWarning] = []
@@ -801,13 +832,22 @@ async def _stat_entries(
                                              entry))
         try:
             s = await stat(entry_spec, index)
-        except (OSError, ValueError) as exc:
+        except Exception as exc:
+            if not is_entry_error(exc):
+                raise
+            s = _stat_failed_row(entry)
+            if not all_files and s.name.startswith("."):
+                continue
+            stats.append(s)
+            if not stat_needed:
+                logger.debug("ls: stat %s: %r", entry, exc)
+                continue
             # An entry below an operand is never a command-line arg, so
             # GNU treats it as a minor problem (exit 1).
             warnings.append(
                 LsWarning(
-                    f"ls: cannot access '{entry}': {fs_strerror(exc) or exc}",
-                    False))
+                    f"ls: cannot access '{entry.rstrip('/')}': "
+                    f"{failure_text(exc)}", False))
             continue
         if not all_files and s.name.startswith("."):
             continue
@@ -851,6 +891,7 @@ async def probe_operand(
     stat_path: StatPath | None = None,
     time_kind: LsTimeKind = LsTimeKind.MTIME,
     group_dirs_first: bool = False,
+    stat_needed: bool = True,
 ) -> tuple[Operand, list[LsWarning]]:
     """List one operand and report whether it turned out to be a directory.
 
@@ -881,6 +922,8 @@ async def probe_operand(
             child-mount rows no backend can supply.
         time_kind (LsTimeKind): which timestamp ``-t`` compares.
         group_dirs_first (bool): ``--group-directories-first``.
+        stat_needed (bool): report an entry whose stat failed. See
+            ``stat_needed``.
     """
     warnings: list[LsWarning] = []
     structure_only = False
@@ -930,7 +973,8 @@ async def probe_operand(
                                             links=links,
                                             deref=deref,
                                             child_mounts=child_mounts,
-                                            stat_path=stat_path)
+                                            stat_path=stat_path,
+                                            stat_needed=stat_needed)
     warnings.extend(entry_ws)
     entries = sort_stats(entries,
                          sort_by,
@@ -964,7 +1008,8 @@ async def probe_operand(
                 mounts=mounts,
                 stat_path=stat_path,
                 time_kind=time_kind,
-                group_dirs_first=group_dirs_first)
+                group_dirs_first=group_dirs_first,
+                stat_needed=stat_needed)
             groups.extend(child.groups)
             warnings.extend(child_ws)
     return Operand(path, None, groups), warnings
@@ -1148,6 +1193,34 @@ def _decorated_names(entries: list[FileStat], hrefs: list[str] | None,
     return out
 
 
+def stat_needed(*, long: bool, sort_by: LsSortBy,
+                columns: formatting.LsColumns, hyperlink: bool,
+                recursive: bool, classify: bool,
+                group_dirs_first: bool) -> bool:
+    """Whether GNU's ls would stat a listed entry to print this listing.
+
+    That is when a failed stat reaches stderr: the long format, a time
+    or size sort, ``-i``, ``-Z`` and ``--hyperlink`` read the stat
+    (GNU's format_needs_stat), and ``-R``, ``-F`` and
+    ``--group-directories-first`` read the type (format_needs_type),
+    which a mirage listing never carries, as a readdir without d_type
+    does not. A plain listing prints the names readdir gave and nothing
+    else. Mirrors TS ``statNeeded``.
+
+    Args:
+        long (bool): the long format (``-l``, ``-g``, ``-o``, ``-n``).
+        sort_by (LsSortBy): the active sort key.
+        columns (formatting.LsColumns): ``-i`` and ``-Z`` ride here.
+        hyperlink (bool): ``--hyperlink``.
+        recursive (bool): ``-R``.
+        classify (bool): ``-F``.
+        group_dirs_first (bool): ``--group-directories-first``.
+    """
+    return (long or sort_by in (LsSortBy.TIME, LsSortBy.SIZE) or columns.inode
+            or columns.context or hyperlink or recursive or classify
+            or group_dirs_first)
+
+
 def _render_group(
     results: list[str],
     entries: list[FileStat],
@@ -1247,6 +1320,13 @@ async def ls(
                       hrefs=row_hrefs if hyperlink else None)
         return _finish(results, warnings)
 
+    needed = stat_needed(long=long,
+                         sort_by=sort_by,
+                         columns=columns,
+                         hyperlink=hyperlink,
+                         recursive=recursive,
+                         classify=classify,
+                         group_dirs_first=group_dirs_first)
     operands: list[Operand] = []
     for p in paths:
         operand, p_ws = await probe_operand(p,
@@ -1263,7 +1343,8 @@ async def ls(
                                             mounts=mounts,
                                             stat_path=stat_path,
                                             time_kind=time_kind,
-                                            group_dirs_first=group_dirs_first)
+                                            group_dirs_first=group_dirs_first,
+                                            stat_needed=needed)
         warnings.extend(p_ws)
         operands.append(operand)
     if len(operands) > 1:

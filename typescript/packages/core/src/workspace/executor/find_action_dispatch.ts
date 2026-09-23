@@ -14,7 +14,8 @@
 
 import { compareCodePoints } from '../../utils/sort.ts'
 import { resolvePath } from '../../utils/path.ts'
-import { fsStrerror, gnuStrerror, isFsError } from '../../utils/errors.ts'
+import { gnuStrerror } from '../../utils/errors.ts'
+import { failureText } from '../../errors/classify.ts'
 import { formatFindLs } from '../../commands/builtin/utils/formatting.ts'
 import {
   expandPrintf,
@@ -342,9 +343,7 @@ async function deleteRow(
  */
 function refusalWhy(err: unknown): string {
   if (err instanceof PolicyDenied) return err.message
-  return (
-    (isFsError(err) ? fsStrerror(err) : null) ?? (err instanceof Error ? err.message : String(err))
-  )
+  return failureText(err)
 }
 
 /**

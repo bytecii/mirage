@@ -28,7 +28,7 @@ import {
   parseFlags,
   sortStats,
 } from './ls.ts'
-import { UsageError } from '../../errors.ts'
+import { CommandTimeoutError, UsageError } from '../../errors.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { type FlagValue } from '../../spec/types.ts'
@@ -365,10 +365,10 @@ describe('lsGeneric exit codes', () => {
   })
 
   it('exits 1 when an entry below the operand cannot be stat', async () => {
-    const [code, out] = await status(['/half'])
+    const [code, out] = await status(['/half'], { args_l: true })
     expect(code).toBe(LS_MINOR_PROBLEM)
-    // The unreadable entry is skipped, not fatal: the listing still renders.
-    expect(out).not.toContain('locked.txt')
+    // Not fatal, and not dropped: the entry keeps GNU's row of `?`.
+    expect(out).toContain('? locked.txt')
   })
 
   it('exits 1 when -R cannot open a subdirectory, keeping parent output', async () => {
@@ -637,35 +637,68 @@ describe('structure-only directories', () => {
 })
 
 describe('honest per-entry errors', () => {
-  function enoent(p: string): Error {
+  function stamped(p: string, code: string): Error {
     const e = new Error(p) as Error & { code: string }
-    e.code = 'ENOENT'
+    e.code = code
     return e
   }
 
   function statFailingEntries(err: Error) {
-    return (p: PathSpec): Promise<FileStat> => (key(p) === '/' ? stat(p) : Promise.reject(err))
+    return (p: PathSpec): Promise<FileStat> =>
+      key(p) === '/apple.txt' ? Promise.reject(err) : stat(p)
   }
 
-  it('warns per entry and ratchets the exit code on a stamped fs error', async () => {
-    const result = await lsGeneric(
-      [spec('/')],
-      opts({}),
-      readdir,
-      statFailingEntries(enoent('/apple.txt')),
-    )
-    expect(result?.[1].exitCode).toBe(LS_MINOR_PROBLEM)
-    const stderr = DEC.decode(result?.[1].stderr as Uint8Array)
-    expect(stderr).toContain("ls: cannot access '/apple.txt': No such file or directory")
+  async function run(flags: Record<string, boolean>, err: Error) {
+    const result = await lsGeneric([spec('/')], opts(flags), readdir, statFailingEntries(err))
+    return {
+      code: result?.[1].exitCode,
+      stdout: DEC.decode(result?.[0] as Uint8Array),
+      stderr: DEC.decode((result?.[1].stderr ?? new Uint8Array()) as Uint8Array),
+    }
+  }
+
+  // GNU (coreutils 9.7, EIO injected on one entry with strace) lists every
+  // name, and only a listing that stats the entry (-l, -F, -t, -i ...)
+  // reports it, whatever the errno, and exits 1.
+  it('lists a name whose stat failed without a word when nothing needs the stat', async () => {
+    for (const err of [stamped('/apple.txt', 'ENOENT'), new Error('socket hang up')]) {
+      const { code, stdout, stderr } = await run({}, err)
+      expect(code).toBe(LS_OK)
+      expect(stdout).toBe('Banana.txt\nCHERRY.txt\napple.txt\n')
+      expect(stderr).toBe('')
+    }
   })
 
-  it('propagates an unstamped backend error instead of laundering it', async () => {
-    // An error with no POSIX code (auth failure, transport prose) must not
-    // become a GNU-shaped 'cannot access' line.
+  it('keeps a ? row and reports the entry when the listing needs its stat', async () => {
+    const { code, stdout, stderr } = await run({ args_l: true }, stamped('/apple.txt', 'ENOENT'))
+    expect(code).toBe(LS_MINOR_PROBLEM)
+    expect(stdout.split('\n')[2]).toBe('?????????? ? ? ? ?            ? apple.txt')
+    expect(stderr).toBe("ls: cannot access '/apple.txt': No such file or directory\n")
+  })
+
+  it('reports an unstamped backend error in its own words, not a GNU phrase', async () => {
     const raw = new Error('S3 GET apple.txt failed: 403 Forbidden')
-    await expect(
-      lsGeneric([spec('/')], opts({}), readdir, statFailingEntries(raw)),
-    ).rejects.toThrow('403 Forbidden')
+    const { code, stdout, stderr } = await run({ classify: true }, raw)
+    expect(code).toBe(LS_MINOR_PROBLEM)
+    expect(stdout).toBe('Banana.txt\nCHERRY.txt\napple.txt\n')
+    expect(stderr).toBe("ls: cannot access '/apple.txt': S3 GET apple.txt failed: 403 Forbidden\n")
+  })
+
+  it('words a stamped EIO the way GNU does', async () => {
+    const { stderr } = await run({ args_l: true }, stamped('/apple.txt', 'EIO'))
+    expect(stderr).toBe("ls: cannot access '/apple.txt': Input/output error\n")
+  })
+
+  it('still ends the command on a timeout or an abort', async () => {
+    await expect(run({}, new CommandTimeoutError('stat', 5))).rejects.toThrow('timed out')
+    await expect(run({}, new DOMException('execute aborted', 'AbortError'))).rejects.toThrow(
+      'execute aborted',
+    )
+  })
+
+  it("still propagates the operand's own unstamped failure", async () => {
+    const failing = (): Promise<string[]> => Promise.reject(new Error('socket hang up'))
+    await expect(lsGeneric([spec('/')], opts({}), failing, stat)).rejects.toThrow('socket hang up')
   })
 
   it('-d propagates an unstamped stat error', async () => {
