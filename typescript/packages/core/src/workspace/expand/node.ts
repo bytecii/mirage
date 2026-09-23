@@ -26,6 +26,7 @@ import { splitBacktickRegion } from '../../shell/backticks.ts'
 import { ArithError, ExitSignal } from '../../shell/errors.ts'
 import { decodeAnsiC, unescapeDquoted, unescapeUnquoted } from '../../shell/escapes.ts'
 import { ARITH_DELIMITERS, ARITH_OPERATORS } from './constants.ts'
+import { scanParameter } from '../../shell/parameter.ts'
 import { expandBraces, landArithWrites, lookupVar } from './variable.ts'
 import type { ArithResult, TSNodeLike } from '../../shell/types.ts'
 import type { HandOff } from '../../policy/types.ts'
@@ -344,19 +345,10 @@ export async function expandNodeMarked(
   if (ntype === NT.SIMPLE_EXPANSION) {
     const prefix = foldedWhitespace(tsNode)
     const raw = tsNode.text.slice(prefix.length)
-    // Bash consumes one digit in an unbraced positional reference;
-    // tree-sitter can include the literal suffix in the same node.
-    const digit = raw.slice(1, 2)
-    if (/^[0-9]$/.test(digit)) {
-      return prefix + lookupVar(digit, session, callStack) + raw.slice(2)
-    }
-    const special = tsNode.namedChildren.find((c) => c.type === NT.SPECIAL_VARIABLE_NAME)
-    if (special !== undefined) {
-      return prefix + lookupVar(special.text, session, callStack)
-    }
-    // Slice past the leading "$" rather than searching for it, so `$$`
-    // keeps its name instead of splitting into prefix + "".
-    return prefix + lookupVar(raw.slice(1), session, callStack)
+    const ref = scanParameter(raw, 0)
+    if (ref === null) return prefix + raw
+    const [name, end] = ref
+    return prefix + lookupVar(name, session, callStack) + raw.slice(end)
   }
 
   if (ntype === NT.EXPANSION) {

@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { scanParameter } from '../../shell/parameter.ts'
 import { nextRandom } from '../session/state.ts'
 import { evaluateArith } from '../../shell/arith.ts'
 import type { ArithWrite } from '../../shell/types.ts'
@@ -326,26 +327,6 @@ function escapedFind(text: string, start: number, quote: string): number {
   return -1
 }
 
-// A $name/${name} reference starting after the $: the name and the index
-// past it, or null when the $ starts no reference and stays literal.
-function refEnd(text: string, start: number): [string, number] | null {
-  const n = text.length
-  let j = start
-  const braced = text[j] === '{'
-  const digit = text.slice(j, j + 1)
-  if (!braced && /^[0-9]$/.test(digit)) return [digit, j + 1]
-  if (braced) j += 1
-  const from = j
-  while (j < n && /[A-Za-z0-9_]/.test(text[j] ?? '')) j += 1
-  const name = text.slice(from, j)
-  if (name === '') return null
-  if (braced) {
-    if (j >= n || text[j] !== '}') return null
-    j += 1
-  }
-  return [name, j]
-}
-
 // A double-quoted pattern segment: everything in it is literal.
 function dquotedPattern(inner: string, session: SessionState, callStack: CallStack | null): string {
   const out: string[] = []
@@ -359,7 +340,7 @@ function dquotedPattern(inner: string, session: SessionState, callStack: CallSta
       continue
     }
     if (ch === '$' && i + 1 < n) {
-      const ref = refEnd(inner, i + 1)
+      const ref = scanParameter(inner, i)
       if (ref !== null) {
         out.push(escapeGlob(lookupVar(ref[0], session, callStack)))
         i = ref[1]
@@ -419,7 +400,7 @@ function patternText(text: string, session: SessionState, callStack: CallStack |
           continue
         }
       }
-      const ref = refEnd(text, i + 1)
+      const ref = scanParameter(text, i)
       if (ref !== null) {
         out.push(lookupVar(ref[0], session, callStack))
         i = ref[1]

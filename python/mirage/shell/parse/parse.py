@@ -15,8 +15,8 @@
 import tree_sitter
 import tree_sitter_bash
 
-from mirage.shell.parse.constants import (ARITH_OPEN_TOKEN, DIGITS, NAME_CONT,
-                                          QUOTES)
+from mirage.shell.parameter import scan_parameter
+from mirage.shell.parse.constants import ARITH_OPEN_TOKEN, QUOTES
 from mirage.shell.parse.heredoc import (heredoc_operators, protected_source,
                                         same_shape)
 from mirage.shell.parse.heredoc.lower import lower_heredocs, rebase_source
@@ -170,8 +170,8 @@ def _orphaned_dollar_offsets(root: tree_sitter.Node, data: bytes) -> list[int]:
     word when a name-terminating character follows it, so
     ``> /api/$c/$id.json`` parses as ``/api/$c/$`` plus a sibling word
     ``id.json``: the ``$`` lands in the tree as a literal token and the
-    expansion is gone. A literal ``$`` directly followed by a name
-    character is a shape no correct bash lex produces (bash would have
+    expansion is gone. A literal ``$`` starting a recognized unbraced
+    parameter is a shape no correct bash lex produces (bash would have
     read an expansion), so each one marks a mis-parse. The ``$`` opening
     a simple_expansion is that expansion's own token and is skipped.
 
@@ -186,8 +186,9 @@ def _orphaned_dollar_offsets(root: tree_sitter.Node, data: bytes) -> list[int]:
         for child in node.children:
             if (not child.is_named and child.type == "$"
                     and node.type != "simple_expansion"
-                    and data[child.end_byte:child.end_byte + 1]
-                    and data[child.end_byte] in NAME_CONT):
+                    and data[child.end_byte:child.end_byte + 1] != b"{"
+                    and scan_parameter(data[child.start_byte:].decode(),
+                                       0) is not None):
                 offsets.append(child.start_byte)
             stack.append(child)
     return offsets
@@ -205,13 +206,14 @@ def _rebrace_dollar(data: bytes, offset: int) -> bytes:
         data (bytes): shell source holding the orphaned ``$``.
         offset (int): byte offset of the ``$``.
     """
-    end = offset + 1
-    if data[end] in DIGITS:
-        end += 1
-    else:
-        while end < len(data) and data[end] in NAME_CONT:
-            end += 1
-    return data[:offset] + b"${" + data[offset + 1:end] + b"}" + data[end:]
+    ref = scan_parameter(data[offset:].decode(), 0)
+    if ref is None:
+        return data
+    name, consumed = ref
+    # References contain only ASCII, so their character and byte lengths
+    # agree even when the source before or after them is multibyte.
+    return (data[:offset] + b"${" + name.encode() + b"}" +
+            data[offset + consumed:])
 
 
 def _repair_orphaned_dollars(root: tree_sitter.Node,

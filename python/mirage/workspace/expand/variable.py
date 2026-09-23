@@ -26,6 +26,7 @@ from mirage.shell.constants import RANDOM
 from mirage.shell.errors import ArithError, ExitSignal
 from mirage.shell.escapes import decode_ansi_c
 from mirage.shell.helpers import get_text
+from mirage.shell.parameter import scan_parameter
 from mirage.shell.types import ArithWrite, ElementOps
 from mirage.shell.types import NodeType as NT
 from mirage.shell.types import TSNodeLike
@@ -402,37 +403,6 @@ def _escaped_find(text: str, start: int, quote: str) -> int:
     return -1
 
 
-def _ref_end(text: str, start: int) -> tuple[str, int] | None:
-    """A ``$name``/``${name}`` reference starting after the ``$``.
-
-    Args:
-        text (str): the token being scanned.
-        start (int): index of the character after ``$``.
-
-    Returns:
-        The name and the index past the reference, or None when the
-        ``$`` starts no reference and stays literal.
-    """
-    n = len(text)
-    j = start
-    braced = j < n and text[j] == "{"
-    if not braced and j < n and "0" <= text[j] <= "9":
-        return text[j], j + 1
-    if braced:
-        j += 1
-    k = j
-    while k < n and (text[k].isalnum() or text[k] == "_"):
-        k += 1
-    name = text[j:k]
-    if not name:
-        return None
-    if braced:
-        if k >= n or text[k] != "}":
-            return None
-        k += 1
-    return name, k
-
-
 def _dquoted_pattern(inner: str, session: SessionState,
                      call_stack: CallStack | None) -> str:
     """A double-quoted pattern segment: everything in it is literal.
@@ -452,7 +422,7 @@ def _dquoted_pattern(inner: str, session: SessionState,
             i += 2
             continue
         if ch == "$" and i + 1 < n:
-            ref = _ref_end(inner, i + 1)
+            ref = scan_parameter(inner, i)
             if ref is not None:
                 name, nxt = ref
                 out.append(escape_glob(_lookup_var(name, session, call_stack)))
@@ -512,7 +482,7 @@ def _pattern_text(text: str, session: SessionState,
                     out.append(escape_glob(decode_ansi_c(text[i + 2:end])))
                     i = end + 1
                     continue
-            ref = _ref_end(text, i + 1)
+            ref = scan_parameter(text, i)
             if ref is not None:
                 name, nxt = ref
                 out.append(_lookup_var(name, session, call_stack))
