@@ -470,10 +470,7 @@ async function listDir(
       const row = statFailedRow(entry)
       stats.push(row)
       if (!all && row.name.startsWith('.')) continue
-      if (!statNeeded) {
-        console.debug(`ls: stat ${entry}: ${String(err)}`)
-        continue
-      }
+      if (!statNeeded) continue
       // An entry below an operand is never a command-line arg.
       warnings.push({
         message: `ls: cannot access '${rstripSlash(entry)}': ${failureText(err)}`,

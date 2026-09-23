@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { mountKey } from '../../../utils/key_prefix.ts'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ContentType, FileStat, FileType, LINK_TARGET_KEY, PathSpec } from '../../../types.ts'
 import type { LinkView, MountView } from '../../../ops/types.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
@@ -661,11 +661,19 @@ describe('honest per-entry errors', () => {
   // name, and only a listing that stats the entry (-l, -F, -t, -i ...)
   // reports it, whatever the errno, and exits 1.
   it('lists a name whose stat failed without a word when nothing needs the stat', async () => {
-    for (const err of [stamped('/apple.txt', 'ENOENT'), new Error('socket hang up')]) {
-      const { code, stdout, stderr } = await run({}, err)
-      expect(code).toBe(LS_OK)
-      expect(stdout).toBe('Banana.txt\nCHERRY.txt\napple.txt\n')
-      expect(stderr).toBe('')
+    const host = (['debug', 'log', 'info', 'warn', 'error'] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation(() => undefined),
+    )
+    try {
+      for (const err of [stamped('/apple.txt', 'ENOENT'), new Error('socket hang up')]) {
+        const { code, stdout, stderr } = await run({}, err)
+        expect(code).toBe(LS_OK)
+        expect(stdout).toBe('Banana.txt\nCHERRY.txt\napple.txt\n')
+        expect(stderr).toBe('')
+      }
+      for (const spy of host) expect(spy).not.toHaveBeenCalled()
+    } finally {
+      vi.restoreAllMocks()
     }
   })
 
