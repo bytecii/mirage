@@ -24,6 +24,7 @@ from mirage.types import FileStat, FileType, LsSortBy, LsTimeKind, PathSpec
 from mirage.utils.errors import fs_strerror
 from mirage.utils.key_prefix import rekey
 from mirage.utils.path import CycleError, respell_one
+from mirage.utils.stat_view import content_size
 from mirage.utils.width import char_width
 
 Readdir = Callable[[PathSpec, IndexCacheStore | None], Awaitable[list[str]]]
@@ -566,7 +567,7 @@ def _primary_value(entry: FileStat, sort_by: LsSortBy,
     if sort_by is LsSortBy.TIME:
         return formatting.time_of(entry, time_kind) or ""
     if sort_by is LsSortBy.SIZE:
-        return entry.size or 0
+        return content_size(entry)
     return entry.name
 
 

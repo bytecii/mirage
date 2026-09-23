@@ -38,6 +38,7 @@ import { rstripSlash } from '../../../utils/slash.ts'
 import { CycleError, respellOne } from '../../../utils/path.ts'
 import { formatRecords } from '../utils/output.ts'
 import { compareCodePoints } from '../../../utils/sort.ts'
+import { contentSize } from '../../../utils/stat_view.ts'
 import { charWidth } from '../../../utils/width.ts'
 
 type Readdir = (p: PathSpec) => Promise<string[]>
@@ -304,7 +305,7 @@ function extensionOf(name: string): string {
 }
 
 function primaryValue(entry: FileStat, sortBy: SortBy, timeKind: LsTimeKind): string | number {
-  return sortBy === 'time' ? (timeOf(entry, timeKind) ?? '') : (entry.size ?? 0)
+  return sortBy === 'time' ? (timeOf(entry, timeKind) ?? '') : contentSize(entry)
 }
 
 // GNU's -t/-S comparators fall back to the name when the timestamps or sizes

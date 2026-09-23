@@ -98,7 +98,7 @@ async def test_mode_directives_directory_default():
     assert await _render("%a", d) == "755"
     assert await _render("%A", d) == "drwxr-xr-x"
     assert await _render("%f", d) == "41ed"
-    assert await _render("%s", d) == "0"
+    assert await _render("%s", d) == "4096"
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,7 @@ from mirage.ops.types import LinkView, MountView, StatPath
 from mirage.types import (DEVICE_NUMBERS_KEY, LINK_TARGET_KEY, FileStat,
                           FileType, PathSpec, StatFn)
 from mirage.utils.errors import FS_ERRORS, fs_error_line
-from mirage.utils.stat_view import device_rdev, posix_mode
+from mirage.utils.stat_view import content_size, device_rdev, posix_mode
 
 _STR_DIRECTIVES = frozenset("nNF")
 
@@ -200,7 +200,7 @@ def _directive_value(spec: str, s: FileStat, name: str,
     if spec == "n":
         return name
     if spec == "s":
-        return str(s.size if s.size is not None else 0)
+        return str(content_size(s))
     if spec == "F":
         return _type_label(s)
     if spec == "a":

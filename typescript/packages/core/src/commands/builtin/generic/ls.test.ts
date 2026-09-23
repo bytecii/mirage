@@ -17,6 +17,7 @@ import { describe, expect, it } from 'vitest'
 import { ContentType, FileStat, FileType, LINK_TARGET_KEY, PathSpec } from '../../../types.ts'
 import type { LinkView, MountView } from '../../../ops/types.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
+import { DIR_SIZE } from '../../../utils/stat_view.ts'
 import type { CommandOpts } from '../../config.ts'
 import {
   LS_FAILURE,
@@ -790,6 +791,19 @@ describe('lsGeneric sort orders', () => {
       (name) => new FileStat({ name, type: FileType.FILE }),
     )
     expect(names(sortStats(wide, 'width', false))).toEqual(['a', 'é', 'aa', 'e\u0301x', '界'])
+  })
+
+  it('sortStats: -S counts a directory as DIR_SIZE bytes', () => {
+    const rows = [
+      new FileStat({ name: 'small.txt', type: FileType.FILE, size: 3 }),
+      new FileStat({ name: 'sub', type: FileType.DIRECTORY }),
+      new FileStat({ name: 'big.txt', type: FileType.FILE, size: DIR_SIZE + 1 }),
+    ]
+    expect(sortStats(rows, 'size', false).map((s) => s.name)).toEqual([
+      'big.txt',
+      'sub',
+      'small.txt',
+    ])
   })
 
   it('filevercmp orders bytes past the letters', () => {

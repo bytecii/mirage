@@ -161,7 +161,7 @@ describe('stat -c directive formatting', () => {
     expect(await render('%a', d)).toBe('755')
     expect(await render('%A', d)).toBe('drwxr-xr-x')
     expect(await render('%f', d)).toBe('41ed')
-    expect(await render('%s', d)).toBe('0')
+    expect(await render('%s', d)).toBe('4096')
   })
 
   it('renders setuid/setgid/sticky bits in %A', async () => {

@@ -103,7 +103,7 @@ def build_query(pfx: str, name: str | None, iname: str | None,
             if max_size is not None:
                 size_cond["$lte"] = max_size
             # Directory markers ride through; the client-side
-            # dirs-count-as-0 rule decides their fate.
+            # directory size rule decides their fate.
             conds.append({
                 "$or": [
                     {

@@ -15,7 +15,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { enotsup } from '../utils/errors.ts'
 import { ContentType, DEVICE_NUMBERS_KEY, FileStat, FileType } from '../types.ts'
-import { CHAR_MODE, DIR_MODE, FILE_MODE, LINK_MODE } from '../utils/stat_view.ts'
+import { CHAR_MODE, DIR_MODE, DIR_SIZE, FILE_MODE, LINK_MODE } from '../utils/stat_view.ts'
 import { LISTING_ENTRY_CONCURRENCY } from './constants.ts'
 import { CrossMountError } from './errors.ts'
 import type { BridgeDispatchFn } from './types.ts'
@@ -61,7 +61,7 @@ describe('RuntimeVFS transport', () => {
     const entries = await new RuntimeVFS(dispatch).readdir('/ram/')
     expect(entries).toEqual([
       { path: '/ram/a.txt', size: 4, isDir: false, mode: FILE_MODE, mtimeMs: 0 },
-      { path: '/ram/sub', size: 0, isDir: true, mode: DIR_MODE, mtimeMs: 0 },
+      { path: '/ram/sub', size: DIR_SIZE, isDir: true, mode: DIR_MODE, mtimeMs: 0 },
     ])
   })
 

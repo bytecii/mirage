@@ -477,38 +477,41 @@ async def test_walk_find_size_filter_propagates_other_stat_errors():
                         args=FindArgs(min_size=1))
 
 
-@pytest.mark.parametrize("kwargs,flag,value", [
+@pytest.mark.parametrize("kwargs,message", [
     ({
         "maxdepth": "abc"
-    }, "-maxdepth", "abc"),
+    }, "find: invalid argument 'abc' to '-maxdepth'"),
     ({
         "mindepth": "xx"
-    }, "-mindepth", "xx"),
+    }, "find: invalid argument 'xx' to '-mindepth'"),
     ({
         "size": ""
-    }, "-size", ""),
+    }, "find: invalid null argument to -size"),
     ({
         "size": "abc"
-    }, "-size", "abc"),
+    }, "find: Invalid argument `abc' to -size"),
+    ({
+        "size": "5x"
+    }, "find: invalid -size type `x'"),
     ({
         "mtime": "abc"
-    }, "-mtime", "abc"),
+    }, "find: invalid argument 'abc' to '-mtime'"),
 ])
 def test_parse_find_args_invalid_numeric_raises_find_parse_error(
-        kwargs, flag, value):
+        kwargs, message):
     with pytest.raises(FindParseError) as exc:
         parse_find_args((), **kwargs)
-    assert str(exc.value) == f"find: invalid argument '{value}' to '{flag}'"
+    assert str(exc.value) == message
 
 
-@pytest.mark.parametrize("expr", [
-    "-maxdepth abc",
-    "-mindepth xx",
-    "-size ''",
-    "-size abc",
-    "-mtime abc",
+@pytest.mark.parametrize("expr,message", [
+    ("-maxdepth abc", "find: invalid argument 'abc' to '-maxdepth'"),
+    ("-mindepth xx", "find: invalid argument 'xx' to '-mindepth'"),
+    ("-size ''", "find: invalid null argument to -size"),
+    ("-size abc", "find: Invalid argument `abc' to -size"),
+    ("-mtime abc", "find: invalid argument 'abc' to '-mtime'"),
 ])
-def test_find_invalid_numeric_arg_exits_one_with_clean_stderr(expr):
+def test_find_invalid_numeric_arg_exits_one_with_clean_stderr(expr, message):
 
     async def _go() -> tuple[int, str]:
         ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
@@ -518,8 +521,7 @@ def test_find_invalid_numeric_arg_exits_one_with_clean_stderr(expr):
 
     code, stderr = asyncio.run(_go())
     assert code == 1
-    assert stderr.startswith("find: invalid argument ")
-    assert stderr.endswith("\n")
+    assert stderr == message + "\n"
 
 
 # ── Issue #312 parse-level regression tests ────────────────

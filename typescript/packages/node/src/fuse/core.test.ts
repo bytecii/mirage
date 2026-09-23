@@ -16,7 +16,7 @@ import { constants as fsConstants } from 'node:fs'
 import { runWithSession } from '@struktoai/mirage-core/context/session_context'
 import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
 import { ContentType, FileStat, FileType, MountMode } from '@struktoai/mirage-core/types'
-import { mtimeMs } from '@struktoai/mirage-core/utils/stat_view'
+import { DIR_SIZE, mtimeMs } from '@struktoai/mirage-core/utils/stat_view'
 import { describe, expect, it, vi } from 'vitest'
 import { Workspace } from '../workspace.ts'
 import { MountCore } from './core.ts'
@@ -103,7 +103,9 @@ describe('MountCore', () => {
 
   it('reports directories', async () => {
     const core = await mkCore()
-    expect((await core.getattr('/data/sub')).mode & 0o170000).toBe(0o040000)
+    const attr = await core.getattr('/data/sub')
+    expect(attr.mode & 0o170000).toBe(0o040000)
+    expect(attr.size).toBe(DIR_SIZE)
   })
 
   it('throws a plain error for a missing path, not an errno code', async () => {

@@ -92,7 +92,7 @@ export function buildQuery(
       const sizeCond: Record<string, number> = {}
       if (options.minSize != null) sizeCond.$gte = options.minSize
       if (options.maxSize != null) sizeCond.$lte = options.maxSize
-      // Directory markers ride through; the client-side dirs-count-as-0
+      // Directory markers ride through; the client-side directory size
       // rule decides their fate.
       conds.push({ $or: [{ length: sizeCond }, { filename: { $regex: '/$' } }] })
     }

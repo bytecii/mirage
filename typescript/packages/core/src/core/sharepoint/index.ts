@@ -53,6 +53,7 @@ import {
   writeItem,
 } from '../msgraph/drive.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
+import { DIR_SIZE } from '../../utils/stat_view.ts'
 
 function directoryPath(path: PathSpec): PathSpec {
   return path.pattern !== null ? path.dir : path
@@ -393,8 +394,8 @@ function pushNamespaceDir(
   if (options.maxDepth != null && depth > options.maxDepth) return
   const entry: FindEntry = { key, name, kind: 'd', depth, isEmpty }
   if (!keep(entry, tree, options.minDepth)) return
-  // Directories count as size 0 for -size (documented GNU divergence).
-  if (options.minSize != null && options.minSize > 0) return
+  if (options.minSize != null && DIR_SIZE < options.minSize) return
+  if (options.maxSize != null && DIR_SIZE > options.maxSize) return
   results.push(key)
 }
 

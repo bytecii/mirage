@@ -15,6 +15,7 @@ from mirage.commands.errors import UsageError
 from mirage.ops.types import LinkView, MountView
 from mirage.types import (LINK_TARGET_KEY, ContentType, FileStat, FileType,
                           LsSortBy, LsTimeKind, PathSpec)
+from mirage.utils.stat_view import DIR_SIZE
 
 
 def _spec(path: str) -> PathSpec:
@@ -167,6 +168,22 @@ async def test_walk_sort_by_size():
                      reverse=True)
     entries = res.entries
     assert [e.name for e in entries] == ["small.txt", "big.txt"]
+
+
+@pytest.mark.asyncio
+async def test_walk_sort_by_size_counts_a_directory_as_dir_size():
+    tree = {
+        "/dir": _dir("dir"),
+        "/dir/big.txt": _file("big.txt", DIR_SIZE + 1),
+        "/dir/small.txt": _file("small.txt", 3),
+        "/dir/sub": _dir("sub"),
+    }
+    readdir, stat = _make_fs_backend(tree)
+    res = await walk(_spec("/dir"),
+                     readdir=readdir,
+                     stat=stat,
+                     sort_by=LsSortBy.SIZE)
+    assert [e.name for e in res.entries] == ["big.txt", "sub", "small.txt"]
 
 
 @pytest.mark.asyncio

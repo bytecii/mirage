@@ -24,6 +24,7 @@ from mirage.core.object_store.driver import (A, A_contra, C, FindHints,
 from mirage.core.object_store.readdir import read_tree
 from mirage.types import PathSpec
 from mirage.utils import key_prefix as kp
+from mirage.utils.stat_view import DIR_SIZE
 
 
 class FindFn(Protocol[A_contra]):
@@ -172,9 +173,7 @@ def make_find(driver: ObjectStoreDriver[A, C]) -> FindFn[A]:
                 if not keep(entry, tree, mindepth):
                     continue
                 if min_size is not None or max_size is not None:
-                    # Directories count as size 0 for -size (deliberate
-                    # GNU divergence).
-                    effective = 0 if kind == "d" else size
+                    effective = DIR_SIZE if kind == "d" else size
                     if min_size is not None and effective < min_size:
                         continue
                     if max_size is not None and effective > max_size:
