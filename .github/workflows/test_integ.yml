@@ -1629,18 +1629,20 @@ jobs:
         working-directory: integ
         run: pnpm run prisma:clients
 
-      - name: Start fake Trello and Linear APIs
+      - name: Start fake Trello, Linear and Airtable APIs
         if: matrix.facet == 'project'
         working-directory: integ
         run: |
           nohup ./node_modules/.bin/tsx server/trello/main.ts --port 5095 > /tmp/trello.log 2>&1 &
           nohup ./node_modules/.bin/tsx server/linear/main.ts --port 5094 > /tmp/linear.log 2>&1 &
-          for f in trello linear; do
+          nohup ./node_modules/.bin/tsx server/airtable/main.ts --port 5101 > /tmp/airtable.log 2>&1 &
+          for f in trello linear airtable; do
             for i in $(seq 1 30); do grep -q "_URL=" /tmp/$f.log && break; sleep 1; done
             cat /tmp/$f.log
           done
           echo "TRELLO_URL=http://127.0.0.1:5095" >> "$GITHUB_ENV"
           echo "LINEAR_URL=http://127.0.0.1:5094" >> "$GITHUB_ENV"
+          echo "AIRTABLE_URL=http://127.0.0.1:5101" >> "$GITHUB_ENV"
 
       # The cli facet drives the builtin CLIs (himalaya, gws, slack, discord,
       # ntn, linear) end to end against the same mocks the email, chat and

@@ -129,6 +129,9 @@ REGISTRY: dict[str, VFSEntry] = {
     VFSEntry("mirage.vfs.gmail:GmailVFS", "mirage.vfs.gmail:GmailConfig"),
     "trello":
     VFSEntry("mirage.vfs.trello:TrelloVFS", "mirage.vfs.trello:TrelloConfig"),
+    "airtable":
+    VFSEntry("mirage.vfs.airtable:AirtableVFS",
+             "mirage.vfs.airtable:AirtableConfig"),
     "mongodb":
     VFSEntry("mirage.vfs.mongodb:MongoDBVFS",
              "mirage.vfs.mongodb:MongoDBConfig"),

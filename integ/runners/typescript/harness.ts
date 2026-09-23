@@ -49,6 +49,8 @@ export interface Mount {
   volume?: string
   prefix?: string
   root?: string
+  // The bases an airtable mount is scoped to (AirtableConfig.base_ids).
+  base_ids?: string[]
   drive?: string
 }
 

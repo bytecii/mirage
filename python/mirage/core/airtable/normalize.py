@@ -1,0 +1,122 @@
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+from typing import Any
+
+from mirage.core.render.json import json_bytes, jsonl_bytes
+
+
+def normalize_base(base: dict[str, Any],
+                   tables: list[dict[str, Any]]) -> dict[str, Any]:
+    """base.json: the base and the tables it holds.
+
+    Args:
+        base (dict[str, Any]): the base-listing row.
+        tables (list[dict[str, Any]]): the base's schema tables.
+    """
+    return {
+        "base_id":
+        base.get("id"),
+        "base_name":
+        base.get("name"),
+        "permission_level":
+        base.get("permissionLevel"),
+        "tables": [{
+            "table_id": table.get("id"),
+            "table_name": table.get("name"),
+            "primary_field_id": table.get("primaryFieldId"),
+        } for table in tables],
+    }
+
+
+def normalize_field(field: dict[str, Any]) -> dict[str, Any]:
+    """One column: its id, name, type and the type's options.
+
+    Args:
+        field (dict[str, Any]): a schema field.
+    """
+    return {
+        "field_id": field.get("id"),
+        "field_name": field.get("name"),
+        "type": field.get("type"),
+        "description": field.get("description"),
+        "options": field.get("options"),
+    }
+
+
+def normalize_view(view: dict[str, Any]) -> dict[str, Any]:
+    """One saved view: its id, name and kind (grid, kanban, ...).
+
+    Args:
+        view (dict[str, Any]): a schema view.
+    """
+    return {
+        "view_id": view.get("id"),
+        "view_name": view.get("name"),
+        "type": view.get("type"),
+    }
+
+
+def normalize_table(table: dict[str, Any], base_id: str) -> dict[str, Any]:
+    """table.json: the column schema and the saved views.
+
+    Args:
+        table (dict[str, Any]): a schema table.
+        base_id (str): the base holding it.
+    """
+    return {
+        "table_id": table.get("id"),
+        "table_name": table.get("name"),
+        "base_id": base_id,
+        "description": table.get("description"),
+        "primary_field_id": table.get("primaryFieldId"),
+        "fields": [normalize_field(f) for f in table.get("fields") or []],
+        "views": [normalize_view(v) for v in table.get("views") or []],
+    }
+
+
+def normalize_record(record: dict[str, Any]) -> dict[str, Any]:
+    """One records.jsonl row.
+
+    ``fields`` is Airtable's cell map, keyed by field name and passed
+    through untouched: an empty cell is absent (Airtable never sends
+    one), a link is a list of record ids, and an attachment's url is
+    the API's own, which expires two hours after it was fetched.
+
+    Args:
+        record (dict[str, Any]): a listed record.
+    """
+    return {
+        "record_id": record.get("id"),
+        "created_time": record.get("createdTime"),
+        "fields": record.get("fields") or {},
+    }
+
+
+def to_json_bytes(value: Any) -> bytes:
+    """Render a .json leaf.
+
+    Args:
+        value (Any): the normalized payload.
+    """
+    return json_bytes(value)
+
+
+def records_jsonl(records: list[dict[str, Any]]) -> bytes:
+    """Render records one per line, in the order they were listed.
+
+    Args:
+        records (list[dict[str, Any]]): listed records.
+    """
+    return jsonl_bytes([normalize_record(r) for r in records])

@@ -278,6 +278,11 @@ const REGISTRY: Record<string, VFSFactory> = {
     const { SharePointVFS } = await import('@struktoai/mirage-core/vfs/sharepoint/sharepoint')
     return new SharePointVFS(normalizeSharePointConfig(config))
   },
+  airtable: async (config) => {
+    const { normalizeAirtableConfig } = await import('@struktoai/mirage-core/core/airtable/config')
+    const { AirtableVFS } = await import('@struktoai/mirage-core/vfs/airtable/airtable')
+    return new AirtableVFS(normalizeAirtableConfig(config))
+  },
   mem0: async (config) => {
     const { normalizeMem0Config } = await import('@struktoai/mirage-core/vfs/mem0/config')
     const { Mem0VFS } = await import('@struktoai/mirage-core/vfs/mem0/mem0')

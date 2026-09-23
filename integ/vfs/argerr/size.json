@@ -4,6 +4,7 @@
       "id": "find_arg_size",
       "seq": 320002,
       "targets": [
+        "argerr-airtable",
         "argerr-databricks",
         "argerr-discord",
         "argerr-email",
@@ -31,6 +32,7 @@
       "id": "find_arg_size_trailing",
       "seq": 320006,
       "targets": [
+        "argerr-airtable",
         "argerr-databricks",
         "argerr-discord",
         "argerr-email",
