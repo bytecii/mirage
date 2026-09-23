@@ -183,6 +183,21 @@ export interface VFS {
   rmR?(path: PathSpec): Promise<void>
   du?(path: PathSpec): Promise<number>
   find?(path: PathSpec, options?: FindOptions): Promise<string[]>
+  /**
+   * Expand the patterned specs in `paths` against this backend.
+   *
+   * `prefix` is the mount prefix without its trailing slash (`/mnt/lin`).
+   * Every caller stamps each spec's `vfsPath` with `mountKey(virtual,
+   * prefix)` before calling: the workspace expander, its mid-path and
+   * globstar walks, and the builtins' `expandOperands` (commands never come
+   * here; they glob through their `CommandIO.resolveGlob`, which takes no
+   * prefix). So an implementation may read `vfsPath` and ignore `prefix`,
+   * as the chroma/dify/mem0/qdrant/onedrive/sharepoint mounts and python's
+   * API backends do, and one that re-derives `vfsPath` from `prefix` computes
+   * the same key. The re-derivation only matters to a caller outside the
+   * workspace handing over an unstamped spec (`PathSpec.fromStrPath` keys it
+   * from the root). Mirrors Python `BaseVFS.resolve_glob`.
+   */
   glob?(paths: readonly PathSpec[], prefix?: string): Promise<PathSpec[]>
   // Capacity for df. Absent -> treated as UNKNOWN (rendered `-`). Implement
   // only where a truthful number exists (a real filesystem, or a provider

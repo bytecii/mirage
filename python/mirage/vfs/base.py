@@ -136,6 +136,28 @@ class BaseVFS:
     async def resolve_glob(self,
                            paths: list[PathSpec],
                            prefix: str = "") -> list[PathSpec]:
+        """Expand the patterned specs in ``paths`` against this backend.
+
+        ``prefix`` is the mount prefix without its trailing slash
+        (``/mnt/lin``). Every caller stamps each spec's ``vfs_path`` with
+        ``mount_key(virtual, prefix)`` before calling: the workspace
+        expander, its mid-path and globstar walks, and the builtins'
+        ``expand_operands`` (commands never come here; they glob through
+        their ``CommandIO.resolve_glob``, which takes no prefix). So an
+        implementation may read ``vfs_path`` and ignore ``prefix``, as the
+        API backends do, and one that re-derives ``vfs_path`` from
+        ``prefix``, as the storage backends and the typescript twins do,
+        computes the same key. The re-derivation only matters to a caller
+        outside the workspace handing over an unstamped spec
+        (``PathSpec.from_str_path`` keys it from the root).
+
+        Args:
+            paths (list[PathSpec]): specs to expand, keyed under the mount.
+            prefix (str): the owning mount's prefix, no trailing slash.
+
+        Returns:
+            list[PathSpec]: one spec per match.
+        """
         raise NotImplementedError
 
     def storage_id(self) -> str:

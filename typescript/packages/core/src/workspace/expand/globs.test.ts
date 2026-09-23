@@ -15,9 +15,13 @@
 import { describe, expect, it } from 'vitest'
 import type { NamespaceLinks } from '../../ops/config.ts'
 import { BaseVFS, type VFS } from '../../vfs/base.ts'
+import { RAMVFS } from '../../vfs/ram/ram.ts'
 import { FileStat, FileType, MountMode, PathSpec } from '../../types.ts'
 import { enoent } from '../../utils/errors.ts'
+import { mountKey } from '../../utils/key_prefix.ts'
+import { getTestParser } from '../fixtures/workspace_fixture.ts'
 import { MountRegistry } from '../mount/registry.ts'
+import { Workspace } from '../workspace/workspace.ts'
 import { resolveGlobs, type ResourceWithGlob } from './globs.ts'
 
 class PlainVFS extends BaseVFS implements VFS {
@@ -267,5 +271,53 @@ describe('matchRaw via resolveGlobs', () => {
     })
     const out = await resolveGlobs([p], reg)
     expect((out[0] as PathSpec).rawPath).toBe('*.nope')
+  })
+})
+
+// A RAM mount that ignores the glob hook's `prefix`, the way python's API
+// backends do, and records the keys it was handed.
+class PrefixBlindRAM extends RAMVFS {
+  readonly seen: [string, string][] = []
+
+  override glob(paths: readonly PathSpec[], _prefix = ''): Promise<PathSpec[]> {
+    for (const p of paths) this.seen.push([p.virtual, p.vfsPath])
+    return super.glob(paths, '')
+  }
+}
+
+// `prefix` is the mount prefix, and every caller stamps each spec's
+// `vfsPath` with `mountKey(virtual, prefix)` before the hook runs. So the
+// two ways a backend treats `prefix` (re-derive the key from it, or read
+// `vfsPath` and ignore it) agree, which is why the typescript remap and
+// python's prefix-blind API backends are both correct. Pinned the same way
+// in python's test_globs.py.
+describe('the glob hook under a non-root mount prefix', () => {
+  it('is handed keys below the prefix on every expansion path', async () => {
+    const vfs = new PrefixBlindRAM()
+    const ws = new Workspace(
+      { '/mnt/x/': vfs },
+      { mode: MountMode.WRITE, shellParser: await getTestParser() },
+    )
+    for (const line of [
+      'mkdir -p /mnt/x/team/sub',
+      'printf 1 > /mnt/x/team/f1',
+      'printf 2 > /mnt/x/tea.txt',
+      'printf 3 > /mnt/x/other',
+    ]) {
+      await ws.shell(line)
+    }
+    const cases: [string, string][] = [
+      ['echo /mnt/x/*', '/mnt/x/other /mnt/x/tea.txt /mnt/x/team'],
+      ['echo /mnt/x/*/f*', '/mnt/x/team/f1'],
+      ['cd /mnt/x && echo tea*', 'tea.txt team'],
+      ['shopt -s globstar; echo /mnt/x/**/f1', '/mnt/x/team/f1'],
+      ['touch /mnt/x/tea* && echo touched', 'touched'],
+    ]
+    for (const [line, want] of cases) {
+      expect((await ws.shell(line)).stdoutText.trim(), line).toBe(want)
+    }
+    expect(vfs.seen.length).toBeGreaterThan(0)
+    expect(vfs.seen.filter(([v, key]) => key !== mountKey(v, '/mnt/x'))).toEqual([])
+    await ws.close()
   })
 })
