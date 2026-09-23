@@ -65,3 +65,23 @@ async def resolve_parent_id(accessor: BoxAccessor,
     if parent is None or parent.get("type") != "folder":
         return None
     return parent["id"]
+
+
+def mount_relative_key(item: dict[str, Any],
+                       root_folder_id: str) -> str | None:
+    # Reconstruct the mount-relative key from the item's ancestor chain by
+    # trimming everything up to and including the mount root folder. Box's
+    # path_collection lists ancestors from the account root down to the
+    # immediate parent (excluding the item itself).
+    entries = (item.get("path_collection") or {}).get("entries") or []
+    names: list[str] = []
+    collecting = False
+    for anc in entries:
+        if collecting:
+            names.append(anc.get("name", ""))
+        if anc.get("id") == root_folder_id:
+            collecting = True
+    if not collecting:
+        return None
+    names.append(item.get("name", ""))
+    return "/".join(n for n in names if n)
