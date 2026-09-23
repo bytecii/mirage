@@ -166,8 +166,8 @@ async def test_shell_function_precedes_external_and_discovery_names_the_route(
 ):
     probe = ProcessProbe()
     async with workspace({"/": RAMVFS()}, runtimes=[probe]) as ws:
-        assert await (
-            await ws.shell("type -t native-tool")).stdout_str() == "external\n"
+        assert await (await
+                      ws.shell("type -t native-tool")).stdout_str() == "file\n"
         await ws.shell("native-tool() { echo function; }")
         assert await (await
                       ws.shell("native-tool")).stdout_str() == "function\n"
@@ -478,8 +478,8 @@ async def test_native_captures_preserve_shell_builtins(kind, willing):
             await
             ws.shell('printf "%s\n" "$NATIVE_TEST"')).stdout_str() == "kept\n"
         assert await (await ws.shell("echo shell")).stdout_str() == "shell\n"
-        assert await (await ws.shell("type -a echo")
-                      ).stdout_str() == "echo is a shell builtin\n"
+        assert await (await ws.shell("type -a echo")).stdout_str() == (
+            "echo is a shell builtin\necho is /usr/bin/echo\n")
         assert not (probe.requests
                     if isinstance(probe, ProcessProbe) else probe.lines)
         for name in ("python", "python3", "node", "js"):

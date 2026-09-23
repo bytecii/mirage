@@ -256,7 +256,7 @@
       "command": "type -t gh; which gh",
       "expect": {
         "exit": 0,
-        "stdout": "cli\ngh\n",
+        "stdout": "file\n/usr/bin/gh\n",
         "stderr": ""
       }
     },

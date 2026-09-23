@@ -275,7 +275,7 @@ describe('hidden vars in the session door', () => {
     expect('SLACK_TOKEN' in env).toBe(false)
     expect('AWS_SECRET_KEY' in env).toBe(false)
     expect(env.PUBLIC).toBe('1')
-    expect(Object.keys(env).sort()).toEqual(['PUBLIC', 'PWD'])
+    expect(Object.keys(env).sort()).toEqual(['PATH', 'PUBLIC', 'PWD'])
   })
 })
 

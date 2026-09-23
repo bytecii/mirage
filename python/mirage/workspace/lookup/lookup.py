@@ -18,8 +18,9 @@ from mirage.policy.match import head_visible, node_visible
 from mirage.runtime.constants import EXTERNAL_COMMANDS
 from mirage.runtime.mixin import LineExecutorMixin, ProcessExecutorMixin
 from mirage.runtime.routing.types import RouteDecision
-from mirage.workspace.lookup.constants import (INTERPRETER_NAMES,
-                                               NAMESPACE_COMMANDS, SHELL_NAMES)
+from mirage.workspace.lookup.constants import (INTERPRETER_NAMES, KEYWORDS,
+                                               NAMESPACE_COMMANDS, SHELL_NAMES,
+                                               SHELL_ONLY_BUILTINS)
 from mirage.workspace.lookup.types import Consumer
 from mirage.workspace.mount import MountRegistry
 from mirage.workspace.session import SessionState
@@ -226,3 +227,55 @@ def lookup_all(name: str, session: SessionState,
         registry (MountRegistry): mount registry (command registration).
     """
     return list(_layers(name, session, registry))
+
+
+def program(name: str, session: SessionState,
+            registry: MountRegistry) -> Consumer | None:
+    """The layer a name runs from as a program, None when it is none.
+
+    A program is what a real system ships as a file on PATH, so it has
+    one under ``/usr/bin`` here: every mount, namespace and CLI command,
+    every runtime capture, and each builtin a real system also finds on
+    disk (echo, test, xargs). The shell's own words (cd, export:
+    ``SHELL_ONLY_BUILTINS``), reserved words, functions and aliases have
+    no file. A function shadowing a program leaves the file in place,
+    as it does on PATH.
+
+    Args:
+        name (str): the command word.
+        session (SessionState): shell session (function table, allow
+            list).
+        registry (MountRegistry): mount registry (command registration).
+    """
+    if "/" in name or name in KEYWORDS:
+        return None
+    for consumer in _layers(name, session, registry):
+        if consumer is Consumer.FUNCTION:
+            continue
+        if consumer is Consumer.SESSION and name in SHELL_ONLY_BUILTINS:
+            continue
+        return consumer
+    return None
+
+
+def programs(session: SessionState, registry: MountRegistry) -> list[str]:
+    """Every program name the session can run, sorted: the ``/usr/bin``
+    listing.
+
+    The names are gathered from each layer that can hold a program and
+    kept only where ``program`` says the name runs as one, so the
+    listing and a lookup never disagree. A name only the external
+    fallback capture would take cannot be listed, since that capture
+    takes any word.
+
+    Args:
+        session (SessionState): shell session (function table, allow
+            list).
+        registry (MountRegistry): mount registry (command registration).
+    """
+    names = set(SHELL_NAMES) | NAMESPACE_COMMANDS | set(registry.clis.names())
+    names |= {n for n in registry.runtime_bindings if n != EXTERNAL_COMMANDS}
+    for mount in registry.mounts():
+        names |= {cmd.name.split()[0] for cmd in mount.all_commands()}
+    return sorted(n for n in names
+                  if program(n, session, registry) is not None)

@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { RANDOM, RANDOM_UNSET, SHELL_ARGV0 } from '../../shell/constants.ts'
+import { BIN_PREFIX, RANDOM, RANDOM_UNSET, SHELL_ARGV0 } from '../../shell/constants.ts'
 import type { AsyncLineIterator } from '../../io/async_line_iterator.ts'
 import { EnvVarSchema, type EnvEntries } from '../../secrets/config.ts'
 import type { ShellArray } from '../../shell/array.ts'
@@ -540,6 +540,10 @@ export class SessionState {
     // rather than every string.
     if (!Object.hasOwn(this.vars, 'PWD'))
       this.vars.PWD = makeVar(this.cwd, new Set([VarAttr.Export]))
+    // bash starts with a PATH when the environment gives it none; the one
+    // directory here is where every program's file is.
+    if (!Object.hasOwn(this.vars, 'PATH'))
+      this.vars.PATH = makeVar(BIN_PREFIX, new Set([VarAttr.Export]))
   }
 
   /**

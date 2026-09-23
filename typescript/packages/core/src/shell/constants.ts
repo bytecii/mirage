@@ -96,6 +96,12 @@ export const RANDOM_UNSET = ''
 // `SessionState.argv0` is the one place the two are folded together.
 export const SHELL_ARGV0 = 'mirage'
 
+// The one directory PATH names, bash's default PATH for a shell that
+// starts without one: every program a session can run has a file here
+// (the /usr/bin view mount), which is the path which, type and command -v
+// report.
+export const BIN_PREFIX = '/usr/bin'
+
 // Node types whose failure never triggers `set -e` by shape alone.
 // Lists are NOT exempt: bash exits when the command after the final
 // `&&`/`||` fails; short-circuit failures set SessionState.errexitImmune

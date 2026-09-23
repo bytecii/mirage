@@ -18,8 +18,15 @@ import type { RouteDecision } from '../../runtime/routing/types.ts'
 import { headVisible, nodeVisible } from '../../policy/match/allow.ts'
 import type { MountRegistry } from '../mount/registry.ts'
 import type { SessionState } from '../session/session.ts'
-import { INTERPRETER_NAMES, NAMESPACE_COMMANDS, SHELL_NAMES } from './constants.ts'
+import {
+  INTERPRETER_NAMES,
+  KEYWORDS,
+  NAMESPACE_COMMANDS,
+  SHELL_NAMES,
+  SHELL_ONLY_BUILTINS,
+} from './constants.ts'
 import { Consumer } from './types.ts'
+import { compareCodePoints } from '../../utils/sort.ts'
 
 /**
  * What the session's allow list says about a tool word. A profile without a
@@ -215,4 +222,50 @@ export function lookupAll(
   registry: MountRegistry,
 ): Consumer[] {
   return [...layers(name, session, registry)]
+}
+
+/**
+ * The layer a name runs from as a program, null when it is none.
+ *
+ * A program is what a real system ships as a file on PATH, so it has one
+ * under `/usr/bin` here: every mount, namespace and CLI command, every
+ * runtime capture, and each builtin a real system also finds on disk
+ * (echo, test, xargs). The shell's own words (cd, export:
+ * `SHELL_ONLY_BUILTINS`), reserved words, functions and aliases have no
+ * file. A function shadowing a program leaves the file in place, as it
+ * does on PATH.
+ */
+export function program(
+  name: string,
+  session: SessionState,
+  registry: MountRegistry,
+): Consumer | null {
+  if (name.includes('/') || KEYWORDS.has(name)) return null
+  for (const consumer of layers(name, session, registry)) {
+    if (consumer === Consumer.FUNCTION) continue
+    if (consumer === Consumer.SESSION && SHELL_ONLY_BUILTINS.has(name)) continue
+    return consumer
+  }
+  return null
+}
+
+/**
+ * Every program name the session can run, sorted: the `/usr/bin` listing.
+ *
+ * The names are gathered from each layer that can hold a program and
+ * kept only where `program` says the name runs as one, so the listing and
+ * a lookup never disagree. A name only the external fallback capture
+ * would take cannot be listed, since that capture takes any word.
+ */
+export function programs(session: SessionState, registry: MountRegistry): string[] {
+  const names = new Set<string>([...SHELL_NAMES, ...NAMESPACE_COMMANDS, ...registry.clis.names()])
+  for (const entry of registry.runtimeEntries) {
+    for (const capture of entry.captures) if (capture !== EXTERNAL_COMMANDS) names.add(capture)
+  }
+  for (const mount of registry.allMounts()) {
+    for (const cmd of mount.allCommands()) names.add(cmd.name.split(' ')[0] ?? cmd.name)
+  }
+  return [...names]
+    .filter((name) => program(name, session, registry) !== null)
+    .sort(compareCodePoints)
 }

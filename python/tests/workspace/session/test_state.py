@@ -246,8 +246,8 @@ def test_visible_env_filters_reads_without_copying():
     assert env.get("SLACK_TOKEN") is None
     assert "AWS_SECRET_KEY" not in env
     assert env["PUBLIC"] == "1"
-    assert sorted(env) == ["PUBLIC", "PWD"]
-    assert len(env) == 2
+    assert sorted(env) == ["PATH", "PUBLIC", "PWD"]
+    assert len(env) == 3
     with pytest.raises(KeyError):
         env["SLACK_TOKEN"]
     seed_var(session, "NEW", "2")

@@ -26,6 +26,8 @@ import {
   readsSubtrees,
   lookup,
   lookupAll,
+  program,
+  programs,
   verbVisible,
   walksMounts,
 } from './index.ts'
@@ -260,5 +262,47 @@ describe('allow lists', () => {
     session.commands = null
     expect(lookupAll('rm', session, reg)).toEqual([Consumer.FUNCTION, Consumer.MOUNT])
     expect(lookup('sleep', session, reg)).toBe(Consumer.SESSION)
+  })
+})
+
+describe('program', () => {
+  it('is what a real system ships as a file', () => {
+    const { session, ws } = fixture()
+    expect(program('cat', session, ws.registry)).toBe(Consumer.MOUNT)
+    expect(program('readlink', session, ws.registry)).toBe(Consumer.NAMESPACE)
+    // A builtin a real system also finds on disk keeps its file.
+    expect(program('echo', session, ws.registry)).toBe(Consumer.SESSION)
+    expect(program('xargs', session, ws.registry)).toBe(Consumer.SESSION)
+    // The shell's own words, reserved words and unknowns have none.
+    for (const name of ['cd', 'export', 'if', 'nope-xyz', '/bin/ls']) {
+      expect(program(name, session, ws.registry)).toBeNull()
+    }
+  })
+
+  it('keeps the file under a shadowing function', () => {
+    const { session, ws } = fixture()
+    session.functions.cat = 'cat() { :; }'
+    expect(lookup('cat', session, ws.registry)).toBe(Consumer.FUNCTION)
+    expect(program('cat', session, ws.registry)).toBe(Consumer.MOUNT)
+    session.functions.myfn = 'myfn() { :; }'
+    expect(program('myfn', session, ws.registry)).toBeNull()
+  })
+
+  it('programs lists every program the session can run, sorted', () => {
+    const { session, ws } = fixture()
+    ws.registerCli('prog', cliTree())
+    const names = programs(session, ws.registry)
+    expect(names).toEqual([...names].sort())
+    for (const name of ['cat', 'echo', 'prog', 'readlink', 'xargs']) expect(names).toContain(name)
+    for (const name of ['cd', 'export', '[[']) expect(names).not.toContain(name)
+  })
+
+  it('programs follows the allow list', () => {
+    const { ws } = fixture()
+    const narrow = new SessionState({
+      sessionId: 'n',
+      commands: { allow: ['cat'], ask: [], deny: [] },
+    })
+    expect(programs(narrow, ws.registry)).toEqual(['cat'])
   })
 })

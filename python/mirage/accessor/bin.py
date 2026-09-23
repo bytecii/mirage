@@ -1,0 +1,36 @@
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+from collections.abc import Callable
+
+from mirage.accessor.base import Accessor
+
+
+class BinAccessor(Accessor):
+    """Accessor over the workspace's command lookup for the /usr/bin view.
+
+    Both answers are the calling session's, so a program its allow list
+    hides has no file either.
+
+    Args:
+        programs (Callable[[], list[str]]): every program name the
+            session can run, sorted.
+        runs (Callable[[str], bool]): whether one name runs as a
+            program, which is what gives it a file.
+    """
+
+    def __init__(self, programs: Callable[[], list[str]],
+                 runs: Callable[[str], bool]) -> None:
+        self.programs = programs
+        self.runs = runs

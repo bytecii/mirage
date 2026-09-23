@@ -18,8 +18,9 @@ from mirage.workspace.lookup.constants import (  # isort: skip
     end_options_after_program, follows_last_component, reads_subtrees,
     reports_link, walks_mounts)
 from mirage.workspace.lookup.lookup import (command_visible, is_tool, listed,
-                                            lookup, lookup_all,
-                                            runtime_refused, verb_visible)
+                                            lookup, lookup_all, program,
+                                            programs, runtime_refused,
+                                            verb_visible)
 from mirage.workspace.lookup.types import (SHELL_CONSUMERS, Consumer,
                                            WordPolicy, word_policy)
 
@@ -44,6 +45,8 @@ __all__ = [
     "SHELL_NAMES",
     "is_tool",
     "lookup_all",
+    "program",
+    "programs",
     "runtime_refused",
     "verb_visible",
     "word_policy",

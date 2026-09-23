@@ -129,8 +129,11 @@ describe('handleExport / handleUnset / handlePrintenv', () => {
     const s = new SessionState({ sessionId: 'test', vars: varsFromEnv({ FOO: 'bar' }) })
     const [out, io] = await handleExport([], s)
     expect(io.exitCode).toBe(0)
-    // $PWD is exported like any other variable, so bash lists it here too.
-    expect(decode(out as Uint8Array)).toBe('declare -x FOO="bar"\ndeclare -x PWD="/"\n')
+    // $PWD and $PATH are exported like any other variable, so bash lists
+    // them here too.
+    expect(decode(out as Uint8Array)).toBe(
+      'declare -x FOO="bar"\ndeclare -x PATH="/usr/bin"\ndeclare -x PWD="/"\n',
+    )
   })
 
   it('export -z is invalid option exit 2', async () => {
@@ -207,7 +210,9 @@ describe('handleExport / handleUnset / handlePrintenv', () => {
     const s = new SessionState({ sessionId: 'test', vars: varsFromEnv({ FOO: 'bar' }) })
     const [out, io] = await handleExport(['-p', '--'], s)
     expect(io.exitCode).toBe(0)
-    expect(decode(out as Uint8Array)).toBe('declare -x FOO="bar"\ndeclare -x PWD="/"\n')
+    expect(decode(out as Uint8Array)).toBe(
+      'declare -x FOO="bar"\ndeclare -x PATH="/usr/bin"\ndeclare -x PWD="/"\n',
+    )
   })
 
   it('export -f lists no variables', async () => {
@@ -352,7 +357,7 @@ describe('handleExport / handleUnset / handlePrintenv', () => {
   it('printenv with no name lists sorted KEY=VAL', () => {
     const s = new SessionState({ sessionId: 'test', vars: varsFromEnv({ B: '2', A: '1' }) })
     const [out] = handlePrintenv(null, s)
-    expect(decode(out as Uint8Array)).toBe('A=1\nB=2\nPWD=/\n')
+    expect(decode(out as Uint8Array)).toBe('A=1\nB=2\nPATH=/usr/bin\nPWD=/\n')
   })
 })
 
@@ -1432,7 +1437,7 @@ describe('handleSet', () => {
   it('no args → print env', () => {
     const s = new SessionState({ sessionId: 'test', vars: varsFromEnv({ A: '1' }) })
     const [out] = handleSet([], s)
-    expect(decode(out as Uint8Array)).toBe('A=1\nPWD=/\n')
+    expect(decode(out as Uint8Array)).toBe('A=1\nPATH=/usr/bin\nPWD=/\n')
   })
 
   it('"-- a b" sets positional args', () => {

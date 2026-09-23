@@ -2822,7 +2822,7 @@ def test_unmount_preserves_root_operations(explicit_root):
             assert (await ws.vfs.stat("/")).type == FileType.DIRECTORY
             result = await ws.shell("ls /")
             assert result.exit_code == 0
-            assert result.stdout == b"dev\n"
+            assert result.stdout == b"dev\nusr\n"
             assert not result.stderr
         finally:
             await ws.close()

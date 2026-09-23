@@ -166,7 +166,7 @@
           "command": "cd /ram; export BUILTIN_VALUE=kept; printf \"%s\\n\" \"$BUILTIN_VALUE\"; echo shell; pwd; type -a echo",
           "expect": {
             "exit": 0,
-            "stdout": "kept\nshell\n/ram\necho is a shell builtin\n"
+            "stdout": "kept\nshell\n/ram\necho is a shell builtin\necho is /usr/bin/echo\n"
           }
         },
         {

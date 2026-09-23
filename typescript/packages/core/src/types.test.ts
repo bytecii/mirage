@@ -102,6 +102,7 @@ describe('VFSName', () => {
     expect(Object.values(VFSName).sort()).toEqual([
       'aliyun',
       'backblaze',
+      'bin',
       'box',
       'ceph',
       'chroma',

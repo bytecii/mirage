@@ -476,6 +476,7 @@ export const VFSName = Object.freeze({
   SCALEWAY: 'scaleway',
   QINGSTOR: 'qingstor',
   HISTORY: 'history',
+  BIN: 'bin',
 } as const)
 
 export type VFSName = (typeof VFSName)[keyof typeof VFSName]

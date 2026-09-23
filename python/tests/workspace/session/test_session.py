@@ -35,7 +35,7 @@ def test_session_defaults():
     assert s.cwd == "/"
     # bash exports `$PWD` from startup, so even a session that never
     # ran `cd` has one.
-    assert s.env == {"PWD": "/"}
+    assert s.env == {"PWD": "/", "PATH": "/usr/bin"}
     assert s.functions == {}
     assert s.last_exit_code == 0
     assert s._stdin_buffer is None
@@ -87,7 +87,7 @@ def test_session_to_dict():
     d = s.to_dict()
     assert d["session_id"] == "s1"
     assert d["cwd"] == "/data"
-    assert d["env"] == {"K": "V", "PWD": "/data"}
+    assert d["env"] == {"K": "V", "PWD": "/data", "PATH": "/usr/bin"}
     assert "created_at" in d
 
 
@@ -156,7 +156,7 @@ def test_fork_copies_every_field_including_mount_modes():
     forked = original.fork()
     assert forked.session_id == "orig"
     assert forked.cwd == "/disk"
-    assert forked.env == {"FOO": "bar", "PWD": "/disk"}
+    assert forked.env == {"FOO": "bar", "PWD": "/disk", "PATH": "/usr/bin"}
     assert forked.mount_modes == {
         "/s3": MountMode.READ,
         "/dev": MountMode.EXEC,
@@ -199,9 +199,9 @@ def test_fork_overrides_apply_without_mutating_original():
     forked = original.fork(cwd="/ram", vars=vars_from_env({"BAZ": "qux"}))
     assert forked.cwd == "/ram"
     # `$PWD` follows the caller-supplied cwd rather than staying stale.
-    assert forked.env == {"BAZ": "qux", "PWD": "/ram"}
+    assert forked.env == {"BAZ": "qux", "PWD": "/ram", "PATH": "/usr/bin"}
     assert original.cwd == "/disk"
-    assert original.env == {"FOO": "bar", "PWD": "/disk"}
+    assert original.env == {"FOO": "bar", "PWD": "/disk", "PATH": "/usr/bin"}
 
 
 def test_fork_drops_the_logical_cwd_when_the_caller_overrides_cwd():
@@ -261,7 +261,7 @@ def test_snapshot_and_restore_undo_a_child_shell():
     session.script_name = "run.sh"
     session.restore(saved)
     assert session.cwd == "/data"
-    assert session.env == {"A": "1", "PWD": "/data"}
+    assert session.env == {"A": "1", "PWD": "/data", "PATH": "/usr/bin"}
     assert session.functions == {}
     assert session.script_name is None
 
@@ -281,8 +281,18 @@ def test_to_dict_carries_the_attributes_beside_the_values():
     # `env` stays a plain name/value map, the shape an embedder writes
     # and the other language reads; the letters ride beside it. An unset
     # name has no value to carry and appears only in `var_attrs`.
-    assert data["env"] == {"PWD": "/", "PLAIN": "hello", "EXPO": "world"}
-    assert data["var_attrs"] == {"PWD": "x", "EXPO": "x", "MARKED": "rx"}
+    assert data["env"] == {
+        "PWD": "/",
+        "PATH": "/usr/bin",
+        "PLAIN": "hello",
+        "EXPO": "world"
+    }
+    assert data["var_attrs"] == {
+        "PWD": "x",
+        "PATH": "x",
+        "EXPO": "x",
+        "MARKED": "rx"
+    }
 
 
 def test_var_attrs_is_written_even_when_empty():
@@ -292,8 +302,9 @@ def test_var_attrs_is_written_even_when_empty():
     # environment, and the reload re-exported everything it held.
     s = SessionState(session_id="s1")
     seed_var(s, "X", "secret")
-    # `export -n PWD` clears the one attribute a fresh session carries.
+    # `export -n` clears the attributes a fresh session carries.
     set_attr(s, "PWD", VarAttr.EXPORT, False)
+    set_attr(s, "PATH", VarAttr.EXPORT, False)
     data = s.to_dict()
     assert data["var_attrs"] == {}
     back = SessionState.from_dict(data)

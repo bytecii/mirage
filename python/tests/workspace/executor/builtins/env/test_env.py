@@ -42,8 +42,9 @@ async def test_env_prints_environment_in_insertion_order():
     seed_exported(session, "AAA", "2")
     out, io, _ = await handle_env(_unused_execute_fn, [], session)
     assert io.exit_code == 0
-    # `$PWD` is seeded at construction, so it leads the insertion order.
-    assert await materialize(out) == b"PWD=/\nZZZ=1\nAAA=2\n"
+    # `$PWD` and `$PATH` are seeded at construction, so they lead the
+    # insertion order.
+    assert await materialize(out) == b"PWD=/\nPATH=/usr/bin\nZZZ=1\nAAA=2\n"
 
 
 @pytest.mark.asyncio
@@ -79,7 +80,7 @@ async def test_env_run_form_forwards_stdin_and_restores_env():
     assert args[0] == "printenv FOO"
     assert kwargs["stdin"] == b"piped\n"
     # The session environment is restored after the inner command runs.
-    assert session.env == {"PWD": "/", "FOO": "original"}
+    assert session.env == {"PWD": "/", "PATH": "/usr/bin", "FOO": "original"}
 
 
 @pytest.mark.asyncio

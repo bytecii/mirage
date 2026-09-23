@@ -12,13 +12,32 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.workspace.executor.builtins.lookup.constants import (
-    DESCRIPTIONS, KIND_BY_CONSUMER)
+from mirage.shell.constants import BIN_PREFIX
+from mirage.workspace.executor.builtins.lookup.constants import DESCRIPTIONS
 from mirage.workspace.executor.builtins.lookup.types import NameKind
-from mirage.workspace.lookup import lookup, lookup_all
+from mirage.workspace.lookup import Consumer, lookup, lookup_all, program
+from mirage.workspace.lookup.constants import BASH_BUILTINS
 from mirage.workspace.mount import MountRegistry
 from mirage.workspace.names import KEYWORDS
 from mirage.workspace.session import SessionState
+
+
+def _kind(consumer: Consumer, name: str) -> NameKind:
+    """The kind one layer reports a name as.
+
+    A function is a function and one of bash's own builtins is a
+    builtin; every other layer runs a program, whose file is the
+    name's under ``/usr/bin``.
+
+    Args:
+        consumer (Consumer): the layer holding the name.
+        name (str): the operand word.
+    """
+    if consumer is Consumer.FUNCTION:
+        return NameKind.FUNCTION
+    if consumer is Consumer.SESSION and name in BASH_BUILTINS:
+        return NameKind.BUILTIN
+    return NameKind.FILE
 
 
 def classify(name: str, session: SessionState,
@@ -34,7 +53,10 @@ def classify(name: str, session: SessionState,
         return NameKind.ALIAS
     if name in KEYWORDS:
         return NameKind.KEYWORD
-    return KIND_BY_CONSUMER.get(lookup(name, session, registry))
+    consumer = lookup(name, session, registry)
+    if consumer is Consumer.UNKNOWN:
+        return None
+    return _kind(consumer, name)
 
 
 def classify_all(name: str, session: SessionState,
@@ -50,8 +72,9 @@ def classify_all(name: str, session: SessionState,
     keyword while the line runs the function.
 
     Duplicate kinds are dropped, since the kinds are coarser than the
-    layers: a shell builtin that a mount also registers is one
-    ``builtin`` line, not two identical ones.
+    layers: a program both a mount and a CLI answer for is one file.
+    A builtin that is a program too ends with that file's line, as
+    bash's ``type -a echo`` does after its builtin line.
 
     Args:
         name (str): the operand word.
@@ -65,9 +88,12 @@ def classify_all(name: str, session: SessionState,
     if name in KEYWORDS:
         kinds.append(NameKind.KEYWORD)
     for consumer in lookup_all(name, session, registry):
-        kind = KIND_BY_CONSUMER[consumer]
+        kind = _kind(consumer, name)
         if kind not in kinds:
             kinds.append(kind)
+    if (NameKind.FILE not in kinds
+            and program(name, session, registry) is not None):
+        kinds.append(NameKind.FILE)
     return kinds
 
 
@@ -81,8 +107,8 @@ def locations(name: str,
     Hiding is a filter over the layer list, never an edit to the
     session, and it runs before the winner is picked. That order is
     what keeps the winner honest: ``type -f`` reports the layer under a
-    shadowing function, and ``which`` the layer under a reserved word,
-    where filtering afterwards would report nothing at all.
+    shadowing function, where filtering afterwards would report nothing
+    at all.
 
     Args:
         name (str): the operand word.
@@ -95,6 +121,15 @@ def locations(name: str,
     if drop is not None:
         kinds = [kind for kind in kinds if kind is not drop]
     return kinds if all_mode else kinds[:1]
+
+
+def program_file(name: str) -> str:
+    """The path of a program's file, where PATH finds it.
+
+    Args:
+        name (str): the program name.
+    """
+    return f"{BIN_PREFIX}/{name}"
 
 
 def describe(name: str,
@@ -110,4 +145,6 @@ def describe(name: str,
     """
     if kind is NameKind.ALIAS and session is not None:
         return f"{name} is aliased to `{session.aliases[name]}'"
+    if kind is NameKind.FILE:
+        return f"{name} is {program_file(name)}"
     return f"{name} is {DESCRIPTIONS[kind]}"

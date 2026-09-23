@@ -19,14 +19,17 @@ from mirage.commands.spec.compile import compile_spec
 from mirage.shell.constants import BUILTIN_GROUP
 from mirage.shell.types import BuiltinGroup
 from mirage.types import PathSpec
-from mirage.workspace.names import (JOB_BUILTINS, NAMESPACE_COMMANDS,
-                                    NO_FOLLOW_COMMANDS, SHELL_NAMES,
-                                    SHELL_ONLY_BUILTINS, UNSUPPORTED_BUILTINS)
+from mirage.workspace.names import (BASH_BUILTINS, JOB_BUILTINS, KEYWORDS,
+                                    NAMESPACE_COMMANDS, NO_FOLLOW_COMMANDS,
+                                    SHELL_NAMES, SHELL_ONLY_BUILTINS,
+                                    UNSUPPORTED_BUILTINS)
 
 # The pools live in workspace/names.py (a leaf shared with the CLI
 # registry's collision rule); this module keeps lookup's public surface.
 __all__ = [
+    "BASH_BUILTINS",
     "JOB_BUILTINS",
+    "KEYWORDS",
     "NAMESPACE_COMMANDS",
     "NO_FOLLOW_COMMANDS",
     "SHELL_NAMES",

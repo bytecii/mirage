@@ -479,6 +479,18 @@
     }
   },
   "command_io": {
+    "bin": {
+      "local": false,
+      "max_du_entries": 10000,
+      "max_glob_matches": 10000,
+      "slots": [
+        "is_mounted",
+        "read_bytes",
+        "read_stream",
+        "readdir",
+        "stat"
+      ]
+    },
     "box": {
       "local": false,
       "max_du_entries": 10000,
@@ -1153,6 +1165,7 @@
     }
   },
   "command_vfs_names": [
+    "bin",
     "box",
     "chroma",
     "databricks_volume",

@@ -13,12 +13,23 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { MountRegistry } from '../../../mount/registry.ts'
-import { KEYWORDS } from '../../../lookup/constants.ts'
-import { lookup, lookupAll } from '../../../lookup/lookup.ts'
+import { BASH_BUILTINS, KEYWORDS } from '../../../lookup/constants.ts'
+import { lookup, lookupAll, program } from '../../../lookup/lookup.ts'
+import { Consumer } from '../../../lookup/types.ts'
 import type { SessionState } from '../../../session/session.ts'
-import { DESCRIPTIONS, KIND_BY_CONSUMER } from './constants.ts'
+import { BIN_PREFIX } from '../../../../shell/constants.ts'
+import { DESCRIPTIONS } from './constants.ts'
 import { NameKind } from './types.ts'
 import { sessionEntry } from '../../../session/session.ts'
+
+// The kind one layer reports a name as. A function is a function and one
+// of bash's own builtins is a builtin; every other layer runs a program,
+// whose file is the name's under /usr/bin.
+function kindOf(consumer: Consumer, name: string): NameKind {
+  if (consumer === Consumer.FUNCTION) return NameKind.FUNCTION
+  if (consumer === Consumer.SESSION && BASH_BUILTINS.has(name)) return NameKind.BUILTIN
+  return NameKind.FILE
+}
 
 /** Classify the name as the layer that would run it, null if none does. */
 export function classify(
@@ -28,7 +39,8 @@ export function classify(
 ): NameKind | null {
   if (sessionEntry(session.aliases, name) !== undefined) return NameKind.ALIAS
   if (KEYWORDS.has(name)) return NameKind.KEYWORD
-  return KIND_BY_CONSUMER[lookup(name, session, registry)] ?? null
+  const consumer = lookup(name, session, registry)
+  return consumer === Consumer.UNKNOWN ? null : kindOf(consumer, name)
 }
 
 /**
@@ -43,8 +55,9 @@ export function classify(
  * line runs the function.
  *
  * Duplicate kinds are dropped, since the kinds are coarser than the
- * layers: a shell builtin that a mount also registers is one `builtin`
- * line, not two identical ones.
+ * layers: a program both a mount and a CLI answer for is one file. A
+ * builtin that is a program too ends with that file's line, as bash's
+ * `type -a echo` does after its builtin line.
  */
 export function classifyAll(
   name: string,
@@ -58,8 +71,11 @@ export function classifyAll(
     sessionEntry(session.aliases, name) !== undefined ? [NameKind.ALIAS] : []
   if (KEYWORDS.has(name)) kinds.push(NameKind.KEYWORD)
   for (const consumer of lookupAll(name, session, registry)) {
-    const kind = KIND_BY_CONSUMER[consumer]
-    if (kind !== undefined && !kinds.includes(kind)) kinds.push(kind)
+    const kind = kindOf(consumer, name)
+    if (!kinds.includes(kind)) kinds.push(kind)
+  }
+  if (!kinds.includes(NameKind.FILE) && program(name, session, registry) !== null) {
+    kinds.push(NameKind.FILE)
   }
   return kinds
 }
@@ -70,8 +86,7 @@ export function classifyAll(
  * Hiding is a filter over the layer list, never an edit to the session,
  * and it runs before the winner is picked. That order is what keeps the
  * winner honest: `type -f` reports the layer under a shadowing function,
- * and `which` the layer under a reserved word, where filtering
- * afterwards would report nothing at all.
+ * where filtering afterwards would report nothing at all.
  */
 export function locations(
   name: string,
@@ -85,6 +100,11 @@ export function locations(
   return allMode ? kinds : kinds.slice(0, 1)
 }
 
+/** The path of a program's file, where PATH finds it. */
+export function programFile(name: string): string {
+  return `${BIN_PREFIX}/${name}`
+}
+
 /** Render the verbose line `command -V` and `type` print. `session` is
  * needed only to read an alias's value; every other kind renders from
  * the name alone. */
@@ -92,5 +112,6 @@ export function describe(name: string, kind: NameKind, session?: SessionState): 
   if (kind === NameKind.ALIAS && session !== undefined) {
     return `${name} is aliased to \`${sessionEntry(session.aliases, name) ?? ''}'`
   }
-  return `${name} is ${DESCRIPTIONS[kind]}`
+  if (kind === NameKind.FILE) return `${name} is ${programFile(name)}`
+  return `${name} is ${DESCRIPTIONS[kind] ?? ''}`
 }

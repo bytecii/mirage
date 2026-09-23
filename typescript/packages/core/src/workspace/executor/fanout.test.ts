@@ -636,7 +636,7 @@ describe('ls -R across a mount boundary', () => {
       '/ghost/very/deep': ram({ '/leaf.txt': 'deep\n' }),
     }
     expect(await runLine(mounts, 'ls -R /')).toMatch(
-      /^\/:\ndev\nghost\ntop\.txt\n\n\/ghost:\nvery\n\n\/ghost\/very:\ndeep\n/,
+      /^\/:\ndev\nghost\ntop\.txt\nusr\n\n\/ghost:\nvery\n\n\/ghost\/very:\ndeep\n/,
     )
   })
 
@@ -648,9 +648,13 @@ describe('ls -R across a mount boundary', () => {
   // so the same name arrived twice in two wrong shapes.
   it('renders a file mount as one row and no group', async () => {
     const mounts = { '/': ram({ '/top.txt': 'T\n' }) }
-    expect(await runLine(mounts, 'ls -aRF /')).toBe(
-      '/:\n.bash_history\ndev/\ntop.txt\n\n/dev:\nnull\nzero\n',
-    )
+    const out = await runLine(mounts, 'ls -aRF /')
+    expect(
+      out.startsWith(
+        '/:\n.bash_history\ndev/\ntop.txt\nusr/\n\n/usr:\nbin/\n\n/dev:\nnull\nzero\n\n',
+      ),
+    ).toBe(true)
+    expect(out.split('.bash_history').length).toBe(2)
   })
 
   // A mount root is listed but not descended, so the shadowed group is

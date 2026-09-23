@@ -292,7 +292,8 @@ def test_find_delete_skips_namespace_ancestors():
     ws = _nested_ghost_workspace()
 
     async def scenario():
-        io = await ws.shell("find / -delete")
+        # /usr is left out: its program files are a read-only view.
+        io = await ws.shell("find / -not -path '/usr*' -delete")
         after = await ws.shell("find /")
         return io, after
 
@@ -666,7 +667,7 @@ def test_ls_r_lists_a_namespace_only_ancestor_under_a_served_root():
     because no other run renders them."""
     ws = _nested_ghost_workspace()
     io = asyncio.run(ws.shell("ls -R /"))
-    assert _stdout(io).startswith("/:\ndev\nghost\ntop.txt\n\n"
+    assert _stdout(io).startswith("/:\ndev\nghost\ntop.txt\nusr\n\n"
                                   "/ghost:\nvery\n\n"
                                   "/ghost/very:\ndeep\n")
 
@@ -700,8 +701,9 @@ def test_ls_r_renders_a_file_mount_as_one_row_and_no_group():
     root._store.files["/top.txt"] = b"T\n"
     ws = Workspace(mounts={"/": (root, MountMode.EXEC)})
     io = asyncio.run(ws.shell("ls -aRF /"))
-    assert _stdout(io) == ("/:\n.bash_history\ndev/\ntop.txt\n\n"
-                           "/dev:\nnull\nzero\n")
+    assert _stdout(io).startswith("/:\n.bash_history\ndev/\ntop.txt\nusr/\n\n"
+                                  "/usr:\nbin/\n\n/dev:\nnull\nzero\n\n")
+    assert _stdout(io).count(".bash_history") == 1
 
 
 def test_tree_renders_one_document_across_a_nested_mount():

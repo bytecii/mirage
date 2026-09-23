@@ -49,8 +49,10 @@ YAML registration, constructor validation, snapshots and credentials, the
 `CLISpec` / `Option` / `Operand` reference, and an agent authoring checklist.
 
 Installed CLIs are self-discovering through `man`, `--help`, `type`, and
-`which`. Installation remains a host-side API, so an agent can use and inspect
-the programs it was given but cannot uninstall them.
+`which`: each has an executable file under `/usr/bin`, the directory `$PATH`
+names, so `which linear` prints `/usr/bin/linear`. Installation remains a
+host-side API, so an agent can use and inspect the programs it was given but
+cannot uninstall them.
 
 ## Builtin CLIs
 

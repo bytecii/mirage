@@ -352,8 +352,8 @@ describe('hf VFS in registry', () => {
 describe('VFSName coverage', () => {
   // Names that are deliberately not buildable from the node registry.
   const BROWSER_ONLY = new Set(['opfs'])
-  // `history` is an internal view mount, never named in user config.
-  const INTERNAL = new Set(['history'])
+  // `history` and `bin` are internal view mounts, never named in user config.
+  const INTERNAL = new Set(['history', 'bin'])
   // Config-mountable in python but not yet wired into a TypeScript registry.
   // Listing them keeps the gap visible instead of hiding it behind a count.
   const PYTHON_ONLY = new Set(['chroma', 'dify', 'lancedb', 'qdrant'])

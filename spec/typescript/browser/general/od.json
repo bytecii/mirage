@@ -1,6 +1,12 @@
 {
   "_meta": {
     "by_vfs": {
+      "bin": {
+        "filetypes": [],
+        "has_aggregate": false,
+        "has_provision": false,
+        "has_write": false
+      },
       "box": {
         "filetypes": [],
         "has_aggregate": false,
@@ -193,6 +199,7 @@
     "has_provision": false,
     "has_write": false,
     "vfs_names": [
+      "bin",
       "box",
       "chroma",
       "databricks_volume",

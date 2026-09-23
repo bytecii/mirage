@@ -20,7 +20,7 @@ from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 from mirage.workspace.lookup import (SHELL_CONSUMERS, Consumer,
                                      command_visible, lookup, lookup_all,
-                                     verb_visible)
+                                     program, programs, verb_visible)
 from mirage.workspace.session import SessionState
 
 
@@ -200,3 +200,41 @@ def test_allow_lists_filter_every_layer_and_spare_only_functions():
     assert lookup_all("rm", session,
                       reg) == [Consumer.FUNCTION, Consumer.MOUNT]
     assert lookup("sleep", session, reg) is Consumer.SESSION
+
+
+def test_program_is_what_a_real_system_ships_as_a_file():
+    session, ws = _fixture()
+    registry = ws._registry
+    assert program("cat", session, registry) is Consumer.MOUNT
+    assert program("readlink", session, registry) is Consumer.NAMESPACE
+    # A builtin a real system also finds on disk keeps its file.
+    assert program("echo", session, registry) is Consumer.SESSION
+    assert program("xargs", session, registry) is Consumer.SESSION
+    # The shell's own words, reserved words and unknowns have none.
+    for name in ("cd", "export", "if", "nope-xyz", "/bin/ls"):
+        assert program(name, session, registry) is None
+
+
+def test_program_keeps_the_file_under_a_shadowing_function():
+    session, ws = _fixture()
+    session.functions["cat"] = []
+    assert lookup("cat", session, ws._registry) is Consumer.FUNCTION
+    assert program("cat", session, ws._registry) is Consumer.MOUNT
+    session.functions["myfn"] = []
+    assert program("myfn", session, ws._registry) is None
+
+
+def test_programs_lists_every_program_the_session_can_run():
+    session, ws = _fixture()
+    ws.register_cli("prog", _cli_tree())
+    names = programs(session, ws._registry)
+    assert names == sorted(names)
+    assert {"cat", "echo", "prog", "readlink", "xargs"} <= set(names)
+    assert not {"cd", "export", "[["} & set(names)
+
+
+def test_programs_follows_the_allow_list():
+    _, ws = _fixture()
+    narrow = SessionState(session_id="n",
+                          commands=AdmissionRules(allow=("cat", )))
+    assert programs(narrow, ws._registry) == ["cat"]

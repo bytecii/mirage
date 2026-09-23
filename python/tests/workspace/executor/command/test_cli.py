@@ -107,8 +107,9 @@ async def test_leaf_runs_with_config_group_flags_and_texts():
     assert inv.flags["verbose"] == 2
     assert inv.argv == ("-vv", "message", "send", "-t", "#eng", "hello",
                         "world")
-    # `$PWD` is exported, so a CLI subprocess inherits it as bash's would.
-    assert inv.env == {"EDITOR": "vi", "PWD": "/"}
+    # `$PWD` and `$PATH` are exported, so a CLI subprocess inherits them
+    # as bash's would.
+    assert inv.env == {"EDITOR": "vi", "PWD": "/", "PATH": "/usr/bin"}
     assert node.command == "prog -vv message send -t #eng hello world"
 
 
@@ -384,6 +385,7 @@ async def test_script_env_carries_mirage_config_json():
     assert run.env == {
         "EDITOR": "vi",
         "PWD": "/",
+        "PATH": "/usr/bin",
         "MIRAGE_CLI_CONFIG": '{"api_key": "k1"}'
     }
 

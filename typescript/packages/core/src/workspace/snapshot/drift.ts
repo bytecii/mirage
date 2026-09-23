@@ -277,7 +277,7 @@ export function captureFingerprints(
 export function liveOnlyMountPrefixes(registry: RegistryLike): string[] {
   const out: string[] = []
   for (const m of registry.allMounts()) {
-    if (m.prefix === '/dev/' || m.prefix === '/.bash_history/') continue
+    if (m.prefix === '/dev/' || m.prefix === '/.bash_history/' || m.prefix === '/usr/bin/') continue
     if (m.vfs.supportsSnapshot !== true) out.push(m.prefix)
   }
   return out

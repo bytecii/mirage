@@ -53,8 +53,10 @@ async def test_export_bare_prints_like_p():
     seed_exported(session, "FOO", "bar")
     out, io, _ = await handle_export([], session)
     assert io.exit_code == 0
-    # `$PWD` is exported like any other variable, so bash lists it too.
+    # `$PWD` and `$PATH` are exported like any other variable, so bash
+    # lists them too.
     assert await materialize(out) == (b'declare -x FOO="bar"\n'
+                                      b'declare -x PATH="/usr/bin"\n'
                                       b'declare -x PWD="/"\n')
 
 
