@@ -17,12 +17,14 @@ from mirage.commands.cli.builtin.git.branch import branch
 from mirage.commands.cli.builtin.git.checkout import checkout
 from mirage.commands.cli.builtin.git.commit import commit
 from mirage.commands.cli.builtin.git.diff import diff
+from mirage.commands.cli.builtin.git.inspect import (config, remote, rev_list,
+                                                     show_ref)
 from mirage.commands.cli.builtin.git.log import log
 from mirage.commands.cli.builtin.git.mv import mv
 from mirage.commands.cli.builtin.git.reset import reset
 from mirage.commands.cli.builtin.git.restore import restore
 from mirage.commands.cli.builtin.git.rm import rm
-from mirage.commands.cli.builtin.git.show import show
+from mirage.commands.cli.builtin.git.show import diff_tree, show
 from mirage.commands.cli.builtin.git.status import status
 from mirage.commands.cli.builtin.git.switch import switch
 from mirage.commands.cli.builtin.git.tag import tag
@@ -55,7 +57,15 @@ FORMAT_OPTION = Option(long="--format",
                        value_optional=True,
                        description="Alias of --pretty (requires =value)")
 
+DATE_OPTION = Option(long="--date",
+                     type="str",
+                     choices=('default', 'iso', 'iso8601', 'iso-strict',
+                              'iso8601-strict', 'short', 'unix', 'raw'),
+                     description="Date display format")
+
 LOG_OPTIONS = (
+    DATE_OPTION,
+    Option(long="--decorate", description="Print ref names on commits"),
     Option(short="-n",
            type="int",
            numeric_shorthand=True,
@@ -82,6 +92,10 @@ LOG_OPTIONS = (
 )
 
 SHOW_OPTIONS = (
+    DATE_OPTION,
+    Option(long="--name-status", description="Show changed paths and status"),
+    Option(long="--summary",
+           description="Summarize creations, deletions and mode changes"),
     Option(long="--stat",
            description="Show the diffstat table instead of the patch"),
     Option(short="-s",
@@ -97,6 +111,10 @@ SHOW_OPTIONS = (
 )
 
 BRANCH_OPTIONS = (
+    Option(short="-v",
+           long="--verbose",
+           count=True,
+           description="Show commit and upstream details"),
     Option(short="-a", description="List local and remote-tracking branches"),
     Option(short="-r", description="List remote-tracking branches"),
     Option(short="-d",
@@ -226,6 +244,40 @@ GIT = CLISpec(
     usage_style=UsageStyle.GIT,
     options=(DIRECTORY_OPTION, ),
     subcommands=(
+        CLISpec(name="remote",
+                description="List remotes",
+                fn=remote,
+                options=(Option(short="-v",
+                                long="--verbose",
+                                description="Show remote URLs"), )),
+        CLISpec(name="config",
+                description="Read repository configuration",
+                fn=config,
+                options=(Option(long="--get",
+                                description="Get a configuration value"), ),
+                positional=(Operand(type="str", name="name",
+                                    required=True), )),
+        CLISpec(name="show-ref",
+                description="List references",
+                fn=show_ref,
+                rest=REVISION),
+        CLISpec(name="rev-list",
+                description="List reachable commits",
+                fn=rev_list,
+                options=(*LOG_OPTIONS,
+                         Option(long="--count",
+                                description="Print commit count")),
+                rest=REVISION),
+        CLISpec(name="diff-tree",
+                description="Compare a commit with its parent",
+                fn=diff_tree,
+                options=(*SHOW_OPTIONS,
+                         Option(long="--no-commit-id",
+                                description="Suppress commit ID"),
+                         Option(short="-r",
+                                description="Recurse into subtrees")),
+                positional=(Operand(type="str", name="commit",
+                                    required=True), )),
         CLISpec(
             name="status",
             description="Show the working tree status",

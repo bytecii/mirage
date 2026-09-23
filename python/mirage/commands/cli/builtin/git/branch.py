@@ -14,6 +14,7 @@
 
 import asyncio
 
+from dulwich.config import ConfigFile
 from dulwich.objects import ObjectID
 from dulwich.refs import Ref
 from dulwich.repo import BaseRepo
@@ -24,7 +25,8 @@ from mirage.commands.cli.builtin.git.errors import (  # yapf: disable
     BranchExistsError, BranchNameRequiredError, CheckedOutBranchError,
     GitError, InvalidBranchNameError, NoBranchError, NoWorkspaceError,
     RefLockError, UnknownSwitchError, UnmergedBranchError)
-from mirage.commands.cli.builtin.git.format import short
+from mirage.commands.cli.builtin.git.format import short, subject
+from mirage.commands.cli.builtin.git.inspect import repo_config
 from mirage.commands.cli.builtin.git.objects import abbrev_for
 from mirage.commands.cli.builtin.git.refs import (blocking_ref, delete_ref,
                                                   read_head, valid_ref_name,
@@ -224,16 +226,76 @@ async def branch(
     except GitError as exc:
         return fatal(exc)
     keys = repo.refs.allkeys()
+    verbose = fl.as_int("verbose") or 0
+    cfg = await repo_config(inv, fl) if verbose else None
+    visible = [
+        r for r in keys
+        if (not remotes_only and r.startswith(HEADS_PREFIX)) or (
+            include_remotes and r.startswith(REMOTES_PREFIX))
+    ]
+    width = max(
+        (len(r[len(HEADS_PREFIX):].decode()) if r.startswith(HEADS_PREFIX) else
+         len(REMOTE + r[len(REMOTES_PREFIX):].decode()) for r in visible),
+        default=0)
     lines: list[str] = []
     if not remotes_only:
         for ref in sorted(k for k in keys if k.startswith(HEADS_PREFIX)):
             name = ref[len(HEADS_PREFIX):].decode()
             marker = CURRENT if name == head.branch else OTHER
-            lines.append(f"{marker}{name}")
+            detail = await asyncio.to_thread(_branch_detail, repo, ref, cfg,
+                                             verbose) if verbose else ""
+            lines.append(
+                f"{marker}{name.ljust(width) if verbose else name}{detail}")
     if include_remotes:
         for ref in sorted(k for k in keys if k.startswith(REMOTES_PREFIX)):
             name = ref[len(REMOTES_PREFIX):].decode()
-            lines.append(f"{OTHER}{REMOTE}{name}{_symref_suffix(repo, ref)}")
+            label = f"{REMOTE}{name}"
+            suffix = _symref_suffix(repo, ref)
+            detail = await asyncio.to_thread(
+                _branch_detail, repo, ref, cfg,
+                verbose) if verbose and not suffix else ""
+            lines.append(f"{OTHER}{label.ljust(width) if detail else label}"
+                         f"{suffix}{detail}")
     if not lines:
         return None, IOResult()
     return yield_bytes(("\n".join(lines) + "\n").encode()), IOResult()
+
+
+def _branch_detail(repo: BaseRepo, ref: bytes, cfg: ConfigFile | None,
+                   verbose: int) -> str:
+    commit = resolve_commit(repo, ref.decode())
+    upstream = ""
+    if cfg is not None and ref.startswith(HEADS_PREFIX):
+        section = (b"branch", ref[len(HEADS_PREFIX):])
+        values = dict(cfg.items(section)) if cfg.has_section(section) else {}
+        remote, merge = values.get(b"remote"), values.get(b"merge")
+        if remote is not None and merge is not None:
+            tracked = merge
+            if remote != b".":
+                tracked = (REMOTES_PREFIX + remote + b"/" +
+                           merge.removeprefix(HEADS_PREFIX))
+            label = tracked.removeprefix(HEADS_PREFIX).removeprefix(
+                REMOTES_PREFIX).decode()
+            differences = []
+            if Ref(tracked) not in repo.refs.allkeys():
+                differences.append("gone")
+            else:
+                ours = {
+                    e.commit.id
+                    for e in Walker(repo.object_store, [commit.id])
+                }
+                theirs = {
+                    e.commit.id
+                    for e in Walker(repo.object_store,
+                                    [repo.refs[Ref(tracked)]])
+                }
+                if ours - theirs:
+                    differences.append(f"ahead {len(ours - theirs)}")
+                if theirs - ours:
+                    differences.append(f"behind {len(theirs - ours)}")
+            counts = ", ".join(differences)
+            if verbose > 1:
+                upstream = f" [{label}{': ' + counts if counts else ''}]"
+            elif counts:
+                upstream = f" [{counts}]"
+    return f" {short(commit.id, abbrev_for(repo))}{upstream} {subject(commit)}"

@@ -25,7 +25,8 @@ import { mv } from './mv.ts'
 import { reset } from './reset.ts'
 import { restore } from './restore.ts'
 import { rm } from './rm.ts'
-import { show } from './show.ts'
+import { config, remote, revList, showRef } from './inspect.ts'
+import { show, diffTree } from './show.ts'
 import { status } from './status.ts'
 import { switchBranch } from './switch.ts'
 import { tag } from './tag.ts'
@@ -62,7 +63,16 @@ const FORMAT_OPTION = new Option({
   description: 'Alias of --pretty (requires =value)',
 })
 
+const DATE_OPTION = new Option({
+  long: '--date',
+  type: 'str',
+  choices: ['default', 'iso', 'iso8601', 'iso-strict', 'iso8601-strict', 'short', 'unix', 'raw'],
+  description: 'Date display format',
+})
+
 const LOG_OPTIONS = [
+  DATE_OPTION,
+  new Option({ long: '--decorate', description: 'Print ref names on commits' }),
   new Option({
     short: '-n',
     type: 'int',
@@ -95,6 +105,9 @@ const LOG_OPTIONS = [
 ]
 
 const SHOW_OPTIONS = [
+  DATE_OPTION,
+  new Option({ long: '--name-status', description: 'Show changed paths and status' }),
+  new Option({ long: '--summary', description: 'Summarize creations, deletions and mode changes' }),
   new Option({ long: '--stat', description: 'Show the diffstat table instead of the patch' }),
   new Option({ short: '-s', long: '--no-patch', description: 'Suppress all diff output' }),
   new Option({ long: '--name-only', description: 'Show changed paths instead of the patch' }),
@@ -224,6 +237,12 @@ const TAG_OPTIONS = [
 ]
 
 const BRANCH_OPTIONS = [
+  new Option({
+    short: '-v',
+    long: '--verbose',
+    count: true,
+    description: 'Show commit and upstream details',
+  }),
   new Option({ short: '-a', description: 'List local and remote-tracking branches' }),
   new Option({ short: '-r', description: 'List remote-tracking branches' }),
   new Option({ short: '-d', long: '--delete', description: 'Delete a fully merged branch' }),
@@ -245,6 +264,38 @@ export const GIT = new CLISpec({
   usageStyle: UsageStyle.GIT,
   options: [DIRECTORY_OPTION],
   subcommands: [
+    new CLISpec({
+      name: 'remote',
+      description: 'List remotes',
+      fn: remote,
+      options: [new Option({ short: '-v', long: '--verbose', description: 'Show remote URLs' })],
+    }),
+    new CLISpec({
+      name: 'config',
+      description: 'Read repository configuration',
+      fn: config,
+      options: [new Option({ long: '--get', description: 'Get a configuration value' })],
+      positional: [new Operand({ type: 'str', name: 'name', required: true })],
+    }),
+    new CLISpec({ name: 'show-ref', description: 'List references', fn: showRef, rest: REVISION }),
+    new CLISpec({
+      name: 'rev-list',
+      description: 'List reachable commits',
+      fn: revList,
+      options: [...LOG_OPTIONS, new Option({ long: '--count', description: 'Print commit count' })],
+      rest: REVISION,
+    }),
+    new CLISpec({
+      name: 'diff-tree',
+      description: 'Compare a commit with its parent',
+      fn: diffTree,
+      options: [
+        ...SHOW_OPTIONS,
+        new Option({ long: '--no-commit-id', description: 'Suppress commit ID' }),
+        new Option({ short: '-r', description: 'Recurse into subtrees' }),
+      ],
+      positional: [new Operand({ type: 'str', name: 'commit', required: true })],
+    }),
     new CLISpec({
       name: 'status',
       description: 'Show the working tree status',

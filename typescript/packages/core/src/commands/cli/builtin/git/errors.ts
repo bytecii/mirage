@@ -197,7 +197,7 @@ export class BadPrettyError extends GitError {
 /**
  * A --pretty/--format preset git has but this build does not.
  *
- * `raw`, `email`, `mboxrd` and `reference` are real git formats; answering
+ * `email`, `mboxrd` and `reference` are real git formats; answering
  * "invalid" for them would gaslight an agent that spelled a valid one, so the
  * refusal says unsupported and names what exists instead.
  */
@@ -205,7 +205,7 @@ export class UnsupportedPrettyError extends GitError {
   constructor(value: string) {
     super(
       `unsupported --pretty format: ${value} (this build implements ` +
-        `oneline, short, medium, full, fuller and format:/tformat: strings)`,
+        `oneline, short, medium, full, fuller, raw and format:/tformat: strings)`,
     )
   }
 }

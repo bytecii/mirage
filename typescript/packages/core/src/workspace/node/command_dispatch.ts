@@ -25,6 +25,7 @@ import type { Runtime } from '../../runtime/base.ts'
 import type { RouteDecision } from '../../runtime/routing/index.ts'
 import { guardDispatch, mergeSignals } from '../abort.ts'
 import { type ByteSource, IOResult, materialize } from '../../io/types.ts'
+import { DevVFS } from '../../vfs/dev/dev.ts'
 import type { VFS } from '../../vfs/base.ts'
 import { encodeText } from '../../shell/bytes.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
@@ -357,108 +358,116 @@ async function runCommandBody(
     }
   }
 
-  const procSubParts: Uint8Array[] = []
+  // Input substitutions are buffered virtual files, not host pipes. Each
+  // operand has its own lifetime; they never consume the caller's stdin.
+  let dev: DevVFS | null = null
+  const procSubPaths: string[] = []
   const procSubStderr: Uint8Array[] = []
   const cleanParts: TSNodeLike[] = []
-  for (const p of parts) {
-    if (p.type === NT.PROCESS_SUBSTITUTION) {
+  try {
+    for (const p of parts) {
+      if (p.type !== NT.PROCESS_SUBSTITUTION) {
+        cleanParts.push(p)
+        continue
+      }
       if (getProcessSubDirection(p) === ProcessSubDirection.OUTPUT) {
-        const err = new TextEncoder().encode('mirage: unsupported: process substitution >(...)\n')
+        const err = encodeText('mirage: unsupported: process substitution >(...)\n')
         return [
           null,
           new IOResult({ exitCode: 2, stderr: err }),
-          new ExecutionNode({
-            command: name === '' ? 'process_sub' : name,
-            exitCode: 2,
-            stderr: err,
-          }),
+          new ExecutionNode({ command: name || 'process_sub', exitCode: 2, stderr: err }),
         ]
       }
-      const inner = getProcessSubBody(p)
-      if (inner !== '') {
-        const io = await executeFn(inner, { sessionId: session.sessionId, node: p })
-        procSubParts.push(await materialize(io.stdout))
-        const stderr = await materialize(io.stderr)
-        if (stderr.byteLength > 0) procSubStderr.push(stderr)
+      if (dev === null) {
+        const [candidate] = registry.resolve('/dev/null')
+        if (!(candidate instanceof DevVFS)) throw new Error('missing device filesystem')
+        dev = candidate
       }
-      continue
+      const path = dev.allocateInput()
+      procSubPaths.push(path)
+      const saved = session.snapshot()
+      try {
+        const inner = getProcessSubBody(p)
+        if (inner !== '') {
+          const io = await executeFn(inner, { sessionId: session.sessionId, node: p })
+          dev.setInput(path, await materialize(io.stdout))
+          procSubStderr.push(await materialize(io.stderr))
+        }
+      } finally {
+        session.restore(saved)
+      }
+      cleanParts.push({ type: NT.WORD, text: path, children: [], namedChildren: [] })
     }
-    cleanParts.push(p)
-  }
-  if (procSubParts.length > 0 && stdin === null) {
-    let total = 0
-    for (const c of procSubParts) total += c.byteLength
-    const merged = new Uint8Array(total)
-    let off = 0
-    for (const c of procSubParts) {
-      merged.set(c, off)
-      off += c.byteLength
-    }
-    stdin = merged
-  }
 
-  const argv = await expandArgv(
-    cleanParts,
-    session,
-    executeFn,
-    callStack,
-    registry,
-    namespace,
-    sessionView(session, registry.policies),
-    routingDecision,
-  )
-
-  // Limits resolve against the expanded name, so `$CMD`-style
-  // invocations get their real command's policy.
-  // External execution owns its mount-resolved deadline and cancellation.
-  const external =
-    !argv.name.includes('/') &&
-    lookup(argv.name, session, registry, routingDecision) === Consumer.EXTERNAL
-  const resolved = argv.name !== '' && !external ? resolveLimit(argv.name) : null
-  const timeout = resolved !== null ? resolved.timeoutSeconds : null
-  // Capture xtrace before the body runs so `set -x` itself is not
-  // traced (bash enables tracing only for the following commands).
-  const xtrace = session.shellOptions.xtrace === true
-  const [stdout, io, execNode] = await runWithTimeout(
-    runArgv(
-      recurse,
-      dispatch,
+    const argv = await expandArgv(
+      cleanParts,
+      session,
+      executeFn,
+      callStack,
       registry,
       namespace,
-      executeFn,
-      argv,
-      session,
-      stdin,
-      callStack,
-      jobTable,
-      ensureOpen,
-      runtimeBindings,
+      sessionView(session, registry.policies),
       routingDecision,
-      signal,
-      node.startPosition?.row ?? 0,
-      agentId,
-      redirectPathsFor(node),
-      claimant,
-    ),
-    timeout,
-    argv.name !== '' ? argv.name : '?',
-  )
-  if (io.producer === null && argv.name !== '') {
-    // Builtins and other non-mount routes return no rider; stamp the
-    // expanded name here so postExecute policies keyed on a command
-    // (echo, printf, ...) still see it.
-    io.producer = { command: argv.name, prefixes: [], declared: null }
+    )
+
+    // Limits resolve against the expanded name, so `$CMD`-style
+    // invocations get their real command's policy.
+    // External execution owns its mount-resolved deadline and cancellation.
+    const external =
+      !argv.name.includes('/') &&
+      lookup(argv.name, session, registry, routingDecision) === Consumer.EXTERNAL
+    const resolved = argv.name !== '' && !external ? resolveLimit(argv.name) : null
+    const timeout = resolved !== null ? resolved.timeoutSeconds : null
+    // Capture xtrace before the body runs so `set -x` itself is not
+    // traced (bash enables tracing only for the following commands).
+    const xtrace = session.shellOptions.xtrace === true
+    const [stdout, io, execNode] = await runWithTimeout(
+      runArgv(
+        recurse,
+        dispatch,
+        registry,
+        namespace,
+        executeFn,
+        argv,
+        session,
+        stdin,
+        callStack,
+        jobTable,
+        ensureOpen,
+        runtimeBindings,
+        routingDecision,
+        signal,
+        node.startPosition?.row ?? 0,
+        agentId,
+        redirectPathsFor(node),
+        claimant,
+      ),
+      timeout,
+      argv.name !== '' ? argv.name : '?',
+    )
+    if (io.producer === null && argv.name !== '') {
+      // Builtins and other non-mount routes return no rider; stamp the
+      // expanded name here so postExecute policies keyed on a command
+      // (echo, printf, ...) still see it.
+      io.producer = { command: argv.name, prefixes: [], declared: null }
+    }
+    if (procSubStderr.length > 0) {
+      const stderr = await materialize(io.stderr)
+      io.stderr = concatBytes([...procSubStderr, stderr])
+      execNode.stderr = io.stderr
+    }
+    if (xtrace && argv.name !== '') {
+      const existing = await materialize(io.stderr)
+      io.stderr = concatBytes([traceCommand([argv.name, ...argv.args]), existing])
+    }
+    return [
+      procSubPaths.length > 0 && stdout !== null ? await materialize(stdout) : stdout,
+      io,
+      execNode,
+    ]
+  } finally {
+    for (const path of procSubPaths) dev?.releaseInput(path)
   }
-  if (procSubStderr.length > 0) {
-    const stderr = await materialize(io.stderr)
-    io.stderr = concatBytes([...procSubStderr, stderr])
-    execNode.stderr = io.stderr
-  }
-  if (xtrace && argv.name !== '') {
-    const existing = await materialize(io.stderr)
-    io.stderr = concatBytes([traceCommand([argv.name, ...argv.args]), existing])
-  }
-  return [stdout, io, execNode]
 }
 
 function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {

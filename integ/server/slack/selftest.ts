@@ -194,6 +194,92 @@ async function main(): Promise<void> {
         .length,
       1,
     )
+
+    await fetch(`${fake.endpoint}/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenants: [TENANT], fixture: 'search' }),
+    })
+    const search = async (
+      method: string,
+      token: string,
+      transport: string,
+      params: Record<string, string> = {},
+    ): Promise<Json> => {
+      const form = new URLSearchParams({ query: 'searchable during:2025-11-03', ...params })
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      }
+      if (transport === 'header') headers.Authorization = `Bearer ${token}-${TENANT}`
+      else form.set('token', `${token}-${TENANT}`)
+      const response = await fetch(
+        `${fake.endpoint}/api/${method}${transport === 'query' ? '?' + form.toString() : ''}`,
+        {
+          method: transport === 'query' ? 'GET' : 'POST',
+          headers,
+          ...(transport === 'query' ? {} : { body: form.toString() }),
+        },
+      )
+      eq('search uses the Slack HTTP success envelope', response.status, 200)
+      return (await response.json()) as Json
+    }
+    for (const token of ['xoxp', 'xoxc']) {
+      for (const transport of ['header', 'form', 'query']) {
+        const all = await search('search.all', token, transport)
+        const messages = (await search('search.messages', token, transport)).messages as Json
+        const files = (await search('search.files', token, transport)).files as Json
+        eq('search.all shares message format with search.messages', all.messages ?? null, messages)
+        eq('search.all shares file format with search.files', all.files, files)
+        eq('search omits joins/leaves and keeps conversation activity', messages.total, 3)
+        eq(
+          'search preserves subtype',
+          (messages.matches as Json[])[0]!.subtype,
+          'channel_convert_to_private',
+        )
+        eq('search.files has its own total', files.total, 1)
+      }
+    }
+    eq(
+      'bot search remains refused',
+      (await search('search.all', 'xoxb', 'form')).error,
+      'not_allowed_token_type',
+    )
+    eq(
+      'during and on match the same day',
+      (await search('search.messages', 'xoxc', 'form')).messages ?? null,
+      (await search('search.messages', 'xoxc', 'form', { query: 'searchable on:2025-11-03' }))
+        .messages ?? null,
+    )
+    const second = (await search('search.messages', 'xoxc', 'form', { count: '1', page: '2' }))
+      .messages as Json
+    eq('pagination totals are not truncated to count', second.total, 3)
+    eq(
+      'pagination selects a distinct second result',
+      (second.matches as Json[]).map((m) => m.ts!),
+      ['1762186003.000001'],
+    )
+    eq('paging matches the Slack wire format', second.paging, {
+      count: 1,
+      total: 3,
+      page: 2,
+      pages: 3,
+    })
+    eq(
+      'unknown channels do not broaden search',
+      ((await search('search.messages', 'xoxc', 'form', { query: 'in:#absent' })).messages as Json)
+        .total,
+      0,
+    )
+    const history = (await call('conversations.history', { channel: 'C1' })).messages as Json[]
+    eq(
+      'history preserves joins and leaves as activity',
+      history.filter((m) => m.subtype).map((m) => m.subtype!),
+      ['channel_convert_to_private', 'channel_leave', 'channel_join'],
+    )
+    const replies = (
+      await call('conversations.replies', { channel: 'C1', ts: '1762186002.000001' })
+    ).messages as Json[]
+    eq('replies preserve the parent subtype', replies[0]!.subtype, 'channel_convert_to_private')
     process.stdout.write(`slack selftest: ${String(checks)} checks passed\n`)
   } finally {
     await fake.close()

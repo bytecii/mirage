@@ -189,6 +189,26 @@ async function liveReads(at: string): Promise<void> {
       ['Priority', 'Name'],
     ],
   )
+  for (const tail of [
+    '?filter_properties[]=pri&filter_properties[]=Name',
+    '?filter_properties=pri&filter_properties%5B%5D=Name',
+  ]) {
+    for (const [path, version] of [
+      [`/v1/data_sources/${DS}/query`, '2025-09-03'],
+      [`/v1/databases/${DB}/query`, '2022-06-28'],
+    ]) {
+      const filtered = await request(at, 'POST', `${path}${tail}`, {}, 200, version)
+      eq(
+        'bracket property filters match repeated keys',
+        results(filtered).map((row) => Object.keys(row.properties as Record<string, JsonValue>)),
+        [
+          ['Priority', 'Name'],
+          ['Priority', 'Name'],
+          ['Priority', 'Name'],
+        ],
+      )
+    }
+  }
   const page = await query({ page_size: 1 })
   eq('query cursor is the next row', page.next_cursor, 'ffff2222-3333-4444-5555-666677778888')
   eq(

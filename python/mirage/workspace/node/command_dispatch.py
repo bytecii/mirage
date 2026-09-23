@@ -15,6 +15,7 @@
 import asyncio
 import dataclasses
 from functools import partial
+from types import SimpleNamespace
 from typing import Any
 
 from mirage.commands.builtin.utils.limit import run_with_timeout
@@ -33,6 +34,7 @@ from mirage.shell.xtrace import trace_command
 from mirage.types import PathSpec, Producer, word_text
 from mirage.utils.glob_walk import glob_pattern
 from mirage.utils.path import CycleError
+from mirage.vfs.dev.dev import DevVFS
 from mirage.workspace.executor.builtins.alias import alias_command_text
 from mirage.workspace.executor.builtins.table import BUILTINS
 from mirage.workspace.executor.builtins.types import BuiltinCall
@@ -266,82 +268,101 @@ async def _dispatch_command_body(
                     stdin = encode_text(content) + b"\n"
                     break
 
-    # Process substitution: <(cmd) feeds inner stdout as stdin.
-    # Output direction >(cmd) is unsupported; reject early so the
-    # caller sees a capability gap rather than a silent no-op.
-    proc_sub_parts = []
+    # Buffered virtual files preserve operand identity without host pipes.
+    dev: DevVFS | None = None
+    proc_sub_paths = []
     proc_sub_stderr = []
     clean_parts = []
-    for p in parts:
-        if hasattr(p, "type") and p.type == NT.PROCESS_SUBSTITUTION:
+    try:
+        for p in parts:
+            if p.type != NT.PROCESS_SUBSTITUTION:
+                clean_parts.append(p)
+                continue
             if get_process_sub_direction(p) == ProcessSubDirection.OUTPUT:
                 err = b"mirage: unsupported: process substitution >(...)\n"
                 return None, IOResult(exit_code=2, stderr=err), ExecutionNode(
                     command=name or "process_sub", exit_code=2, stderr=err)
-            inner = get_process_sub_body(p)
-            if inner:
-                io_ps = await execute_fn(inner,
-                                         session_id=session.session_id,
-                                         node=p)
-                proc_sub_parts.append(io_ps.stdout or b"")
-                stderr = await materialize(io_ps.stderr)
-                if stderr:
-                    proc_sub_stderr.append(stderr)
-        else:
-            clean_parts.append(p)
-    if proc_sub_parts and stdin is None:
-        stdin = b"".join(proc_sub_parts)
-    parts = clean_parts
+            if dev is None:
+                dev, _, _ = registry.resolve("/dev/null")
+                assert isinstance(dev, DevVFS)
+            path = dev.allocate_input()
+            proc_sub_paths.append(path)
+            saved = session.snapshot()
+            try:
+                inner = get_process_sub_body(p)
+                if inner:
+                    io_ps = await execute_fn(inner,
+                                             session_id=session.session_id,
+                                             node=p)
+                    dev.set_input(path, await materialize(io_ps.stdout))
+                    proc_sub_stderr.append(await materialize(io_ps.stderr))
+            finally:
+                session.restore(saved)
+            clean_parts.append(
+                SimpleNamespace(type=NT.WORD,
+                                text=path.encode(),
+                                children=[],
+                                named_children=[]))
+        parts = clean_parts
 
-    argv = await expand_argv(parts,
-                             session,
-                             execute_fn,
-                             call_stack,
-                             registry,
-                             namespace,
-                             view=session_view(session, registry.policies),
-                             routing=routing_decision)
+        argv = await expand_argv(parts,
+                                 session,
+                                 execute_fn,
+                                 call_stack,
+                                 registry,
+                                 namespace,
+                                 view=session_view(session, registry.policies),
+                                 routing=routing_decision)
 
-    # Limits resolve against the expanded name, so `$CMD`-style
-    # invocations get their real command's policy.
-    # External execution owns its mount-resolved deadline and cancellation.
-    external = ("/" not in argv.name and lookup(
-        argv.name, session, registry, routing_decision) is Consumer.EXTERNAL)
-    resolved = resolve_limit(argv.name) if argv.name and not external else None
-    timeout = (resolved.timeout_seconds if resolved is not None else None)
-    body = _run_argv(recurse,
-                     dispatch,
-                     registry,
-                     namespace,
-                     execute_fn,
-                     argv,
-                     session,
-                     stdin,
-                     call_stack,
-                     job_table,
-                     cancel,
-                     routing_decision,
-                     row=node.start_point[0],
-                     agent_id=agent_id,
-                     redirects=redirect_paths_for(node.id),
-                     claimant=claimant)
-    # Capture xtrace before the body runs so `set -x` itself is not
-    # traced (bash enables tracing only for the following commands).
-    xtrace = bool(session.shell_options.get("xtrace"))
-    stdout, io, exec_node = await run_with_timeout(body, timeout, argv.name
-                                                   or "?")
-    if io.producer is None and argv.name:
-        # Builtins and other non-mount routes return no rider; stamp the
-        # expanded name here so post_execute policies keyed on a command
-        # (echo, printf, ...) still see it.
-        io.producer = Producer(command=argv.name)
-    if proc_sub_stderr:
-        io.stderr = b"".join(proc_sub_stderr) + await materialize(io.stderr)
-        exec_node.stderr = io.stderr
-    if xtrace and argv.name:
-        existing = await materialize(io.stderr) or b""
-        io.stderr = trace_command([argv.name, *argv.args]) + existing
-    return stdout, io, exec_node
+        # Limits resolve against the expanded name, so `$CMD`-style
+        # invocations get their real command's policy.
+        # External execution owns its mount-resolved deadline and cancellation.
+        external = ("/" not in argv.name
+                    and lookup(argv.name, session, registry,
+                               routing_decision) is Consumer.EXTERNAL)
+        resolved = resolve_limit(
+            argv.name) if argv.name and not external else None
+        timeout = (resolved.timeout_seconds if resolved is not None else None)
+        body = _run_argv(recurse,
+                         dispatch,
+                         registry,
+                         namespace,
+                         execute_fn,
+                         argv,
+                         session,
+                         stdin,
+                         call_stack,
+                         job_table,
+                         cancel,
+                         routing_decision,
+                         row=node.start_point[0],
+                         agent_id=agent_id,
+                         redirects=redirect_paths_for(node.id),
+                         claimant=claimant)
+        # Capture xtrace before the body runs so `set -x` itself is not
+        # traced (bash enables tracing only for the following commands).
+        xtrace = bool(session.shell_options.get("xtrace"))
+        stdout, io, exec_node = await run_with_timeout(body, timeout, argv.name
+                                                       or "?")
+        if io.producer is None and argv.name:
+            # Builtins and other non-mount routes return no rider; stamp the
+            # expanded name here so post_execute policies keyed on a command
+            # (echo, printf, ...) still see it.
+            io.producer = Producer(command=argv.name)
+        if proc_sub_stderr:
+            io.stderr = b"".join(proc_sub_stderr) + await materialize(io.stderr
+                                                                      )
+            exec_node.stderr = io.stderr
+        if xtrace and argv.name:
+            existing = await materialize(io.stderr) or b""
+            io.stderr = trace_command([argv.name, *argv.args]) + existing
+        if proc_sub_paths and stdout is not None:
+            stdout = await materialize(stdout)
+        return stdout, io, exec_node
+    finally:
+        if dev is not None:
+            for path in proc_sub_paths:
+                dev.release_input(path)
 
 
 async def _run_argv(

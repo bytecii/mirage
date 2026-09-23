@@ -144,3 +144,17 @@ class DevVFS(BaseVFS):
             self.register(fn)
         for ro in DEV_OPS:
             self.register_op(ro)
+
+    def allocate_input(self) -> str:
+        fd = 63
+        while f"/fd/{fd}" in self._store.files:
+            fd -= 1
+        key = f"/fd/{fd}"
+        self._store.files[key] = b""
+        return f"/dev{key}"
+
+    def set_input(self, path: str, data: bytes) -> None:
+        self._store.files[path[4:]] = data
+
+    def release_input(self, path: str) -> None:
+        self._store.files.pop(path[4:], None)

@@ -184,6 +184,7 @@ model GithubIssue {
 }
 
 model GithubComment {
+  metaJson    String @default("{}")
   pk          Int    @id @default(autoincrement())
   tenant      String
   repo        String

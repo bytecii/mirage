@@ -779,6 +779,110 @@
         "stdout": "{\n  \"title\": \"na\u00efve \u65e5\u672c\"\n}\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "gh_issue_comments",
+      "seq": 569070,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue view 4 --comments",
+      "expect": {
+        "exit": 0,
+        "stdout": "author:\tinteg-user\nassociation:\tnone\nedited:\tfalse\nstatus:\tnone\n--\nnote\n--\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_comments_json",
+      "seq": 569071,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue view 4 --json comments --jq '.comments | map(.body)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"note\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_comments_json",
+      "seq": 569072,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr view 5 --json comments --jq '.comments | map(.body)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"review\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_colon",
+      "seq": 569073,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api 'search/repositories?q=user:integ' --jq '.items | map(.full_name)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"integ/repo-cli\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_colon_field",
+      "seq": 569074,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api search/repositories -X GET -f 'q=user:integ' --jq '.items | map(.full_name)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"integ/repo-cli\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_missing_owner",
+      "seq": 569075,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api 'search/repositories?q=user:no-such-owner' --jq .total_count",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_pr_comments_text",
+      "seq": 569076,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh pr view 5 -c",
+      "expect": {
+        "exit": 0,
+        "stdout": "author:\tinteg-user\nassociation:\tnone\nedited:\tfalse\nstatus:\tnone\n--\nreview\n--\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_issue_comment_metadata",
+      "seq": 569077,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh issue view 4 --json comments --jq '.comments | map({author: .author, edited: .includesCreatedEdit, minimized: .isMinimized, reason: .minimizedReason, reactions: .reactionGroups, mine: .viewerDidAuthor})'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[{\"author\":{\"login\":\"integ-user\"},\"edited\":false,\"minimized\":false,\"reason\":\"\",\"reactions\":[],\"mine\":true}]\n",
+        "stderr": ""
+      }
     }
   ]
 }

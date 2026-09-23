@@ -163,3 +163,15 @@ describe('HttpGitHubTransport', () => {
     })
   })
 })
+
+it.each([
+  'repo:theonion/fartscroll.js+created:2014-09-22',
+  'user:theonion',
+  'org%3Atheonion',
+  'repo:owner/repo+is:issue+label:bug',
+])('preserves search qualifiers in an endpoint query: %s', async (query) => {
+  await transport().get(`/search/issues?q=${query}`)
+  expect(new URL(SEEN[0]?.url ?? '').searchParams.get('q')).toBe(
+    new URLSearchParams(`q=${query}`).get('q'),
+  )
+})

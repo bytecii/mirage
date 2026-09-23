@@ -44,6 +44,7 @@ const PREFIXES: [string, keyof ParsedQuery][] = [
   ['after:', 'after'],
   ['before:', 'before'],
   ['on:', 'on'],
+  ['during:', 'on'],
 ]
 
 function tokenize(query: string): { value: string; quoted: boolean }[] {

@@ -225,7 +225,14 @@ async function answer<C extends MinimalClient>(
   let tenant: string
   try {
     run = resolveRun(headers, url, pathRun)
-    tenant = resolveTenant(headers, url, tenantKind, tenantFromBearer, tenantTokenPattern)
+    tenant = resolveTenant(
+      headers,
+      url,
+      tenantKind,
+      tenantFromBearer,
+      tenantTokenPattern,
+      rt.fake.requestToken?.(headers, url, raw),
+    )
   } catch (err: unknown) {
     // Same shape /reset already used, just reached from the request path. An
     // illegal `?_run=..%2Fx` or `?_tenant=bad name` reached the 500 envelope

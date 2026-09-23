@@ -210,7 +210,7 @@ class BadPrettyError(GitError):
 class UnsupportedPrettyError(GitError):
     """A --pretty/--format preset git has but this build does not.
 
-    ``raw``, ``email``, ``mboxrd`` and ``reference`` are real git
+    ``email``, ``mboxrd`` and ``reference`` are real git
     formats; answering "invalid" for them would gaslight an agent that
     spelled a valid one, so the refusal says unsupported and names what
     exists instead.
@@ -222,7 +222,7 @@ class UnsupportedPrettyError(GitError):
     def __init__(self, value: str) -> None:
         super().__init__(
             f"unsupported --pretty format: {value} (this build implements "
-            f"oneline, short, medium, full, fuller and format:/tformat: "
+            f"oneline, short, medium, full, fuller, raw and format:/tformat: "
             f"strings)")
 
 

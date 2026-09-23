@@ -1015,11 +1015,11 @@
         "git-disk",
         "git-ram"
       ],
-      "command": "git -C /repo log --pretty=raw",
+      "command": "git -C /repo log --pretty=email",
       "expect": {
         "exit": 128,
         "stdout": "",
-        "stderr": "fatal: unsupported --pretty format: raw (this build implements oneline, short, medium, full, fuller and format:/tformat: strings)\n"
+        "stderr": "fatal: unsupported --pretty format: email (this build implements oneline, short, medium, full, fuller, raw and format:/tformat: strings)\n"
       }
     },
     {
@@ -2882,6 +2882,314 @@
         "exit": 129,
         "stdout": "",
         "stderr": "error: unknown switch `Z'\n"
+      }
+    },
+    {
+      "id": "git_read_remote_empty",
+      "seq": 568050,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo remote -v",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_config_get",
+      "seq": 568051,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo config --get user.name",
+      "expect": {
+        "exit": 0,
+        "stdout": "Integ Author\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_config_missing",
+      "seq": 568052,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo config --get remote.absent.url",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_show_ref",
+      "seq": 568053,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo show-ref",
+      "expect": {
+        "exit": 0,
+        "stdout": "8ef25423772bbfe671c8e285ae1d63991d59db19 refs/heads/main\n225f39c50d27e015653a38d589474ce2880399e6 refs/heads/topic\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_show_ref_suffix",
+      "seq": 568054,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo show-ref topic",
+      "expect": {
+        "exit": 0,
+        "stdout": "225f39c50d27e015653a38d589474ce2880399e6 refs/heads/topic\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_rev_list_count",
+      "seq": 568055,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo rev-list --all --count",
+      "expect": {
+        "exit": 0,
+        "stdout": "4\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_rev_list",
+      "seq": 568056,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo rev-list HEAD",
+      "expect": {
+        "exit": 0,
+        "stdout": "8ef25423772bbfe671c8e285ae1d63991d59db19\n225f39c50d27e015653a38d589474ce2880399e6\n265ec3adb16a0c90ad09a180687677927b9d7b7f\n98b4ffe0976edf04eebcc645df908f5a4f19e538\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_log_iso",
+      "seq": 568057,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo log -1 --date=iso --format=%ad",
+      "expect": {
+        "exit": 0,
+        "stdout": "2026-01-08 14:45:00 +0000\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_log_iso_strict",
+      "seq": 568058,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo log -1 --date=iso-strict --format=%ad",
+      "expect": {
+        "exit": 0,
+        "stdout": "2026-01-08T14:45:00Z\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_log_dates",
+      "seq": 568059,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo log -1 --format=%aI%n%ai%n%cI%n%ci",
+      "expect": {
+        "exit": 0,
+        "stdout": "2026-01-08T14:45:00Z\n2026-01-08 14:45:00 +0000\n2026-01-08T14:45:00Z\n2026-01-08 14:45:00 +0000\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_log_raw",
+      "seq": 568060,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo log -1 --pretty=raw",
+      "expect": {
+        "exit": 0,
+        "stdout": "commit 8ef25423772bbfe671c8e285ae1d63991d59db19\ntree 213a314abdd4e23f24dccd80a763c4b533bdb01d\nparent 225f39c50d27e015653a38d589474ce2880399e6\nauthor Integ Author <integ@example.com> 1767883500 +0000\ncommitter Integ Author <integ@example.com> 1767883500 +0000\n\n    add two\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_log_decorate",
+      "seq": 568061,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo log --oneline --decorate -2",
+      "expect": {
+        "exit": 0,
+        "stdout": "8ef2542 (HEAD -> main) add two\n225f39c (topic) add docs\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_branch_verbose",
+      "seq": 568062,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo branch -a -vv",
+      "expect": {
+        "exit": 0,
+        "stdout": "* main  8ef2542 add two\n  topic 225f39c add docs\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_show_name_status",
+      "seq": 568063,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo show --name-status --format= HEAD",
+      "expect": {
+        "exit": 0,
+        "stdout": "M\tnumbers.txt\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_show_summary_modified",
+      "seq": 568064,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo show --summary --format=%h HEAD",
+      "expect": {
+        "exit": 0,
+        "stdout": "8ef2542\n\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_show_summary_added",
+      "seq": 568065,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo show --summary --format=%h HEAD~1",
+      "expect": {
+        "exit": 0,
+        "stdout": "225f39c\n\n create mode 100644 docs/readme.md\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_diff_tree_names",
+      "seq": 568066,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo diff-tree --no-commit-id --name-only -r HEAD",
+      "expect": {
+        "exit": 0,
+        "stdout": "numbers.txt\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_read_diff_tree_status",
+      "seq": 568067,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo diff-tree --no-commit-id --name-status -r HEAD",
+      "expect": {
+        "exit": 0,
+        "stdout": "M\tnumbers.txt\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_remote_and_tracking_reads",
+      "seq": 568080,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "cp /repo/.git/config /repo/.git/config.saved; printf '\\n[remote \"origin\"]\\n    url = https://example.com/org/repo.git\\n    fetch = +refs/heads/*:refs/remotes/origin/*\\n    pushurl = ssh://git@example.com/org/repo.git\\n[branch \"main\"]\\n    remote = origin\\n    merge = refs/heads/main\\n' >> /repo/.git/config; mkdir -p /repo/.git/refs/remotes/origin; git -C /repo log -1 --format=%H HEAD~1 > /repo/.git/refs/remotes/origin/main; git -C /repo remote -v; git -C /repo config --get remote.origin.url; git -C /repo branch -a -vv; rm -r /repo/.git/refs/remotes; mv /repo/.git/config.saved /repo/.git/config",
+      "expect": {
+        "exit": 0,
+        "stdout": "origin\thttps://example.com/org/repo.git (fetch)\norigin\tssh://git@example.com/org/repo.git (push)\nhttps://example.com/org/repo.git\n* main                8ef2542 [origin/main: ahead 1] add two\n  topic               225f39c add docs\n  remotes/origin/main 225f39c add docs\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_diff_tree_raw",
+      "seq": 568081,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo diff-tree HEAD",
+      "expect": {
+        "exit": 0,
+        "stdout": "8ef25423772bbfe671c8e285ae1d63991d59db19\n:100644 100644 5626abf0f72e58d7a153368ba57db4c673c0e171 814f4a422927b82f5f8a43f8fab6d3839e3983f2 M\tnumbers.txt\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_diff_tree_subtrees",
+      "seq": 568082,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo diff-tree --name-only HEAD~1",
+      "expect": {
+        "exit": 0,
+        "stdout": "225f39c50d27e015653a38d589474ce2880399e6\ndocs\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_diff_tree_recursive",
+      "seq": 568083,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo diff-tree --no-commit-id --name-status -r HEAD~1",
+      "expect": {
+        "exit": 0,
+        "stdout": "A\tdocs/readme.md\n",
+        "stderr": ""
       }
     }
   ]

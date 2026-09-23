@@ -19,26 +19,41 @@ import type { ParsedQuery } from './query.ts'
 import { channels, users } from './store.ts'
 import type { MessageRow } from './store.ts'
 import type { ChannelRow, FileRow, UserRow } from './wire.ts'
-import { argsOf, fail } from './wire.ts'
+import { argsOf, fail, requestToken } from './wire.ts'
 
 interface Scope {
   parsed: ParsedQuery
   channelId?: string
   fromUserId?: string
   fromMissing: boolean
+  channelMissing: boolean
   count: number
   display: (id: string) => string
   userName: Map<string, string>
 }
 
-// search.* requires a user token (xoxp-); a bot token is rejected exactly like
-// real Slack, so the backend falls back to the per-file scan. This is the one
-// place the two tokens a mount carries are told apart, which is why they stay
-// distinct rather than collapsing to one string.
 function userToken(ctx: Ctx<C>): boolean {
-  const raw = ctx.headers.authorization
-  const one = Array.isArray(raw) ? raw[0] : raw
-  return one !== undefined && one.startsWith('Bearer xoxp-')
+  return /^xox[pc]-/.test(requestToken(ctx.headers, ctx.url, ctx.body) ?? '')
+}
+
+function searchPage(ctx: Ctx<C>, matches: JsonValue[], count: number): JsonValue {
+  const page = Math.max(1, Number.parseInt(argsOf(ctx).get('page') ?? '1', 10) || 1)
+  const total = matches.length
+  const pages = Math.ceil(total / count)
+  const start = (page - 1) * count
+  return {
+    total,
+    pagination: {
+      total_count: total,
+      page,
+      page_count: pages,
+      per_page: count,
+      first: total ? start + 1 : 0,
+      last: Math.min(start + count, total),
+    },
+    paging: { count, total, page, pages },
+    matches: matches.slice(start, start + count),
+  }
 }
 
 async function scopeOf(ctx: Ctx<C>): Promise<Scope> {
@@ -71,7 +86,9 @@ async function scopeOf(ctx: Ctx<C>): Promise<Scope> {
   const out: Scope = {
     parsed,
     fromMissing,
-    count: raw === null ? 20 : Number.parseInt(raw, 10),
+    channelMissing:
+      (parsed.channelName !== undefined || parsed.dmName !== undefined) && channelId === undefined,
+    count: Math.min(100, Math.max(1, Number.parseInt(raw ?? '20', 10) || 20)),
     display,
     userName,
   }
@@ -89,14 +106,21 @@ export async function searchMessages(ctx: Ctx<C>): Promise<Reply> {
   }
   if (s.channelId !== undefined) where.channelId = s.channelId
   if (s.fromUserId !== undefined) where.userId = s.fromUserId
-  const rows: MessageRow[] = s.fromMissing
-    ? []
-    : await ctx.db.message.findMany({ where, orderBy: { ts: 'asc' } })
+  const rows: MessageRow[] =
+    s.fromMissing || s.channelMissing
+      ? []
+      : await ctx.db.message.findMany({ where, orderBy: { ts: 'asc' } })
   const matches = rows
-    .filter((m) => withinDates(Number(m.ts), s.parsed))
-    .slice(0, s.count)
+    .filter(
+      (m) =>
+        m.subtype !== 'channel_join' &&
+        m.subtype !== 'channel_leave' &&
+        withinDates(Number(m.ts), s.parsed),
+    )
     .map((m) => ({
       type: 'message',
+      ...(m.subtype ? { subtype: m.subtype } : {}),
+      permalink: `${ctx.url.origin}/archives/${m.channelId}/p${m.ts.replace('.', '')}`,
       user: m.userId,
       username: s.userName.get(m.userId) ?? m.userId,
       ts: m.ts,
@@ -108,12 +132,7 @@ export async function searchMessages(ctx: Ctx<C>): Promise<Reply> {
     body: {
       ok: true,
       query: argsOf(ctx).get('query') ?? '',
-      messages: {
-        total: matches.length,
-        pagination: { total_count: matches.length, page: 1, page_count: 1 },
-        paging: { count: s.count, total: matches.length, page: 1, pages: 1 },
-        matches,
-      },
+      messages: searchPage(ctx, matches, s.count),
     },
   }
 }
@@ -133,12 +152,11 @@ export async function searchFiles(ctx: Ctx<C>): Promise<Reply> {
   // search.files has no author field in this model, so a from: query can never
   // match a file; return an empty set rather than silently ignoring it.
   const rows: FileRow[] =
-    s.parsed.fromName !== undefined
+    s.channelMissing || s.parsed.fromName !== undefined
       ? []
       : await ctx.db.slackFile.findMany({ where, orderBy: { id: 'asc' } })
   const matches = rows
     .filter((f) => withinDates(f.timestamp, s.parsed))
-    .slice(0, s.count)
     .map((f) => ({
       id: f.id,
       name: f.name,
@@ -153,12 +171,20 @@ export async function searchFiles(ctx: Ctx<C>): Promise<Reply> {
     body: {
       ok: true,
       query: argsOf(ctx).get('query') ?? '',
-      files: {
-        total: matches.length,
-        pagination: { total_count: matches.length, page: 1, page_count: 1 },
-        paging: { count: s.count, total: matches.length, page: 1, pages: 1 },
-        matches,
-      },
+      files: searchPage(ctx, matches, s.count),
+    },
+  }
+}
+
+export async function searchAll(ctx: Ctx<C>): Promise<Reply> {
+  if (!userToken(ctx)) return fail('not_allowed_token_type')
+  const messages = await searchMessages(ctx)
+  const files = await searchFiles(ctx)
+  return {
+    status: 200,
+    body: {
+      ...(messages.body as Record<string, JsonValue>),
+      ...(files.body as Record<string, JsonValue>),
     },
   }
 }

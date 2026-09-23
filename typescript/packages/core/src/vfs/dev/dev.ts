@@ -34,6 +34,22 @@ export class DevVFS extends RAMVFS {
     this.opsMap.stat = stat
   }
 
+  allocateInput(): string {
+    let fd = 63
+    while (this.store.files.has(`/fd/${String(fd)}`)) fd -= 1
+    const key = `/fd/${String(fd)}`
+    this.store.files.set(key, new Uint8Array())
+    return `/dev${key}`
+  }
+
+  setInput(path: string, data: Uint8Array): void {
+    this.store.files.set(path.slice(4), data)
+  }
+
+  releaseInput(path: string): void {
+    this.store.files.delete(path.slice(4))
+  }
+
   override ops(): readonly RegisteredOp[] {
     return DEV_OPS
   }
