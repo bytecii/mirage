@@ -15,8 +15,9 @@
 import { resolveConfigSecrets } from '@struktoai/mirage-core/secrets/sources'
 import type { ResolvedSource } from '@struktoai/mirage-core/secrets/types'
 import type { VFS } from '@struktoai/mirage-core/vfs/base'
-import { z } from '@struktoai/mirage-core/vfs/secrets'
+import { refuseUnknownKeys, z } from '@struktoai/mirage-core/vfs/secrets'
 import { errorSummary } from '@struktoai/mirage-core/secrets/summary'
+import type { OPFSVFSOptions } from './opfs/opfs.ts'
 import type { RedisVFSOptions } from './redis/redis.ts'
 import { normalizeFields } from '@struktoai/mirage-core/utils/normalize'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
@@ -37,12 +38,26 @@ import { recordVfsRef } from '@struktoai/mirage-core/vfs/base'
  */
 export type VFSFactory = (config: Record<string, unknown>) => Promise<VFS>
 
+// The backends that take their options without a schema, and the option
+// names each takes, so a key outside these is refused rather than ignored,
+// the way python refuses a constructor keyword its class does not take.
+const OPFS_OPTIONS: readonly (keyof OPFSVFSOptions)[] = ['root']
+const REDIS_OPTIONS: readonly (keyof RedisVFSOptions)[] = [
+  'url',
+  'token',
+  'keyPrefix',
+  'fetchImpl',
+  'maxRequestBytes',
+]
+
 const REGISTRY: Record<string, VFSFactory> = {
-  ram: async (_config) => {
+  ram: async (config) => {
+    refuseUnknownKeys(config, [])
     const { RAMVFS } = await import('@struktoai/mirage-core/vfs/ram/ram')
     return new RAMVFS()
   },
   opfs: async (config) => {
+    refuseUnknownKeys(config, OPFS_OPTIONS)
     const { OPFSVFS } = await import('./opfs/opfs.ts')
     const norm = normalizeFields(config)
     return new OPFSVFS(norm)
@@ -173,6 +188,7 @@ const REGISTRY: Record<string, VFSFactory> = {
     return new QdrantVFS(normalizeQdrantConfig(config))
   },
   redis: async (config) => {
+    refuseUnknownKeys(config, REDIS_OPTIONS)
     const { RedisVFS } = await import('./redis/redis.ts')
     return new RedisVFS(normalizeFields(config) as unknown as RedisVFSOptions)
   },

@@ -15,12 +15,14 @@
 import { resolveConfigSecrets } from '@struktoai/mirage-core/secrets/sources'
 import type { ResolvedSource } from '@struktoai/mirage-core/secrets/types'
 import type { VFS } from '@struktoai/mirage-core/vfs/base'
-import { z } from '@struktoai/mirage-core/vfs/secrets'
+import { refuseUnknownKeys, z } from '@struktoai/mirage-core/vfs/secrets'
 import { errorSummary } from '@struktoai/mirage-core/secrets/summary'
 import { normalizeFields } from '@struktoai/mirage-core/utils/normalize'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 import { recordVfsRef } from '@struktoai/mirage-core/vfs/base'
+import type { DiskVFSOptions } from './disk/disk.ts'
 import { loadAttr } from './loader.ts'
+import type { RedisVFSOptions } from './redis/redis.ts'
 
 /**
  * Construct a VFS by registry name. Mirrors Python's
@@ -37,17 +39,26 @@ import { loadAttr } from './loader.ts'
  */
 export type VFSFactory = (config: Record<string, unknown>) => Promise<VFS>
 
+// The backends that take their options without a schema, and the option
+// names each takes. Python builds the same three from constructor keywords,
+// so a key outside these is refused on both sides rather than ignored here.
+const DISK_OPTIONS: readonly (keyof DiskVFSOptions)[] = ['root']
+const REDIS_OPTIONS: readonly (keyof RedisVFSOptions)[] = ['url', 'keyPrefix']
+
 const REGISTRY: Record<string, VFSFactory> = {
-  ram: async (_config) => {
+  ram: async (config) => {
+    refuseUnknownKeys(config, [])
     const { RAMVFS } = await import('@struktoai/mirage-core/vfs/ram/ram')
     return new RAMVFS()
   },
   disk: async (config) => {
+    refuseUnknownKeys(config, DISK_OPTIONS)
     const { DiskVFS } = await import('./disk/disk.ts')
     const norm = normalizeFields(config) as { root: string }
     return new DiskVFS(norm)
   },
   redis: async (config) => {
+    refuseUnknownKeys(config, REDIS_OPTIONS)
     const { RedisVFS } = await import('./redis/redis.ts')
     const norm = normalizeFields(config)
     return new RedisVFS(norm)

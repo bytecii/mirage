@@ -173,6 +173,22 @@ describe('browser VFS registry', () => {
     )
   })
 
+  // A key no field takes used to be stripped here too; it is refused under
+  // the spelling the block wrote, the way the node registry and python's
+  // `build_vfs` refuse it.
+  it('refuses an unknown config key, schema or none', async () => {
+    await expect(buildVfs('linear', { api_key: 'k', team_idz: ['x'] })).rejects.toThrow(
+      /^linear: team_idz: unrecognized_keys$/,
+    )
+    await expect(buildVfs('ram', { root: '/' })).rejects.toThrow(/^ram: root: unrecognized_keys$/)
+    await expect(buildVfs('opfs', { root: 'r', roots: 'x' })).rejects.toThrow(
+      /^opfs: roots: unrecognized_keys$/,
+    )
+    await expect(buildVfs('redis', { url: 'https://r', keyprefix: 'a' })).rejects.toThrow(
+      /^redis: keyprefix: unrecognized_keys$/,
+    )
+  })
+
   it('builds RAM with no config', async () => {
     const r = await buildVfs('ram', {})
     expect(r.kind).toBe('ram')

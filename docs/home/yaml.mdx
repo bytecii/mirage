@@ -28,7 +28,7 @@ A workspace can be described entirely in YAML and loaded with one call — `load
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `vfs` | string | required | The registered backend name, or a `./file.py:Class` reference. |
-| `config` | map | `{}` | The backend's own config, validated by that backend's model. |
+| `config` | map | `{}` | The backend's own config, validated by that backend's model. A key the model does not declare is refused by name (`linear: team_idz: ...`), never ignored. |
 | `mode` | `read` \| `write` \| `exec` | top-level `mode` | This mount's mode. |
 | `read` | `fresh` \| `bounded` | top-level `read` | How this mount's cached bytes are served. |
 | `ttl` | integer (seconds) | `600` | The staleness bound `bounded` serves within. |

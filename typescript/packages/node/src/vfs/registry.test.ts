@@ -108,6 +108,50 @@ describe('node VFS registry', () => {
     )
   })
 
+  // A key no field takes used to be stripped, so a typo'd `team_idz` built a
+  // linear mount that exposed every team. It is refused under the spelling
+  // the block wrote, which is the one python's `extra="forbid"` names.
+  it('refuses an unknown config key under the spelling it was written in', async () => {
+    await expect(buildVfs('linear', { api_key: 'k', team_idz: ['x'] })).rejects.toThrow(
+      /^linear: team_idz: unrecognized_keys$/,
+    )
+    await expect(buildVfs('s3', { bucket: 'b', one: 1, two: 2 })).rejects.toThrow(
+      /^s3: one: unrecognized_keys; two: unrecognized_keys$/,
+    )
+    // A strict schema refuses in parse too, but after the renames: it would
+    // name `pageSizee`.
+    await expect(buildVfs('wandb', { entities: ['lab'], page_sizee: 1 })).rejects.toThrow(
+      /^wandb: page_sizee: unrecognized_keys$/,
+    )
+  })
+
+  it('knows a key under the name its rename writes it to', async () => {
+    const vfs = await buildVfs('s3', {
+      bucket: 'b',
+      endpoint_url: 'http://127.0.0.1:1',
+      aws_profile: 'p',
+      timeout: 3,
+    })
+    expect(vfs.kind).toBe('s3')
+    await expect(
+      buildVfs('s3', { bucket: 'b', endpoint_urll: 'http://127.0.0.1:1' }),
+    ).rejects.toThrow(/^s3: endpoint_urll: unrecognized_keys$/)
+  })
+
+  // These three take their options without a schema, and python builds them
+  // from constructor keywords, which refuse a key their class does not take.
+  it('refuses an unknown key on the backends with no schema', async () => {
+    await expect(buildVfs('ram', { root: '/tmp' })).rejects.toThrow(
+      /^ram: root: unrecognized_keys$/,
+    )
+    await expect(buildVfs('disk', { root: '/tmp', roots: '/x' })).rejects.toThrow(
+      /^disk: roots: unrecognized_keys$/,
+    )
+    await expect(buildVfs('redis', { keyprefix: 'a' })).rejects.toThrow(
+      /^redis: keyprefix: unrecognized_keys$/,
+    )
+  })
+
   it('serves a pre-minted Google access token without the refresh grant', async () => {
     const vfs = await buildVfs('gdrive', { access_token: 'sa-token' })
     const { accessor } = vfs as unknown as { accessor: { tokenManager: TokenManager } }

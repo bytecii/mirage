@@ -12,10 +12,12 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 
 class MongoDBConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     uri: SecretStr
     databases: list[str] | None = None
     default_doc_limit: int = 1000

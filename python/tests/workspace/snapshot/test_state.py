@@ -569,6 +569,29 @@ async def test_an_alias_saved_with_redacted_creds_requires_an_override():
         build_mount_args(state, None, None)
 
 
+# The same alias built in code with no inline credentials needs no
+# override, and its `type` still names the parent: rebuilding through the
+# type's entry handed MinIO's own config to `S3Config`, which dropped
+# `access_key_id` and the rest and rebuilt a plain S3 mount, and refuses
+# them now that configs refuse unknown keys. The saved class names the
+# alias, so the mount comes back as what it was.
+@pytest.mark.asyncio
+async def test_an_alias_built_in_code_rebuilds_as_itself():
+    config = MinIOConfig(bucket="b", endpoint_url="http://localhost:9000")
+    ws = Workspace({"/s3": MinIOVFS(config)}, mode=MountMode.READ)
+    try:
+        state = await to_state_dict(ws)
+    finally:
+        await ws.close()
+    (mount, ) = (m for m in state[StateKey.MOUNTS]
+                 if m[MountKey.PREFIX].rstrip("/") == "/s3")
+    assert mount[MountKey.VFS_REF] is None
+    assert not requires_vfs_override(mount)
+    rebuilt = build_mount_args(state, None, None).mount_args["/s3/"].vfs
+    assert isinstance(rebuilt, MinIOVFS)
+    assert rebuilt.alias_config == config
+
+
 # The capture side used to read `cache._entries` unconditionally, which
 # only a RAM cache has, so `Workspace.snapshot()` raised AttributeError
 # under a Redis cache while the restore side already skipped it.

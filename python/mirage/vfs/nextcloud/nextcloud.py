@@ -22,7 +22,7 @@ _NEXTCLOUD_OPS: dict[str, Any] = {}
 
 
 class NextcloudConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     url: str
     username: str | None = None
