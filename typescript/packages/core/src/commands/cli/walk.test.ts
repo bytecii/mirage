@@ -628,3 +628,25 @@ describe('suppliedEnvNames', () => {
     expect(suppliedEnvNames(envFillTree(), ['--token', 'x', '--'])).toEqual(new Set(['ROOT_T']))
   })
 })
+
+it('resolves option-shaped aliases through their declared leaf, after real options', () => {
+  const leaf = new CLISpec({ name: 'version', aliases: ['--version', '-v'], fn: verb })
+  const spec = new CLISpec({
+    name: 'tool',
+    options: [new Option({ short: '-C', type: 'path', default: '.' })],
+    subcommands: [leaf],
+  })
+  const result = walk('tool', spec, ['--version'], '/work')
+  expect(result.leaf).toBe(leaf)
+  expect(result.path).toEqual(['version'])
+  expect(result.groupFlags['-C']).toBe('/work')
+  expect(result.argv).toEqual([])
+  const other = new CLISpec({
+    name: 'tool',
+    options: [new Option({ short: '-v' })],
+    subcommands: [leaf],
+  })
+  const flagged = walk('tool', other, ['-v', 'version'])
+  expect(flagged.leaf).toBe(leaf)
+  expect(flagged.groupFlags['-v']).toBe(true)
+})

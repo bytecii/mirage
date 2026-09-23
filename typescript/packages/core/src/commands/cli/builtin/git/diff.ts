@@ -20,7 +20,7 @@ import type { CommandFnResult } from '../../../config.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
 import type { CLIInvocation } from '../../types.ts'
 import { GitError, InvalidOptionError } from './errors.ts'
-import { treeDiff } from './patch.ts'
+import { treeOutput, parseDiffFlags, renamesEnabled } from './diff_output.ts'
 import { opened, repoArgs, type Repo } from './repo.ts'
 import { resolveCommit } from './revparse.ts'
 import { checkOperands, escaped, fatal } from './util.ts'
@@ -49,10 +49,11 @@ export async function diff(inv: CLIInvocation): Promise<CommandFnResult> {
   try {
     checkOperands(texts, InvalidOptionError, escaped(inv.argv))
     const repo = await opened(fl, doors)
-    const body = await treeDiff(
+    const body = await treeOutput(
       repo,
       await treeOf(repo, first),
       await treeOf(repo, texts[1] ?? HEAD),
+      parseDiffFlags(fl, true, 'off', true, await renamesEnabled(repo)),
     )
     if (body === '') return [null, new IOResult()]
     return [ENC.encode(body), new IOResult()]

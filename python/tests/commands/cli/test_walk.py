@@ -523,3 +523,20 @@ def test_supplied_env_names_double_dash_keeps_descendants_readable():
     # ... while one with no reader below the group stays claimed.
     assert supplied_env_names(_env_tree(),
                               ["--token", "x", "--"]) == {"ROOT_T"}
+
+
+def test_option_shaped_alias_uses_the_declared_leaf():
+    leaf = CLISpec(name="version", aliases=("--version", "-v"), fn=_verb)
+    spec = CLISpec(name="tool",
+                   options=(Option(short="-C", type="path", default="."), ),
+                   subcommands=(leaf, ))
+    result = walk("tool", spec, ["--version"], cwd="/work")
+    assert result.leaf is leaf
+    assert result.path == ("version", )
+    assert result.group_flags["-C"] == "/work"
+    assert result.argv == ()
+    # A real option keeps its meaning even if a child also declares that alias.
+    spec = replace(spec, options=(Option(short="-v"), ))
+    result = walk("tool", spec, ["-v", "version"])
+    assert result.leaf is leaf
+    assert result.group_flags["-v"] is True

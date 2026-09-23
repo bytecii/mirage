@@ -17,6 +17,7 @@ import type { CommandFnResult } from '../../../config.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
 import type { CLIInvocation } from '../../types.ts'
 import { GitError } from './errors.ts'
+import { joinOutput, commitOutput, parseDiffFlags, renamesEnabled } from './diff_output.ts'
 import {
   FULL_SHA,
   needsDecorations,
@@ -102,7 +103,26 @@ export async function log(inv: CLIInvocation): Promise<CommandFnResult> {
     const commits = await select(repo, starts, parsed)
     const decor =
       parsed.decorate || needsDecorations(parsed.pretty) ? await decorations(repo) : null
-    const out = rendered(commits, parsed, repo.abbrev, decor)
+    let diffFlags = parseDiffFlags(fl, false)
+    let out: string
+    if (
+      diffFlags.patch ||
+      diffFlags.stat ||
+      diffFlags.nameOnly ||
+      diffFlags.nameStatus ||
+      diffFlags.numstat ||
+      diffFlags.shortstat ||
+      diffFlags.summary
+    ) {
+      diffFlags = parseDiffFlags(fl, false, 'off', true, await renamesEnabled(repo))
+      const blocks: string[] = []
+      for (const commit of commits) {
+        const head = rendered([commit], parsed, repo.abbrev, decor)
+        const bodies = await commitOutput(repo, commit, diffFlags)
+        blocks.push(joinOutput(commit, head, bodies, parsed.pretty.kind, repo.abbrev))
+      }
+      out = blocks.join(parsed.oneline ? '' : '\n')
+    } else out = rendered(commits, parsed, repo.abbrev, decor)
     if (out === '') return [null, new IOResult()]
     return [encodeText(out), new IOResult()]
   } catch (err) {

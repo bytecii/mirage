@@ -17,6 +17,10 @@ import asyncio
 from dulwich.objects import Commit
 from dulwich.repo import BaseRepo
 
+from mirage.commands.cli.builtin.git.diff_output import (commit_output,
+                                                         join_output,
+                                                         parse_diff_flags,
+                                                         renames_enabled)
 from mirage.commands.cli.builtin.git.errors import GitError, NoWorkspaceError
 from mirage.commands.cli.builtin.git.format import (FULL_SHA, Decorations,
                                                     needs_decorations, oneline,
@@ -132,9 +136,27 @@ async def log(inv: CLIInvocation[None]) -> tuple[ByteSource | None, IOResult]:
         commits, decor = await asyncio.to_thread(
             _collect, repo, revision_arg(texts), parsed,
             (parsed.decorate or needs_decorations(parsed.pretty)))
+        diff_flags = parse_diff_flags(fl, default_patch=False)
     except GitError as exc:
         return fatal(exc)
-    out = _rendered(commits, parsed, abbrev_for(repo), decor)
+    if any((diff_flags.patch, diff_flags.stat, diff_flags.name_only,
+            diff_flags.name_status, diff_flags.numstat, diff_flags.shortstat,
+            diff_flags.summary)):
+        diff_flags = parse_diff_flags(fl,
+                                      default_patch=False,
+                                      default_renames=await
+                                      renames_enabled(dispatch, _location))
+        blocks = []
+        for commit in commits:
+            head = _rendered([commit], parsed, abbrev_for(repo), decor)
+            bodies = await asyncio.to_thread(commit_output, repo, commit,
+                                             diff_flags)
+            blocks.append(
+                join_output(commit, head, bodies, parsed.pretty.kind,
+                            abbrev_for(repo)))
+        out = (b"" if parsed.oneline else b"\n").join(blocks)
+    else:
+        out = _rendered(commits, parsed, abbrev_for(repo), decor)
     if not out:
         return None, IOResult()
     return yield_bytes(out), IOResult()

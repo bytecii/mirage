@@ -157,7 +157,10 @@ export function statTable(stats: readonly FileStat[], width: number = STAT_WIDTH
   const maxLen = Math.max(...stats.map((stat) => stat.path.length))
   const changes = stats.filter((s) => !s.binary).map((s) => s.insertions + s.deletions)
   const maxChange = changes.length > 0 ? Math.max(...changes) : 0
-  const numberWidth = maxChange > 0 ? String(maxChange).length : 1
+  const numberWidth = Math.max(
+    maxChange > 0 ? String(maxChange).length : 1,
+    stats.some((s) => s.binary) ? 3 : 1,
+  )
   const binWidths = stats
     .filter((s) => s.binary)
     .map((s) => `Bin ${String(s.oldSize)} -> ${String(s.newSize)} bytes`.length - 4)

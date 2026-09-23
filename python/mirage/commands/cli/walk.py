@@ -629,6 +629,17 @@ def walk(head: str,
         options_ended = False
         while i < len(argv):
             token = argv[i]
+            alias = find_child(node, token) if token.startswith(
+                '-') and token not in cs.dest and token != '--help' else None
+            if alias is not None and token in alias.aliases:
+                refused = _finish_node(name, node, cs, flags, cwd, style, env)
+                if refused is not None:
+                    return refused
+                node = alias
+                path = path + (alias.name, )
+                i += 1
+                descended = True
+                break
             if not options_ended and token == "--":
                 options_ended = True
                 i += 1

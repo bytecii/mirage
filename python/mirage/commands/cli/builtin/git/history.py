@@ -59,6 +59,10 @@ class LogFlags:
     pretty: LogFormat = MEDIUM
     abbrev_commit: bool = False
 
+    min_parents: int | None = None
+    max_parents: int | None = None
+    first_parent: bool = False
+
 
 def _timestamp(value: str | None, flag: str) -> float | None:
     """Read a date flag as an epoch second, refusing what it cannot read.
@@ -123,11 +127,14 @@ def parse_flags(fl: FlagView) -> LogFlags:
         date=fl.as_str("date") or "default",
         decorate=fl.as_bool("decorate"),
         max_count=fl.as_int("n"),
+        min_parents=2 if fl.as_bool("merges") else fl.as_int("min_parents"),
+        max_parents=1 if fl.as_bool("no_merges") else fl.as_int("max_parents"),
+        first_parent=fl.as_bool("first_parent"),
         oneline=oneline,
         reverse=fl.as_bool("reverse"),
         search=fl.as_str("S"),
-        since=_timestamp(fl.as_str("since"), "--since"),
-        until=_timestamp(fl.as_str("until"), "--until"),
+        since=_timestamp(fl.as_str("after") or fl.as_str("since"), "--since"),
+        until=_timestamp(fl.as_str("before") or fl.as_str("until"), "--until"),
         all_refs=fl.as_bool("all"),
         pretty=pretty,
         abbrev_commit=oneline,
@@ -265,13 +272,23 @@ def select(repo: BaseRepo, starts: list[Commit],
     walker = Walker(
         store,
         include,
-        max_entries=flags.max_count if needle is None else None,
+        max_entries=None,
+        get_parents=lambda c: c.parents[:1]
+        if flags.first_parent else c.parents,
         since=int(flags.since) if flags.since is not None else None,
         until=int(flags.until) if flags.until is not None else None,
     )
     selected: list[Commit] = []
+    if flags.max_count == 0:
+        return selected
     for entry in walker:
         commit = entry.commit
+        if flags.min_parents is not None and len(
+                commit.parents) < flags.min_parents:
+            continue
+        if flags.max_parents is not None and flags.max_parents >= 0 and len(
+                commit.parents) > flags.max_parents:
+            continue
         if needle is not None and not touches(store, commit, needle):
             continue
         selected.append(commit)

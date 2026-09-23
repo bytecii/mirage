@@ -30,6 +30,9 @@ const REMOTE_PREFIX = 'refs/remotes/'
 
 /** The parsed shape of a `git log` invocation. */
 export interface LogFlags {
+  readonly minParents: number | null
+  readonly maxParents: number | null
+  readonly firstParent: boolean
   readonly date: string
   readonly decorate: boolean
   /** `-n`, how many commits to print. */
@@ -105,11 +108,14 @@ export function parseFlags(fl: FlagView): LogFlags {
     date: fl.asStr('date') ?? 'default',
     decorate: fl.asBool('decorate'),
     maxCount: fl.asInt('n') ?? null,
+    minParents: fl.asBool('merges') ? 2 : (fl.asInt('min_parents') ?? null),
+    maxParents: fl.asBool('no_merges') ? 1 : (fl.asInt('max_parents') ?? null),
+    firstParent: fl.asBool('first_parent'),
     oneline,
     reverse: fl.asBool('reverse'),
     search: fl.asStr('S') ?? null,
-    since: timestamp(fl.asStr('since') ?? null, '--since'),
-    until: timestamp(fl.asStr('until') ?? null, '--until'),
+    since: timestamp(fl.asStr('after') ?? fl.asStr('since') ?? null, '--since'),
+    until: timestamp(fl.asStr('before') ?? fl.asStr('until') ?? null, '--until'),
     allRefs: fl.asBool('all'),
     pretty,
     abbrevCommit: oneline,
@@ -240,6 +246,7 @@ async function decorateHead(
 async function* walkHistory(
   repo: Repo,
   starts: readonly CommitFacts[],
+  firstParent: boolean,
 ): AsyncGenerator<CommitFacts> {
   const seen = new Set<string>()
   const queue: CommitFacts[] = []
@@ -253,7 +260,7 @@ async function* walkHistory(
     const next = queue.shift()
     if (next === undefined) break
     yield next
-    for (const parent of next.parents) {
+    for (const parent of firstParent ? next.parents.slice(0, 1) : next.parents) {
       if (seen.has(parent)) continue
       seen.add(parent)
       queue.push(await commitFacts(repo, parent))
@@ -280,9 +287,17 @@ export async function select(
   flags: LogFlags,
 ): Promise<CommitFacts[]> {
   const selected: CommitFacts[] = []
-  for await (const commit of walkHistory(repo, starts)) {
-    if (flags.since !== null && commit.authorTime <= flags.since) continue
-    if (flags.until !== null && commit.authorTime > flags.until) continue
+  if (flags.maxCount === 0) return selected
+  for await (const commit of walkHistory(repo, starts, flags.firstParent)) {
+    if (flags.minParents !== null && commit.parents.length < flags.minParents) continue
+    if (
+      flags.maxParents !== null &&
+      flags.maxParents >= 0 &&
+      commit.parents.length > flags.maxParents
+    )
+      continue
+    if (flags.since !== null && commit.committerTime < flags.since) continue
+    if (flags.until !== null && commit.committerTime > flags.until) continue
     if (flags.search !== null && !(await touches(repo, commit.oid, commit.parents, flags.search))) {
       continue
     }

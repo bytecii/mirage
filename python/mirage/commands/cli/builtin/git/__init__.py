@@ -18,7 +18,7 @@ from mirage.commands.cli.builtin.git.checkout import checkout
 from mirage.commands.cli.builtin.git.commit import commit
 from mirage.commands.cli.builtin.git.diff import diff
 from mirage.commands.cli.builtin.git.inspect import (config, remote, rev_list,
-                                                     show_ref)
+                                                     show_ref, version)
 from mirage.commands.cli.builtin.git.log import log
 from mirage.commands.cli.builtin.git.mv import mv
 from mirage.commands.cli.builtin.git.reset import reset
@@ -63,7 +63,44 @@ DATE_OPTION = Option(long="--date",
                               'iso8601-strict', 'short', 'unix', 'raw'),
                      description="Date display format")
 
+DIFF_OPTIONS = (
+    Option(long="--name-status", description="Name status"),
+    Option(long="--name-only", description="Name only"),
+    Option(long="--stat", description="Stat"),
+    Option(long="--numstat", description="Numstat"),
+    Option(long="--shortstat", description="Shortstat"),
+    Option(long="--summary", description="Summary"),
+    Option(short="-p", long="--patch", description="Patch"),
+    Option(short="-s", long="--no-patch", description="No patch"),
+    Option(long="--no-ext-diff", description="No ext diff"),
+    Option(short="-M",
+           long="--find-renames",
+           type="str",
+           value_optional=True,
+           description="Detect renames with an optional similarity threshold"),
+    Option(long="--no-renames", description="No renames"),
+)
+
+MERGE_OPTIONS = (
+    Option(short="-m",
+           description="Show merge diffs separately against each parent"),
+    Option(short="-c", description="Show combined merge diffs"),
+    Option(long="--cc", description="Show dense combined merge diffs"),
+    Option(long="--first-parent",
+           description="Follow and compare only the first parent"),
+    Option(long="--diff-merges",
+           type="str",
+           description="Select merge diff mode"),
+)
+
 LOG_OPTIONS = (
+    *MERGE_OPTIONS,
+    Option(long="--after", type="str", description="After"),
+    Option(long="--before", type="str", description="Before"),
+    Option(long="--max-parents", type="int", description="Max parents"),
+    Option(long="--min-parents", type="int", description="Min parents"),
+    Option(long="--merges", description="Merges"),
+    Option(long="--no-merges", description="No merges"),
     DATE_OPTION,
     Option(long="--decorate", description="Print ref names on commits"),
     Option(short="-n",
@@ -91,24 +128,8 @@ LOG_OPTIONS = (
            description="Commits older than a date (ISO-8601 or epoch)"),
 )
 
-SHOW_OPTIONS = (
-    DATE_OPTION,
-    Option(long="--name-status", description="Show changed paths and status"),
-    Option(long="--summary",
-           description="Summarize creations, deletions and mode changes"),
-    Option(long="--stat",
-           description="Show the diffstat table instead of the patch"),
-    Option(short="-s",
-           long="--no-patch",
-           description="Suppress all diff output"),
-    Option(long="--name-only",
-           description="Show changed paths instead of the patch"),
-    Option(long="--no-ext-diff",
-           description="Accepted for compatibility; there are no external "
-           "diff drivers to disable"),
-    PRETTY_OPTION,
-    FORMAT_OPTION,
-)
+SHOW_OPTIONS = (*DIFF_OPTIONS, *MERGE_OPTIONS, DATE_OPTION, PRETTY_OPTION,
+                FORMAT_OPTION)
 
 BRANCH_OPTIONS = (
     Option(short="-v",
@@ -244,6 +265,10 @@ GIT = CLISpec(
     usage_style=UsageStyle.GIT,
     options=(DIRECTORY_OPTION, ),
     subcommands=(
+        CLISpec(name="version",
+                aliases=("--version", "-v"),
+                fn=version,
+                description="Show the Mirage Git implementation version"),
         CLISpec(name="remote",
                 description="List remotes",
                 fn=remote,
@@ -254,9 +279,11 @@ GIT = CLISpec(
                 description="Read repository configuration",
                 fn=config,
                 options=(Option(long="--get",
-                                description="Get a configuration value"), ),
-                positional=(Operand(type="str", name="name",
-                                    required=True), )),
+                                description="Get a configuration value"),
+                         Option(short="-l",
+                                long="--list"), Option(long="--show-origin"),
+                         Option(long="--get-regexp")),
+                positional=(Operand(type="str", name="name"), )),
         CLISpec(name="show-ref",
                 description="List references",
                 fn=show_ref,
@@ -288,7 +315,7 @@ GIT = CLISpec(
             name="log",
             description="Show commit logs",
             fn=log,
-            options=LOG_OPTIONS,
+            options=(*LOG_OPTIONS, *DIFF_OPTIONS),
             rest=REVISION,
         ),
         CLISpec(
@@ -302,6 +329,7 @@ GIT = CLISpec(
             name="diff",
             description="Show changes between commits",
             fn=diff,
+            options=DIFF_OPTIONS,
             rest=REVISION,
         ),
         CLISpec(

@@ -13,106 +13,47 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import git from 'isomorphic-git'
-
 import { unifiedDiff } from '../../../builtin/diff_format.ts'
-import { short } from './format.ts'
 import { repoArgs, type Repo } from './repo.ts'
-import { treeEntries, type TreeEntry } from './tree.ts'
-import { compareCodePoints } from '../../../../utils/sort.ts'
+import type { TreeEntry } from './tree.ts'
 
-const DEC = new TextDecoder('utf-8', { fatal: false })
-// git's blob abbreviation inside an index line is fixed at seven, unlike the
-// commit abbreviation, which widens with the repository.
-const BLOB_ABBREV = 7
-const DEV_NULL = '/dev/null'
-
-// Deliberate divergence, verified against git 2.47.3 on a real repository. The
-// patch is correct and applies cleanly, and file headers, mode lines and blob
-// abbreviations match git exactly, but the hunks are not byte-identical:
-//
-//   ours: @@ -3,6 +3,10 @@
-//   git:  @@ -4,6 +4,10 @@ from collections import defaultdict
-//
-// Two causes, both from rendering through a Myers/SequenceMatcher diff rather
-// than git's xdiff. git appends the enclosing function or section to a hunk
-// header (xfuncname), and git slides a hunk to the equivalent boundary xdiff
-// prefers, so a blank line can be attributed to the additions on one side and
-// the context on the other. Closing this means reimplementing xdl_change_compact
-// and the xfuncname scan; until then do not claim byte parity for diff bodies.
-// `log`, `log --oneline`, `show`'s header and `branch` ARE byte-identical.
-//
-// The same divergence exists on the Python side and for the same reason (its
-// dulwich patch writer runs on difflib), so the two implementations agree with
-// each other even where both differ from git.
-
-/** Read one blob as lines, keeping the newline on each. */
-async function blobLines(repo: Repo, oid: string | null): Promise<string[]> {
-  if (oid === null) return []
-  const { blob } = await git.readBlob({ ...repoArgs(repo), oid })
-  const text = DEC.decode(blob)
-  if (text === '') return []
-  return text.split(/(?<=\n)/)
+async function blobData(repo: Repo, entry: TreeEntry | null): Promise<Uint8Array> {
+  if (!entry) return new Uint8Array()
+  if (entry.mode === '160000') return new TextEncoder().encode(`Subproject commit ${entry.oid}\n`)
+  return (await git.readBlob({ ...repoArgs(repo), oid: entry.oid })).blob
+}
+function lines(data: Uint8Array): string[] {
+  const text = new TextDecoder().decode(data)
+  return text === '' ? [] : text.split(/(?<=\n)/)
 }
 
-/** The `index <old>..<new> <mode>` line git puts under the header. */
-function indexLine(before: TreeEntry | null, after: TreeEntry | null): string {
-  const zero = '0'.repeat(BLOB_ABBREV)
-  const old = before === null ? zero : short(before.oid, BLOB_ABBREV)
-  const now = after === null ? zero : short(after.oid, BLOB_ABBREV)
-  if (before !== null && after !== null && before.mode === after.mode) {
-    return `index ${old}..${now} ${after.mode}`
-  }
-  return `index ${old}..${now}`
-}
-
-/** The header lines for one changed path, git's own order. */
-function header(path: string, before: TreeEntry | null, after: TreeEntry | null): string[] {
-  const lines = [`diff --git a/${path} b/${path}`]
-  if (before === null && after !== null) lines.push(`new file mode ${after.mode}`)
-  else if (before !== null && after === null) lines.push(`deleted file mode ${before.mode}`)
-  else if (before !== null && after !== null && before.mode !== after.mode) {
-    lines.push(`old mode ${before.mode}`, `new mode ${after.mode}`)
-  }
-  lines.push(indexLine(before, after))
-  return lines
-}
-
-/**
- * Render a patch between two trees, in git's own format.
- *
- * Paths are compared in sorted order, which is what git prints; a path whose
- * blob id is unchanged is skipped even when its mode moved, apart from the mode
- * lines, because there is no content hunk to show.
- *
- * @param repo repository holding the objects
- * @param beforeTree the tree on the minus side, or null for no commit at all
- * @param afterTree the tree on the plus side
- */
-export async function treeDiff(
+export async function filePatch(
   repo: Repo,
-  beforeTree: string | null,
-  afterTree: string | null,
+  path: string,
+  oldPath: string,
+  before: TreeEntry | null,
+  after: TreeEntry | null,
+  score: number | null,
 ): Promise<string> {
-  const before =
-    beforeTree === null ? new Map<string, TreeEntry>() : await treeEntries(repo, beforeTree)
-  const after =
-    afterTree === null ? new Map<string, TreeEntry>() : await treeEntries(repo, afterTree)
-  const paths = [...new Set([...before.keys(), ...after.keys()])].sort(compareCodePoints)
-  const out: string[] = []
-  for (const path of paths) {
-    const old = before.get(path) ?? null
-    const now = after.get(path) ?? null
-    if (old !== null && now !== null && old.oid === now.oid && old.mode === now.mode) continue
-    out.push(...header(path, old, now))
-    const oldLines = await blobLines(repo, old?.oid ?? null)
-    const newLines = await blobLines(repo, now?.oid ?? null)
-    const body = unifiedDiff(
-      oldLines,
-      newLines,
-      old === null ? DEV_NULL : `a/${path}`,
-      now === null ? DEV_NULL : `b/${path}`,
-    )
-    for (const line of body) out.push(line.endsWith('\n') ? line.slice(0, -1) : line)
-  }
-  return out.length === 0 ? '' : `${out.join('\n')}\n`
+  const a = before,
+    b = after,
+    name = path,
+    origin = oldPath
+  const head = [`diff --git a/${origin} b/${name}`]
+  if (!a && b) head.push(`new file mode ${b.mode}`)
+  else if (!b && a) head.push(`deleted file mode ${a.mode}`)
+  else if (a && b && a.mode !== b.mode) head.push(`old mode ${a.mode}`, `new mode ${b.mode}`)
+  if (score !== null)
+    head.push(`similarity index ${String(score)}%`, `rename from ${origin}`, `rename to ${name}`)
+  if (a?.oid === b?.oid) return head.join('\n') + '\n'
+  head.push(
+    `index ${(a?.oid ?? '0000000').slice(0, 7)}..${(b?.oid ?? '0000000').slice(0, 7)}${a && a.mode === b?.mode ? ' ' + b.mode : ''}`,
+  )
+  const old = await blobData(repo, a),
+    fresh = await blobData(repo, b)
+  const from = a ? `a/${origin}` : '/dev/null',
+    to = b ? `b/${name}` : '/dev/null'
+  if (old.subarray(0, 8000).includes(0) || fresh.subarray(0, 8000).includes(0))
+    return head.join('\n') + `\nBinary files ${from} and ${to} differ\n`
+  return head.join('\n') + '\n' + unifiedDiff(lines(old), lines(fresh), from, to).join('')
 }

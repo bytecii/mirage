@@ -1,4 +1,5 @@
 import asyncio
+import re
 from io import BytesIO
 
 from dulwich.config import ConfigFile
@@ -10,10 +11,12 @@ from mirage.commands.cli.builtin.git.history import (LogFlags, parse_flags,
 from mirage.commands.cli.builtin.git.io import read_file
 from mirage.commands.cli.builtin.git.revparse import resolve_commit
 from mirage.commands.cli.builtin.git.session import opened
-from mirage.commands.cli.builtin.git.util import check_operands, escaped, fatal
+from mirage.commands.cli.builtin.git.util import (check_operands, escaped,
+                                                  fatal, start_point)
 from mirage.commands.cli.types import CLIDoors, CLIInvocation
 from mirage.commands.spec.flag_view import FlagView
 from mirage.io.types import ByteSource, IOResult
+from mirage.version import __version__
 
 
 async def repo_config(inv: CLIInvocation[None], fl: FlagView) -> ConfigFile:
@@ -55,18 +58,44 @@ async def config(
     fl = FlagView(inv.flags)
     try:
         cfg = await repo_config(inv, fl)
-        key = inv.texts[0]
-        parts = key.split(".")
-        section = (parts[0].lower().encode(), ) if len(parts) == 2 else (
-            parts[0].lower().encode(), ".".join(parts[1:-1]).encode())
-        if not cfg.has_section(section):
-            return None, IOResult(exit_code=1)
-        values = [
-            value for name, value in cfg.items(section)
-            if name.lower() == parts[-1].lower().encode()
+        listing = fl.as_bool("list")
+        regexp = fl.as_bool("get_regexp")
+        origin = fl.as_bool("show_origin")
+        if not listing and not inv.texts:
+            return None, IOResult(exit_code=129,
+                                  stderr=b"error: wrong number of arguments\n")
+        key = inv.texts[0] if inv.texts else ""
+        try:
+            pattern = re.compile(key) if regexp else None
+        except re.error:
+            return None, IOResult(
+                exit_code=6,
+                stderr=f"error: invalid key pattern: {key}\n".encode())
+        values = []
+        for section in cfg.sections():
+            for name, value in cfg.items(section):
+                full = b".".join((*section, name.lower())).decode()
+                if listing or (pattern.search(full)
+                               if pattern else full == config_key(key)):
+                    values.append((full, value.decode()))
+        if not listing and not regexp:
+            values = values[-1:]
+        prefix = ""
+        if origin:
+            _, location = await opened(fl, inv.doors or CLIDoors())
+            source = f"{location.commondir}/config"
+            ordinary = location.commondir == location.worktree + "/.git"
+            if ordinary and start_point(fl) == location.worktree:
+                source = ".git/config"
+            prefix = f"file:{source}\t"
+        lines = [
+            prefix + (name +
+                      ("=" if listing else " ") if listing or regexp else "") +
+            value + "\n" for name, value in values
         ]
-        return (values[-1] + b"\n",
-                IOResult()) if values else (None, IOResult(exit_code=1))
+        return "".join(lines).encode(), IOResult(
+            exit_code=0 if values or listing else 1)
+
     except GitError as exc:
         return fatal(exc)
 
@@ -113,3 +142,15 @@ async def rev_list(
                 b"".join(oid + b"\n" for oid in commits)), IOResult()
     except GitError as exc:
         return fatal(exc)
+
+
+async def version(
+        inv: CLIInvocation[None]) -> tuple[ByteSource | None, IOResult]:
+    return f"git version {__version__} (Mirage)\n".encode(), IOResult()
+
+
+def config_key(key: str) -> str:
+    parts = key.split('.')
+    parts[0] = parts[0].lower()
+    parts[-1] = parts[-1].lower()
+    return '.'.join(parts)

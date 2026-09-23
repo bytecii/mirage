@@ -199,7 +199,9 @@ def stat_table(stats: list[FileStat], width: int = STAT_WIDTH) -> list[str]:
     max_change = max((stat.insertions + stat.deletions
                       for stat in stats if not stat.binary),
                      default=0)
-    number_width = len(str(max_change)) if max_change else 1
+    number_width = max(
+        len(str(max_change)) if max_change else 1,
+        3 if any(stat.binary for stat in stats) else 1)
     bin_width = max((len(f"Bin {stat.old_size} -> {stat.new_size} bytes") - 4
                      for stat in stats if stat.binary),
                     default=0)

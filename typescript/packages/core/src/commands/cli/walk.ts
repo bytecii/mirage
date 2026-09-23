@@ -547,6 +547,19 @@ export function walk(
     while (i < argv.length) {
       const token = argv[i]
       if (token === undefined) break
+      const alias =
+        token.startsWith('-') && !cs.dest.has(token) && token !== '--help'
+          ? findChild(node, token)
+          : null
+      if (alias?.aliases.includes(token)) {
+        const refused = finishNode(name, node, cs, flags, cwd, style, env)
+        if (refused !== null) return refused
+        node = alias
+        path = [...path, alias.name]
+        i += 1
+        descended = true
+        break
+      }
       if (!optionsEnded && token === '--') {
         optionsEnded = true
         i += 1

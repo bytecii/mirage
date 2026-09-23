@@ -13,12 +13,14 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
-from io import BytesIO
 
-from dulwich.patch import write_tree_diff
 from dulwich.repo import BaseRepo
 
 from mirage.commands.cli.builtin.git.constants import HEAD
+from mirage.commands.cli.builtin.git.diff_output import (DiffFlags,
+                                                         parse_diff_flags,
+                                                         renames_enabled,
+                                                         tree_output)
 from mirage.commands.cli.builtin.git.errors import (GitError,
                                                     InvalidOptionError,
                                                     NoWorkspaceError)
@@ -49,7 +51,8 @@ from mirage.io.types import ByteSource, IOResult
 # `show`'s header and `branch` ARE byte-identical.
 
 
-def _render(repo: BaseRepo, old_rev: str, new_rev: str) -> bytes:
+def _render(repo: BaseRepo, old_rev: str, new_rev: str,
+            flags: DiffFlags) -> bytes:
     """Resolve both revisions and render the patch, synchronously.
 
     Runs on a worker thread, because resolving and reading blobs both
@@ -62,9 +65,7 @@ def _render(repo: BaseRepo, old_rev: str, new_rev: str) -> bytes:
     """
     old = resolve_commit(repo, old_rev)
     new = resolve_commit(repo, new_rev)
-    out = BytesIO()
-    write_tree_diff(out, repo.object_store, old.tree, new.tree)
-    return out.getvalue()
+    return tree_output(repo, old.tree, new.tree, flags)
 
 
 async def diff(inv: CLIInvocation[None]) -> tuple[ByteSource | None, IOResult]:
@@ -94,7 +95,11 @@ async def diff(inv: CLIInvocation[None]) -> tuple[ByteSource | None, IOResult]:
         check_operands(texts, InvalidOptionError, escaped(inv.argv))
         repo, _location = await opened(fl, doors)
         new_rev = texts[1] if len(texts) >= 2 else HEAD
-        body = await asyncio.to_thread(_render, repo, texts[0], new_rev)
+        body = await asyncio.to_thread(
+            _render, repo, texts[0], new_rev,
+            parse_diff_flags(fl,
+                             default_renames=await
+                             renames_enabled(dispatch, _location)))
     except GitError as exc:
         return fatal(exc)
     if not body:

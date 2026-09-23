@@ -49,11 +49,10 @@ def test_fatal_names_an_explicit_gitdir():
 @pytest.mark.asyncio
 async def test_an_unsupported_log_flag_says_so_rather_than_blaming_the_repo(
         git_ws):
-    # -p is real git, absent here. As a revision operand it used to come
-    # back "ambiguous argument", which reads as a missing commit.
-    result = await git_ws.shell("git -C /repo log -p")
+    # Unknown options must not read as missing revisions.
+    result = await git_ws.shell("git -C /repo log --zzz")
     assert result.exit_code == 128
-    assert result.stderr == b"fatal: unrecognized argument: -p\n"
+    assert result.stderr == b"fatal: unrecognized argument: --zzz\n"
 
 
 @pytest.mark.asyncio
@@ -74,18 +73,18 @@ async def test_an_unsupported_show_flag_is_refused(git_ws):
 async def test_diff_keeps_gits_own_wording_and_exit_for_a_bad_option(git_ws):
     # git words this one differently from log and show, and exits 129
     # rather than 128. Pinned against git 2.50.1.
-    result = await git_ws.shell("git -C /repo diff --stat HEAD")
+    result = await git_ws.shell("git -C /repo diff --zzz HEAD")
     assert result.exit_code == 129
-    assert result.stderr == b"error: invalid option: --stat\n"
+    assert result.stderr == b"error: invalid option: --zzz\n"
 
 
 @pytest.mark.asyncio
 async def test_a_refused_flag_costs_no_object_reads(git_ws):
     # The check runs before the repository is opened, so a bad flag is
     # answered without touching the backend.
-    result = await git_ws.shell("git -C /nowhere log -p")
+    result = await git_ws.shell("git -C /nowhere log --zzz")
     assert result.exit_code == 128
-    assert result.stderr == b"fatal: unrecognized argument: -p\n"
+    assert result.stderr == b"fatal: unrecognized argument: --zzz\n"
 
 
 @pytest.mark.asyncio
