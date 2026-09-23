@@ -16,7 +16,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { normalizeOneDriveConfig } from '@struktoai/mirage-core/accessor/onedrive'
 import { tokenUrl } from '@struktoai/mirage-core/core/google/client'
 import type { TokenManager } from '@struktoai/mirage-core/core/google/client'
@@ -24,7 +24,8 @@ import { normalizeMem0Config } from '@struktoai/mirage-core/vfs/mem0/config'
 import { Mem0VFS } from '@struktoai/mirage-core/vfs/mem0/mem0'
 import { OneDriveVFS } from '@struktoai/mirage-core/vfs/onedrive/onedrive'
 import { vfsStateRequiresOverride } from '@struktoai/mirage-core/vfs/secrets'
-import { VFSName } from '@struktoai/mirage-core/types'
+import { MountMode, VFSName } from '@struktoai/mirage-core/types'
+import { Workspace } from '../workspace.ts'
 import { normalizeS3Config } from './s3/config.ts'
 import { buildVfs, knownVfsNames, register } from './registry.ts'
 
@@ -111,6 +112,60 @@ describe('node VFS registry', () => {
     const vfs = await buildVfs('gdrive', { access_token: 'sa-token' })
     const { accessor } = vfs as unknown as { accessor: { tokenManager: TokenManager } }
     expect(await accessor.tokenManager.getToken()).toBe('sa-token')
+  })
+
+  // Node's copy of GitHubVFS was the only one without a prompt, so the file
+  // prompt skipped every node GitHub mount while the browser and python
+  // described theirs.
+  it('describes a github mount in the agent file prompt', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: string | URL | Request) => {
+        const url = input instanceof Request ? input.url : String(input)
+        const body = url.includes('/git/trees/')
+          ? { tree: [], truncated: false }
+          : { default_branch: 'main' }
+        return Promise.resolve(
+          new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } }),
+        )
+      }),
+    )
+    try {
+      const vfs = await buildVfs('github', {
+        token: 't',
+        owner: 'o',
+        repo: 'r',
+        base_url: 'http://127.0.0.1:1',
+      })
+      const ws = new Workspace({ '/gh': vfs })
+      try {
+        expect(ws.filePrompt).toContain('/gh\n  Mirrors the GitHub repository file tree.')
+      } finally {
+        await ws.close()
+      }
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  // EMAIL_WRITE_PROMPT was exported but never attached to EmailVFS, so a
+  // writable mailbox said nothing about sending. Its wording also named
+  // `himalaya message send --to`, a verb that takes a raw RFC 5322 message
+  // and refuses those flags; python's `message compose ... --send` is the
+  // line the CLI accepts.
+  it('tells a writable email mount how to send', async () => {
+    const vfs = await buildVfs('email', {
+      imap_host: 'h',
+      smtp_host: 'h',
+      username: 'me@example.com',
+      password: 'p',
+    })
+    const ws = new Workspace({ '/mail': vfs }, { mode: MountMode.WRITE })
+    try {
+      expect(ws.filePrompt).toContain('himalaya message compose --to')
+    } finally {
+      await ws.close()
+    }
   })
 
   // The python wire spelling of every field reaches the VFS and the

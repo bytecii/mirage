@@ -31,7 +31,7 @@ import {
   type EmailConfig,
   type EmailConfigRedacted,
 } from '../../core/email/config.ts'
-import { EMAIL_PROMPT } from './prompt.ts'
+import { EMAIL_PROMPT, EMAIL_WRITE_PROMPT } from './prompt.ts'
 
 const resolveGlob = makeResolveGlob(emailReaddir)
 
@@ -49,6 +49,7 @@ export class EmailVFS extends BaseVFS implements VFS {
   readonly sizesAlwaysKnown: boolean = true
   override readonly indexTtl: number = 86_400
   readonly prompt: string = EMAIL_PROMPT
+  readonly writePrompt: string = EMAIL_WRITE_PROMPT
   readonly config: EmailConfig
   readonly accessor: EmailAccessor
 

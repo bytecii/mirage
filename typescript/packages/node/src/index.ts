@@ -304,7 +304,7 @@ export {
   type LangfuseConfig,
   type LangfuseConfigRedacted,
 } from '@struktoai/mirage-core/vfs/langfuse/config'
-export { GitHubVFS, type GitHubVFSState } from './vfs/github/github.ts'
+export { GitHubVFS, type GitHubVFSState } from '@struktoai/mirage-core/vfs/github/github'
 export {
   normalizeGitHubConfig,
   redactGitHubConfig,

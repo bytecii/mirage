@@ -54,6 +54,8 @@ export interface Capabilities {
   sizes_always_known: boolean | string
   storage_id: boolean
   statfs: boolean
+  has_prompt: boolean
+  has_write_prompt: boolean
 }
 
 export interface CommandIoFacts {
@@ -166,6 +168,60 @@ function declaresMethod(info: ClassInfo, name: string): boolean {
   )
 }
 
+function isEmptyString(node: ts.Expression): boolean {
+  return ts.isStringLiteralLike(node) && node.text === ''
+}
+
+// Whether the class's constructor assigns `this.<name>` a value other than
+// the empty string. A prompt that embeds the mount prefix is built there
+// (postgres, mongodb), so its field is declared with no initializer.
+function assignsInConstructor(info: ClassInfo, name: string): boolean {
+  let found = false
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(node.left) &&
+      node.left.expression.kind === ts.SyntaxKind.ThisKeyword &&
+      node.left.name.text === name &&
+      !isEmptyString(node.right)
+    ) {
+      found = true
+    }
+    ts.forEachChild(node, visit)
+  }
+  for (const member of info.decl.members) {
+    if (ts.isConstructorDeclaration(member) && member.body !== undefined) visit(member.body)
+  }
+  return found
+}
+
+/**
+ * Whether a class on the extends chain gives a text slot a value.
+ *
+ * The nearest declaration decides, as it does at runtime: an initializer
+ * other than `''`, a getter, or a bare declaration its constructor fills.
+ * `prompt` and `writePrompt` are optional members of `VFS` with no
+ * `BaseVFS` declaration, and `buildFilePrompt` skips a mount whose prompt
+ * is absent, so a class that declares neither describes nothing to an agent.
+ *
+ * Args:
+ *   ancestry: the class and its ancestors, nearest first.
+ *   name: the instance field to read.
+ */
+function givesText(ancestry: readonly ClassInfo[], name: string): boolean {
+  for (const info of ancestry) {
+    for (const member of info.decl.members) {
+      if (member.name?.getText(info.source) !== name) continue
+      if (ts.isGetAccessorDeclaration(member)) return true
+      if (!ts.isPropertyDeclaration(member)) continue
+      if (member.initializer !== undefined) return !isEmptyString(member.initializer)
+      return assignsInConstructor(info, name)
+    }
+  }
+  return false
+}
+
 /**
  * One class's capability values, resolved up its extends chain.
  *
@@ -201,6 +257,8 @@ export function capabilitiesOf(className: string, classes: Map<string, ClassInfo
     sizes_always_known: booleanCapability(values, 'sizesAlwaysKnown', false, className),
     storage_id: overrides.some((info) => declaresMethod(info, 'storageId')),
     statfs: overrides.some((info) => declaresMethod(info, 'statfs')),
+    has_prompt: givesText(ancestry, 'prompt'),
+    has_write_prompt: givesText(ancestry, 'writePrompt'),
   }
 }
 

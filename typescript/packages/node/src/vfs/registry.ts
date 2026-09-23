@@ -239,7 +239,7 @@ const REGISTRY: Record<string, VFSFactory> = {
     return new JaegerVFS(normalizeJaegerConfig(config))
   },
   github: async (config) => {
-    const { GitHubVFS } = await import('./github/github.ts')
+    const { GitHubVFS } = await import('@struktoai/mirage-core/vfs/github/github')
     const { normalizeGitHubConfig } = await import('@struktoai/mirage-core/core/github/config')
     return GitHubVFS.create(normalizeGitHubConfig(config))
   },

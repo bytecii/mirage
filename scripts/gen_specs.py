@@ -246,7 +246,11 @@ def _capabilities() -> dict[str, dict[str, Any]]:
     mongodb where typescript pins 0, so an ``ls`` of a live schema could
     be ten minutes stale. ``storage_id`` and ``statfs`` are reported as
     "does this class override the base" rather than by value, because the
-    base answers are per-instance identity and UNKNOWN.
+    base answers are per-instance identity and UNKNOWN. ``has_prompt`` and
+    ``has_write_prompt`` say whether the mount describes itself to an
+    agent; the text is prose each side words for itself, but its absence is
+    not: node's GitHubVFS carried no prompt, so its file prompt left every
+    GitHub mount out while python and the browser described theirs.
     """
     out: dict[str, dict[str, Any]] = {}
     for name in sorted(REGISTRY):
@@ -259,6 +263,8 @@ def _capabilities() -> dict[str, dict[str, Any]]:
             "sizes_always_known": cls.SIZES_ALWAYS_KNOWN,
             "storage_id": cls.storage_id is not BaseVFS.storage_id,
             "statfs": cls.statfs is not BaseVFS.statfs,
+            "has_prompt": bool(cls.PROMPT),
+            "has_write_prompt": bool(cls.WRITE_PROMPT),
         }
     return out
 

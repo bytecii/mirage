@@ -12,35 +12,36 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { GitHubAccessor } from '@struktoai/mirage-core/accessor/github'
-import { RAMIndexCacheStore } from '@struktoai/mirage-core/cache/index/ram'
-import type { IndexCacheStore } from '@struktoai/mirage-core/cache/index/store'
-import { makeResolveGlob } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
-import { GITHUB_COMMANDS } from '@struktoai/mirage-core/commands/builtin/github/index'
-import type { RegisteredCommand } from '@struktoai/mirage-core/commands/config'
+import { GitHubAccessor } from '../../accessor/github.ts'
+import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
+import type { IndexCacheStore } from '../../cache/index/store.ts'
+import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+import { GITHUB_COMMANDS } from '../../commands/builtin/github/index.ts'
+import type { RegisteredCommand } from '../../commands/config.ts'
 import {
   HttpGitHubTransport,
   fetchRepoInfo as fetchGitHubRepoInfo,
   fetchTree as fetchGitHubTree,
-} from '@struktoai/mirage-core/core/github/client'
-import { read as githubRead } from '@struktoai/mirage-core/core/github/read'
-import { readdir as githubReaddir } from '@struktoai/mirage-core/core/github/readdir'
-import { stat as githubStat } from '@struktoai/mirage-core/core/github/stat'
-import { buildTreeMap as githubBuildTreeMap } from '@struktoai/mirage-core/core/github/tree'
-import { buildDeltaHook } from '@struktoai/mirage-core/core/github/watch'
-import { GITHUB_OPS } from '@struktoai/mirage-core/ops/github/index'
-import type { RegisteredOp } from '@struktoai/mirage-core/ops/registry'
-import { BaseVFS } from '@struktoai/mirage-core/vfs/base'
-import type { VFS } from '@struktoai/mirage-core/vfs/base'
-import { PathSpec, VFSName } from '@struktoai/mirage-core/types'
-import type { FileStat } from '@struktoai/mirage-core/types'
-import { mountKey, mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
-import type { DeltaHook } from '@struktoai/mirage-core/watch/index'
+} from '../../core/github/client.ts'
+import { read as githubRead } from '../../core/github/read.ts'
+import { readdir as githubReaddir } from '../../core/github/readdir.ts'
+import { stat as githubStat } from '../../core/github/stat.ts'
+import { buildTreeMap as githubBuildTreeMap } from '../../core/github/tree.ts'
+import { buildDeltaHook } from '../../core/github/watch.ts'
+import { GITHUB_OPS } from '../../ops/github/index.ts'
+import type { RegisteredOp } from '../../ops/registry.ts'
+import { BaseVFS } from '../base.ts'
+import type { VFS } from '../base.ts'
+import { GITHUB_PROMPT } from './prompt.ts'
+import { PathSpec, VFSName } from '../../types.ts'
+import type { FileStat } from '../../types.ts'
+import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
+import type { DeltaHook } from '../../watch/index.ts'
 import {
   redactGitHubConfig,
   type GitHubConfig,
   type GitHubConfigRedacted,
-} from '@struktoai/mirage-core/core/github/config'
+} from '../../core/github/config.ts'
 
 const githubResolveGlob = makeResolveGlob(githubReaddir)
 
@@ -62,6 +63,7 @@ export class GitHubVFS extends BaseVFS implements VFS {
   // probe-verified under ALWAYS and snapshots carry drift fingerprints.
   readonly supportsSnapshot: boolean = true
   override readonly indexTtl: number = 86_400
+  readonly prompt: string = GITHUB_PROMPT
   readonly config: GitHubConfig
   readonly accessor: GitHubAccessor
 
