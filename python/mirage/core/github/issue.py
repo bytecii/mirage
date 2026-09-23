@@ -12,7 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from typing import Any
+from typing import Any, cast
 
 from mirage.core.github.client import github_request
 from mirage.core.github.config import GhConfig
@@ -114,8 +114,8 @@ fragment CommentFields on IssueComment {
 
 async def issue_comments(config: GhConfig, ref: RepoRef,
                          number: int) -> list[dict[str, Any]]:
-    rows = []
-    cursor = None
+    rows: list[dict[str, Any]] = []
+    cursor: str | None = None
     while True:
         response = await github_request(config.token,
                                         "POST",
@@ -131,10 +131,11 @@ async def issue_comments(config: GhConfig, ref: RepoRef,
                                         base_url=config.base_url)
         if not isinstance(response, dict):
             raise ValueError("Invalid GitHub comments response")
-        if response.get("errors"):
+        payload = cast(dict[str, Any], response)
+        if payload.get("errors"):
             raise ValueError("; ".join(e["message"]
-                                       for e in response["errors"]))
-        repo = (response.get("data") or {}).get("repository") or {}
+                                       for e in payload["errors"]))
+        repo = (payload.get("data") or {}).get("repository") or {}
         comments = (repo.get("issueOrPullRequest") or {}).get("comments")
         if comments is None:
             raise ValueError(

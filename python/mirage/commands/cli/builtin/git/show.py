@@ -161,6 +161,7 @@ def _diff_section(repo: BaseRepo, commit: Commit, flags: ShowFlags) -> bytes:
                         status = "M"
                     lines.append(f"{status}\t{name}")
                 elif old is None:
+                    assert new is not None
                     lines.append(f" create mode {new[0]:06o} {name}")
                 elif new is None:
                     lines.append(f" delete mode {old[0]:06o} {name}")

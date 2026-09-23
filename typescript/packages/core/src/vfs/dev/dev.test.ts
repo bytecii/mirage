@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { CLISpec } from '../../commands/cli/types.ts'
+import { IOResult } from '../../io/types.ts'
 import { describe, expect, it } from 'vitest'
 import { OpsRegistry } from '../../ops/registry.ts'
 import { MountMode, PathSpec, VFSName } from '../../types.ts'
@@ -254,4 +256,63 @@ describe('DevVFS auto-mount in Workspace', () => {
       /duplicate mount prefix/,
     )
   })
+})
+
+it('keeps process substitution private while another session runs', async () => {
+  let readyResolve!: () => void
+  const ready = new Promise<void>((resolve) => {
+    readyResolve = resolve
+  })
+  let releaseResolve!: () => void
+  const release = new Promise<void>((resolve) => {
+    releaseResolve = resolve
+  })
+  const ws = await makeWs()
+  ws.createSession('owner')
+  ws.createSession('peer')
+  ws.registerCli(
+    'hold',
+    new CLISpec({
+      name: 'hold',
+      fn: async () => {
+        readyResolve()
+        await release
+        return [null, new IOResult()]
+      },
+    }),
+  )
+  const owner = ws.shell(
+    'consume() { ls /dev/fd >/dev/null; hold; cat "$1"; }; consume <(echo private)',
+    { sessionId: 'owner' },
+  )
+  try {
+    await ready
+    for (const command of [
+      'cat /dev/fd/63',
+      'stat /dev/fd/63',
+      'ls /dev/fd',
+      'echo corrupt > /dev/fd/63',
+      'rm /dev/fd/63',
+      'mkdir -p /dev/fd/63',
+      'mv /dev/fd /dev/stolen',
+    ]) {
+      const result = await ws.shell(command, { sessionId: 'peer' })
+      expect(result.exitCode, command).not.toBe(0)
+      expect(new TextDecoder().decode(result.stdout)).not.toContain('private')
+    }
+    expect(
+      new TextDecoder().decode((await ws.shell('cat <(echo peer)', { sessionId: 'peer' })).stdout),
+    ).toBe('peer\n')
+    releaseResolve()
+    const result = await owner
+    expect(result.exitCode).toBe(0)
+    expect(new TextDecoder().decode(result.stdout)).toBe('private\n')
+    expect(
+      new TextDecoder().decode((await ws.shell('ls /dev', { sessionId: 'owner' })).stdout),
+    ).not.toContain('fd')
+  } finally {
+    releaseResolve()
+    await owner
+    await ws.close()
+  }
 })

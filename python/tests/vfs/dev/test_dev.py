@@ -12,9 +12,15 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
+
 import pytest
 
+from mirage import Workspace
+from mirage.commands.cli.types import CLISpec
+from mirage.io.types import IOResult
 from mirage.vfs.dev.dev import DevStore, _DevFiles
+from mirage.vfs.ram import RAMVFS
 
 
 def test_contains_dev_names_with_or_without_slash():
@@ -103,3 +109,49 @@ def test_dev_store_starts_with_synthetic_files_and_root():
     assert list(store.files.keys()) == ["/null", "/zero"]
     assert "/" in store.dirs
     assert store.modified == {}
+
+
+@pytest.mark.asyncio
+async def test_process_substitution_is_private_to_its_session():
+    ready, release = asyncio.Event(), asyncio.Event()
+
+    async def hold(inv):
+        ready.set()
+        await release.wait()
+        return None, IOResult()
+
+    ws = Workspace({"/data": RAMVFS()}, mode="exec")
+    ws.create_session("owner")
+    ws.create_session("peer")
+    ws.register_cli("hold", CLISpec(name="hold", fn=hold))
+    owner = asyncio.create_task(
+        ws.shell(
+            'consume() { ls /dev/fd >/dev/null; hold; cat "$1"; }; '
+            'consume <(echo private)',
+            session_id="owner"))
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=5)
+        for command in [
+                'cat /dev/fd/63',
+                'stat /dev/fd/63',
+                'ls /dev/fd',
+                'echo corrupt > /dev/fd/63',
+                'rm /dev/fd/63',
+                'mkdir -p /dev/fd/63',
+                'mv /dev/fd /dev/stolen',
+        ]:
+            result = await ws.shell(command, session_id="peer")
+            assert result.exit_code != 0, command
+            assert b"private" not in (result.stdout or b"")
+        result = await ws.shell('cat <(echo peer)', session_id="peer")
+        assert result.stdout == b"peer\n"
+        release.set()
+        result = await owner
+        assert result.exit_code == 0
+        assert result.stdout == b"private\n"
+        result = await ws.shell('ls /dev', session_id="owner")
+        assert b"fd" not in (result.stdout or b"")
+    finally:
+        release.set()
+        await owner
+        await ws.close()

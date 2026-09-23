@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
+import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { RAMAccessor } from '../../accessor/ram.ts'
 import { DEV_COMMANDS } from '../../commands/builtin/dev/index.ts'
 import { read, stat, stream } from '../../core/dev/index.ts'
@@ -21,7 +23,19 @@ import type { RegisteredOp } from '../../ops/registry.ts'
 import { type FileStat, type PathSpec } from '../../types.ts'
 import { RAMVFS } from '../ram/ram.ts'
 import type { RAMStore } from '../ram/store.ts'
-import { DevStore } from './store.ts'
+import { type DevFiles, DevStore } from './store.ts'
+
+class DevIndex extends RAMIndexCacheStore {
+  override seed(): void {
+    return undefined
+  }
+  override put(): Promise<void> {
+    return Promise.resolve()
+  }
+  override setDir(): Promise<void> {
+    return Promise.resolve()
+  }
+}
 
 export class DevVFS extends RAMVFS {
   override readonly store: RAMStore = new DevStore() as unknown as RAMStore
@@ -34,12 +48,15 @@ export class DevVFS extends RAMVFS {
     this.opsMap.stat = stat
   }
 
+  private readonly descriptorIndex = new DevIndex()
+
+  override get index(): IndexCacheStore {
+    // A path-only index must not publish one session's descriptors to another.
+    return this.descriptorIndex
+  }
+
   allocateInput(): string {
-    let fd = 63
-    while (this.store.files.has(`/fd/${String(fd)}`)) fd -= 1
-    const key = `/fd/${String(fd)}`
-    this.store.files.set(key, new Uint8Array())
-    return `/dev${key}`
+    return (this.store.files as DevFiles).allocateInput()
   }
 
   setInput(path: string, data: Uint8Array): void {
@@ -47,7 +64,10 @@ export class DevVFS extends RAMVFS {
   }
 
   releaseInput(path: string): void {
-    this.store.files.delete(path.slice(4))
+    const files = this.store.files as DevFiles
+    files.releaseInput(path)
+    this.store.modified.delete(path.slice(4))
+    this.store.attrs.delete(path.slice(4))
   }
 
   override ops(): readonly RegisteredOp[] {
