@@ -182,10 +182,6 @@ export class MyVFS extends BaseVFS implements VFS {
     this.accessor = new MyAccessor(this.config)
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   ops(): readonly RegisteredOp[] {
     return MY_VFS_OPS
   }
@@ -196,7 +192,7 @@ export class MyVFS extends BaseVFS implements VFS {
 }
 ```
 
-Set `cachesReads` true only for stable, read-mostly content. Override `getState()` to carry the (redacted) config, and `close()` to release any client handles, calling `super.close()`, which closes the index store.
+Set `cachesReads` true only for stable, read-mostly content. `BaseVFS` supplies a no-op `open()`, a no-op `loadState()` and a 600 s `indexTtl`, so declare one only to change it (`override open()` for a backend that must connect before its first read). Override `getState()` to carry the (redacted) config, and `close()` to release any client handles, calling `super.close()`, which closes the index store.
 
 A config-backed backend also sets `needs_override: true` in that state. TypeScript's loader consults no registry, so a mount it was not handed comes back as an empty `RAMVFS`; the flag makes it refuse instead. Python does not need it, which is why the flag is written on only a handful of mounts there and read on none.
 

@@ -53,10 +53,6 @@ export class GDocsVFS extends BaseVFS implements VFS {
     this.accessor = new GDocsAccessor({ tokenManager: tm })
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return GDOCS_COMMANDS
   }
@@ -100,9 +96,5 @@ export class GDocsVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactGDocsConfig(this.config),
     })
-  }
-
-  override loadState(_state: GDocsVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

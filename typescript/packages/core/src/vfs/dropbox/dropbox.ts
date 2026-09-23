@@ -61,10 +61,6 @@ export class DropboxVFS extends BaseVFS implements VFS {
     })
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return DROPBOX_COMMANDS
   }
@@ -112,9 +108,5 @@ export class DropboxVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactDropboxConfig(this.config),
     })
-  }
-
-  override loadState(_state: DropboxVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

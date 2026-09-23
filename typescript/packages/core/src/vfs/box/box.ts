@@ -65,10 +65,6 @@ export class BoxVFS extends BaseVFS implements VFS {
     })
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return BOX_COMMANDS
   }
@@ -116,9 +112,5 @@ export class BoxVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactBoxConfig(this.config),
     })
-  }
-
-  override loadState(_state: BoxVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

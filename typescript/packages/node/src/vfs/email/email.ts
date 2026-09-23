@@ -59,10 +59,6 @@ export class EmailVFS extends BaseVFS implements VFS {
     this.accessor = new EmailAccessor(config)
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   override async close(): Promise<void> {
     await this.accessor.close()
     await super.close()
@@ -111,9 +107,5 @@ export class EmailVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactEmailConfig(this.config),
     })
-  }
-
-  override loadState(_state: EmailVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

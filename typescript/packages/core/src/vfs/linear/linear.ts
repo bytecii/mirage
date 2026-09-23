@@ -45,7 +45,6 @@ export class LinearVFS extends BaseVFS implements VFS {
   // (comments.jsonl via one bounded comments call), so stat always reports
   // the rendered byte length and fskit mounts serve exact reads.
   readonly sizesAlwaysKnown: boolean = true
-  override readonly indexTtl: number = 600
   readonly prompt: string = LINEAR_PROMPT
   readonly writePrompt: string = LINEAR_WRITE_PROMPT
   readonly config: LinearConfig
@@ -59,10 +58,6 @@ export class LinearVFS extends BaseVFS implements VFS {
     const accessorOpts: { teamIds?: readonly string[] } = {}
     if (config.teamIds !== undefined) accessorOpts.teamIds = config.teamIds
     this.accessor = new LinearAccessor(new HttpLinearTransport(transportOpts), accessorOpts)
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
   }
 
   commands(): readonly RegisteredCommand[] {
@@ -108,9 +103,5 @@ export class LinearVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactLinearConfig(this.config),
     })
-  }
-
-  override loadState(_state: LinearVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

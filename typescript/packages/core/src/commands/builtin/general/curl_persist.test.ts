@@ -39,9 +39,6 @@ function mockFetch(): void {
 
 class StubVFS extends BaseVFS {
   readonly kind = 'stub'
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
   override close(): Promise<void> {
     return Promise.resolve()
   }

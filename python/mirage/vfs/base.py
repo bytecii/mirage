@@ -225,7 +225,16 @@ class BaseVFS:
         }
 
     def load_state(self, state: dict[str, Any]) -> None:
-        pass
+        """Take back what ``get_state`` put out.
+
+        A no-op by default, which is right for every VFS whose bytes live
+        in the remote service: its state is a redacted config, and the
+        restored mount reaches its data through that config alone. Only a
+        VFS holding content of its own (ram, disk, redis) overrides this.
+
+        Args:
+            state (dict[str, Any]): the payload ``get_state`` produced.
+        """
 
     @property
     def is_closed(self) -> bool:

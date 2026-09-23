@@ -22,9 +22,6 @@ import { resolveGlobs, type ResourceWithGlob } from './globs.ts'
 
 class PlainVFS extends BaseVFS implements VFS {
   readonly kind = 'plain'
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
   override close(): Promise<void> {
     return Promise.resolve()
   }
@@ -35,9 +32,6 @@ class PlainVFS extends BaseVFS implements VFS {
 // resolveGlobs sends is not a contract it can rely on.
 class EchoGlobVFS extends BaseVFS implements ResourceWithGlob {
   readonly kind = 'echo'
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
   override close(): Promise<void> {
     return Promise.resolve()
   }
@@ -51,9 +45,6 @@ class EchoGlobVFS extends BaseVFS implements ResourceWithGlob {
 class LazyDirVFS extends BaseVFS implements VFS {
   readonly kind = 'lazy'
   ready = false
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
   override close(): Promise<void> {
     return Promise.resolve()
   }
@@ -80,9 +71,6 @@ class GlobVFS extends BaseVFS implements ResourceWithGlob {
   readonly kind = 'glob'
   constructor(private readonly results: PathSpec[]) {
     super()
-  }
-  open(): Promise<void> {
-    return Promise.resolve()
   }
   override close(): Promise<void> {
     return Promise.resolve()

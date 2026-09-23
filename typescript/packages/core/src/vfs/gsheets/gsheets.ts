@@ -53,10 +53,6 @@ export class GSheetsVFS extends BaseVFS implements VFS {
     this.accessor = new GSheetsAccessor({ tokenManager: tm })
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return GSHEETS_COMMANDS
   }
@@ -100,9 +96,5 @@ export class GSheetsVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactGSheetsConfig(this.config),
     })
-  }
-
-  override loadState(_state: GSheetsVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

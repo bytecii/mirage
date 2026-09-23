@@ -205,10 +205,6 @@ export class GenericVFS<A extends Accessor = Accessor> extends BaseVFS implement
     if (find !== undefined) this.find = (p, o) => find(this.accessor, p, o ?? {})
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   // The base cannot know a subclass's constructor, so by default a
   // GenericVFS cannot be rebuilt from its state and says so: both
   // loaders then require the mount to be handed back live (`load`'s

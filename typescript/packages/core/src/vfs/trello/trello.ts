@@ -40,7 +40,6 @@ export interface TrelloVFSState {
 export class TrelloVFS extends BaseVFS implements VFS {
   readonly kind: string = VFSName.TRELLO
   readonly cachesReads: boolean = true
-  override readonly indexTtl: number = 600
   readonly prompt: string = TRELLO_PROMPT
   readonly writePrompt: string = TRELLO_WRITE_PROMPT
   readonly config: TrelloConfig
@@ -58,10 +57,6 @@ export class TrelloVFS extends BaseVFS implements VFS {
     if (config.workspaceId !== undefined) accessorOpts.workspaceId = config.workspaceId
     if (config.boardIds !== undefined) accessorOpts.boardIds = config.boardIds
     this.accessor = new TrelloAccessor(new HttpTrelloTransport(transportOpts), accessorOpts)
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
   }
 
   commands(): readonly RegisteredCommand[] {
@@ -107,9 +102,5 @@ export class TrelloVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactTrelloConfig(this.config),
     })
-  }
-
-  override loadState(_state: TrelloVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

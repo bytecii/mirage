@@ -55,10 +55,6 @@ export class GDriveVFS extends BaseVFS implements VFS {
     this.accessor = new GDriveAccessor({ tokenManager: tm })
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return GDRIVE_COMMANDS
   }
@@ -106,9 +102,5 @@ export class GDriveVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactGDriveConfig(this.config),
     })
-  }
-
-  override loadState(_state: GDriveVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

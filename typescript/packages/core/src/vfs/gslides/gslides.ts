@@ -53,10 +53,6 @@ export class GSlidesVFS extends BaseVFS implements VFS {
     this.accessor = new GSlidesAccessor({ tokenManager: tm })
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return GSLIDES_COMMANDS
   }
@@ -100,9 +96,5 @@ export class GSlidesVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactGSlidesConfig(this.config),
     })
-  }
-
-  override loadState(_state: GSlidesVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

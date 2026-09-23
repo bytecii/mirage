@@ -56,10 +56,6 @@ export class GCalVFS extends BaseVFS implements VFS {
     this.accessor = new GCalAccessor({ tokenManager: tm, config })
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return GCAL_COMMANDS
   }
@@ -103,9 +99,5 @@ export class GCalVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactGCalConfig(this.config),
     })
-  }
-
-  override loadState(_state: GCalVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

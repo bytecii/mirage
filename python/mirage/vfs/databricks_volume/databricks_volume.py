@@ -108,6 +108,3 @@ class DatabricksVolumeVFS(BaseVFS):
             "redacted_fields": redacted,
             "config": cfg,
         }
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        pass

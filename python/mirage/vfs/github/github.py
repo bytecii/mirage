@@ -166,6 +166,3 @@ class GitHubVFS(BaseVFS):
             default_branch=self.accessor.default_branch,
             truncated=self.accessor.truncated,
         )
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        pass

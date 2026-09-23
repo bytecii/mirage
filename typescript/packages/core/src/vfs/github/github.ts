@@ -97,10 +97,6 @@ export class GitHubVFS extends BaseVFS implements VFS {
     return new GitHubVFS(config, accessor, index)
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return GITHUB_COMMANDS
   }
@@ -150,9 +146,5 @@ export class GitHubVFS extends BaseVFS implements VFS {
       defaultBranch: this.accessor.defaultBranch,
       truncated: this.accessor.truncated,
     })
-  }
-
-  override loadState(_state: GitHubVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

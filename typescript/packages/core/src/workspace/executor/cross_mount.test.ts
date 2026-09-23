@@ -23,9 +23,6 @@ import type { RunSingle } from '../../commands/builtin/generic/crossmount/index.
 
 class Stub extends BaseVFS implements VFS {
   readonly kind = 'stub'
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
   override close(): Promise<void> {
     return Promise.resolve()
   }

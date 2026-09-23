@@ -294,6 +294,17 @@ export abstract class BaseVFS {
   }
 
   /**
+   * Prepare the backend before a mount first uses it. A no-op by
+   * default: an API backend reaches its service lazily, on the first
+   * request, which is the only way Python's `BaseVFS` works (it has no
+   * open step at all). A VFS that must load or connect before its first
+   * read (disk, OPFS, redis) overrides this.
+   */
+  open(): Promise<void> {
+    return Promise.resolve()
+  }
+
+  /**
    * Release what this VFS owns, exactly once. The base teardown is
    * the index store: a mount configured `index: {type: redis}` holds a
    * client that nothing else closes, so without this a Node process

@@ -57,10 +57,6 @@ export class GmailVFS extends BaseVFS implements VFS {
     this.accessor = new GmailAccessor({ tokenManager: tm })
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return GMAIL_COMMANDS
   }
@@ -104,9 +100,5 @@ export class GmailVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactGmailConfig(this.config),
     })
-  }
-
-  override loadState(_state: GmailVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

@@ -69,6 +69,17 @@ describe('BaseVFS state', () => {
   })
 })
 
+describe('BaseVFS open', () => {
+  // `open` is a required member of `VFS`, so without a base default every
+  // backend restated the same resolved promise. Python's base has no open
+  // step at all, which is what the no-op default stands for.
+  it('resolves without touching the index', async () => {
+    const r = new Probe()
+    await expect(r.open()).resolves.toBeUndefined()
+    expect((r as unknown as { _index?: unknown })._index).toBeUndefined()
+  })
+})
+
 describe('BaseVFS close', () => {
   it('closes the index, once', async () => {
     const r = new Probe()
