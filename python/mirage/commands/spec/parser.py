@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from mirage.commands.spec import constants
 from mirage.commands.spec.argmatch import (ArgmatchChoices, ArgmatchMatch,
                                            argmatch, value_classes)
 from mirage.commands.spec.builtin_specs import SPECS, is_builtin_grammar
@@ -127,8 +128,8 @@ class ParsedArgs:
     # above is what orders them against each other: a value that is a
     # prefix of two candidates reads `ambiguous argument 'ie'`, one that
     # is a prefix of none reads `invalid argument 'a'`, and both print
-    # the same candidate block. Only the three ARGMATCH_CHOICE_OPTIONS
-    # tables can fill the ambiguous one, because only a prefix can be
+    # the same candidate block. Only the ARGMATCH_CHOICE_OPTIONS tables
+    # can fill the ambiguous one, because only a prefix can be
     # ambiguous and every other choices set compares the whole word.
     invalid_value_options: list[tuple[str, str, ArgmatchChoices]] = field(
         default_factory=list)
@@ -195,7 +196,7 @@ def _check_value(refusals: _Refusals, cs: CompiledSpec,
     choices reports the conversion failure, not the choice list.
 
     A declared ``choices`` set compares the WHOLE word, argparse's rule,
-    unless the option declaring it is one of the three gnulib ARGMATCH
+    unless the option declaring it is one of the gnulib ARGMATCH
     tables the parser owns, in which case an unambiguous prefix resolves
     to its candidate. The resolved word is what the caller stores, so a
     command reads `none` where the line typed `non` and never learns the
@@ -375,6 +376,10 @@ def _match_mixed_cluster(
 ) -> tuple[list[str], str, str | None] | None:
     """Match a getopt-style cluster of bool flags ending in a value flag.
 
+    An optional-value short (getopt's ``x::``) takes whatever follows
+    it in the cluster as its value, as getopt does, so ``date -uIs`` is
+    ``-u -Is``; with nothing after it, it is one more bool flag.
+
     Args:
         tok (str): token like "-ne" or "-nepat".
         cs (CompiledSpec): compiled spec tables.
@@ -389,14 +394,44 @@ def _match_mixed_cluster(
     chars = tok[1:]
     for idx, ch in enumerate(chars):
         name = f"-{ch}"
+        rest = chars[idx + 1:]
+        if rest and name in cs.attach_spellings:
+            return bools, name, rest
         if name in cs.bool_spellings:
             bools.append(name)
             continue
         if name in cs.value_spellings:
-            rest = chars[idx + 1:]
             return bools, name, (rest if rest else None)
         return None
     return None
+
+
+def _match_digit_cluster(tok: str,
+                         cs: CompiledSpec) -> tuple[list[str], str] | None:
+    """Match a cluster of bool flags and digit options (``-d10``).
+
+    For a DIGIT_OPTIONS program the digits are option letters too, and
+    getopt hands them over one at a time into one number: every digit of
+    the word joins it, wherever it sits (``-1d0`` is ten).
+
+    Args:
+        tok (str): token like "-d10" or "-10d".
+        cs (CompiledSpec): compiled spec tables.
+
+    Returns:
+        tuple[list[str], str] | None: (bool flag spellings, the digits),
+            or None when a character is neither or no digit is present.
+    """
+    bools: list[str] = []
+    digits: list[str] = []
+    for ch in tok[1:]:
+        if "0" <= ch <= "9":
+            digits.append(ch)
+        elif f"-{ch}" in cs.bool_spellings:
+            bools.append(f"-{ch}")
+        else:
+            return None
+    return (bools, "".join(digits)) if digits else None
 
 
 def parse_command(
@@ -433,7 +468,7 @@ def parse_command(
             say it: the shared grammar stays what POSIX and argparse can
             both express. It says nothing about ``choices``, which
             compares the whole word for every spec unless the option
-            declaring the set is one of the three builtin ARGMATCH
+            declaring the set is one of the builtin ARGMATCH
             declarations -- an identity the spec itself settles, so
             it is not a fact about the caller at all.
 
@@ -520,6 +555,8 @@ def parse_command(
                                  and not cs.remainder)
         no_long_option_parser = lenient_dash_operands
         outside_sole_argument = False
+        digit_options = False
+        synonyms: dict[str, str] = {}
     else:
         # getopt_long, with exactly two exceptions, both named rather
         # than derived from the spec because nothing in a declaration
@@ -547,6 +584,15 @@ def parse_command(
         # A dash-leading word this program answers by printing it as an
         # operand rather than by refusing it.
         lenient_dash_operands = no_long_option_parser or sole_argument
+        # Gated the same way: the digit letters and the synonym pairs
+        # are the real program's own tables, not facts any declaration
+        # states.
+        digit_options = builtin and cmd_name in constants.DIGIT_OPTIONS
+        synonyms = {
+            spelling: same
+            for (name, spelling), same in constants.LONG_SYNONYMS.items()
+            if builtin and name == cmd_name
+        }
     i = 0
     end_of_flags = False
 
@@ -587,7 +633,7 @@ def parse_command(
             typed = tok if eq == -1 else tok[:eq]
             spelling = typed
             if typed not in cs.dest and not no_long_option_parser:
-                expansions = expand_long(cs, typed)
+                expansions = expand_long(cs, typed, synonyms)
                 if len(expansions) == 1:
                     spelling = expansions[0]
                 elif len(expansions) > 1:
@@ -707,6 +753,17 @@ def parse_command(
 
             if tok in cs.bool_spellings:
                 _set_bool_flag(flags, cs, tok)
+                i += 1
+                continue
+
+            count_dest = cs.numeric_dest if digit_options else None
+            digit_cluster = (_match_digit_cluster(tok, cs)
+                             if count_dest is not None else None)
+            if count_dest is not None and digit_cluster is not None:
+                for name in digit_cluster[0]:
+                    _set_bool_flag(flags, cs, name)
+                flags.pop(count_dest, None)
+                flags[count_dest] = digit_cluster[1]
                 i += 1
                 continue
 

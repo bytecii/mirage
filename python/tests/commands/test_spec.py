@@ -270,6 +270,7 @@ def test_all_commands_have_specs():
         "bc",
         "expr",
         "date",
+        "uname",
         "csplit",
         "expand",
         "unexpand",

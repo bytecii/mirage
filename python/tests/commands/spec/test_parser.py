@@ -368,13 +368,38 @@ def test_short_value_false_keeps_short_boolean_and_clusterable():
 
 
 def test_short_value_optional_uses_only_attached_value():
-    bare = parse_command(SPECS["split"],
-                         ["-d", "-l", "2", "/input", "/prefix"], "/")
-    attached = parse_command(SPECS["split"], ["-d10", "/input"], "/")
-    assert bare.flags["--numeric-suffixes"] is True
-    assert bare.flags["--lines"] == "2"
-    assert bare.paths() == ["/input", "/prefix"]
-    assert attached.flags["--numeric-suffixes"] == "10"
+    # date's -I[FMT] is getopt's `I::`: the value only rides attached,
+    # and a detached word stays an operand (coreutils 9.7).
+    bare = parse_command(SPECS["date"], ["-I", "-d", "now", "+%F"], "/")
+    attached = parse_command(SPECS["date"], ["-Is", "+%F"], "/")
+    assert bare.flags["--iso-8601"] is True
+    assert bare.flags["--date"] == "now"
+    assert bare.texts() == ["+%F"]
+    assert attached.flags["--iso-8601"] == "seconds"
+
+
+def test_optional_value_short_takes_the_rest_of_a_cluster():
+    # getopt's `I::` inside a cluster: whatever follows the letter is its
+    # value, and nothing after it leaves it bare (coreutils 9.7:
+    # `date -uIs` is `date -u -Is`, `date -uI` is `date -u -I`).
+    valued = parse_command(SPECS["date"], ["-uIs"], "/")
+    assert valued.flags["--utc"] is True
+    assert valued.flags["--iso-8601"] == "seconds"
+    assert valued.invalid_options == []
+    bare = parse_command(SPECS["date"], ["-uI"], "/")
+    assert bare.flags["--iso-8601"] is True
+
+
+def test_plain_short_of_an_optional_long_refuses_an_attached_value():
+    # GNU mkdir's -Z takes no argument, only --context= does, so -vZ is a
+    # cluster and -Zfoo refuses the `f` (coreutils 9.7).
+    clustered = parse_command(SPECS["mkdir"], ["-vZ", "/d"], "/")
+    assert clustered.flags["--verbose"] is True
+    assert clustered.flags["--context"] is True
+    attached = parse_command(SPECS["mkdir"], ["-Zfoo", "/d"], "/")
+    assert attached.invalid_options == ["f"]
+    valued = parse_command(SPECS["mkdir"], ["--context=ctx", "/d"], "/")
+    assert valued.flags["--context"] == "ctx"
 
 
 def test_overflow_operands_pass_through_like_last_slot():
@@ -409,19 +434,39 @@ def test_multiple_accumulates_across_spellings_in_line_order():
 
 
 def test_attached_short_value_lands_on_canonical_dest():
-    # The attached-value spelling (`-d10`) unifies too, so last-wins holds
+    # The attached-value spelling (`-Ih`) unifies too, so last-wins holds
     # for `--long=` and the short form alike.
-    attached = parse_command(SPECS["split"], ["-d10", "/in", "/pre"], "/")
-    assert attached.flags["--numeric-suffixes"] == "10"
-    assert "-d" not in attached.flags
-    short_last = parse_command(SPECS["split"],
-                               ["--numeric-suffixes=3", "-d10", "/in", "/p"],
-                               "/")
-    assert short_last.flags["--numeric-suffixes"] == "10"
-    long_last = parse_command(SPECS["split"],
-                              ["-d10", "--numeric-suffixes=3", "/in", "/p"],
-                              "/")
-    assert long_last.flags["--numeric-suffixes"] == "3"
+    attached = parse_command(SPECS["date"], ["-Ih"], "/")
+    assert attached.flags["--iso-8601"] == "hours"
+    assert "-I" not in attached.flags
+    short_last = parse_command(SPECS["date"], ["--iso-8601=ns", "-Ih"], "/")
+    assert short_last.flags["--iso-8601"] == "hours"
+    long_last = parse_command(SPECS["date"], ["-Ih", "--iso-8601=ns"], "/")
+    assert long_last.flags["--iso-8601"] == "ns"
+
+
+def test_digit_options_build_split_line_count():
+    # split's getopt string lists the digits: those of one word build the
+    # count wherever they sit, a later word replaces it, and -d stays a
+    # plain flag (coreutils 9.7: `split -d10` is -d and ten lines).
+    for argv in (["-d10"], ["-10d"], ["-1d0"], ["-d", "-10"]):
+        parsed = parse_command(SPECS["split"], argv + ["/in"], "/", "split")
+        assert parsed.flags["--numeric-suffixes"] is True, argv
+        assert parsed.flags["--lines"] == "10", argv
+        assert parsed.invalid_options == [], argv
+    later = parse_command(SPECS["split"], ["-12", "-5", "/in"], "/", "split")
+    assert later.flags["--lines"] == "5"
+    valued = parse_command(SPECS["split"], ["--numeric-suffixes=3", "/in"],
+                           "/", "split")
+    assert valued.flags["--numeric-suffixes"] == "3"
+
+
+def test_digit_options_are_the_builtin_programs_own():
+    # A mount's own command borrowing the name gets getopt's plain rule.
+    spec = CommandSpec(options=(Option(
+        short="-d"), Option(short="-l", type="str", numeric_shorthand=True)))
+    parsed = parse_command(spec, ["-d10"], "/", "split")
+    assert parsed.invalid_options == ["1"]
 
 
 def test_count_flag_accumulates_occurrences():
@@ -917,12 +962,32 @@ def test_typed_values_reject_unicode_digits():
 
 
 def test_synonym_spellings_resolve_a_shared_prefix_like_glibc():
-    parsed = parse_command(SPECS["grep"], ["--colo", "pat", "/a.txt"], "/")
+    parsed = parse_command(SPECS["grep"], ["--colo", "pat", "/a.txt"], "/",
+                           "grep")
     assert parsed.ambiguous_options == []
     assert parsed.flags["--color"] is True
     attached = parse_command(SPECS["grep"], ["--colo=never", "pat", "/a.txt"],
-                             "/")
+                             "/", "grep")
     assert attached.flags["--color"] == "never"
+    utc = parse_command(SPECS["date"], ["--u"], "/", "date")
+    assert utc.flags["--utc"] is True
+
+
+def test_distinct_options_sharing_a_prefix_are_ambiguous():
+    # Two declared options are two options, whatever their shape, so a
+    # prefix of both is ambiguous, listed in GNU's table order
+    # (coreutils 9.7).
+    cases = [
+        ("ls", ["--re", "/"], ("--reverse", "--recursive")),
+        ("uname", ["--k"], ("--kernel-name", "--kernel-release",
+                            "--kernel-version")),
+        ("mv", ["--no-c", "/a", "/b"], ("--no-clobber", "--no-copy")),
+        ("md5sum", ["--st", "/f"], ("--status", "--strict")),
+        ("sort", ["--m", "/f"], ("--merge", "--month-sort")),
+    ]
+    for name, argv, possible in cases:
+        parsed = parse_command(SPECS[name], argv, "/", name)
+        assert parsed.ambiguous_options == [(argv[0], possible)], name
 
 
 def test_ambiguity_lists_synonyms_like_gnu():

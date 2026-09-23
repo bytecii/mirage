@@ -316,3 +316,52 @@ export function parseDateExpr(text: string, zone: Zone, now?: Date): Date | null
   }
   return applyRelative(base, words.slice(index), zone)
 }
+
+// POSIX `MMDDhhmm[[CC]YY][.ss]`, the clock a bare `date` operand sets.
+const POSIX_TIME_RE = /^([0-9]{8}|[0-9]{10}|[0-9]{12})(?:\.([0-9]{2}))?$/
+
+// gnulib's posixtime with date's syntax bits, measured on coreutils 9.7: no
+// year is this year, a two-digit one is 2000-2068 up to 68 and 1969-1999 from
+// 69, and `.ss` takes exactly two digits. A field out of range (`1301000024`,
+// `01012500`) is not a date, nor is a wall clock the zone skips; second 60 is
+// the next minute's first, as mktime reads a leap second. Mirrors the Python
+// parse_posix_time.
+export function parsePosixTime(text: string, zone: Zone, now?: Date): Date | null {
+  const m = POSIX_TIME_RE.exec(text)
+  if (m === null) return null
+  const digits = m[1] ?? ''
+  const pair = (at: number): number => Number(digits.slice(at, at + 2))
+  const month = pair(0) - 1
+  const day = pair(2)
+  const hour = pair(4)
+  const minute = pair(6)
+  const tail = digits.slice(8)
+  let year: number
+  if (tail === '') year = zone.parts(now ?? new Date()).year
+  else if (tail.length === 2) year = Number(tail) + (Number(tail) <= 68 ? 2000 : 1900)
+  else year = Number(tail)
+  const second = m[2] !== undefined ? Number(m[2]) : 0
+  if (
+    year < 1 ||
+    month < 0 ||
+    month > 11 ||
+    day < 1 ||
+    day > daysInMonth(year, month) ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 60
+  )
+    return null
+  const leap = second === 60
+  const placed = placeWall(zone, {
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second: leap ? 59 : second,
+    ms: 0,
+  })
+  if (placed === null || !leap) return placed
+  return new Date(placed.getTime() + 1000)
+}

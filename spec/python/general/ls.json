@@ -397,9 +397,9 @@
       "type": "bool"
     },
     {
-      "long": "--context",
-      "short": "-Z",
-      "type": "bool"
+      "long": "--color",
+      "type": "str",
+      "value_optional": true
     },
     {
       "long": "--group-directories-first",
@@ -415,9 +415,9 @@
       "value_optional": true
     },
     {
-      "long": "--color",
-      "type": "str",
-      "value_optional": true
+      "long": "--context",
+      "short": "-Z",
+      "type": "bool"
     }
   ],
   "rest": {

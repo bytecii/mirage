@@ -369,13 +369,41 @@ describe('parseCommand — optional-value long options', () => {
 })
 
 describe('parseCommand — optional-value short options', () => {
+  // date's -I[FMT] is getopt's `I::`: the value only rides attached, and a
+  // detached word stays an operand (coreutils 9.7).
   it('uses only an attached value and leaves the next option intact', () => {
-    const bare = parseCommand(specOf('split'), ['-d', '-l', '2', '/input', '/prefix'], '/')
-    const attached = parseCommand(specOf('split'), ['-d10', '/input'], '/')
-    expect(bare.flags['--numeric-suffixes']).toBe(true)
-    expect(bare.flags['--lines']).toBe('2')
-    expect(bare.paths()).toEqual(['/input', '/prefix'])
-    expect(attached.flags['--numeric-suffixes']).toBe('10')
+    const bare = parseCommand(specOf('date'), ['-I', '-d', 'now', '+%F'], '/')
+    const attached = parseCommand(specOf('date'), ['-Is', '+%F'], '/')
+    expect(bare.flags['--iso-8601']).toBe(true)
+    expect(bare.flags['--date']).toBe('now')
+    expect(bare.texts()).toEqual(['+%F'])
+    expect(attached.flags['--iso-8601']).toBe('seconds')
+  })
+})
+
+describe('parseCommand: optional-value shorts inside a cluster', () => {
+  // getopt's `I::` inside a cluster: whatever follows the letter is its
+  // value, and nothing after it leaves it bare (coreutils 9.7: `date -uIs` is
+  // `date -u -Is`, `date -uI` is `date -u -I`).
+  it('takes the rest of the cluster as the value', () => {
+    const valued = parseCommand(specOf('date'), ['-uIs'], '/')
+    expect(valued.flags['--utc']).toBe(true)
+    expect(valued.flags['--iso-8601']).toBe('seconds')
+    expect(valued.invalidOptions).toEqual([])
+    const bare = parseCommand(specOf('date'), ['-uI'], '/')
+    expect(bare.flags['--iso-8601']).toBe(true)
+  })
+
+  // GNU mkdir's -Z takes no argument, only --context= does, so -vZ is a
+  // cluster and -Zfoo refuses the `f` (coreutils 9.7).
+  it('keeps a plain short of an optional long from taking a value', () => {
+    const clustered = parseCommand(specOf('mkdir'), ['-vZ', '/d'], '/')
+    expect(clustered.flags['--verbose']).toBe(true)
+    expect(clustered.flags['--context']).toBe(true)
+    const attached = parseCommand(specOf('mkdir'), ['-Zfoo', '/d'], '/')
+    expect(attached.invalidOptions).toEqual(['f'])
+    const valued = parseCommand(specOf('mkdir'), ['--context=ctx', '/d'], '/')
+    expect(valued.flags['--context']).toBe('ctx')
   })
 })
 
@@ -642,25 +670,45 @@ describe('spellings share one dest and honor command-line order', () => {
 })
 
 describe('attached short values land on the canonical dest', () => {
-  it('unifies -d10 onto --numeric-suffixes and honors order both ways', () => {
+  it('unifies -Ih onto --iso-8601 and honors order both ways', () => {
     // Last-wins holds for `--long=` and the short form alike.
-    const attached = parseCommand(specOf('split'), ['-d10', '/in', '/pre'], '/')
-    expect(attached.flags['--numeric-suffixes']).toBe('10')
-    expect('-d' in attached.flags).toBe(false)
+    const attached = parseCommand(specOf('date'), ['-Ih'], '/')
+    expect(attached.flags['--iso-8601']).toBe('hours')
+    expect('-I' in attached.flags).toBe(false)
+    const shortLast = parseCommand(specOf('date'), ['--iso-8601=ns', '-Ih'], '/')
+    expect(shortLast.flags['--iso-8601']).toBe('hours')
+    const longLast = parseCommand(specOf('date'), ['-Ih', '--iso-8601=ns'], '/')
+    expect(longLast.flags['--iso-8601']).toBe('ns')
+  })
+})
 
-    const shortLast = parseCommand(
-      specOf('split'),
-      ['--numeric-suffixes=3', '-d10', '/in', '/p'],
-      '/',
-    )
-    expect(shortLast.flags['--numeric-suffixes']).toBe('10')
+describe("digit options build split's line count", () => {
+  // split's getopt string lists the digits: those of one word build the count
+  // wherever they sit, a later word replaces it, and -d stays a plain flag
+  // (coreutils 9.7: `split -d10` is -d and ten lines).
+  it.each([[['-d10']], [['-10d']], [['-1d0']], [['-d', '-10']]])('%j', (argv) => {
+    const parsed = parseCommand(specOf('split'), [...argv, '/in'], '/', 'split')
+    expect(parsed.flags['--numeric-suffixes']).toBe(true)
+    expect(parsed.flags['--lines']).toBe('10')
+    expect(parsed.invalidOptions).toEqual([])
+  })
 
-    const longLast = parseCommand(
-      specOf('split'),
-      ['-d10', '--numeric-suffixes=3', '/in', '/p'],
-      '/',
-    )
-    expect(longLast.flags['--numeric-suffixes']).toBe('3')
+  it('lets a later word replace the count and keeps the long value', () => {
+    const later = parseCommand(specOf('split'), ['-12', '-5', '/in'], '/', 'split')
+    expect(later.flags['--lines']).toBe('5')
+    const valued = parseCommand(specOf('split'), ['--numeric-suffixes=3', '/in'], '/', 'split')
+    expect(valued.flags['--numeric-suffixes']).toBe('3')
+  })
+
+  it("is the builtin program's own rule", () => {
+    // A mount's own command borrowing the name gets getopt's plain rule.
+    const spec = new CommandSpec({
+      options: [
+        new Option({ short: '-d' }),
+        new Option({ short: '-l', type: 'str', numericShorthand: true }),
+      ],
+    })
+    expect(parseCommand(spec, ['-d10'], '/', 'split').invalidOptions).toEqual(['1'])
   })
 })
 
@@ -689,7 +737,7 @@ describe('choices violations are reported, never thrown', () => {
   })
 
   // Prefix matching is opt-in per (command, option), so a choices set that
-  // is NOT one of the three compares the whole word, which is argparse's own
+  // is NOT in the table compares the whole word, which is argparse's own
   // rule for `choices`. CPython is the measured case: on 3.11.15
   // `--check-hash-based-pycs a` and `al` are both refused where gnulib would
   // have resolved them to `always`.
@@ -871,7 +919,7 @@ describe('choices violations are reported, never thrown', () => {
     expect(parsed.invalidValueOptions).toEqual([['-m', 'z', ['x', 'y']]])
   })
 
-  // `tee --output-error` is one of the three spec-declared choices sets that
+  // `tee --output-error` is one of the spec-declared choices sets that
   // really are gnulib ARGMATCH tables, so the parser resolves a prefix and
   // rewrites the bag to the canonical word. Measured on coreutils 9.7:
   // `tee --output-error=exit-n` exits 0 (exit-nopipe) and `=w` is
@@ -1170,11 +1218,25 @@ describe('int-typed values', () => {
 describe('synonym long spellings', () => {
   it('resolves a shared prefix like glibc', () => {
     const grep = specOf('grep')
-    const parsed = parseCommand(grep, ['--colo', 'pat', '/a.txt'], '/')
+    const parsed = parseCommand(grep, ['--colo', 'pat', '/a.txt'], '/', 'grep')
     expect(parsed.ambiguousOptions).toEqual([])
     expect(parsed.flags['--color']).toBe(true)
-    const attached = parseCommand(grep, ['--colo=never', 'pat', '/a.txt'], '/')
+    const attached = parseCommand(grep, ['--colo=never', 'pat', '/a.txt'], '/', 'grep')
     expect(attached.flags['--color']).toBe('never')
+    expect(parseCommand(specOf('date'), ['--u'], '/', 'date').flags['--utc']).toBe(true)
+  })
+
+  // Two declared options are two options, whatever their shape, so a prefix
+  // of both is ambiguous, listed in GNU's table order (coreutils 9.7).
+  it.each([
+    ['ls', ['--re', '/'], ['--reverse', '--recursive']],
+    ['uname', ['--k'], ['--kernel-name', '--kernel-release', '--kernel-version']],
+    ['mv', ['--no-c', '/a', '/b'], ['--no-clobber', '--no-copy']],
+    ['md5sum', ['--st', '/f'], ['--status', '--strict']],
+    ['sort', ['--m', '/f'], ['--merge', '--month-sort']],
+  ])('%s %j is ambiguous', (name, argv, possible) => {
+    const parsed = parseCommand(specOf(name), argv, '/', name)
+    expect(parsed.ambiguousOptions).toEqual([[argv[0], possible]])
   })
 
   it('lists synonyms in an ambiguity like GNU', () => {

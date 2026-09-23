@@ -119,12 +119,12 @@ export const SPECS: Record<string, CommandSpec> = {
       new Option({ short: '-o' }),
       new Option({ short: '-n', long: '--numeric-uid-gid' }),
       new Option({ short: '-i', long: '--inode' }),
-      new Option({ short: '-Z', long: '--context' }),
+      // Accepted no-op like grep --color (#471).
+      new Option({ long: '--color', type: 'str', valueOptional: true }),
       new Option({ long: '--group-directories-first' }),
       new Option({ long: '--block-size', type: 'str' }),
       new Option({ long: '--hyperlink', type: 'str', valueOptional: true }),
-      // Accepted no-op like grep --color (#471).
-      new Option({ long: '--color', type: 'str', valueOptional: true }),
+      new Option({ short: '-Z', long: '--context' }),
     ],
     rest: new Operand({ type: 'path' }),
   }),

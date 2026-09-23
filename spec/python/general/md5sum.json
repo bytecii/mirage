@@ -294,12 +294,12 @@
       "type": "bool"
     },
     {
-      "long": "--text",
-      "short": "-t",
+      "long": "--tag",
       "type": "bool"
     },
     {
-      "long": "--tag",
+      "long": "--text",
+      "short": "-t",
       "type": "bool"
     },
     {
@@ -313,7 +313,7 @@
       "type": "bool"
     },
     {
-      "long": "--strict",
+      "long": "--status",
       "type": "bool"
     },
     {
@@ -321,7 +321,7 @@
       "type": "bool"
     },
     {
-      "long": "--status",
+      "long": "--strict",
       "type": "bool"
     },
     {

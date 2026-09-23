@@ -110,6 +110,7 @@
   "options": [
     {
       "long": "--lines",
+      "numeric_shorthand": true,
       "short": "-l",
       "type": "str"
     },
@@ -126,12 +127,14 @@
     {
       "long": "--numeric-suffixes",
       "short": "-d",
+      "short_value": false,
       "type": "str",
       "value_optional": true
     },
     {
       "long": "--hex-suffixes",
       "short": "-x",
+      "short_value": false,
       "type": "str",
       "value_optional": true
     },

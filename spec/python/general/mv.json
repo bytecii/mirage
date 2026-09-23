@@ -136,9 +136,8 @@
       "value_optional": true
     },
     {
-      "long": "--suffix",
-      "short": "-S",
-      "type": "str"
+      "long": "--strip-trailing-slashes",
+      "type": "bool"
     },
     {
       "long": "--target-directory",
@@ -146,8 +145,7 @@
       "type": "path"
     },
     {
-      "long": "--no-target-directory",
-      "short": "-T",
+      "long": "--no-copy",
       "type": "bool"
     },
     {
@@ -155,12 +153,14 @@
       "type": "bool"
     },
     {
-      "long": "--no-copy",
+      "long": "--no-target-directory",
+      "short": "-T",
       "type": "bool"
     },
     {
-      "long": "--strip-trailing-slashes",
-      "type": "bool"
+      "long": "--suffix",
+      "short": "-S",
+      "type": "str"
     }
   ],
   "rest": {

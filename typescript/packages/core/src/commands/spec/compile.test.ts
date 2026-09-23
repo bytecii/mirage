@@ -129,6 +129,27 @@ describe('expandLong', () => {
     expect(expandLong(cs, '--zz')).toEqual([])
     expect(expandLong(cs, '--')).toEqual([])
   })
+
+  // Two options of one shape are still two options; only a named synonym
+  // folds a shared prefix into one (glibc's entries sharing one `val`).
+  it('resolves a shared prefix only across named synonyms', () => {
+    const cs = compileSpec(
+      new CommandSpec({
+        options: [
+          new Option({ long: '--color' }),
+          new Option({ long: '--colour' }),
+          new Option({ long: '--count' }),
+        ],
+      }),
+    )
+    expect(expandLong(cs, '--col')).toEqual(['--color', '--colour'])
+    expect(expandLong(cs, '--col', new Map([['--colour', '--color']]))).toEqual(['--color'])
+    expect(expandLong(cs, '--co', new Map([['--colour', '--color']]))).toEqual([
+      '--color',
+      '--colour',
+      '--count',
+    ])
+  })
 })
 
 describe('pair options', () => {

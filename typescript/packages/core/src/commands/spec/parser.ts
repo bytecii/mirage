@@ -20,9 +20,11 @@ import { type CompiledSpec, compileSpec, expandLong } from './compile.ts'
 import {
   ARG_PLACEHOLDER,
   ARGMATCH_CHOICE_OPTIONS,
+  DIGIT_OPTIONS,
   FLOAT_VALUE,
   flagKwargName,
   INT_VALUE,
+  LONG_SYNONYMS,
   NO_LONG_OPTIONS,
   NUMERIC_SHORT,
   SOLE_ARGUMENT_LONG_OPTIONS,
@@ -108,7 +110,7 @@ export interface ParsedArgsInit {
    * `ls --color=zzz` matches nothing and reads `invalid argument 'zzz'`.
    * Both print the same candidate block; optionErrorKinds is what orders
    * them against each other and against every other refusal on the line.
-   * Only the three ARGMATCH_CHOICE_OPTIONS tables can fill the ambiguous
+   * Only the ARGMATCH_CHOICE_OPTIONS tables can fill the ambiguous
    * one, because only a prefix can be ambiguous.
    */
   invalidValueOptions?: [string, string, ArgmatchChoices][]
@@ -248,7 +250,7 @@ interface Refusals {
 // failure, not the choice list.
 //
 // A declared `choices` set compares the WHOLE word, argparse's rule, unless
-// the option declaring it is one of the three gnulib ARGMATCH tables the
+// the option declaring it is one of the gnulib ARGMATCH tables the
 // parser owns, in which case an unambiguous prefix resolves to its
 // candidate. The returned word is what the caller stores, so a command reads
 // `none` where the line typed `non` and never learns the difference. Which
@@ -385,7 +387,10 @@ interface MixedCluster {
 }
 
 // getopt-style cluster of bool flags ending in a value flag, e.g. -ne / -nepat.
-// Returns null when any character is unknown or no value flag terminates it.
+// An optional-value short (getopt's `x::`) takes whatever follows it in the
+// cluster as its value, as getopt does, so `date -uIs` is `-u -Is`; with
+// nothing after it, it is one more bool flag. Returns null when any character
+// is unknown or no value flag terminates it.
 function matchMixedCluster(tok: string, cs: CompiledSpec): MixedCluster | null {
   const bools: string[] = []
   const chars = tok.slice(1)
@@ -393,17 +398,39 @@ function matchMixedCluster(tok: string, cs: CompiledSpec): MixedCluster | null {
     const ch = chars[idx]
     if (ch === undefined) break
     const name = `-${ch}`
+    const rest = chars.slice(idx + 1)
+    if (rest.length > 0 && cs.attachSpellings.includes(name)) {
+      return { bools, valueFlag: name, attached: rest }
+    }
     if (cs.boolSpellings.has(name)) {
       bools.push(name)
       continue
     }
     if (cs.valueSpellings.includes(name)) {
-      const rest = chars.slice(idx + 1)
       return { bools, valueFlag: name, attached: rest.length > 0 ? rest : null }
     }
     return null
   }
   return null
+}
+
+// A cluster of bool flags and digit options (`-d10`). For a DIGIT_OPTIONS
+// program the digits are option letters too, and getopt hands them over one
+// at a time into one number: every digit of the word joins it, wherever it
+// sits (`-1d0` is ten). Null when a character is neither or no digit is
+// present.
+function matchDigitCluster(
+  tok: string,
+  cs: CompiledSpec,
+): { bools: string[]; digits: string } | null {
+  const bools: string[] = []
+  let digits = ''
+  for (const ch of tok.slice(1)) {
+    if (ch >= '0' && ch <= '9') digits += ch
+    else if (cs.boolSpellings.has(`-${ch}`)) bools.push(`-${ch}`)
+    else return null
+  }
+  return digits === '' ? null : { bools, digits }
 }
 
 /**
@@ -420,7 +447,7 @@ function matchMixedCluster(tok: string, cs: CompiledSpec): MixedCluster | null {
  * the call rather than about the spec, and nothing on CommandSpec may say it:
  * the shared grammar stays what POSIX and argparse can both express. It says
  * nothing about `choices`, which compares the whole word for every spec
- * unless the option declaring the set is one of the three builtin ARGMATCH
+ * unless the option declaring the set is one of the builtin ARGMATCH
  * declarations -- an identity the spec itself settles, so it is not a fact
  * about the caller at all.
  *
@@ -517,6 +544,8 @@ export function parseCommand(
   let noLongOptionParser: boolean
   let outsideSoleArgument: boolean
   let lenientDashOperands: boolean
+  let digitOptions: boolean
+  const synonyms = new Map<string, string>()
   if (unknownIsOperand) {
     // Where the word goes is still the grammar's to say: it lands in a textual
     // rest slot when the node has one (git's `log -p`, and a script root whose
@@ -528,6 +557,7 @@ export function parseCommand(
     lenientDashOperands = cs.restKind !== null && cs.restKind !== 'path' && !cs.remainder
     noLongOptionParser = lenientDashOperands
     outsideSoleArgument = false
+    digitOptions = false
   } else {
     // getopt_long, with exactly two exceptions, both named rather than derived
     // from the spec because nothing in a declaration tells them apart: see
@@ -552,6 +582,15 @@ export function parseCommand(
     // A dash-leading word this program answers by printing it as an operand
     // rather than by refusing it.
     lenientDashOperands = noLongOptionParser || soleArgument
+    // Gated the same way: the digit letters and the synonym pairs are the real
+    // program's own tables, not facts any declaration states.
+    digitOptions = builtin && DIGIT_OPTIONS.has(cmdName)
+    if (builtin) {
+      for (const [key, same] of LONG_SYNONYMS) {
+        const [name, spelling] = key.split(' ')
+        if (name === cmdName && spelling !== undefined) synonyms.set(spelling, same)
+      }
+    }
   }
   i = 0
   let endOfFlags = false
@@ -608,7 +647,7 @@ export function parseCommand(
       const typed = eqPos === -1 ? tok : tok.slice(0, eqPos)
       let spelling = typed
       if (!cs.dest.has(typed) && !noLongOptionParser) {
-        const candidates = expandLong(cs, typed)
+        const candidates = expandLong(cs, typed, synonyms)
         if (candidates.length === 1) {
           spelling = candidates[0] ?? typed
         } else if (candidates.length > 1) {
@@ -728,6 +767,16 @@ export function parseCommand(
 
       if (cs.boolSpellings.has(tok)) {
         setBoolFlag(flags, cs, tok)
+        i += 1
+        continue
+      }
+
+      const digitCluster =
+        digitOptions && cs.numericDest !== null ? matchDigitCluster(tok, cs) : null
+      if (digitCluster !== null && cs.numericDest !== null) {
+        for (const name of digitCluster.bools) setBoolFlag(flags, cs, name)
+        Reflect.deleteProperty(flags, cs.numericDest)
+        flags[cs.numericDest] = digitCluster.digits
         i += 1
         continue
       }

@@ -42,12 +42,12 @@ SPECS: dict[str, CommandSpec] = {
             Option(short="-o"),
             Option(short="-n", long="--numeric-uid-gid"),
             Option(short="-i", long="--inode"),
-            Option(short="-Z", long="--context"),
+            # Accepted no-op like grep --color (#471).
+            Option(long="--color", type="str", value_optional=True),
             Option(long="--group-directories-first"),
             Option(long="--block-size", type="str"),
             Option(long="--hyperlink", type="str", value_optional=True),
-            # Accepted no-op like grep --color (#471).
-            Option(long="--color", type="str", value_optional=True),
+            Option(short="-Z", long="--context"),
         ),
         rest=Operand(type="path"),
     ),
