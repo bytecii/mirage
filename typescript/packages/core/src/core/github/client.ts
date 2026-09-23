@@ -53,17 +53,21 @@ const Kit = Octokit.plugin(retry, throttling)
  * Octokit reads `{name}` in a url as a route-template placeholder and drops
  * the segment when nothing fills it, silently and without an error. Every
  * caller here passes a path that is already final -- `gh api` takes one
- * straight from the agent's command line -- so the braces are escaped to
- * the percent forms a server sees them as.
+ * straight from the agent's command line. Escape braces and query colons
+ * before Octokit can interpret them as route-template placeholders.
  *
  * Args:
  *   path (string): the request path as the caller spelled it.
  *
  * Returns:
- *   string: the path with `{` and `}` percent-encoded.
+ *   string: braces and query colons percent-encoded, preserving the URL scheme.
  */
-function escapeBraces(path: string): string {
-  return path.replace(/\{/g, '%7B').replace(/\}/g, '%7D')
+function escapeRoute(path: string): string {
+  const escaped = path.replace(/\{/g, '%7B').replace(/\}/g, '%7D')
+  const query = escaped.indexOf('?')
+  return query < 0
+    ? escaped
+    : escaped.slice(0, query + 1) + escaped.slice(query + 1).replace(/:/g, '%3A')
 }
 
 export class HttpGitHubTransport implements GitHubTransport {
@@ -123,7 +127,7 @@ export class HttpGitHubTransport implements GitHubTransport {
       const query = new URLSearchParams(params ?? {}).toString()
       const r = await this.kit.request({
         method: method.toUpperCase(),
-        url: escapeBraces(path) + (query === '' ? '' : `${path.includes('?') ? '&' : '?'}${query}`),
+        url: escapeRoute(path) + (query === '' ? '' : `${path.includes('?') ? '&' : '?'}${query}`),
         headers: { 'X-GitHub-Api-Version': GITHUB_API_VERSION, ...headers },
         ...(body === undefined ? {} : { data: body }),
       })

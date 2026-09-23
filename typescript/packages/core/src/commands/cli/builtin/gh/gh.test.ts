@@ -20,6 +20,8 @@ import { cliSpecFor } from '../../specs.ts'
 import type { CommandFnResult } from '../../../config.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
 import type { CLIInvocation } from '../../types.ts'
+import { issueComments } from '../../../../core/github/issue.ts'
+import { commentsFor, commentsText } from './issue.ts'
 import { GH } from './index.ts'
 import { api } from './api.ts'
 import { fork, rename, summary, view } from './repo.ts'
@@ -467,4 +469,68 @@ describe('gh repo view rendering', () => {
       'name:\to/r\ndescription:\t\n',
     )
   })
+})
+
+it('follows GraphQL comment cursors and propagates errors', async () => {
+  const transport = new FakeTransport()
+  const request = vi.spyOn(transport, 'request')
+  const page = (body: string, more: boolean) => ({
+    data: {
+      repository: {
+        issueOrPullRequest: {
+          comments: { nodes: [{ body }], pageInfo: { hasNextPage: more, endCursor: 'next' } },
+        },
+      },
+    },
+  })
+  request.mockResolvedValueOnce(page('first', true)).mockResolvedValueOnce(page('second', false))
+  expect(await issueComments(transport, { owner: 'o', repo: 'r' }, 1)).toEqual([
+    { body: 'first' },
+    { body: 'second' },
+  ])
+  expect(request).toHaveBeenNthCalledWith(
+    2,
+    'POST',
+    '/graphql',
+    expect.objectContaining({ variables: { owner: 'o', repo: 'r', number: 1, cursor: 'next' } }),
+  )
+  request.mockResolvedValueOnce({ errors: [{ message: 'Could not resolve repository' }] })
+  await expect(issueComments(transport, { owner: 'o', repo: 'r' }, 1)).rejects.toThrow(
+    'Could not resolve repository',
+  )
+})
+
+it('formats deleted authors, edited/minimized comments and nonzero reactions like gh', async () => {
+  const row = {
+    author: null,
+    authorAssociation: 'CONTRIBUTOR',
+    includesCreatedEdit: true,
+    isMinimized: true,
+    minimizedReason: 'OUTDATED',
+    body: 'comment',
+    viewerDidAuthor: false,
+    reactionGroups: [
+      { content: 'THUMBS_UP', users: { totalCount: 2 } },
+      { content: 'LAUGH', users: { totalCount: 0 } },
+    ],
+  }
+  reset({
+    data: {
+      repository: {
+        issueOrPullRequest: {
+          comments: { nodes: [row], pageInfo: { hasNextPage: false, endCursor: null } },
+        },
+      },
+    },
+  })
+  const rows = await commentsFor(
+    inv([], { comments: true }),
+    new FlagView({ comments: true }),
+    { owner: 'o', repo: 'r' },
+    1,
+  )
+  expect(rows).toEqual([{ ...row, author: { login: '' }, reactionGroups: [row.reactionGroups[0]] }])
+  expect(commentsText(rows ?? [])).toBe(
+    'author:\t\nassociation:\tcontributor\nedited:\ttrue\nstatus:\toutdated\n--\ncomment\n--\n',
+  )
 })

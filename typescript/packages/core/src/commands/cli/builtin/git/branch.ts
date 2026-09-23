@@ -31,6 +31,7 @@ import {
   UnknownSwitchError,
   UnmergedBranchError,
 } from './errors.ts'
+import { parseFlags, select } from './history.ts'
 import { short } from './format.ts'
 import {
   blockingRef,
@@ -41,7 +42,7 @@ import {
   writeRef,
   SYMREF_PREFIX,
 } from './refs.ts'
-import { opened, repoArgs, type Repo } from './repo.ts'
+import { commitFacts, opened, repoArgs, type Repo } from './repo.ts'
 import { resolveCommit } from './revparse.ts'
 import type { Dispatch, HeadRef } from './types.ts'
 import { checkOperands, escaped, fatal, switches } from './util.ts'
@@ -157,11 +158,12 @@ export async function branch(inv: CLIInvocation): Promise<CommandFnResult> {
   const includeRemotes = remotesOnly || fl.asBool('a')
   let refs: ReadonlyMap<string, string>
   let head: HeadRef
+  let repo: Repo
   try {
     const dispatch = doors.dispatch
     if (dispatch === undefined) throw new NoWorkspaceError()
     checkOperands(texts, UnknownSwitchError, escaped(inv.argv), switches(inv))
-    const repo = await opened(fl, doors)
+    repo = await opened(fl, doors)
     refs = await loadRefs(dispatch, repo.location.gitdir, repo.location.commondir)
     head = await readHead(dispatch, repo.location.gitdir)
     const force = fl.asBool('D')
@@ -182,18 +184,80 @@ export async function branch(inv: CLIInvocation): Promise<CommandFnResult> {
   }
   const lines: string[] = []
   const keys = [...refs.keys()].sort(compareCodePoints)
+  const verbose = fl.asInt('verbose') ?? 0
+  const visible = keys.filter(
+    (r) =>
+      (!remotesOnly && r.startsWith(HEADS_PREFIX)) ||
+      (includeRemotes && r.startsWith(REMOTES_PREFIX)),
+  )
+  const width = Math.max(
+    0,
+    ...visible.map((r) =>
+      r.startsWith(HEADS_PREFIX)
+        ? r.slice(HEADS_PREFIX.length).length
+        : (REMOTE + r.slice(REMOTES_PREFIX.length)).length,
+    ),
+  )
   if (!remotesOnly) {
     for (const ref of keys.filter((k) => k.startsWith(HEADS_PREFIX))) {
       const name = ref.slice(HEADS_PREFIX.length)
-      lines.push(`${name === head.branch ? CURRENT : OTHER}${name}`)
+      lines.push(
+        `${name === head.branch ? CURRENT : OTHER}${verbose ? name.padEnd(width) + (await branchDetail(repo, ref, verbose)) : name}`,
+      )
     }
   }
   if (includeRemotes) {
     for (const ref of keys.filter((k) => k.startsWith(REMOTES_PREFIX))) {
       const name = ref.slice(REMOTES_PREFIX.length)
-      lines.push(`${OTHER}${REMOTE}${name}${symrefSuffix(refs, ref)}`)
+      const label = `${REMOTE}${name}`
+      const suffix = symrefSuffix(refs, ref)
+      lines.push(
+        `${OTHER}${verbose && !suffix ? label.padEnd(width) + (await branchDetail(repo, ref, verbose)) : label + suffix}`,
+      )
     }
   }
   if (lines.length === 0) return [null, new IOResult()]
   return [ENC.encode(`${lines.join('\n')}\n`), new IOResult()]
+}
+
+async function branchDetail(repo: Repo, ref: string, verbose: number): Promise<string> {
+  const oid = await resolveCommit(repo, ref)
+  const facts = await commitFacts(repo, oid)
+  let upstream = ''
+  if (ref.startsWith(HEADS_PREFIX)) {
+    const branch = ref.slice(HEADS_PREFIX.length)
+    const remote: unknown = await git.getConfig({
+      ...repoArgs(repo),
+      path: `branch.${branch}.remote`,
+    })
+    const merge: unknown = await git.getConfig({
+      ...repoArgs(repo),
+      path: `branch.${branch}.merge`,
+    })
+    if (typeof remote === 'string' && typeof merge === 'string') {
+      const tracked =
+        remote === '.' ? merge : `refs/remotes/${remote}/${merge.replace(/^refs\/heads\//, '')}`
+      const label = tracked.replace(/^refs\/(heads|remotes)\//, '')
+      const refs = await loadRefs(repo.dispatch, repo.location.gitdir, repo.location.commondir)
+      const differences: string[] = []
+      if (!refs.has(tracked)) differences.push('gone')
+      else {
+        const flags = parseFlags(new FlagView())
+        const ours = new Set((await select(repo, [facts], flags)).map((c) => c.oid))
+        const theirs = new Set(
+          (
+            await select(repo, [await commitFacts(repo, await resolveCommit(repo, tracked))], flags)
+          ).map((c) => c.oid),
+        )
+        const ahead = [...ours].filter((id) => !theirs.has(id)).length
+        const behind = [...theirs].filter((id) => !ours.has(id)).length
+        if (ahead) differences.push(`ahead ${String(ahead)}`)
+        if (behind) differences.push(`behind ${String(behind)}`)
+      }
+      const counts = differences.join(', ')
+      if (verbose > 1) upstream = ` [${label}${counts ? ': ' + counts : ''}]`
+      else if (counts) upstream = ` [${counts}]`
+    }
+  }
+  return ` ${short(oid, repo.abbrev)}${upstream} ${facts.message.split('\n')[0] ?? ''}`
 }

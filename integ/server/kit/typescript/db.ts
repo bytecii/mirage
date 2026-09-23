@@ -14,7 +14,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { KitError } from './errors.ts'
@@ -53,6 +53,7 @@ function prismaBin(): string {
 // node folds it into the message of a failed command but not of a killed one,
 // which says only ETIMEDOUT, so the first line is kept and stderr added once.
 function pushTemplate(schema: string, target: string): void {
+  writeFileSync(target, '', { flag: 'a' })
   try {
     execFileSync('node', [prismaBin(), 'db', 'push', '--schema', schema, '--skip-generate'], {
       env: { ...process.env, [SCHEMA_ENV]: `file:${target}` },

@@ -30,6 +30,8 @@ const REMOTE_PREFIX = 'refs/remotes/'
 
 /** The parsed shape of a `git log` invocation. */
 export interface LogFlags {
+  readonly date: string
+  readonly decorate: boolean
   /** `-n`, how many commits to print. */
   readonly maxCount: number | null
   /** `--oneline`, one abbreviated row per commit. */
@@ -100,6 +102,8 @@ export function parseFlags(fl: FlagView): LogFlags {
   let pretty: LogFormat = oneline ? { kind: 'oneline', template: null } : MEDIUM
   if (spelled !== null) pretty = parsePretty(spelled)
   return {
+    date: fl.asStr('date') ?? 'default',
+    decorate: fl.asBool('decorate'),
     maxCount: fl.asInt('n') ?? null,
     oneline,
     reverse: fl.asBool('reverse'),

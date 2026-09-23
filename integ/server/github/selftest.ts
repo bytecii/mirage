@@ -856,13 +856,7 @@ async function main(): Promise<void> {
     })
     check('and not what the branch gained afterwards', later.status === 404, String(later.status))
 
-    // ---- listing an issue's comments, which no mirage client asks for
-    // `gh issue comment` posts one and there is no verb that lists them, so
-    // the battery cannot reach this and the endpoint would ship untested.
-    // What does ask is everything on the other side of the fake: a grader
-    // checking that the reply it wanted is the reply that landed reads
-    // `comments[-1]`, which is only "what was said last" if the order is the
-    // vendor's -- oldest first.
+    // REST and GraphQL return comments oldest first.
     const opened = await post(`${at}/repos/${REPO}/issues`, {
       title: 'License info. needed',
       body: 'Could you provide license info.?',
@@ -925,6 +919,55 @@ async function main(): Promise<void> {
       'integ/repo-v1',
     ])
 
+    const commentsReset = await fetch(`${at}/reset`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tenants: [TENANT], fixture: 'comments' }),
+    })
+    check('comment metadata fixture is seeded', commentsReset.status === 200)
+    const query = `query($cursor: String) {
+      repository(owner: "integ", name: "repo-comments") {
+        issueOrPullRequest(number: 1) { ... on Issue {
+          comments(first: 1, after: $cursor) {
+            nodes { body author { login } authorAssociation includesCreatedEdit
+              isMinimized minimizedReason viewerDidAuthor reactionGroups { content users { totalCount } } }
+            pageInfo { hasNextPage endCursor }
+          }
+        } }
+      }
+    }`
+    const graph = async (cursor: JsonValue): Promise<JsonValue> => {
+      const response = await post(`${at}/graphql`, { query, variables: { cursor } })
+      eq('GraphQL response has no errors', field(response.body, 'errors'), null)
+      return field(
+        field(field(field(response.body, 'data'), 'repository'), 'issueOrPullRequest'),
+        'comments',
+      )
+    }
+    const firstPage = await graph(null)
+    const nodes = field(firstPage, 'nodes') as JsonValue[]
+    eq('first GraphQL page respects its limit', nodes.length, 1)
+    eq('GraphQL preserves nullable author and comment metadata', nodes[0] ?? null, {
+      body: 'comment 1',
+      author: null,
+      authorAssociation: 'CONTRIBUTOR',
+      includesCreatedEdit: true,
+      isMinimized: true,
+      minimizedReason: 'OUTDATED',
+      viewerDidAuthor: false,
+      reactionGroups: [
+        { content: 'THUMBS_UP', users: { totalCount: 2 } },
+        { content: 'LAUGH', users: { totalCount: 0 } },
+      ],
+    })
+    eq('first page has a continuation', field(field(firstPage, 'pageInfo'), 'hasNextPage'), true)
+    const lastPage = await graph(field(field(firstPage, 'pageInfo'), 'endCursor'))
+    eq(
+      'cursor advances to the last comment',
+      (field(lastPage, 'nodes') as JsonValue[]).map((row) => field(row, 'body')),
+      ['comment 2'],
+    )
+    eq('last page terminates pagination', field(field(lastPage, 'pageInfo'), 'hasNextPage'), false)
     process.stdout.write(`github selftest: ${String(checks)} checks passed\n`)
   } finally {
     fake.child.kill('SIGTERM')

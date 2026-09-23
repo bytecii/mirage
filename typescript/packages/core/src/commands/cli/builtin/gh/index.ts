@@ -107,7 +107,12 @@ function issue(): CLISpec {
         description: 'View an issue',
         fn: issueView,
         positional: [NUMBER],
-        options: [REPO, JSON_FIELDS, JQ],
+        options: [
+          REPO,
+          JSON_FIELDS,
+          JQ,
+          new Option({ short: '-c', long: '--comments', description: 'Show comments' }),
+        ],
       }),
       new CLISpec({
         name: 'create',
@@ -200,7 +205,12 @@ function pr(): CLISpec {
         description: 'View a pull request',
         fn: prView,
         positional: [NUMBER],
-        options: [REPO, JSON_FIELDS, JQ],
+        options: [
+          REPO,
+          JSON_FIELDS,
+          JQ,
+          new Option({ short: '-c', long: '--comments', description: 'Show comments' }),
+        ],
       }),
       new CLISpec({
         name: 'create',

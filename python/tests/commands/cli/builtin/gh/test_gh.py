@@ -19,12 +19,14 @@ import pytest
 from mirage.commands.cli.builtin.gh import GH
 from mirage.commands.cli.builtin.gh.accessor import body_value, repo_number
 from mirage.commands.cli.builtin.gh.api import api
+from mirage.commands.cli.builtin.gh.issue import comments_for, comments_text
 from mirage.commands.cli.builtin.gh.repo import fork, rename, summary, view
 from mirage.commands.cli.specs import cli_spec_for
 from mirage.commands.cli.types import CLIDoors, CLIInvocation
 from mirage.commands.spec.flag_view import FlagView
 from mirage.core.api.client import ApiResponse
 from mirage.core.github.config import GhConfig
+from mirage.core.github.repo import RepoRef
 from mirage.io.types import materialize
 from mirage.types import PathSpec
 
@@ -555,3 +557,54 @@ async def test_api_renders_non_ascii_across_pages_as_raw_utf8():
     assert '"Café"' in printed
     assert '"東京"' in printed
     assert "\\u" not in printed
+
+
+@pytest.mark.asyncio
+async def test_comment_metadata_matches_gh(monkeypatch):
+    row = {
+        "author":
+        None,
+        "authorAssociation":
+        "CONTRIBUTOR",
+        "includesCreatedEdit":
+        True,
+        "isMinimized":
+        True,
+        "minimizedReason":
+        "OUTDATED",
+        "body":
+        "comment",
+        "viewerDidAuthor":
+        False,
+        "reactionGroups": [
+            {
+                "content": "THUMBS_UP",
+                "users": {
+                    "totalCount": 2
+                }
+            },
+            {
+                "content": "LAUGH",
+                "users": {
+                    "totalCount": 0
+                }
+            },
+        ]
+    }
+
+    async def comments(*args):
+        return [row.copy()]
+
+    monkeypatch.setitem(comments_for.__globals__, "issue_comments", comments)
+    rows = await comments_for(_inv([], {"comments": True}),
+                              FlagView({"comments": True}), RepoRef("o", "r"),
+                              1)
+    assert rows == [{
+        **row, "author": {
+            "login": ""
+        },
+        "reactionGroups": row["reactionGroups"][:1]
+    }]
+    assert comments_text(rows) == ("author:\t\nassociation:\tcontributor\n"
+                                   "edited:\ttrue\nstatus:\toutdated\n"
+                                   "--\ncomment\n--\n")

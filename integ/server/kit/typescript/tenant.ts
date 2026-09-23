@@ -120,6 +120,7 @@ export function resolveTenant(
   kind: TenantKind,
   fromBearer = false,
   tokenPattern = '',
+  requestToken?: string,
 ): string {
   if (kind === 'none') return DEFAULT_TENANT
   const named =
@@ -134,7 +135,7 @@ export function resolveTenant(
   // OUTSIDE the reset try/catch, so `Authorization: Bearer a/b` answered 500 on
   // every route of every pk-column fake, where the fakes it replaces answered
   // their own 401.
-  const raw = bearer(headers)
+  const raw = bearer(headers) ?? requestToken
   if (raw === undefined) return DEFAULT_TENANT
   const token = tenantFromToken(raw, tokenPattern)
   return token !== undefined && NAME_RE.test(token) ? token : DEFAULT_TENANT

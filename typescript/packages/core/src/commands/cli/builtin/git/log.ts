@@ -52,12 +52,14 @@ function rendered(
   const fmt = flags.pretty
   if (fmt.kind === 'oneline') {
     const length = flags.abbrevCommit ? width : FULL_SHA
-    const lines = commits.map((commit) => oneline(commit, length))
+    const lines = commits.map((commit) =>
+      flags.decorate ? renderTemplate('%h%d %s', commit, length, decor) : oneline(commit, length),
+    )
     return lines.length > 0 ? `${lines.join('\n')}\n` : ''
   }
   if (fmt.kind === 'format' || fmt.kind === 'tformat') {
     const entries = commits.map((commit) =>
-      renderTemplate(fmt.template ?? '', commit, width, decor),
+      renderTemplate(fmt.template ?? '', commit, width, decor, flags.date),
     )
     if (fmt.kind === 'tformat') {
       if (fmt.template === null || fmt.template === '') return ''
@@ -68,7 +70,10 @@ function rendered(
   const lines: string[] = []
   commits.forEach((commit, index) => {
     if (index > 0) lines.push('')
-    lines.push(...presetBlock(commit, fmt.kind, width))
+    const block = presetBlock(commit, fmt.kind, width, flags.date)
+    if (flags.decorate && block[0]?.startsWith('commit '))
+      block[0] += renderTemplate('%d', commit, width, decor)
+    lines.push(...block)
   })
   return lines.length > 0 ? `${lines.join('\n')}\n` : ''
 }
@@ -95,7 +100,8 @@ export async function log(inv: CLIInvocation): Promise<CommandFnResult> {
     const repo = await opened(fl, doors)
     const starts = await startingPoints(repo, revisionArg(texts), parsed)
     const commits = await select(repo, starts, parsed)
-    const decor = needsDecorations(parsed.pretty) ? await decorations(repo) : null
+    const decor =
+      parsed.decorate || needsDecorations(parsed.pretty) ? await decorations(repo) : null
     const out = rendered(commits, parsed, repo.abbrev, decor)
     if (out === '') return [null, new IOResult()]
     return [encodeText(out), new IOResult()]

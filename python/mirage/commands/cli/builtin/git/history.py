@@ -53,6 +53,8 @@ class LogFlags:
     search: str | None
     since: float | None
     until: float | None
+    date: str = "default"
+    decorate: bool = False
     all_refs: bool = False
     pretty: LogFormat = MEDIUM
     abbrev_commit: bool = False
@@ -118,6 +120,8 @@ def parse_flags(fl: FlagView) -> LogFlags:
     if spelled is not None:
         pretty = parse_pretty(spelled)
     return LogFlags(
+        date=fl.as_str("date") or "default",
+        decorate=fl.as_bool("decorate"),
         max_count=fl.as_int("n"),
         oneline=oneline,
         reverse=fl.as_bool("reverse"),

@@ -12,10 +12,12 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { buildSchema, graphql } from 'graphql'
+
 import type { Ctx, JsonValue, KitRoute, Reply } from '../kit/typescript/index.ts'
 import { API_PREFIXES, DEFAULT_LOGIN } from './config.ts'
 import type { C } from './config.ts'
-import { nextNumber, scope } from './store.ts'
+import { nextNumber, repoByName, scope } from './store.ts'
 import type { RepoRow } from './store.ts'
 import {
   authedRoute,
@@ -233,14 +235,99 @@ async function listComments(ctx: Ctx<C>, repo: RepoRow): Promise<Reply> {
       id: row.id,
       body: row.body,
       created_at: row.createdAt,
+      updated_at: row.createdAt,
+      node_id: Buffer.from(`012:IssueComment${row.id}`).toString('base64'),
+      author_association: 'NONE',
       user: { login: row.user },
       html_url: `https://github.com/${repo.fullName}/issues/${String(number)}#issuecomment-${String(row.id)}`,
     })),
   )
 }
 
+const COMMENT_SCHEMA = buildSchema(`
+  type Query { repository(owner: String!, name: String!): Repository }
+  type Repository { issueOrPullRequest(number: Int!): IssueOrPullRequest }
+  union IssueOrPullRequest = Issue | PullRequest
+  type Issue { comments(first: Int!, after: String): IssueCommentConnection! }
+  type PullRequest { comments(first: Int!, after: String): IssueCommentConnection! }
+  type IssueCommentConnection { nodes: [IssueComment!]!, pageInfo: PageInfo! }
+  type PageInfo { hasNextPage: Boolean!, endCursor: String }
+  type Actor { login: String! }
+  type Users { totalCount: Int! }
+  type ReactionGroup { content: String!, users: Users! }
+  type IssueComment {
+    id: ID!, author: Actor, authorAssociation: String!, body: String!,
+    createdAt: String!, includesCreatedEdit: Boolean!, isMinimized: Boolean!,
+    minimizedReason: String, reactionGroups: [ReactionGroup!]!, url: String!,
+    viewerDidAuthor: Boolean!
+  }
+`)
+
+function commentCursor(id: number): string {
+  return Buffer.from(`comment:${id}`).toString('base64')
+}
+
+async function commentGraphql(ctx: Ctx<C>): Promise<Reply> {
+  const body = jsonBodyOf(ctx)
+  const result = await graphql({
+    schema: COMMENT_SCHEMA,
+    source: str(body, 'query'),
+    variableValues: body.variables as Record<string, unknown> | undefined,
+    rootValue: {
+      repository: async ({ owner, name }: { owner: string; name: string }) => {
+        const repo = await repoByName(ctx.db, ctx.tenant, `${owner}/${name}`)
+        if (repo === null) return null
+        return {
+          issueOrPullRequest: async ({ number }: { number: number }) => {
+            const issue = await issueRow(ctx.db, ctx.tenant, repo, number)
+            const pull = issue === null ? await pullRow(ctx.db, ctx.tenant, repo, number) : null
+            if (issue === null && pull === null) return null
+            return {
+              __typename: issue === null ? 'PullRequest' : 'Issue',
+              comments: async ({ first, after }: { first: number; after?: string }) => {
+                if (first < 1 || first > 100) throw new Error('first must be between 1 and 100')
+                const rows = await ctx.db.githubComment.findMany({
+                  where: { ...scope(ctx.tenant), repo: repo.fullName, issueNumber: number },
+                  orderBy: { seq: 'asc' },
+                })
+                const start = after
+                  ? rows.findIndex((row) => commentCursor(row.id) === after) + 1
+                  : 0
+                if (after && start === 0) throw new Error('Invalid cursor')
+                const page = rows.slice(start, start + first)
+                return {
+                  nodes: page.map((row) => ({
+                    id: Buffer.from(`012:IssueComment${row.id}`).toString('base64'),
+                    author: { login: row.user },
+                    authorAssociation: 'NONE',
+                    body: row.body,
+                    createdAt: row.createdAt,
+                    includesCreatedEdit: false,
+                    isMinimized: false,
+                    minimizedReason: null,
+                    reactionGroups: [],
+                    url: `https://github.com/${repo.fullName}/issues/${number}#issuecomment-${row.id}`,
+                    viewerDidAuthor: row.user === DEFAULT_LOGIN,
+                    ...(JSON.parse(row.metaJson) as Record<string, JsonValue>),
+                  })),
+                  pageInfo: {
+                    hasNextPage: start + first < rows.length,
+                    endCursor: page.length ? commentCursor(page[page.length - 1]!.id) : null,
+                  },
+                }
+              },
+            }
+          },
+        }
+      },
+    },
+  })
+  return { status: 200, body: JSON.parse(JSON.stringify(result)) as JsonValue }
+}
+
 export function issueRoutes(): KitRoute<C>[] {
   return everywhere<C>(API_PREFIXES, (p) => [
+    route<C>('POST', `${p}/graphql`, authedRoute(commentGraphql)),
     route<C>('GET', `${p}/repos/:owner/:repo/issues`, authedRoute(withRepo(listIssues))),
     route<C>('POST', `${p}/repos/:owner/:repo/issues`, authedRoute(withRepo(createIssue)), {
       write: true,

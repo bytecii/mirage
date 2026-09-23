@@ -82,12 +82,16 @@ def _rendered(commits: list[Commit], flags: LogFlags, width: int,
     fmt = flags.pretty
     if fmt.kind == "oneline":
         length = width if flags.abbrev_commit else FULL_SHA
-        lines = [oneline(commit, length) for commit in commits]
+        lines = [
+            render_template("%h%d %s", commit, length, decor)
+            if flags.decorate else oneline(commit, length)
+            for commit in commits
+        ]
         return ("\n".join(lines) + "\n").encode() if lines else b""
     if fmt.kind in ("format", "tformat"):
         rendered = [
-            render_template(fmt.template or "", commit, width, decor)
-            for commit in commits
+            render_template(fmt.template or "", commit, width, decor,
+                            flags.date) for commit in commits
         ]
         if fmt.kind == "tformat":
             if not fmt.template:
@@ -98,7 +102,10 @@ def _rendered(commits: list[Commit], flags: LogFlags, width: int,
     for index, commit in enumerate(commits):
         if index:
             lines.append("")
-        lines.extend(preset_block(commit, fmt.kind, width))
+        block = preset_block(commit, fmt.kind, width, flags.date)
+        if flags.decorate and block and block[0].startswith("commit "):
+            block[0] += render_template("%d", commit, width, decor)
+        lines.extend(block)
     return ("\n".join(lines) + "\n").encode() if lines else b""
 
 
@@ -124,7 +131,7 @@ async def log(inv: CLIInvocation[None]) -> tuple[ByteSource | None, IOResult]:
         repo, _location = await opened(fl, doors)
         commits, decor = await asyncio.to_thread(
             _collect, repo, revision_arg(texts), parsed,
-            needs_decorations(parsed.pretty))
+            (parsed.decorate or needs_decorations(parsed.pretty)))
     except GitError as exc:
         return fatal(exc)
     out = _rendered(commits, parsed, abbrev_for(repo), decor)

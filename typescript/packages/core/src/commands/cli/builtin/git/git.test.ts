@@ -14,7 +14,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -91,6 +91,28 @@ beforeAll(async () => {
 
 afterAll(() => {
   rmSync(tmp, { recursive: true, force: true })
+})
+
+it.each([
+  'remote -v',
+  'config --get user.name',
+  'show-ref',
+  'rev-list --all --count',
+  'rev-list HEAD',
+  'log -1 --date=iso --format=%ad',
+  'log -1 --date=iso-strict --format=%ad',
+  'log -1 --format=%aI%n%ai%n%cI%n%ci',
+  'log -1 --pretty=raw',
+  'log --oneline --decorate -2',
+  'log --decorate -1',
+  'branch -a -vv',
+  'show --name-status --format= HEAD',
+  'show --summary --format=%h HEAD~1',
+  'diff-tree --no-commit-id --name-only -r HEAD',
+  'diff-tree HEAD',
+  'diff-tree -r HEAD',
+])('read command matches native Git: %s', async (command) => {
+  expect(await run(command)).toEqual([0, realGit(command.split(' ')), ''])
 })
 
 describe('git log', () => {
@@ -189,9 +211,9 @@ describe('git log', () => {
   })
 
   it('says unsupported for a real preset this build lacks', async () => {
-    const [code, , err] = await run('log --pretty=raw')
+    const [code, , err] = await run('log --pretty=email')
     expect(code).toBe(128)
-    expect(err).toContain('unsupported --pretty format: raw')
+    expect(err).toContain('unsupported --pretty format: email')
   })
 
   it('keeps empty format entries as separators byte for byte', async () => {
@@ -397,4 +419,48 @@ describe('the git root', () => {
       "fatal: cannot change to '/repo/letters.txt': Not a directory\n",
     )
   })
+})
+
+it('matches native remote URLs and tracking branches', async () => {
+  const original = readFileSync(join(repoPath, '.git/config'))
+  try {
+    realGit(['remote', 'add', 'origin', 'https://example.com/org/repo.git'])
+    realGit(['remote', 'set-url', '--push', 'origin', 'ssh://git@example.com/org/repo.git'])
+    realGit(['update-ref', 'refs/remotes/origin/main', 'HEAD~1'])
+    realGit(['branch', '--set-upstream-to=origin/main', 'main'])
+    const ram = new RAMVFS()
+    const registry = new OpsRegistry()
+    registry.registerVfs(ram)
+    const remoteWs = new Workspace(
+      { '/repo': ram },
+      { mode: MountMode.WRITE, ops: registry, shellParser: parser },
+    )
+    const dispatch: Dispatch = async (op, path, args = [], kwargs = {}) => [
+      await remoteWs.dispatch(op, path.virtual, args, kwargs),
+      new IOResult(),
+    ]
+    for (const rel of walk(repoPath)) {
+      const target = `/repo/${rel}`
+      await ensureDir(dispatch, target.slice(0, target.lastIndexOf('/')))
+      await remoteWs.dispatch('write', target, [new Uint8Array(readFileSync(join(repoPath, rel)))])
+    }
+    remoteWs.registerCli('git', GIT)
+    for (const command of [
+      'remote',
+      'remote -v',
+      'config --get remote.origin.url',
+      'branch -a -vv',
+      'branch -v',
+    ]) {
+      const result = await remoteWs.shell(`git -C /repo ${command}`)
+      expect([result.exitCode, DEC.decode(result.stdout), DEC.decode(result.stderr)]).toEqual([
+        0,
+        realGit(command.split(' ')),
+        '',
+      ])
+    }
+  } finally {
+    writeFileSync(join(repoPath, '.git/config'), original)
+    realGit(['update-ref', '-d', 'refs/remotes/origin/main'])
+  }
 })
