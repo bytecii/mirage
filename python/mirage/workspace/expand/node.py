@@ -345,6 +345,10 @@ async def expand_node_marked(
     if ntype == NT.SIMPLE_EXPANSION:
         prefix = _folded_whitespace(ts_node)
         raw = get_text(ts_node)[len(prefix):]
+        # Bash consumes one digit in an unbraced positional reference;
+        # tree-sitter can include the literal suffix in the same node.
+        if len(raw) > 1 and "0" <= raw[1] <= "9":
+            return prefix + _lookup_var(raw[1], session, call_stack) + raw[2:]
         for child in ts_node.named_children:
             if child.type == NT.SPECIAL_VARIABLE_NAME:
                 return prefix + _lookup_var(get_text(child), session,

@@ -332,6 +332,8 @@ function refEnd(text: string, start: number): [string, number] | null {
   const n = text.length
   let j = start
   const braced = text[j] === '{'
+  const digit = text.slice(j, j + 1)
+  if (!braced && /^[0-9]$/.test(digit)) return [digit, j + 1]
   if (braced) j += 1
   const from = j
   while (j < n && /[A-Za-z0-9_]/.test(text[j] ?? '')) j += 1

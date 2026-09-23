@@ -416,6 +416,8 @@ def _ref_end(text: str, start: int) -> tuple[str, int] | None:
     n = len(text)
     j = start
     braced = j < n and text[j] == "{"
+    if not braced and j < n and "0" <= text[j] <= "9":
+        return text[j], j + 1
     if braced:
         j += 1
     k = j

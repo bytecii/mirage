@@ -344,6 +344,12 @@ export async function expandNodeMarked(
   if (ntype === NT.SIMPLE_EXPANSION) {
     const prefix = foldedWhitespace(tsNode)
     const raw = tsNode.text.slice(prefix.length)
+    // Bash consumes one digit in an unbraced positional reference;
+    // tree-sitter can include the literal suffix in the same node.
+    const digit = raw.slice(1, 2)
+    if (/^[0-9]$/.test(digit)) {
+      return prefix + lookupVar(digit, session, callStack) + raw.slice(2)
+    }
     const special = tsNode.namedChildren.find((c) => c.type === NT.SPECIAL_VARIABLE_NAME)
     if (special !== undefined) {
       return prefix + lookupVar(special.text, session, callStack)
