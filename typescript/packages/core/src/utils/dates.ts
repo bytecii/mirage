@@ -319,12 +319,18 @@ export function parseDateExpr(text: string, zone: Zone, now?: Date): Date | null
 
 // POSIX `MMDDhhmm[[CC]YY][.ss]`, the clock a bare `date` operand sets.
 const POSIX_TIME_RE = /^([0-9]{8}|[0-9]{10}|[0-9]{12})(?:\.([0-9]{2}))?$/
+// The UTC seconds Python's datetime holds: 0001-01-01 to 9999-12-31.
+const FIRST_SECOND = -62135596800
+const LAST_SECOND = 253402300799
 
 // gnulib's posixtime with date's syntax bits, measured on coreutils 9.7: no
 // year is this year, a two-digit one is 2000-2068 up to 68 and 1969-1999 from
 // 69, and `.ss` takes exactly two digits. A field out of range (`1301000024`,
 // `01012500`) is not a date, nor is a wall clock the zone skips; second 60 is
-// the next minute's first, as mktime reads a leap second. Mirrors the Python
+// the next minute's first, as mktime reads a leap second. One divergence: GNU
+// shows year 0 and year 10000, where mirage holds what Python's datetime
+// holds, so a year 0 operand, a UTC moment outside years 1-9999 and the leap
+// second after 9999-12-31 23:59:59 are not a date either. Mirrors the Python
 // parse_posix_time.
 export function parsePosixTime(text: string, zone: Zone, now?: Date): Date | null {
   const m = POSIX_TIME_RE.exec(text)
@@ -362,6 +368,10 @@ export function parsePosixTime(text: string, zone: Zone, now?: Date): Date | nul
     second: leap ? 59 : second,
     ms: 0,
   })
-  if (placed === null || !leap) return placed
+  if (placed === null) return null
+  const first = placed.getTime() / 1000
+  if (first < FIRST_SECOND || first + (leap ? 1 : 0) > LAST_SECOND) return null
+  if (!leap) return placed
+  if (year === 9999 && month === 11 && day === 31 && hour === 23 && minute === 59) return null
   return new Date(placed.getTime() + 1000)
 }

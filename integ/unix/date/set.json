@@ -278,6 +278,69 @@
         "stdout": "",
         "stderr": "date: extra operand '+%F'\nTry 'date --help' for more information.\n"
       }
+    },
+    {
+      "id": "date_set_last_second_datetime_holds",
+      "seq": 991462,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "date -u 123123599999.59",
+      "expect": {
+        "exit": 1,
+        "stdout": "Fri Dec 31 23:59:59 UTC 9999\n",
+        "stderr": "date: cannot set date: Operation not permitted\n"
+      }
+    },
+    {
+      "id": "date_set_leap_second_into_year_10000_is_invalid",
+      "seq": 991463,
+      "note": "Deliberate divergence: GNU 9.7 prints Sat Jan  1 00:00:00 UTC 10000 and refuses the setting. mirage holds the years Python's datetime holds, 1 through 9999, on both hosts.",
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "date -u 123123599999.60",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "date: invalid date '123123599999.60'\n"
+      }
     }
   ]
 }

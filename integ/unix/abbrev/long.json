@@ -95,7 +95,7 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "mv --no-c /data/a /data/b",
+      "command": "mv --no-c",
       "expect": {
         "exit": 1,
         "stdout": "",

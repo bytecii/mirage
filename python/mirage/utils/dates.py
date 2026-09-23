@@ -34,6 +34,9 @@ _EPOCH_RE = re.compile(r"@\s*[+-]?\d+(?:\.\d+)?")
 # [0-9], not \d: python's \d also matches Unicode digits, which gnulib
 # refuses.
 _POSIX_TIME_RE = re.compile(r"([0-9]{8}|[0-9]{10}|[0-9]{12})(\.[0-9]{2})?")
+_FIRST_SECOND = datetime.min.replace(tzinfo=timezone.utc).timestamp()
+_LAST_SECOND = datetime.max.replace(tzinfo=timezone.utc,
+                                    microsecond=0).timestamp()
 
 
 def _date_unit(word: str) -> str | None:
@@ -299,7 +302,10 @@ def parse_posix_time(text: str,
     and 1969-1999 from 69, and ``.ss`` takes exactly two digits. A
     field out of range (``1301000024``, ``01012500``) is not a date,
     nor is a wall clock ``tz`` skips; second 60 is the next minute's
-    first, as mktime reads a leap second.
+    first, as mktime reads a leap second. One divergence: GNU shows
+    year 0 and year 10000, where mirage holds what ``datetime`` holds,
+    so a year 0 operand, a UTC moment outside years 1-9999 and the
+    leap second after 9999-12-31 23:59:59 are not a date either.
 
     Args:
         text (str): the operand as typed.
@@ -325,10 +331,16 @@ def parse_posix_time(text: str,
         wall = datetime(year, month, day, hour, minute, 59 if leap else second)
     except ValueError:
         return None
-    placed = _localize(wall, tz)
-    if placed is None or not leap:
-        return placed
-    return placed + timedelta(seconds=1)
+    try:
+        placed = _localize(wall, tz)
+        if placed is None:
+            return None
+        first = placed.timestamp()
+        if first < _FIRST_SECOND or first + leap > _LAST_SECOND:
+            return None
+        return placed + timedelta(seconds=leap)
+    except (OverflowError, ValueError):
+        return None
 
 
 def utc_date_folder(ts: float | None = None) -> str:

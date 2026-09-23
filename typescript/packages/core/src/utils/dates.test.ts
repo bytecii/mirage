@@ -261,6 +261,26 @@ describe('parsePosixTime', () => {
     expect(parsePosixTime(text, UTC_ZONE, NOW)).toBeNull()
   })
 
+  // mirage holds what Python's datetime holds, years 1-9999 in UTC and on the
+  // wall clock, where GNU also shows year 0 and year 10000.
+  it.each([
+    ['010100000000', 'UTC'],
+    ['123123599999.60', 'UTC'],
+    ['123123599999', 'America/New_York'],
+    ['123118599999.60', 'America/New_York'],
+    ['010100000001', 'Asia/Tokyo'],
+    ['123123599999.60', 'Asia/Tokyo'],
+  ])('refuses %s in %s, a moment datetime cannot hold', (text, zone) => {
+    expect(parsePosixTime(text, resolveTz(zone))).toBeNull()
+  })
+
+  it('reads the last second datetime holds', () => {
+    expect(parsePosixTime('123123599999.59', UTC_ZONE)?.getTime()).toBe(253402300799000)
+    expect(parsePosixTime('123118599999.59', resolveTz('America/New_York'))?.getTime()).toBe(
+      253402300799000,
+    )
+  })
+
   it('refuses a wall clock the zone skips', () => {
     const berlin = resolveTz('Europe/Berlin')
     expect(parsePosixTime('033002302025', berlin)).toBeNull()
