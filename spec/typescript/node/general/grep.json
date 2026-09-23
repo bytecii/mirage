@@ -315,9 +315,8 @@
       "type": "bool"
     },
     {
-      "long": "--byte-offset",
-      "short": "-b",
-      "type": "bool"
+      "long": "--binary-files",
+      "type": "str"
     },
     {
       "short": "-c",
@@ -396,8 +395,9 @@
       "type": "bool"
     },
     {
-      "long": "--binary-files",
-      "type": "str"
+      "long": "--byte-offset",
+      "short": "-b",
+      "type": "bool"
     },
     {
       "long": "--include",

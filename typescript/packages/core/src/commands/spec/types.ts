@@ -34,6 +34,7 @@ export enum CommandName {
   SPLIT = 'split',
   TR = 'tr',
   TSORT = 'tsort',
+  UNAME = 'uname',
   UNIQ = 'uniq',
   XXD = 'xxd',
 }

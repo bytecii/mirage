@@ -80,12 +80,12 @@ export const SPECS: Record<string, CommandSpec> = {
         valueOptional: true,
         shortValue: false,
       }),
-      new Option({ short: '-S', long: '--suffix', type: 'str' }),
-      new Option({ short: '-t', long: '--target-directory', type: 'path' }),
-      new Option({ short: '-T', long: '--no-target-directory' }),
       // PathSpec normalizes trailing slashes everywhere, so the GNU
       // spelling is an accepted no-op.
       new Option({ long: '--strip-trailing-slashes' }),
+      new Option({ short: '-t', long: '--target-directory', type: 'path' }),
+      new Option({ short: '-T', long: '--no-target-directory' }),
+      new Option({ short: '-S', long: '--suffix', type: 'str' }),
     ],
     rest: new Operand({ type: 'path' }),
   }),
@@ -147,7 +147,7 @@ export const SPECS: Record<string, CommandSpec> = {
   // is its grammar authority and no builder binds it.
   ln: new CommandSpec({
     options: [
-      new Option({ short: '-s', long: '--symbolic' }),
+      new Option({ short: '-S', long: '--suffix', type: 'str' }),
       new Option({ short: '-f', long: '--force' }),
       new Option({ short: '-n', long: '--no-dereference' }),
       new Option({ short: '-v', long: '--verbose' }),
@@ -165,7 +165,7 @@ export const SPECS: Record<string, CommandSpec> = {
         valueOptional: true,
         shortValue: false,
       }),
-      new Option({ short: '-S', long: '--suffix', type: 'str' }),
+      new Option({ short: '-s', long: '--symbolic' }),
       new Option({ short: '-t', long: '--target-directory', type: 'path' }),
       new Option({ short: '-T', long: '--no-target-directory' }),
     ],
@@ -176,11 +176,14 @@ export const SPECS: Record<string, CommandSpec> = {
       new Option({ short: '-p', long: '--parents' }),
       new Option({ short: '-v', long: '--verbose' }),
       new Option({ short: '-m', long: '--mode', type: 'str' }),
+      // GNU: -Z never takes an argument; only --context= carries one, so
+      // the short stays clusterable (-vZ) and `-Zfoo` is refused.
       new Option({
         short: '-Z',
         long: '--context',
         type: 'str',
         valueOptional: true,
+        shortValue: false,
       }),
     ],
     rest: new Operand({ type: 'path' }),
@@ -210,16 +213,16 @@ export const SPECS: Record<string, CommandSpec> = {
         valueOptional: true,
         shortValue: false,
       }),
-      new Option({ short: '-S', long: '--suffix', type: 'str' }),
-      new Option({ short: '-t', long: '--target-directory', type: 'path' }),
-      new Option({ short: '-T', long: '--no-target-directory' }),
-      new Option({ long: '--exchange' }),
-      // Cross-mount moves are copy+remove; --no-copy turns them into
-      // GNU's cross-device refusal instead.
-      new Option({ long: '--no-copy' }),
       // PathSpec normalizes trailing slashes everywhere, so the GNU
       // spelling is an accepted no-op.
       new Option({ long: '--strip-trailing-slashes' }),
+      new Option({ short: '-t', long: '--target-directory', type: 'path' }),
+      // Cross-mount moves are copy+remove; --no-copy turns them into
+      // GNU's cross-device refusal instead.
+      new Option({ long: '--no-copy' }),
+      new Option({ long: '--exchange' }),
+      new Option({ short: '-T', long: '--no-target-directory' }),
+      new Option({ short: '-S', long: '--suffix', type: 'str' }),
     ],
     rest: new Operand({ type: 'path' }),
   }),

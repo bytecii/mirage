@@ -105,6 +105,27 @@ SOLE_ARGUMENT_LONG_OPTIONS = frozenset({"expr"})
 # `usage` and exits INSIDE the loop.
 STANDARD_AFTER_SCAN = frozenset({"grep", "rg"})
 
+# The programs whose getopt string lists the ten digits as options, the
+# obsolete `-NUM` count spelled one letter at a time: the digits of one
+# word build a number and a later word replaces it, wherever they sit in
+# a cluster. Measured on coreutils 9.7: `split -d10` is `-d` and ten
+# lines, as are `-10d` and `-dx10`, and `split -12 -5` is five. head and
+# tail list the digits too but refuse one past the first word, so they
+# keep only the whole-word `-NUM` that numeric_shorthand reads.
+DIGIT_OPTIONS = frozenset({"split"})
+
+# The long spellings that are one option under two names, keyed by
+# (program, synonym) to the spelling it duplicates: glibc's several
+# long_options entries sharing one `val`, so a prefix of both resolves
+# rather than being ambiguous. Every other pair of declared longs is two
+# options, and a prefix of both is ambiguous, which is what getopt_long
+# answers for `ls --re` and `uname --k`. Measured on coreutils 9.7 and
+# grep 3.11: `grep --col` is --color and `date --u` is --utc.
+LONG_SYNONYMS = {
+    ("grep", "--colour"): "--color",
+    ("date", "--universal"): "--utc",
+}
+
 # The one program whose standard options outrank every option refusal,
 # wherever the word sits. zgrep is a shell script that reads the line in
 # its own loop before it ever builds a grep command, and that loop
@@ -128,14 +149,15 @@ STANDARD_BEFORE_SCAN = frozenset({"zgrep"})
 # -- `--backup`, `ls --sort`, `ls --time`, `sort --check`, `cp
 # --update`, `tail --follow`, `wc --total`, `uniq`, `cut` -- call
 # `argmatch` from the command with their own candidate list, and never
-# reach the parser's `Option.choices` at all. These three are the whole
-# of what does. Measured on coreutils 9.7: `tee --output-error=exit-n`
-# resolves to `exit-nopipe` while `=w` and `=e` are ambiguous, `numfmt
-# --to=s` resolves to `si` and `--to=ie` is ambiguous between `iec` and
-# `iec-i`.
+# reach the parser's `Option.choices` at all. The entries below are the
+# whole of what does. Measured on coreutils 9.7: `tee
+# --output-error=exit-n` resolves to `exit-nopipe` while `=w` and `=e`
+# are ambiguous, `numfmt --to=s` resolves to `si` and `--to=ie` is
+# ambiguous between `iec` and `iec-i`, `date -Is` resolves to `seconds`
+# and `date --rfc-3339=` is ambiguous.
 #
 # Written as (command, canonical long spelling) because that is how the
-# measurement reads, but it NAMES the three builtin `Option` objects
+# measurement reads, but it NAMES the builtin `Option` objects
 # rather than keying on the two strings: the parser resolves each pair
 # once and then asks whether the option declaring a set IS one of them.
 # A name is not identity, and a mount may register its own `tee`
@@ -149,6 +171,8 @@ ARGMATCH_CHOICE_OPTIONS = frozenset({
     ("tee", "--output-error"),
     ("numfmt", "--to"),
     ("numfmt", "--from"),
+    ("date", "--iso-8601"),
+    ("date", "--rfc-3339"),
 })
 
 # Value shapes accepted by int- and float-typed options: the portable

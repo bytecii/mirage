@@ -204,17 +204,71 @@ SPECS: dict[str, CommandSpec] = {
         options=(
             Option(
                 short="-d",
+                long="--date",
                 type="str",
                 description=("Display the time described by the given "
                              "date string."),
             ),
-            Option(short="-u",
-                   description="Use Coordinated Universal Time (UTC)."),
-            Option(short="-I", description="Output date in ISO 8601 format."),
+            # GNU -I[FMT]: the precision rides attached (-Is) or after
+            # `=`, never as the next word, and matches by prefix in
+            # GNU's own table order.
+            Option(short="-I",
+                   long="--iso-8601",
+                   type="str",
+                   value_optional=True,
+                   choices=("hours", "minutes", "date", "seconds", "ns"),
+                   description=("Output date/time in ISO 8601 format, to "
+                                "the given precision (default date).")),
             Option(short="-R",
+                   long="--rfc-email",
                    description="Output date in RFC 5322 email format."),
+            Option(long="--rfc-3339",
+                   type="str",
+                   choices=("date", "seconds", "ns"),
+                   description=("Output date/time in RFC 3339 format, to "
+                                "the given precision.")),
+            Option(short="-u",
+                   long="--utc",
+                   description="Use Coordinated Universal Time (UTC)."),
+            Option(long="--universal",
+                   description="Use Coordinated Universal Time (UTC)."),
         ),
         positional=(Operand(type="str"), ),
+    ),
+    'uname':
+    CommandSpec(
+        description="Print certain system information.",
+        options=(
+            Option(short="-a",
+                   long="--all",
+                   description=("Print all information, omitting -p and -i "
+                                "if unknown.")),
+            Option(short="-s",
+                   long="--kernel-name",
+                   description="Print the kernel name."),
+            Option(short="-n",
+                   long="--nodename",
+                   description="Print the network node hostname."),
+            Option(short="-r",
+                   long="--kernel-release",
+                   description="Print the kernel release."),
+            Option(short="-v",
+                   long="--kernel-version",
+                   description="Print the kernel version."),
+            Option(short="-m",
+                   long="--machine",
+                   description="Print the machine hardware name."),
+            Option(short="-p",
+                   long="--processor",
+                   description="Print the processor type."),
+            Option(short="-i",
+                   long="--hardware-platform",
+                   description="Print the hardware platform."),
+            Option(short="-o",
+                   long="--operating-system",
+                   description="Print the operating system."),
+        ),
+        rest=Operand(type="str"),
     ),
     'sleep':
     CommandSpec(

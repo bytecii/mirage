@@ -150,9 +150,8 @@
       "value_optional": true
     },
     {
-      "long": "--suffix",
-      "short": "-S",
-      "type": "str"
+      "long": "--strip-trailing-slashes",
+      "type": "bool"
     },
     {
       "long": "--target-directory",
@@ -165,8 +164,9 @@
       "type": "bool"
     },
     {
-      "long": "--strip-trailing-slashes",
-      "type": "bool"
+      "long": "--suffix",
+      "short": "-S",
+      "type": "str"
     }
   ],
   "rest": {

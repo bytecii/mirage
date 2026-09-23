@@ -158,6 +158,18 @@ def test_expand_long_exact_prefix_ambiguous_and_unknown():
     assert expand_long(cs, "--") == ()
 
 
+def test_expand_long_folds_only_named_synonyms():
+    # Two options of one shape are still two options; only a named synonym
+    # folds a shared prefix into one (glibc's entries sharing one `val`).
+    cs = compile_spec(
+        CommandSpec(options=(Option(long="--color"), Option(long="--colour"),
+                             Option(long="--count"))))
+    assert expand_long(cs, "--col") == ("--color", "--colour")
+    same = {"--colour": "--color"}
+    assert expand_long(cs, "--col", same) == ("--color", )
+    assert expand_long(cs, "--co", same) == ("--color", "--colour", "--count")
+
+
 def test_pair_on_a_boolean_flag_is_a_spec_error():
     spec = CommandSpec(options=(Option(long="--arg", pair=True), ))
     with pytest.raises(ValueError, match="pair requires a value flag"):

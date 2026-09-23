@@ -126,6 +126,7 @@
     {
       "long": "--context",
       "short": "-Z",
+      "short_value": false,
       "type": "str",
       "value_optional": true
     }

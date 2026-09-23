@@ -119,9 +119,8 @@
       "type": "str"
     },
     {
-      "long": "--suffix-format",
-      "short": "-b",
-      "type": "str"
+      "long": "--silent",
+      "type": "bool"
     },
     {
       "long": "--keep-files",
@@ -134,8 +133,9 @@
       "type": "bool"
     },
     {
-      "long": "--silent",
-      "type": "bool"
+      "long": "--suffix-format",
+      "short": "-b",
+      "type": "str"
     },
     {
       "long": "--suppress-matched",

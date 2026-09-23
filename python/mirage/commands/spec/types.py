@@ -75,6 +75,7 @@ class CommandName(StrEnum):
     SPLIT = "split"
     TR = "tr"
     TSORT = "tsort"
+    UNAME = "uname"
     UNIQ = "uniq"
     XXD = "xxd"
 
