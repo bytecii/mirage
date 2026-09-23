@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { IOResult } from '../../../io/types.ts'
 import { RAMVFS } from '../../../vfs/ram/ram.ts'
 import { createShellParser } from '../../../shell/parse/index.ts'
 import { Workspace } from '../../../workspace/workspace/workspace.ts'
@@ -19,6 +20,33 @@ const corpus = JSON.parse(
 }
 
 describe('program file routing', () => {
+  it.each([
+    ['grep', '-rn pattern', ['-rn', 'pattern']],
+    ['sed', '-n p', ['-n', 'p']],
+    ['awk', '-F : program', ['-F', ':', 'program']],
+    ['jq', '-r .a', ['-r', '.a']],
+  ])('leaves inline %s arguments to the mount spec', async (name, args, texts) => {
+    const ws = new Workspace(
+      { '/data': new RAMVFS() },
+      {
+        mode: MountMode.EXEC,
+        shellParserFactory: async () => createShellParser({ engineWasm, grammarWasm }),
+      },
+    )
+    try {
+      const mount = ws.registry.mountFor('/data')
+      vi.spyOn(mount, 'specFor').mockReturnValue(null)
+      const execute = vi.spyOn(mount, 'executeCmd').mockResolvedValue([null, new IOResult()])
+      const result = await ws.shell(`${name} ${args} /data/input`)
+      expect(result.exitCode).toBe(0)
+      expect(execute).toHaveBeenCalledOnce()
+      expect(execute.mock.calls[0]?.[2]).toEqual(texts)
+      expect(execute.mock.calls[0]?.[3]).toEqual({})
+    } finally {
+      await ws.close()
+    }
+  })
+
   for (const test of corpus.cases) {
     it(test.id, async () => {
       const ws = new Workspace(

@@ -21,7 +21,11 @@ import type { VFS } from '../../vfs/base.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
 import type { JobTable } from '../../shell/job_table/index.ts'
 import { PathSpec } from '../../types.ts'
-import { PROGRAM_FILE_COMMANDS, prepareProgram } from '../../commands/builtin/generic/program.ts'
+import {
+  PROGRAM_FILE_COMMANDS,
+  prepareProgram,
+  programFiles,
+} from '../../commands/builtin/generic/program.ts'
 import type { ParsedCommand } from './command/types.ts'
 import { identityFrom } from '../../commands/builtin/utils/identity.ts'
 import type { MountEntry } from '../mount/mount.ts'
@@ -286,42 +290,45 @@ export async function handleCommand(
   if (PROGRAM_FILE_COMMANDS.has(cmdName)) {
     const programSpec = SPECS[cmdName]
     if (programSpec !== undefined) {
-      prepared = parseFlags(
+      const candidate = parseFlags(
         parts.slice(1),
         registeredSpec(cmdName, programSpec),
         cmdName,
         session.cwd,
       )
-      const refusal = optionError(cmdName, prepared)
-      if (refusal !== null) {
-        const [msg, code] = refusal
-        return [
-          null,
-          new IOResult({ exitCode: code, stderr: msg }),
-          new ExecutionNode({ command: cmdStr, exitCode: code, stderr: msg }),
-        ]
+      if (programFiles(cmdName, candidate.flagKwargs).length > 0) {
+        prepared = candidate
+        const refusal = optionError(cmdName, prepared)
+        if (refusal !== null) {
+          const [msg, code] = refusal
+          return [
+            null,
+            new IOResult({ exitCode: code, stderr: msg }),
+            new ExecutionNode({ command: cmdStr, exitCode: code, stderr: msg }),
+          ]
+        }
+        const [texts, flags, remaining, error] = await prepareProgram(
+          cmdName,
+          prepared.texts,
+          prepared.flagKwargs,
+          stdin,
+          dispatch,
+        )
+        if (error !== null) {
+          return [
+            null,
+            error,
+            new ExecutionNode({
+              command: cmdStr,
+              exitCode: error.exitCode,
+              stderr: await materialize(error.stderr),
+            }),
+          ]
+        }
+        stdin = remaining
+        prepared = { ...prepared, texts, flagKwargs: flags }
+        pathScopes.splice(0, pathScopes.length, ...prepared.paths)
       }
-      const [texts, flags, remaining, error] = await prepareProgram(
-        cmdName,
-        prepared.texts,
-        prepared.flagKwargs,
-        stdin,
-        dispatch,
-      )
-      if (error !== null) {
-        return [
-          null,
-          error,
-          new ExecutionNode({
-            command: cmdStr,
-            exitCode: error.exitCode,
-            stderr: await materialize(error.stderr),
-          }),
-        ]
-      }
-      stdin = remaining
-      prepared = { ...prepared, texts, flagKwargs: flags }
-      pathScopes.splice(0, pathScopes.length, ...prepared.paths)
     }
   }
 

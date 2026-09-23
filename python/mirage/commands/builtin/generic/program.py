@@ -5,9 +5,22 @@ from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult, materialize
 from mirage.runtime.types import DispatchFn
+from mirage.types import PathSpec
 from mirage.utils.errors import FS_ERRORS, fs_error_line
 
 PROGRAM_FILE_COMMANDS = frozenset({"grep", "sed", "awk", "jq"})
+
+
+def program_files(name: str, flags: dict[str, FlagValue]) -> list[PathSpec]:
+    """The invocation's program files, or an empty list for inline programs.
+
+    Args:
+        name (str): a PROGRAM_FILE_COMMANDS member.
+        flags (dict[str, FlagValue]): spec-bound flags with PATH values.
+    """
+    fl = FlagView(flags, spec=SPECS[name])
+    key = "from_file" if name == "jq" else "file" if name == "grep" else "f"
+    return fl.as_paths(key)
 
 
 async def prepare_program(
@@ -34,7 +47,7 @@ async def prepare_program(
     """
     fl = FlagView(flags, spec=SPECS[name])
     key = "from_file" if name == "jq" else "file" if name == "grep" else "f"
-    files = fl.as_paths(key)
+    files = program_files(name, flags)
     if not files:
         return texts, flags, stdin, None
     source = resolve_source(stdin)

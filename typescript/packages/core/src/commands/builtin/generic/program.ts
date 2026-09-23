@@ -10,6 +10,13 @@ import { fsErrorLine, isFsError } from '../../../utils/errors.ts'
 
 export const PROGRAM_FILE_COMMANDS = new Set(['grep', 'sed', 'awk', 'jq'])
 
+/** The invocation's program files, or an empty list for inline programs. */
+export function programFiles(name: string, bag: Record<string, FlagValue>): string[] {
+  const fl = new FlagView(bag, specOf(name))
+  const key = name === 'jq' ? 'from_file' : name === 'grep' ? 'file' : 'f'
+  return fl.asList(key)
+}
+
 /** Read program files once before input routing or traversal fan-out.
  * Lower to the inline form so every native sub-run sees the same program,
  * including when reading it consumed stdin. Pinned against debian:stable-slim.
@@ -23,7 +30,7 @@ export async function prepareProgram(
 ): Promise<[string[], Record<string, FlagValue>, ByteSource | null, IOResult | null]> {
   const fl = new FlagView(bag, specOf(name))
   const key = name === 'jq' ? 'from_file' : name === 'grep' ? 'file' : 'f'
-  const files = fl.asList(key)
+  const files = programFiles(name, bag)
   if (files.length === 0) return [texts, bag, stdin, null]
   const source = resolveSource(stdin)
   let consumed = false

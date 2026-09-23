@@ -21,7 +21,8 @@ from mirage.commands.builtin.generic.crossmount import (handle_cross_mount,
 from mirage.commands.builtin.generic.crossmount.detect import strategy_for
 from mirage.commands.builtin.generic.crossmount.types import Strategy
 from mirage.commands.builtin.generic.program import (PROGRAM_FILE_COMMANDS,
-                                                     prepare_program)
+                                                     prepare_program,
+                                                     program_files)
 from mirage.commands.builtin.utils.identity import identity_from
 from mirage.commands.builtin.utils.limit import maybe_with_timeout
 from mirage.commands.config import standard_request
@@ -262,26 +263,29 @@ async def handle_command(
 
     prepared: ParsedCommand | None = None
     if cmd_name in PROGRAM_FILE_COMMANDS and dispatch is not None:
-        prepared = parse_flags(parts[1:],
-                               registered_spec(cmd_name, SPECS[cmd_name]),
-                               cmd_name, session.cwd)
-        refusal = option_error(cmd_name, prepared)
-        if refusal is not None:
-            program_msg, code = refusal
-            return None, IOResult(exit_code=code,
-                                  stderr=program_msg), ExecutionNode(
-                                      command=cmd_str,
-                                      exit_code=code,
-                                      stderr=program_msg)
-        result = await prepare_program(cmd_name, prepared.texts,
-                                       prepared.flag_kwargs, stdin, dispatch)
-        program_texts, program_flags, stdin, program_error = result
-        if program_error is not None:
-            return None, program_error, await exec_node(
-                cmd_str, program_error, prepared.paths)
-        prepared = prepared._replace(texts=program_texts,
-                                     flag_kwargs=program_flags)
-        path_scopes = prepared.paths
+        candidate = parse_flags(parts[1:],
+                                registered_spec(cmd_name, SPECS[cmd_name]),
+                                cmd_name, session.cwd)
+        if program_files(cmd_name, candidate.flag_kwargs):
+            prepared = candidate
+            refusal = option_error(cmd_name, prepared)
+            if refusal is not None:
+                program_msg, code = refusal
+                return None, IOResult(exit_code=code,
+                                      stderr=program_msg), ExecutionNode(
+                                          command=cmd_str,
+                                          exit_code=code,
+                                          stderr=program_msg)
+            result = await prepare_program(cmd_name, prepared.texts,
+                                           prepared.flag_kwargs, stdin,
+                                           dispatch)
+            program_texts, program_flags, stdin, program_error = result
+            if program_error is not None:
+                return None, program_error, await exec_node(
+                    cmd_str, program_error, prepared.paths)
+            prepared = prepared._replace(texts=program_texts,
+                                         flag_kwargs=program_flags)
+            path_scopes = prepared.paths
 
     # Path-valued flags (e.g. shuf --output=/dst/out) own a mount just like
     # positional operands, so they join routing and mount validation instead
