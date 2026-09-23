@@ -22,12 +22,12 @@ it('refuses descriptor access when fallback contexts overlap', async () => {
   })
   const secret = new TextEncoder().encode('private')
   const owner = runWithSession(new SessionState({ sessionId: 'owner' }), async () => {
-    const path = files.allocateInput()
+    const [path, allocation] = files.allocateInput()
     files.set(path.slice(4), secret)
     readyResolve()
     await done
     expect(files.get(path.slice(4))).toEqual(secret)
-    files.releaseInput(path)
+    files.releaseInput(path, allocation)
   })
   await ready
   try {

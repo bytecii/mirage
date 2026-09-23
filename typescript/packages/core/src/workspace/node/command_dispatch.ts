@@ -361,7 +361,7 @@ async function runCommandBody(
   // Input substitutions are buffered virtual files, not host pipes. Each
   // operand has its own lifetime; they never consume the caller's stdin.
   let dev: DevVFS | null = null
-  const procSubPaths: string[] = []
+  const procSubInputs: (readonly [string, number])[] = []
   const procSubStderr: Uint8Array[] = []
   const cleanParts: TSNodeLike[] = []
   try {
@@ -383,14 +383,14 @@ async function runCommandBody(
         if (!(candidate instanceof DevVFS)) throw new Error('missing device filesystem')
         dev = candidate
       }
-      const path = dev.allocateInput()
-      procSubPaths.push(path)
+      const [path, allocation] = dev.allocateInput()
+      procSubInputs.push([path, allocation])
       const saved = session.snapshot()
       try {
         const inner = getProcessSubBody(p)
         if (inner !== '') {
           const io = await executeFn(inner, { sessionId: session.sessionId, node: p })
-          dev.setInput(path, await materialize(io.stdout))
+          dev.setInput(path, allocation, await materialize(io.stdout))
           procSubStderr.push(await materialize(io.stderr))
         }
       } finally {
@@ -461,12 +461,12 @@ async function runCommandBody(
       io.stderr = concatBytes([traceCommand([argv.name, ...argv.args]), existing])
     }
     return [
-      procSubPaths.length > 0 && stdout !== null ? await materialize(stdout) : stdout,
+      procSubInputs.length > 0 && stdout !== null ? await materialize(stdout) : stdout,
       io,
       execNode,
     ]
   } finally {
-    for (const path of procSubPaths) dev?.releaseInput(path)
+    for (const [path, allocation] of procSubInputs) dev?.releaseInput(path, allocation)
   }
 }
 

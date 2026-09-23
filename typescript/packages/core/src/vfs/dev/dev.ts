@@ -55,19 +55,21 @@ export class DevVFS extends RAMVFS {
     return this.descriptorIndex
   }
 
-  allocateInput(): string {
+  allocateInput(): readonly [string, number] {
     return (this.store.files as DevFiles).allocateInput()
   }
 
-  setInput(path: string, data: Uint8Array): void {
-    this.store.files.set(path.slice(4), data)
+  setInput(path: string, allocation: number, data: Uint8Array): void {
+    const files = this.store.files as DevFiles
+    files.setInput(path, allocation, data)
   }
 
-  releaseInput(path: string): void {
+  releaseInput(path: string, allocation: number): void {
     const files = this.store.files as DevFiles
-    files.releaseInput(path)
-    this.store.modified.delete(path.slice(4))
-    this.store.attrs.delete(path.slice(4))
+    if (files.releaseInput(path, allocation)) {
+      this.store.modified.delete(path.slice(4))
+      this.store.attrs.delete(path.slice(4))
+    }
   }
 
   override ops(): readonly RegisteredOp[] {

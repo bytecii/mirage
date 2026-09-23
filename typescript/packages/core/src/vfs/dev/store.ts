@@ -30,7 +30,11 @@ function strip(key: string): string {
 // rm-then-redirect recreation as a regular file.
 export class DevFiles extends Map<string, Uint8Array> {
   private readonly tombstones = new Set<string>()
-  private readonly inputs = new Map<string, { owner: string; data: Uint8Array }>()
+  private readonly inputs = new Map<
+    string,
+    { owner: string; allocation: number; data: Uint8Array }
+  >()
+  private nextAllocation = 0
 
   private owner(): string | null {
     const sessions = liveSessions()
@@ -50,18 +54,27 @@ export class DevFiles extends Map<string, Uint8Array> {
     )
   }
 
-  allocateInput(): string {
+  allocateInput(): readonly [string, number] {
     const owner = this.owner()
     if (owner === null) throw eacces('/dev/fd')
     let fd = 63
     while (this.inputs.has(`/fd/${String(fd)}`)) fd -= 1
     const key = `/fd/${String(fd)}`
-    this.inputs.set(key, { owner, data: new Uint8Array() })
-    return `/dev${key}`
+    const allocation = this.nextAllocation++
+    this.inputs.set(key, { owner, allocation, data: new Uint8Array() })
+    return [`/dev${key}`, allocation]
   }
 
-  releaseInput(path: string): void {
-    this.inputs.delete(path.slice(4))
+  setInput(path: string, allocation: number, data: Uint8Array): void {
+    const row = this.inputs.get(path.slice(4))
+    if (row?.allocation !== allocation) throw enoent(path)
+    this.set(path.slice(4), data)
+  }
+
+  releaseInput(path: string, allocation: number): boolean {
+    const row = this.inputs.get(path.slice(4))
+    if (row?.allocation !== allocation) return false
+    return this.inputs.delete(path.slice(4))
   }
 
   private syntheticActive(name: string): boolean {
@@ -96,7 +109,7 @@ export class DevFiles extends Map<string, Uint8Array> {
     if (key === '/fd' || key.startsWith('/fd/')) {
       const row = this.inputs.get(key)
       if (row === undefined || !this.visibleInputs().has(key)) throw enoent(`/dev${key}`)
-      this.inputs.set(key, { owner: row.owner, data: value })
+      this.inputs.set(key, { ...row, data: value })
       return this
     }
     const name = strip(key)

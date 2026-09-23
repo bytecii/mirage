@@ -41,7 +41,8 @@ class _DevFiles(dict[str, bytes]):
     def __init__(self) -> None:
         super().__init__()
         self._tombstones: set[str] = set()
-        self._inputs: dict[str, tuple[str, bytes]] = {}
+        self._inputs: dict[str, tuple[str, int, bytes]] = {}
+        self._next_allocation = 0
 
     def _visible_inputs(self) -> dict[str, bytes]:
         session = get_current_session()
@@ -49,11 +50,11 @@ class _DevFiles(dict[str, bytes]):
             return {}
         return {
             key: data
-            for key, (owner, data) in self._inputs.items()
+            for key, (owner, _, data) in self._inputs.items()
             if owner == session.session_id
         }
 
-    def allocate_input(self) -> str:
+    def allocate_input(self) -> tuple[str, int]:
         session = get_current_session()
         if session is None:
             raise eacces("/dev/fd")
@@ -61,11 +62,23 @@ class _DevFiles(dict[str, bytes]):
         while f"/fd/{fd}" in self._inputs:
             fd -= 1
         key = f"/fd/{fd}"
-        self._inputs[key] = (session.session_id, b"")
-        return f"/dev{key}"
+        allocation = self._next_allocation
+        self._next_allocation += 1
+        self._inputs[key] = (session.session_id, allocation, b"")
+        return f"/dev{key}", allocation
 
-    def release_input(self, path: str) -> None:
-        self._inputs.pop(path[4:], None)
+    def set_input(self, path: str, allocation: int, data: bytes) -> None:
+        row = self._inputs.get(path[4:])
+        if row is None or row[1] != allocation:
+            raise enoent(path)
+        self[path[4:]] = data
+
+    def release_input(self, path: str, allocation: int) -> bool:
+        row = self._inputs.get(path[4:])
+        if row is None or row[1] != allocation:
+            return False
+        del self._inputs[path[4:]]
+        return True
 
     def _synthetic_active(self, name: str) -> bool:
         return (name in _DEV_NAMES and name not in self._tombstones
@@ -106,8 +119,8 @@ class _DevFiles(dict[str, bytes]):
         if key == "/fd" or key.startswith("/fd/"):
             if key not in self._visible_inputs():
                 raise enoent(f"/dev{key}")
-            owner, _ = self._inputs[key]
-            self._inputs[key] = (owner, value)
+            owner, allocation, _ = self._inputs[key]
+            self._inputs[key] = (owner, allocation, value)
             return
         name = key.strip("/")
         if self._synthetic_active(name):
@@ -233,13 +246,13 @@ class DevVFS(BaseVFS):
         # A path-only index would expose descriptors across sessions.
         return NULL_INDEX
 
-    def allocate_input(self) -> str:
+    def allocate_input(self) -> tuple[str, int]:
         return self._store.files.allocate_input()
 
-    def set_input(self, path: str, data: bytes) -> None:
-        self._store.files[path[4:]] = data
+    def set_input(self, path: str, allocation: int, data: bytes) -> None:
+        self._store.files.set_input(path, allocation, data)
 
-    def release_input(self, path: str) -> None:
-        self._store.files.release_input(path)
-        self._store.modified.pop(path[4:], None)
-        self._store.attrs.pop(path[4:], None)
+    def release_input(self, path: str, allocation: int) -> None:
+        if self._store.files.release_input(path, allocation):
+            self._store.modified.pop(path[4:], None)
+            self._store.attrs.pop(path[4:], None)

@@ -270,7 +270,7 @@ async def _dispatch_command_body(
 
     # Buffered virtual files preserve operand identity without host pipes.
     dev: DevVFS | None = None
-    proc_sub_paths = []
+    proc_sub_inputs: list[tuple[str, int]] = []
     proc_sub_stderr = []
     clean_parts = []
     try:
@@ -285,8 +285,8 @@ async def _dispatch_command_body(
             if dev is None:
                 dev, _, _ = registry.resolve("/dev/null")
                 assert isinstance(dev, DevVFS)
-            path = dev.allocate_input()
-            proc_sub_paths.append(path)
+            path, allocation = dev.allocate_input()
+            proc_sub_inputs.append((path, allocation))
             saved = session.snapshot()
             try:
                 inner = get_process_sub_body(p)
@@ -294,7 +294,8 @@ async def _dispatch_command_body(
                     io_ps = await execute_fn(inner,
                                              session_id=session.session_id,
                                              node=p)
-                    dev.set_input(path, await materialize(io_ps.stdout))
+                    data = await materialize(io_ps.stdout)
+                    dev.set_input(path, allocation, data)
                     proc_sub_stderr.append(await materialize(io_ps.stderr))
             finally:
                 session.restore(saved)
@@ -356,13 +357,13 @@ async def _dispatch_command_body(
         if xtrace and argv.name:
             existing = await materialize(io.stderr) or b""
             io.stderr = trace_command([argv.name, *argv.args]) + existing
-        if proc_sub_paths and stdout is not None:
+        if proc_sub_inputs and stdout is not None:
             stdout = await materialize(stdout)
         return stdout, io, exec_node
     finally:
         if dev is not None:
-            for path in proc_sub_paths:
-                dev.release_input(path)
+            for path, allocation in proc_sub_inputs:
+                dev.release_input(path, allocation)
 
 
 async def _run_argv(
