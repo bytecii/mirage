@@ -16,18 +16,15 @@ from typing import Any
 
 from mirage.accessor.mongodb import MongoDBAccessor
 from mirage.commands.builtin.mongodb import COMMANDS
-from mirage.core.mongodb.readdir import readdir
+from mirage.commands.builtin.mongodb.io import IO
 from mirage.ops.mongodb import OPS as MONGODB_VFS_OPS
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.vfs.base import BaseVFS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.mongodb.config import MongoDBConfig
 from mirage.vfs.mongodb.prompt import PROMPT
 
-_resolve_glob = make_resolve_glob(readdir)
 
-
-class MongoDBVFS(BaseVFS):
+class MongoDBVFS(BoundVFS):
 
     accessor: MongoDBAccessor
     name: str = VFSName.MONGODB
@@ -38,20 +35,13 @@ class MongoDBVFS(BaseVFS):
     PROMPT: str = PROMPT
 
     def __init__(self, config: MongoDBConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self.accessor = MongoDBAccessor(self.config)
         for fn in COMMANDS:
             self.register(fn)
         for op in MONGODB_VFS_OPS:
             self.register_op(op)
-
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        return await _resolve_glob(self.accessor, paths, index=self._index)
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)

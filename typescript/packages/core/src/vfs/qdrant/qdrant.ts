@@ -12,17 +12,16 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { BoundVFS } from '../bound.ts'
+import { QDRANT_IO } from '../../commands/builtin/qdrant/io.ts'
 import { QdrantAccessor } from '../../accessor/qdrant.ts'
 import { QDRANT_COMMANDS } from '../../commands/builtin/qdrant/index.ts'
 import type { RegisteredCommand } from '../../commands/config.ts'
-import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
-import { read } from '../../core/qdrant/read.ts'
-import { readdir as qdrantReaddir } from '../../core/qdrant/readdir.ts'
-import { stat as qdrantStat } from '../../core/qdrant/stat.ts'
+
 import { QDRANT_OPS } from '../../ops/qdrant/index.ts'
 import type { RegisteredOp } from '../../ops/registry.ts'
-import { VFSName, type FileStat, type PathSpec } from '../../types.ts'
-import { BaseVFS, type VFS } from '../base.ts'
+import { VFSName } from '../../types.ts'
+import { type VFS } from '../base.ts'
 import {
   type QdrantConfigRedacted,
   redactQdrantConfig,
@@ -31,8 +30,6 @@ import {
   type QdrantConfigResolved,
 } from './config.ts'
 import { QDRANT_PROMPT } from './prompt.ts'
-
-const resolveGlob = makeResolveGlob(qdrantReaddir)
 
 export interface QdrantVFSOptions {
   config: QdrantConfig
@@ -44,7 +41,7 @@ export interface QdrantVFSState {
   needs_override: true
 }
 
-export class QdrantVFS extends BaseVFS implements VFS {
+export class QdrantVFS extends BoundVFS<QdrantAccessor> implements VFS {
   readonly kind: string = VFSName.QDRANT
   // readdir seeds exact rendered sizes from the scroll payloads and stat
   // falls back to rendering the row itself, so sizes are exact either way.
@@ -55,7 +52,7 @@ export class QdrantVFS extends BaseVFS implements VFS {
   readonly accessor: QdrantAccessor
 
   constructor(options: QdrantVFSOptions | QdrantConfig) {
-    super()
+    super(QDRANT_IO)
     const config = 'config' in options ? options.config : options
     this.config = resolveQdrantConfig(config)
     this.accessor = new QdrantAccessor(this.config)
@@ -80,21 +77,5 @@ export class QdrantVFS extends BaseVFS implements VFS {
 
   commands(): readonly RegisteredCommand[] {
     return QDRANT_COMMANDS
-  }
-
-  glob(paths: readonly PathSpec[], _prefix = ''): Promise<PathSpec[]> {
-    return resolveGlob(this.accessor, paths, this.index)
-  }
-
-  readFile(p: PathSpec): Promise<Uint8Array> {
-    return read(this.accessor, p, this.index)
-  }
-
-  readdir(p: PathSpec): Promise<string[]> {
-    return qdrantReaddir(this.accessor, p, this.index)
-  }
-
-  stat(p: PathSpec): Promise<FileStat> {
-    return qdrantStat(this.accessor, p, this.index)
   }
 }

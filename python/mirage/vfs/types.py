@@ -284,14 +284,28 @@ class SearchOp(Protocol):
         ...
 
 
+class SearchManyOp(Protocol):
+    """Search several scopes as one ranked query."""
+
+    def __call__(self,
+                 accessor: Any,
+                 paths: list[PathSpec],
+                 query: SearchQuery,
+                 /,
+                 index: IndexCacheStore = ...) -> Awaitable[list[str] | None]:
+        ...
+
+
 @dataclass(frozen=True, kw_only=True)
 class SearchOps:
     """Optional resource search with extensible capability metadata.
 
     Args:
-        search (SearchOp): the resource's search callback.
+        search (SearchOp): the resource's single-scope search callback.
+        search_many (SearchManyOp | None): optional batch ranking.
         meta (Mapping[str, JsonValue]): static capabilities; consumers
             validate their own namespace. No grep compatibility is assumed.
     """
     search: SearchOp
+    search_many: SearchManyOp | None = None
     meta: Mapping[str, JsonValue] = field(default_factory=dict)

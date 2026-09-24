@@ -12,32 +12,29 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { BoundVFS } from '../bound.ts'
+import { GMAIL_IO } from '../../commands/builtin/gmail/io.ts'
 import { GmailAccessor } from '../../accessor/gmail.ts'
-import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+
 import { GMAIL_COMMANDS } from '../../commands/builtin/gmail/index.ts'
 import type { RegisteredCommand } from '../../commands/config.ts'
-import { read as gmailRead } from '../../core/gmail/read.ts'
-import { readdir as gmailReaddir } from '../../core/gmail/readdir.ts'
-import { stat as gmailStat } from '../../core/gmail/stat.ts'
+
 import { TokenManager } from '../../core/google/client.ts'
 import { GMAIL_OPS } from '../../ops/gmail/index.ts'
 import type { RegisteredOp } from '../../ops/registry.ts'
-import { BaseVFS } from '../base.ts'
+
 import type { VFS } from '../base.ts'
 import { GMAIL_PROMPT, GMAIL_WRITE_PROMPT } from './prompt.ts'
-import { PathSpec, VFSName } from '../../types.ts'
-import type { FileStat } from '../../types.ts'
-import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
-import { redactGmailConfig, type GmailConfig, type GmailConfigRedacted } from './config.ts'
+import { VFSName } from '../../types.ts'
 
-const gmailResolveGlob = makeResolveGlob(gmailReaddir)
+import { redactGmailConfig, type GmailConfig, type GmailConfigRedacted } from './config.ts'
 
 export interface GmailVFSState {
   type: string
   config: GmailConfigRedacted
 }
 
-export class GmailVFS extends BaseVFS implements VFS {
+export class GmailVFS extends BoundVFS<GmailAccessor> implements VFS {
   readonly kind: string = VFSName.GMAIL
   readonly cachesReads: boolean = true
   // Every listed file carries an exact size: .gmail.json is rendered at
@@ -51,7 +48,7 @@ export class GmailVFS extends BaseVFS implements VFS {
   readonly accessor: GmailAccessor
 
   constructor(config: GmailConfig) {
-    super()
+    super(GMAIL_IO)
     this.config = config
     const tm = new TokenManager(config)
     this.accessor = new GmailAccessor({ tokenManager: tm })
@@ -63,36 +60,6 @@ export class GmailVFS extends BaseVFS implements VFS {
 
   ops(): readonly RegisteredOp[] {
     return GMAIL_OPS
-  }
-
-  readFile(p: PathSpec): Promise<Uint8Array> {
-    return gmailRead(this.accessor, p, this.index)
-  }
-
-  readdir(p: PathSpec): Promise<string[]> {
-    return gmailReaddir(this.accessor, p, this.index)
-  }
-
-  stat(p: PathSpec): Promise<FileStat> {
-    return gmailStat(this.accessor, p, this.index)
-  }
-
-  glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {
-    const effective =
-      prefix !== ''
-        ? paths.map((p) =>
-            mountPrefixOf(p.virtual, p.vfsPath) !== ''
-              ? p
-              : new PathSpec({
-                  virtual: p.virtual,
-                  directory: p.directory,
-                  ...(p.pattern !== null ? { pattern: p.pattern } : {}),
-                  resolved: p.resolved,
-                  vfsPath: mountKey(p.virtual, prefix),
-                }),
-          )
-        : paths
-    return gmailResolveGlob(this.accessor, effective, this.index)
   }
 
   override getState(): Promise<GmailVFSState> {

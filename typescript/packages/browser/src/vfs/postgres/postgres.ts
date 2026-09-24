@@ -12,17 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { BoundVFS } from '@struktoai/mirage-core/vfs/bound'
+import { POSTGRES_IO } from '@struktoai/mirage-core/commands/builtin/postgres/io'
 import { PostgresAccessor } from '@struktoai/mirage-core/accessor/postgres'
-import { makeResolveGlob } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
+
 import { POSTGRES_COMMANDS } from '@struktoai/mirage-core/commands/builtin/postgres/index'
 import type { RegisteredCommand } from '@struktoai/mirage-core/commands/config'
 import type { PgDriver } from '@struktoai/mirage-core/core/postgres/_driver'
-import { read as postgresRead } from '@struktoai/mirage-core/core/postgres/read'
-import { readdir as postgresReaddir } from '@struktoai/mirage-core/core/postgres/readdir'
-import { stat as postgresStat } from '@struktoai/mirage-core/core/postgres/stat'
+
 import { POSTGRES_OPS } from '@struktoai/mirage-core/ops/postgres/index'
 import type { RegisteredOp } from '@struktoai/mirage-core/ops/registry'
-import { BaseVFS } from '@struktoai/mirage-core/vfs/base'
+
 import type { VFS } from '@struktoai/mirage-core/vfs/base'
 import {
   redactPostgresConfig,
@@ -34,12 +34,9 @@ import type {
   PostgresConfigResolved,
 } from '@struktoai/mirage-core/vfs/postgres/config'
 import { POSTGRES_PROMPT } from '@struktoai/mirage-core/vfs/postgres/prompt'
-import { PathSpec, VFSName } from '@struktoai/mirage-core/types'
-import type { FileStat } from '@struktoai/mirage-core/types'
-import { mountKey, mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
-import { NeonPgDriver } from './neon_driver.ts'
+import { VFSName } from '@struktoai/mirage-core/types'
 
-const resolvePostgresGlob = makeResolveGlob(postgresReaddir)
+import { NeonPgDriver } from './neon_driver.ts'
 
 export interface PostgresVFSOptions {
   config: PostgresConfig
@@ -53,7 +50,7 @@ export interface PostgresVFSState {
   needs_override: true
 }
 
-export class PostgresVFS extends BaseVFS implements VFS {
+export class PostgresVFS extends BoundVFS<PostgresAccessor> implements VFS {
   readonly kind: string = VFSName.POSTGRES
   readonly cachesReads: boolean = false
   override readonly indexTtl: number = 0
@@ -63,7 +60,7 @@ export class PostgresVFS extends BaseVFS implements VFS {
   readonly accessor: PostgresAccessor
 
   constructor(options: PostgresVFSOptions | PostgresConfig) {
-    super()
+    super(POSTGRES_IO)
     const { config, prefix, driver } =
       'config' in options ? options : { config: options, prefix: undefined, driver: undefined }
     this.config = resolvePostgresConfig(config)
@@ -96,35 +93,5 @@ export class PostgresVFS extends BaseVFS implements VFS {
 
   commands(): readonly RegisteredCommand[] {
     return POSTGRES_COMMANDS
-  }
-
-  readFile(p: PathSpec): Promise<Uint8Array> {
-    return postgresRead(this.accessor, p, this.index)
-  }
-
-  readdir(p: PathSpec): Promise<string[]> {
-    return postgresReaddir(this.accessor, p, this.index)
-  }
-
-  stat(p: PathSpec): Promise<FileStat> {
-    return postgresStat(this.accessor, p, this.index)
-  }
-
-  glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {
-    const effective =
-      prefix !== ''
-        ? paths.map((p) =>
-            mountPrefixOf(p.virtual, p.vfsPath) !== ''
-              ? p
-              : new PathSpec({
-                  virtual: p.virtual,
-                  directory: p.directory,
-                  ...(p.pattern !== null ? { pattern: p.pattern } : {}),
-                  resolved: p.resolved,
-                  vfsPath: mountKey(p.virtual, prefix),
-                }),
-          )
-        : paths
-    return resolvePostgresGlob(this.accessor, effective, this.index)
   }
 }

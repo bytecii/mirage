@@ -12,69 +12,32 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import dataclasses
 import os
 from pathlib import Path
 from typing import Any
 
 from mirage.accessor.disk import DiskAccessor
 from mirage.commands.builtin.disk import COMMANDS as DISK_COMMANDS
-from mirage.core.disk.append import append_bytes
-from mirage.core.disk.constants import SCOPE_ERROR
-from mirage.core.disk.copy import copy
-from mirage.core.disk.create import create
-from mirage.core.disk.mkdir import mkdir
-from mirage.core.disk.read import read_bytes
-from mirage.core.disk.readdir import readdir
-from mirage.core.disk.rename import rename
-from mirage.core.disk.rm import rm_r
-from mirage.core.disk.rmdir import rmdir
-from mirage.core.disk.stat import stat as disk_stat
-from mirage.core.disk.stream import read_stream
-from mirage.core.disk.truncate import truncate
-from mirage.core.disk.unlink import unlink
+from mirage.commands.builtin.disk.io import IO
 from mirage.core.disk.watch import build_delta_hook
-from mirage.core.disk.write import write_bytes
 from mirage.ops.disk import OPS as DISK_OPS
-from mirage.types import CapacityResult, CapacityState, PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.utils.key_prefix import mount_key
-from mirage.vfs.base import BaseVFS
+from mirage.types import CapacityResult, CapacityState, VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.disk.prompt import PROMPT
 from mirage.watch.base import DeltaHook
 
-_resolve_glob = make_resolve_glob(readdir, SCOPE_ERROR)
 
-_DISK_OPS = {
-    "read_bytes": read_bytes,
-    "write": write_bytes,
-    "readdir": readdir,
-    "stat": disk_stat,
-    "unlink": unlink,
-    "rmdir": rmdir,
-    "copy": copy,
-    "rename": rename,
-    "mkdir": mkdir,
-    "read_stream": read_stream,
-    "rm_recursive": rm_r,
-    "create": create,
-    "truncate": truncate,
-    "append": append_bytes,
-}
-
-
-class DiskVFS(BaseVFS):
+class DiskVFS(BoundVFS):
 
     name: str = VFSName.DISK
     # byte store: stat() sizes every file from metadata
     SIZES_ALWAYS_KNOWN: bool = True
     accessor: DiskAccessor
     index_ttl: float = 60
-    _ops: dict[str, Any] = _DISK_OPS
     PROMPT: str = PROMPT
 
     def __init__(self, root: str) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.root = Path(root).resolve()
         # The mount root is infrastructure, not a path component a caller
         # asked for, so it is created here rather than on demand by the
@@ -95,18 +58,6 @@ class DiskVFS(BaseVFS):
 
     def delta_hook(self) -> DeltaHook:
         return build_delta_hook(self.accessor)
-
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        if prefix:
-            paths = [
-                dataclasses.replace(p, vfs_path=mount_key(p.virtual, prefix))
-                if isinstance(p, PathSpec) else p for p in paths
-            ]
-        return await _resolve_glob(self.accessor, paths, self._index)
 
     async def statfs(self) -> CapacityResult:
         # A real filesystem reports real numbers (QUOTA). GNU df: used counts
