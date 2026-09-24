@@ -310,7 +310,9 @@ function extensionOf(name: string): string {
 }
 
 function primaryValue(entry: FileStat, sortBy: SortBy, timeKind: LsTimeKind): string | number {
-  return sortBy === 'time' ? (timeOf(entry, timeKind) ?? '') : contentSize(entry)
+  if (sortBy === 'time') return timeOf(entry, timeKind) ?? ''
+  // A row whose stat failed sorts as 0, as GNU's zeroed stat does.
+  return entry.extra[STAT_FAILED_KEY] === true ? 0 : contentSize(entry)
 }
 
 // GNU's -t/-S comparators fall back to the name when the timestamps or sizes

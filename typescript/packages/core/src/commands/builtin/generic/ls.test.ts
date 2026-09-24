@@ -698,6 +698,18 @@ describe('honest per-entry errors', () => {
     expect(stderr).toBe("ls: cannot access '/apple.txt': Input/output error\n")
   })
 
+  // GNU (coreutils 9.7, both entries' stat denied) zeroes a failed stat, so
+  // -S sorts the rows as size 0 even where readdir marked a directory.
+  it('-S counts an unstattable directory as size 0', async () => {
+    const marking = (p: PathSpec): Promise<string[]> =>
+      Promise.resolve(key(p) === '/' ? ['/afile', '/zdir/'] : [])
+    const denying = (p: PathSpec): Promise<FileStat> =>
+      key(p) === '/' ? stat(p) : Promise.reject(stamped(key(p), 'EACCES'))
+    const result = await lsGeneric([spec('/')], opts({ S: true }), marking, denying)
+    expect(result?.[1].exitCode).toBe(LS_MINOR_PROBLEM)
+    expect(DEC.decode(result?.[0] as Uint8Array)).toBe('afile\nzdir\n')
+  })
+
   it('still ends the command on a timeout or an abort', async () => {
     await expect(run({}, new CommandTimeoutError('stat', 5))).rejects.toThrow('timed out')
     await expect(run({}, new DOMException('execute aborted', 'AbortError'))).rejects.toThrow(

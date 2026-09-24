@@ -571,6 +571,9 @@ def _primary_value(entry: FileStat, sort_by: LsSortBy,
     if sort_by is LsSortBy.TIME:
         return formatting.time_of(entry, time_kind) or ""
     if sort_by is LsSortBy.SIZE:
+        # A row whose stat failed sorts as 0, as GNU's zeroed stat does.
+        if entry.extra.get(formatting.STAT_FAILED_KEY):
+            return 0
         return content_size(entry)
     return entry.name
 

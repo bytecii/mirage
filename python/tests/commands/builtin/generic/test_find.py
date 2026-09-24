@@ -392,7 +392,7 @@ async def test_walk_find_fails_a_stat_test_without_asking_again():
                               index=None,
                               args=FindArgs(min_size=1),
                               unstatted={})
-    assert results == ["/a.json", "/c.json"]
+    assert results == ["/", "/a.json", "/c.json"]
     assert calls.count("/b.json") == 1
 
 

@@ -418,6 +418,36 @@ async def test_ls_words_an_eio_the_way_gnu_does():
         b"ls: cannot access '/dir/b.txt': Input/output error\n")
 
 
+# GNU (coreutils 9.7, both entries' stat denied) zeroes a failed stat, so
+# -S sorts the rows as size 0 even where readdir marked a directory.
+@pytest.mark.asyncio
+async def test_ls_size_sort_counts_an_unstattable_directory_as_zero():
+    tree = {
+        "/d": _dir("d"),
+        "/d/afile": _file("afile", 5000, "2026-01-01T00:00:00Z"),
+        "/d/zdir": _dir("zdir"),
+    }
+    readdir, stat = _make_fs_backend(tree)
+
+    async def marking_readdir(p: PathSpec, index=None) -> list[str]:
+        return [
+            f"{e}/" if tree[e].type == FileType.DIRECTORY else e
+            for e in await readdir(p, index)
+        ]
+
+    async def denying_stat(p: PathSpec, index=None) -> FileStat:
+        if p.virtual != "/d":
+            raise PermissionError(errno.EACCES, "Permission denied")
+        return await stat(p, index)
+
+    output, io = await ls([_spec("/d")],
+                          readdir=marking_readdir,
+                          stat=denying_stat,
+                          sort_by=LsSortBy.SIZE)
+    assert io.exit_code == LS_MINOR_PROBLEM
+    assert output == b"afile\nzdir\n"
+
+
 @pytest.mark.asyncio
 async def test_ls_still_ends_on_a_timeout():
     readdir, stat = _failing_entry(CommandTimeoutError("stat", 5))
