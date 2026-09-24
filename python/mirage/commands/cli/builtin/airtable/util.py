@@ -29,8 +29,9 @@ PROG = "airtable"
 
 Outcome = tuple[ByteSource | None, IOResult]
 
-Verb = Callable[[AirtableAccessor, CLIInvocation[AirtableConfig], FlagView],
-                Awaitable[Outcome]]
+Verb = Callable[
+    [AirtableAccessor, CLIInvocation[AirtableConfig], FlagView, str],
+    Awaitable[Outcome]]
 
 
 def usage_error(prog: str, message: str) -> UsageError:
@@ -138,21 +139,26 @@ async def stdin_text(stdin: ByteSource) -> str:
     return (await materialize(stdin)).decode("utf-8-sig", errors="replace")
 
 
-async def run(verb: Verb, inv: CLIInvocation[AirtableConfig]) -> Outcome:
+async def run(path: str, verb: Verb,
+              inv: CLIInvocation[AirtableConfig]) -> Outcome:
     """Run one verb on its own accessor, rendering a scope refusal.
 
     The accessor lives for the invocation and closes with it, the way a
-    one-shot ``SessionAccessor`` is used. A base outside the install's
-    scope answers ``airtable: <base-id>: Permission denied``, exit 1.
+    one-shot ``SessionAccessor`` is used. The verb's display path
+    (``airtable base get``) prefixes its refusals, as the executor
+    prefixes a leaf's failure, so a base outside the install's scope
+    answers ``airtable base get: <base-id>: Permission denied``, exit 1.
 
     Args:
-        verb (Verb): the verb's body.
+        path (str): the verb's words below the head ("base get").
+        verb (Verb): the verb's body, handed its display path.
         inv (CLIInvocation[AirtableConfig]): the line.
     """
+    prog = f"{PROG} {path}"
     fl = FlagView(inv.flags, inv.spec)
     async with AirtableAccessor(inv.config) as accessor:
         try:
-            return await verb(accessor, inv, fl)
+            return await verb(accessor, inv, fl, prog)
         except PermissionError as exc:
             return None, IOResult(exit_code=1,
-                                  stderr=format_fs_error(PROG, exc))
+                                  stderr=format_fs_error(prog, exc))

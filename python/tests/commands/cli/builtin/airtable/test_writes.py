@@ -283,6 +283,7 @@ async def test_every_stdin_line_is_checked_before_anything_is_sent(
 async def test_a_write_outside_the_scope_is_refused_unsent(
         airtable_ws, airtable_api, line):
     ws = airtable_ws(base_ids=[ROADMAP])
+    verb = " ".join(line.split()[:3])
     assert await _run(ws,
-                      line) == (1, "", f"airtable: {OPS}: Permission denied\n")
+                      line) == (1, "", f"{verb}: {OPS}: Permission denied\n")
     assert airtable_api.calls == []

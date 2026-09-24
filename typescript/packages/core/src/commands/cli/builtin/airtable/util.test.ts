@@ -31,8 +31,8 @@ describe('airtable cli util', () => {
     } catch (err) {
       refused = err
     }
-    expect(DEC.decode(formatFsError('airtable', refused))).toBe(
-      'airtable: appB: Permission denied\n',
+    expect(DEC.decode(formatFsError('airtable base get', refused))).toBe(
+      'airtable base get: appB: Permission denied\n',
     )
   })
 

@@ -29,7 +29,8 @@ def test_the_scope_admits_its_bases_and_refuses_the_rest():
     with pytest.raises(PermissionError) as exc:
         scoped_base(scoped, "appB")
     assert format_fs_error(
-        "airtable", exc.value) == (b"airtable: appB: Permission denied\n")
+        "airtable base get",
+        exc.value) == (b"airtable base get: appB: Permission denied\n")
 
 
 def test_json_is_strict_about_non_finite_numbers():

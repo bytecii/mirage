@@ -119,7 +119,7 @@ jq -c 'select(.fields.Status == "Todo") | .fields.Status = "Done"' \
 | Exit | When |
 | --- | --- |
 | `1` | an API error (`airtable record get: Airtable API error (GET /app.../tbl.../rec...): HTTP 404: MODEL_ID_NOT_FOUND: Record not found`), a `record list` past the cap, a partial write |
-| `1` | a base outside `base_ids`: `airtable: <base-id>: Permission denied`, refused before any request |
+| `1` | a base outside `base_ids`: `airtable <verb>: <base-id>: Permission denied`, refused before any request |
 | `2` | a usage error: a missing flag or operand, malformed `--fields`, or a bad stdin line |
 
 Requests are paced per base at `requests_per_second`. A read retries a `429`,

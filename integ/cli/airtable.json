@@ -192,7 +192,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "airtable: appArchive0000003: Permission denied\n"
+        "stderr": "airtable base get: appArchive0000003: Permission denied\n"
       }
     },
     {
@@ -205,7 +205,7 @@
       "expect": {
         "exit": 0,
         "stdout": "exit=1\n3\n",
-        "stderr": "airtable: appArchive0000003: Permission denied\n"
+        "stderr": "airtable record delete: appArchive0000003: Permission denied\n"
       }
     },
     {

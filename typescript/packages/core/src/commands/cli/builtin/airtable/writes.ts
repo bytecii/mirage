@@ -33,7 +33,6 @@ import type { CommandFnResult } from '../../../config.ts'
 import type { FlagView } from '../../../spec/flag_view.ts'
 import type { CLIInvocation } from '../../types.ts'
 import {
-  PROG,
   jsonObject,
   noOperands,
   oneOperand,
@@ -164,8 +163,8 @@ async function recordCreateBody(
   accessor: AirtableAccessor,
   inv: CLIInvocation,
   fl: FlagView,
+  prog: string,
 ): Promise<CommandFnResult> {
-  const prog = `${PROG} record create`
   noOperands(prog, inv.texts)
   const fields = fl.asStr('fields')
   const table = fl.asStr('table') ?? ''
@@ -192,8 +191,8 @@ async function recordUpdateBody(
   accessor: AirtableAccessor,
   inv: CLIInvocation,
   fl: FlagView,
+  prog: string,
 ): Promise<CommandFnResult> {
-  const prog = `${PROG} record update`
   const recordId = optionalOperand(prog, inv.texts)
   const fields = fl.asStr('fields')
   const table = fl.asStr('table') ?? ''
@@ -230,8 +229,8 @@ async function recordDeleteBody(
   accessor: AirtableAccessor,
   inv: CLIInvocation,
   fl: FlagView,
+  prog: string,
 ): Promise<CommandFnResult> {
-  const prog = `${PROG} record delete`
   let recordIds: string[]
   if (inv.texts.length > 0) {
     recordIds = [...inv.texts]
@@ -250,8 +249,8 @@ async function commentAddBody(
   accessor: AirtableAccessor,
   inv: CLIInvocation,
   fl: FlagView,
+  prog: string,
 ): Promise<CommandFnResult> {
-  const prog = `${PROG} comment add`
   const recordId = oneOperand(prog, inv.texts, 'RECORD')
   let text = fl.asStr('text')
   if (text === undefined) {
@@ -265,7 +264,7 @@ async function commentAddBody(
   return [toJsonBytes(normalizeComment(comment)), new IOResult()]
 }
 
-export const recordCreate = run(recordCreateBody)
-export const recordUpdate = run(recordUpdateBody)
-export const recordDelete = run(recordDeleteBody)
-export const commentAdd = run(commentAddBody)
+export const recordCreate = run('record create', recordCreateBody)
+export const recordUpdate = run('record update', recordUpdateBody)
+export const recordDelete = run('record delete', recordDeleteBody)
+export const commentAdd = run('comment add', commentAddBody)

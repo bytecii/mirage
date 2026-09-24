@@ -30,7 +30,7 @@ from mirage.io.stream import yield_bytes
 from mirage.io.types import IOResult
 
 from mirage.commands.cli.builtin.airtable.util import (  # isort: skip
-    PROG, Outcome, json_object, no_operands, one_operand, optional_operand,
+    Outcome, json_object, no_operands, one_operand, optional_operand,
     parse_json, run, scoped_base, stdin_text, usage_error)
 
 LINE_KEYS = frozenset({"record_id", "created_time", "fields"})
@@ -148,9 +148,8 @@ async def landed(prog: str, batches: AsyncIterator[Rows],
 
 
 async def _record_create(accessor: AirtableAccessor,
-                         inv: CLIInvocation[AirtableConfig],
-                         fl: FlagView) -> Outcome:
-    prog = f"{PROG} record create"
+                         inv: CLIInvocation[AirtableConfig], fl: FlagView,
+                         prog: str) -> Outcome:
     no_operands(prog, inv.texts)
     fields = fl.as_str("fields")
     table = fl.as_str("table") or ""
@@ -177,9 +176,8 @@ async def _record_create(accessor: AirtableAccessor,
 
 
 async def _record_update(accessor: AirtableAccessor,
-                         inv: CLIInvocation[AirtableConfig],
-                         fl: FlagView) -> Outcome:
-    prog = f"{PROG} record update"
+                         inv: CLIInvocation[AirtableConfig], fl: FlagView,
+                         prog: str) -> Outcome:
     record_id = optional_operand(prog, inv.texts)
     fields = fl.as_str("fields")
     table = fl.as_str("table") or ""
@@ -213,9 +211,8 @@ async def _record_update(accessor: AirtableAccessor,
 
 
 async def _record_delete(accessor: AirtableAccessor,
-                         inv: CLIInvocation[AirtableConfig],
-                         fl: FlagView) -> Outcome:
-    prog = f"{PROG} record delete"
+                         inv: CLIInvocation[AirtableConfig], fl: FlagView,
+                         prog: str) -> Outcome:
     if inv.texts:
         record_ids = list(inv.texts)
     elif inv.stdin is not None:
@@ -233,9 +230,8 @@ async def _record_delete(accessor: AirtableAccessor,
 
 
 async def _comment_add(accessor: AirtableAccessor,
-                       inv: CLIInvocation[AirtableConfig],
-                       fl: FlagView) -> Outcome:
-    prog = f"{PROG} comment add"
+                       inv: CLIInvocation[AirtableConfig], fl: FlagView,
+                       prog: str) -> Outcome:
     record_id = one_operand(prog, inv.texts, "RECORD")
     text = fl.as_str("text")
     if text is None:
@@ -251,7 +247,7 @@ async def _comment_add(accessor: AirtableAccessor,
     return yield_bytes(to_json_bytes(normalize_comment(comment))), IOResult()
 
 
-record_create = functools.partial(run, _record_create)
-record_update = functools.partial(run, _record_update)
-record_delete = functools.partial(run, _record_delete)
-comment_add = functools.partial(run, _comment_add)
+record_create = functools.partial(run, "record create", _record_create)
+record_update = functools.partial(run, "record update", _record_update)
+record_delete = functools.partial(run, "record delete", _record_delete)
+comment_add = functools.partial(run, "comment add", _comment_add)

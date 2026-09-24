@@ -272,7 +272,8 @@ describe('airtable write verbs', () => {
   ])('refuses a write outside the scope unsent: %s', async (line) => {
     const fake = new FakeAirtable()
     const run = await open(fake, { baseIds: [ROADMAP] })
-    expect(await run(line)).toEqual([1, '', `airtable: ${OPS}: Permission denied\n`])
+    const verb = line.split(' ').slice(0, 3).join(' ')
+    expect(await run(line)).toEqual([1, '', `${verb}: ${OPS}: Permission denied\n`])
     expect(fake.calls).toEqual([])
   })
 })

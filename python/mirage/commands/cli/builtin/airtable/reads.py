@@ -15,8 +15,7 @@
 import functools
 
 from mirage.accessor.airtable import AirtableAccessor
-from mirage.commands.cli.builtin.airtable.util import (PROG, Outcome,
-                                                       no_operands,
+from mirage.commands.cli.builtin.airtable.util import (Outcome, no_operands,
                                                        one_operand, run,
                                                        scoped_base,
                                                        usage_error)
@@ -34,19 +33,18 @@ from mirage.io.types import IOResult
 
 
 async def _base_list(accessor: AirtableAccessor,
-                     inv: CLIInvocation[AirtableConfig],
-                     fl: FlagView) -> Outcome:
-    no_operands(f"{PROG} base list", inv.texts)
+                     inv: CLIInvocation[AirtableConfig], fl: FlagView,
+                     prog: str) -> Outcome:
+    no_operands(prog, inv.texts)
     bases = await list_bases(accessor)
     payload = [normalize_base_summary(base) for base in bases]
     return yield_bytes(to_json_bytes(payload)), IOResult()
 
 
 async def _base_get(accessor: AirtableAccessor,
-                    inv: CLIInvocation[AirtableConfig],
-                    fl: FlagView) -> Outcome:
-    base_id = scoped_base(inv.config,
-                          one_operand(f"{PROG} base get", inv.texts, "BASE"))
+                    inv: CLIInvocation[AirtableConfig], fl: FlagView,
+                    prog: str) -> Outcome:
+    base_id = scoped_base(inv.config, one_operand(prog, inv.texts, "BASE"))
     for base in await list_bases(accessor):
         if base.get("id") == base_id:
             tables = await list_tables(accessor, base_id)
@@ -56,9 +54,9 @@ async def _base_get(accessor: AirtableAccessor,
 
 
 async def _table_get(accessor: AirtableAccessor,
-                     inv: CLIInvocation[AirtableConfig],
-                     fl: FlagView) -> Outcome:
-    ref = one_operand(f"{PROG} table get", inv.texts, "TABLE")
+                     inv: CLIInvocation[AirtableConfig], fl: FlagView,
+                     prog: str) -> Outcome:
+    ref = one_operand(prog, inv.texts, "TABLE")
     base_id = scoped_base(inv.config, fl.as_str("base") or "")
     tables = await list_tables(accessor, base_id)
     table = (next((t for t in tables if t.get("id") == ref), None) or next(
@@ -70,9 +68,8 @@ async def _table_get(accessor: AirtableAccessor,
 
 
 async def _record_list(accessor: AirtableAccessor,
-                       inv: CLIInvocation[AirtableConfig],
-                       fl: FlagView) -> Outcome:
-    prog = f"{PROG} record list"
+                       inv: CLIInvocation[AirtableConfig], fl: FlagView,
+                       prog: str) -> Outcome:
     no_operands(prog, inv.texts)
     asked = fl.as_int("max_records")
     if asked is not None and asked < 1:
@@ -94,9 +91,9 @@ async def _record_list(accessor: AirtableAccessor,
 
 
 async def _record_get(accessor: AirtableAccessor,
-                      inv: CLIInvocation[AirtableConfig],
-                      fl: FlagView) -> Outcome:
-    record_id = one_operand(f"{PROG} record get", inv.texts, "RECORD")
+                      inv: CLIInvocation[AirtableConfig], fl: FlagView,
+                      prog: str) -> Outcome:
+    record_id = one_operand(prog, inv.texts, "RECORD")
     base_id = scoped_base(inv.config, fl.as_str("base") or "")
     record = await get_record(accessor, base_id,
                               fl.as_str("table") or "", record_id)
@@ -104,9 +101,9 @@ async def _record_get(accessor: AirtableAccessor,
 
 
 async def _comment_list(accessor: AirtableAccessor,
-                        inv: CLIInvocation[AirtableConfig],
-                        fl: FlagView) -> Outcome:
-    record_id = one_operand(f"{PROG} comment list", inv.texts, "RECORD")
+                        inv: CLIInvocation[AirtableConfig], fl: FlagView,
+                        prog: str) -> Outcome:
+    record_id = one_operand(prog, inv.texts, "RECORD")
     base_id = scoped_base(inv.config, fl.as_str("base") or "")
     comments = await list_comments(accessor, base_id,
                                    fl.as_str("table") or "", record_id)
@@ -114,9 +111,9 @@ async def _comment_list(accessor: AirtableAccessor,
     return yield_bytes(to_json_bytes(payload)), IOResult()
 
 
-base_list = functools.partial(run, _base_list)
-base_get = functools.partial(run, _base_get)
-table_get = functools.partial(run, _table_get)
-record_list = functools.partial(run, _record_list)
-record_get = functools.partial(run, _record_get)
-comment_list = functools.partial(run, _comment_list)
+base_list = functools.partial(run, "base list", _base_list)
+base_get = functools.partial(run, "base get", _base_get)
+table_get = functools.partial(run, "table get", _table_get)
+record_list = functools.partial(run, "record list", _record_list)
+record_get = functools.partial(run, "record get", _record_get)
+comment_list = functools.partial(run, "comment list", _comment_list)

@@ -145,8 +145,9 @@ async def test_comment_list_is_normalized_in_api_order(airtable_ws):
 async def test_a_base_outside_the_scope_is_refused_unsent(
         airtable_ws, airtable_api, line):
     ws = airtable_ws(base_ids=[ROADMAP])
+    verb = " ".join(line.split()[:3])
     assert await _run(ws,
-                      line) == (1, "", f"airtable: {OPS}: Permission denied\n")
+                      line) == (1, "", f"{verb}: {OPS}: Permission denied\n")
     assert airtable_api.calls == []
 
 

@@ -30,6 +30,7 @@ export type Verb = (
   accessor: AirtableAccessor,
   inv: CLIInvocation,
   fl: FlagView,
+  prog: string,
 ) => Promise<CommandFnResult>
 
 /** A refusal in the voice the parser refuses a bad flag in, exit 2. */
@@ -87,18 +88,21 @@ export async function stdinText(stdin: ByteSource): Promise<string> {
 }
 
 /**
- * Run one verb on its own accessor, rendering a scope refusal as
- * `airtable: <base-id>: Permission denied`, exit 1.
+ * Run one verb on its own accessor. The verb's display path (`airtable base
+ * get`) prefixes its refusals, as the executor prefixes a leaf's failure, so
+ * a base outside the install's scope answers `airtable base get: <base-id>:
+ * Permission denied`, exit 1.
  */
-export function run(verb: Verb): CLIVerbFn {
+export function run(path: string, verb: Verb): CLIVerbFn {
+  const prog = `${PROG} ${path}`
   return async (inv: CLIInvocation): Promise<CommandFnResult> => {
     const fl = new FlagView(inv.flags, inv.spec)
     const accessor = new AirtableAccessor(inv.config as AirtableConfig)
     try {
-      return await verb(accessor, inv, fl)
+      return await verb(accessor, inv, fl, prog)
     } catch (err) {
       if (!isEacces(err)) throw err
-      return [null, new IOResult({ exitCode: 1, stderr: formatFsError(PROG, err) })]
+      return [null, new IOResult({ exitCode: 1, stderr: formatFsError(prog, err) })]
     }
   }
 }
