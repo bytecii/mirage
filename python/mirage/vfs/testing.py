@@ -22,6 +22,9 @@ async def check_read_contract(adapter: VFSAdapter | CommandIO,
                               index: IndexCacheStore = NULL_INDEX) -> None:
     """Verify reads against a caller-owned fixture without mutations.
 
+    Native ranges probe nonempty windows within the fixture. Empty and
+    out-of-range reads are normalized by the filesystem operation instead.
+
     Args:
         adapter (VFSAdapter | CommandIO): adapter being validated.
         accessor (Accessor): fixture's backend client.
@@ -45,8 +48,9 @@ async def check_read_contract(adapter: VFSAdapter | CommandIO,
     streamed = b"".join(
         [part async for part in io.read_stream(accessor, fixture.file, index)])
     assert streamed == data, "read_stream differs from read_bytes"
-    if io.read_range is not None:
-        for offset, size in [(0, 0), (1, 3), (len(data), 2), (1, None)]:
+    if io.read_range is not None and data:
+        offset = min(1, len(data) - 1)
+        for size in (min(3, len(data) - offset), None):
             end = None if size is None else offset + size
             actual = await io.read_range(accessor, fixture.file, index, offset,
                                          size)

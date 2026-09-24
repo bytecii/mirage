@@ -31,6 +31,27 @@ async def test_builtin_and_minimal_adapter_share_the_contract(native):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content", [b"", b"a", b"ab", CONTENT])
+async def test_contract_only_probes_valid_native_ranges(content):
+    accessor = RAMAccessor(RAMStore())
+    await IO.write(accessor, FILE, content)
+    calls = []
+
+    async def strict_range(a, p, i, offset, size):
+        if size == 0 or offset >= len(content):
+            raise ValueError("unsatisfiable native range")
+        calls.append((offset, size))
+        return content[offset:None if size is None else offset + size]
+
+    await check_read_contract(replace(IO, read_range=strict_range), accessor,
+                              replace(FIXTURE, content=content))
+    assert len(calls) == (2 if content else 0)
+    if content:
+        assert calls[0][1] is not None
+        assert calls[1][1] is None
+
+
+@pytest.mark.asyncio
 async def test_contract_catches_ranges_using_end_instead_of_size():
     accessor = RAMAccessor(RAMStore())
     await IO.write(accessor, FILE, CONTENT)

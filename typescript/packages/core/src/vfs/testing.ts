@@ -21,7 +21,9 @@ function sameBytes(actual: Uint8Array, expected: Uint8Array): boolean {
   return actual.length === expected.length && actual.every((byte, i) => byte === expected[i])
 }
 
-/** Verify reads against a caller-owned fixture without mutations or test dependencies. */
+/** Verify reads against a caller-owned fixture without mutations or test dependencies.
+ * Native ranges probe nonempty windows within the fixture. Empty and out-of-range
+ * reads are normalized by the filesystem operation instead. */
 export async function checkReadContract<A extends Accessor>(
   adapter: VFSAdapter<A> | CommandIO<A>,
   accessor: A,
@@ -44,14 +46,9 @@ export async function checkReadContract<A extends Accessor>(
   const chunks: number[] = []
   for await (const chunk of io.readStream(accessor, fixture.file, index)) chunks.push(...chunk)
   check(sameBytes(Uint8Array.from(chunks), data), 'readStream differs from readBytes')
-  if (io.readRange !== undefined) {
-    const windows: [number, number | undefined][] = [
-      [0, 0],
-      [1, 3],
-      [data.length, 2],
-      [1, undefined],
-    ]
-    for (const [offset, size] of windows) {
+  if (io.readRange !== undefined && data.length > 0) {
+    const offset = Math.min(1, data.length - 1)
+    for (const size of [Math.min(3, data.length - offset), undefined]) {
       const actual = await io.readRange(accessor, fixture.file, index, offset, size ?? null)
       check(
         sameBytes(actual, data.slice(offset, size === undefined ? undefined : offset + size)),
