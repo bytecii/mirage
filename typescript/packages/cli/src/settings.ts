@@ -30,8 +30,8 @@ import {
   DEFAULT_SSH_HOST,
   HOST_KEY_NAME,
   SSH_ENV_KEYS,
-  defaultSSHDir,
-} from '@struktoai/mirage-server/ssh/config'
+} from '@struktoai/mirage-server/ssh/constants'
+import { defaultSSHDir } from '@struktoai/mirage-server/ssh/config'
 
 import { ENV_DAEMON_URL, ENV_TOKEN } from './env.ts'
 

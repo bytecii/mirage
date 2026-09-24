@@ -31,9 +31,10 @@ from mirage.server.env import (ENV_ALLOWED_HOSTS, ENV_DAEMON_PORT,
                                ENV_IDLE_GRACE_SECONDS)
 from mirage.server.host_validation_constants import DEFAULT_ALLOWED_HOSTS
 from mirage.server.paths import mirage_home
-from mirage.server.ssh.config import (AUTHORIZED_KEYS_NAME, DEFAULT_SSH_HOST,
-                                      HOST_KEY_NAME, SSH_ENV_KEYS,
-                                      default_ssh_dir)
+from mirage.server.ssh.config import default_ssh_dir
+from mirage.server.ssh.constants import (AUTHORIZED_KEYS_NAME,
+                                         DEFAULT_SSH_HOST, HOST_KEY_NAME,
+                                         SSH_ENV_KEYS)
 
 DEFAULT_DAEMON_URL = "http://127.0.0.1:8765"
 

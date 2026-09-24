@@ -17,9 +17,9 @@ from pathlib import Path
 import pytest
 
 from mirage.server.daemon_config import ALLOWED_KEYS, NUMERIC_KEYS
-from mirage.server.ssh.config import (DEFAULT_SSH_HOST, SSH_ENV_KEYS,
-                                      SSHConfig, default_ssh_dir,
+from mirage.server.ssh.config import (SSHConfig, default_ssh_dir,
                                       resolve_ssh_config)
+from mirage.server.ssh.constants import DEFAULT_SSH_HOST, SSH_ENV_KEYS
 from mirage.server.ssh.errors import SSHConfigError
 
 

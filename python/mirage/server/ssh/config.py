@@ -19,29 +19,11 @@ from typing import Mapping
 
 from mirage.server.daemon_config import read_daemon_table
 from mirage.server.paths import mirage_home
+from mirage.server.ssh.constants import (AUTHORIZED_KEYS_NAME,
+                                         DEFAULT_SSH_HOST, HOST_KEY_NAME,
+                                         SSH_DIR, SSH_ENV_KEYS)
 from mirage.server.ssh.errors import SSHConfigError
 from mirage.types import JsonValue
-
-ENV_SSH_PORT = "MIRAGE_SSH_PORT"
-ENV_SSH_HOST = "MIRAGE_SSH_HOST"
-ENV_SSH_HOST_KEY_FILE = "MIRAGE_SSH_HOST_KEY_FILE"
-ENV_SSH_AUTHORIZED_KEYS = "MIRAGE_SSH_AUTHORIZED_KEYS"
-
-DEFAULT_SSH_HOST = "127.0.0.1"
-SSH_DIR = "ssh"
-HOST_KEY_NAME = "host_ed25519_key"
-AUTHORIZED_KEYS_NAME = "authorized_keys"
-
-# The module that serves the door. It imports asyncssh, which is the
-# `ssh` extra, so the daemon loads it by path only once a port is set.
-SERVER_MODULE = "mirage.server.ssh.server:start_ssh_server"
-
-SSH_ENV_KEYS = {
-    "ssh_port": ENV_SSH_PORT,
-    "ssh_host": ENV_SSH_HOST,
-    "ssh_host_key_file": ENV_SSH_HOST_KEY_FILE,
-    "ssh_authorized_keys": ENV_SSH_AUTHORIZED_KEYS,
-}
 
 
 @dataclass(frozen=True)

@@ -69,6 +69,10 @@
       "types": "./dist/auth/storage.d.ts",
       "import": "./dist/auth/storage.js"
     },
+    "./ssh/constants": {
+      "types": "./dist/ssh/constants.d.ts",
+      "import": "./dist/ssh/constants.js"
+    },
     "./ssh/config": {
       "types": "./dist/ssh/config.d.ts",
       "import": "./dist/ssh/config.js"

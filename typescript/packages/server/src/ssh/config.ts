@@ -17,26 +17,16 @@ import { join } from 'node:path'
 
 import { readDaemonTable } from '../daemon_config.ts'
 import { mirageHome } from '../paths.ts'
+import {
+  AUTHORIZED_KEYS_NAME,
+  DEFAULT_SSH_HOST,
+  HOST_KEY_NAME,
+  SSH_DIR,
+  SSH_ENV_KEYS,
+} from './constants.ts'
 import { SSHConfigError } from './errors.ts'
 
-export const ENV_SSH_PORT = 'MIRAGE_SSH_PORT'
-export const ENV_SSH_HOST = 'MIRAGE_SSH_HOST'
-export const ENV_SSH_HOST_KEY_FILE = 'MIRAGE_SSH_HOST_KEY_FILE'
-export const ENV_SSH_AUTHORIZED_KEYS = 'MIRAGE_SSH_AUTHORIZED_KEYS'
-
-export const DEFAULT_SSH_HOST = '127.0.0.1'
-export const SSH_DIR = 'ssh'
-export const HOST_KEY_NAME = 'host_ed25519_key'
-export const AUTHORIZED_KEYS_NAME = 'authorized_keys'
-
-export type SSHSettingKey = 'ssh_port' | 'ssh_host' | 'ssh_host_key_file' | 'ssh_authorized_keys'
-
-export const SSH_ENV_KEYS: Readonly<Record<SSHSettingKey, string>> = {
-  ssh_port: ENV_SSH_PORT,
-  ssh_host: ENV_SSH_HOST,
-  ssh_host_key_file: ENV_SSH_HOST_KEY_FILE,
-  ssh_authorized_keys: ENV_SSH_AUTHORIZED_KEYS,
-}
+export type SSHSettingKey = keyof typeof SSH_ENV_KEYS
 
 /**
  * Where the daemon's SSH door listens and whom it lets in.

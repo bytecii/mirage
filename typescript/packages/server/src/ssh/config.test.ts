@@ -17,7 +17,8 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { ALLOWED_KEYS, NUMERIC_KEYS } from '../daemon_config.ts'
-import { DEFAULT_SSH_HOST, SSH_ENV_KEYS, defaultSSHDir, resolveSSHConfig } from './config.ts'
+import { defaultSSHDir, resolveSSHConfig } from './config.ts'
+import { DEFAULT_SSH_HOST, SSH_ENV_KEYS } from './constants.ts'
 import { SSHConfigError } from './errors.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'mirage-ssh-config-'))

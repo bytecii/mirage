@@ -36,8 +36,8 @@ from mirage.server.paths import (mirage_home, pid_file_path,
 from mirage.server.registry import WorkspaceRegistry
 from mirage.server.routers import (asks, execute, health, jobs, sessions,
                                    versions, workspaces)
-from mirage.server.ssh.config import (SERVER_MODULE, SSHConfig,
-                                      resolve_ssh_config)
+from mirage.server.ssh.config import SSHConfig, resolve_ssh_config
+from mirage.server.ssh.constants import SERVER_MODULE
 from mirage.server.ssh.errors import SSHConfigError
 from mirage.server.ssh.types import SSHListener, StartSSH
 from mirage.server.version.backend import LocalBackend
