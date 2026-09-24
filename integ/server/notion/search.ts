@@ -28,18 +28,24 @@ import {
   dataSourceIdOf,
 } from './wire.ts'
 
-// A title query is folded in JS, so rows arrive in keyset order one batch at a
-// time and the scan stops as soon as a page's worth matched. With no query the
-// first batch is the page.
-async function firstMatches<R extends { titleText: string }>(
-  fetch: (skip: number) => Promise<R[]>,
+type Key = { id: string; lastEditedTime: string; position: number }
+
+// A title query is folded in JS, so rows arrive one batch at a time and the
+// scan stops as soon as a page's worth matched. Each batch resumes after the
+// last row it read by key, not by offset: no earlier row is read twice, and a
+// row trashed mid-scan cannot shift a later match out. With no query the first
+// batch is the page.
+async function firstMatches<R extends Key & { titleText: string }>(
+  fetch: (after: Key | null) => Promise<R[]>,
   take: number,
   matches: (row: R) => boolean,
 ): Promise<R[]> {
   const kept: R[] = []
-  for (let skip = 0; kept.length < take; skip += take) {
-    const batch = await fetch(skip)
+  let after: Key | null = null
+  while (kept.length < take) {
+    const batch = await fetch(after)
     kept.push(...batch.filter(matches))
+    after = batch.at(-1) ?? null
     if (batch.length < take) break
   }
   return kept.slice(0, take)
@@ -77,10 +83,7 @@ export async function searchResults(
   const asDataSource =
     kind === 'data_source' || (kind === undefined && version >= DATA_SOURCE_VERSION)
   const cursor = cursorOf(args.start_cursor)
-  let anchor: {
-    row: { id: string; lastEditedTime: string; position: number }
-    database: boolean
-  } | null = null
+  let anchor: { row: Key; database: boolean } | null = null
   if (cursor !== null) {
     if (!onlyDatabases) {
       const row = await db.notionPage.findFirst({ where: { ...where, id: cursor } })
@@ -95,34 +98,42 @@ export async function searchResults(
     }
     if (anchor === null) return []
   }
+  const laterTime = (row: Key) => ({
+    lastEditedTime: ascending ? { gt: row.lastEditedTime } : { lt: row.lastEditedTime },
+  })
+  // Rows from `row` on in sort order; the cursor row itself opens its page, a
+  // batch resumes strictly after the row it ended on.
+  const from = (row: Key, inclusive: boolean) => ({
+    OR: [
+      laterTime(row),
+      {
+        lastEditedTime: row.lastEditedTime,
+        OR: [
+          { position: { gt: row.position } },
+          { position: row.position, id: inclusive ? { gte: row.id } : { gt: row.id } },
+        ],
+      },
+    ],
+  })
   const bounds = (database: boolean) => {
     if (anchor === null) return {}
     const row = anchor.row
-    const laterTime = {
-      lastEditedTime: ascending ? { gt: row.lastEditedTime } : { lt: row.lastEditedTime },
-    }
     if (database !== anchor.database) {
-      return database ? laterTime : { OR: [laterTime, { lastEditedTime: row.lastEditedTime }] }
+      return database
+        ? laterTime(row)
+        : { OR: [laterTime(row), { lastEditedTime: row.lastEditedTime }] }
     }
-    return {
-      OR: [
-        laterTime,
-        {
-          lastEditedTime: row.lastEditedTime,
-          OR: [{ position: { gt: row.position } }, { position: row.position, id: { gte: row.id } }],
-        },
-      ],
-    }
+    return from(row, true)
   }
-  const found: {
-    row: { id: string; lastEditedTime: string; position: number }
-    item: Json
-    database: boolean
-  }[] = []
+  const batch = (database: boolean, after: Key | null) => ({
+    where: { AND: [{ ...where, ...bounds(database) }, after === null ? {} : from(after, false)] },
+    orderBy,
+    take,
+  })
+  const found: { row: Key; item: Json; database: boolean }[] = []
   if (includeDatabases) {
-    const scan = { where: { ...where, ...bounds(true) }, orderBy, take }
     const rows = await firstMatches(
-      (skip) => db.notionDatabase.findMany({ ...scan, skip }),
+      (after) => db.notionDatabase.findMany(batch(true, after)),
       take,
       matches,
     )
@@ -134,9 +145,8 @@ export async function searchResults(
       })
   }
   if (!onlyDatabases) {
-    const scan = { where: { ...where, ...bounds(false) }, orderBy, take }
     const rows = await firstMatches(
-      (skip) => db.notionPage.findMany({ ...scan, skip }),
+      (after) => db.notionPage.findMany(batch(false, after)),
       take,
       matches,
     )
