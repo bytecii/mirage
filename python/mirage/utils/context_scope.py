@@ -51,7 +51,14 @@ class ContextScope:
         return call
 
     def stream(self, source: AsyncIterator[T]) -> AsyncIterator[T]:
-        """Replay the producer's admission context for each lazy step."""
+        """Replay the producer's admission context for each lazy step.
+
+        Args:
+            source (AsyncIterator[T]): the lazy output to step through.
+
+        Returns:
+            AsyncIterator[T]: the same items, each fetched in the context.
+        """
         context = self._context.copy()
 
         async def iterate() -> AsyncIterator[T]:

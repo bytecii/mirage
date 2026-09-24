@@ -475,6 +475,17 @@ async def early_root(
     Native find ops can batch their descendants; they must not delay the
     directory row that the dispatcher already knows. A closing pipe can
     consequently stop here without starting a remote traversal.
+
+    Args:
+        search (PathSpec): the start point, as the operand named it.
+        args (FindArgs): parsed find expression, shared across operands.
+        stat_path (StatPath | None): dispatcher-backed stat probe.
+        stat (Callable | None): overlay-aware stat for the mtime filter.
+        links (LinkView | None): the namespace's symlink facts.
+
+    Returns:
+        list[str]: the start point's own row, or nothing when it cannot
+            be answered before the walk.
     """
     if args.empty or (stat is None and (args.mtime_min is not None
                                         or args.mtime_max is not None)):
