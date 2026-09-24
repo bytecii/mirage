@@ -396,7 +396,7 @@ def bre_to_ere(pat: str) -> str:
 
 
 def _re_pattern(pat: str, extended: bool) -> str:
-    return translate_classes(pat if extended else bre_to_ere(pat))
+    return translate_classes(pat if extended else bre_to_ere(pat), extended)
 
 
 def _addr_matches(addr: tuple[str, str],
@@ -516,11 +516,14 @@ def execute_program(text: str,
                 # (GNU sed's numeric s///N flag, default 1). Without `g` only
                 # that occurrence is replaced; with `g` that one and every
                 # later one are. Count matches and decide per match so both
-                # `N` and `Ng` work.
+                # `N` and `Ng` work. An empty match touching the previous
+                # match is no match at all, so `s/b*/X/g` turns "abbb" into
+                # "XaX", not "XaXX".
                 digits = re.search(r"[0-9]+", eflags)
                 nth = int(digits.group()) if digits else 1
                 global_ = "g" in eflags
                 counter = [0]
+                last_end = [-1]
 
                 # Defaults bind the per-command values early (the closure is
                 # defined inside the command loop and used immediately).
@@ -528,7 +531,12 @@ def execute_program(text: str,
                           _repl_s: str = repl,
                           _nth: int = nth,
                           _global: bool = global_,
-                          _counter: list[Any] = counter) -> str:
+                          _counter: list[Any] = counter,
+                          _last_end: list[int] = last_end) -> str:
+                    if m.start() == m.end() == _last_end[0]:
+                        return ""
+                    if m.end() > m.start():
+                        _last_end[0] = m.end()
                     _counter[0] += 1
                     hit = (_counter[0] >= _nth
                            if _global else _counter[0] == _nth)

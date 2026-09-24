@@ -1325,6 +1325,40 @@
         "stdout": "NO trailing newline",
         "stderr": ""
       }
+    },
+    {
+      "id": "sed_empty_match_after_match",
+      "seq": 568409,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "echo abxd | sed 's/x*/-/g'",
+      "expect": {
+        "exit": 0,
+        "stdout": "-a-b-d-\n",
+        "stderr": ""
+      }
     }
   ]
 }

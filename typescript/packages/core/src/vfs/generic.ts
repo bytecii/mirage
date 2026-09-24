@@ -14,17 +14,15 @@
 
 import type { Accessor } from '../accessor/base.ts'
 import type { IndexConfig } from '../cache/index/config.ts'
-import {
-  type CommandIO,
-  type ResolveGlobOp,
-  makeGenericCommands,
-  resolveGlobOf,
-} from '../commands/builtin/generic_bind/index.ts'
+import { type CommandIO, makeGenericCommands } from '../commands/builtin/generic_bind/index.ts'
+
 import type { ProvisionFn, RegisteredCommand } from '../commands/config.ts'
 import { makeGenericOps } from '../ops/generic/factory.ts'
 import type { RegisteredOp } from '../ops/registry.ts'
-import type { FileStat, PathSpec } from '../types.ts'
-import { BaseVFS, type FindOptions, type VFS, type VFSStateBase } from './base.ts'
+
+import { type VFS, type VFSStateBase } from './base.ts'
+import type { VFSAdapter } from './adapter.ts'
+import { BoundVFS } from './bound.ts'
 
 export interface GenericVFSOptions<A extends Accessor = Accessor> {
   /**
@@ -35,8 +33,8 @@ export interface GenericVFSOptions<A extends Accessor = Accessor> {
   name: string
   /** Backend handle passed to every core fn on the table. */
   accessor: A
-  /** The backend's IO table. */
-  io: CommandIO<A>
+  /** Resource capabilities or a prebuilt command/dispatcher table. */
+  io: CommandIO<A> | VFSAdapter<A>
   /** LLM-facing description of the mounted layout. */
   prompt?: string
   /** Appended to `prompt` when the mount is writable. */
@@ -96,12 +94,12 @@ export interface GenericVFSOptions<A extends Accessor = Accessor> {
 }
 
 /**
- * A whole backend generated from one {@link CommandIO} table.
+ * A whole backend generated from resource capabilities or a CommandIO table.
  *
  * The one-file path for a custom backend: supply an accessor and the
- * core functions on a table (readdir/readBytes/readStream/stat at
- * minimum) and the generic command set arrives wired, along with glob
- * resolution and the VFS/FUSE ops. Optional fields on the table unlock
+ * three core functions on a VFSAdapter (readdir/readBytes/stat), and the
+ * generic commands, glob resolution and VFS/FUSE ops arrive wired.
+ * Optional fields on the table unlock
  * more surface (`write` enables the byte-mutation family, `find` and
  * `du` become native fast paths), and a command whose requirements the
  * table cannot meet is never registered rather than registered and
@@ -118,10 +116,9 @@ export interface GenericVFSOptions<A extends Accessor = Accessor> {
  * as `Any` for contravariance reasons documented on its own op
  * protocols.
  */
-export class GenericVFS<A extends Accessor = Accessor> extends BaseVFS implements VFS {
+export class GenericVFS<A extends Accessor = Accessor> extends BoundVFS<A> implements VFS {
   readonly kind: string
   readonly accessor: A
-  readonly io: CommandIO<A>
   readonly prompt: string
   readonly writePrompt: string
   readonly cachesReads: boolean
@@ -130,32 +127,13 @@ export class GenericVFS<A extends Accessor = Accessor> extends BaseVFS implement
   readonly readRevalidatable: boolean
   readonly #commands: readonly RegisteredCommand[]
   readonly #ops: readonly RegisteredOp[]
-  readonly #glob: ResolveGlobOp<A>
-
-  // The optional surface, declared but not defined. `declare` emits no
-  // property, so a field the table does not carry stays genuinely absent
-  // and `typeof r.writeFile === 'function'` answers truthfully. The
-  // constructor installs a forwarder for each field the table does carry,
-  // which is what Python's `_ops` map does through `__getattr__`.
-  declare writeFile?: (path: PathSpec, data: Uint8Array) => Promise<void>
-  declare appendFile?: (path: PathSpec, data: Uint8Array) => Promise<void>
-  declare exists?: (path: PathSpec) => Promise<boolean>
-  declare mkdir?: (path: PathSpec, options?: { recursive?: boolean }) => Promise<void>
-  declare rmdir?: (path: PathSpec) => Promise<void>
-  declare unlink?: (path: PathSpec) => Promise<void>
-  declare rename?: (src: PathSpec, dst: PathSpec) => Promise<void>
-  declare truncate?: (path: PathSpec, length: number) => Promise<void>
-  declare copy?: (src: PathSpec, dst: PathSpec) => Promise<void>
-  declare rmR?: (path: PathSpec) => Promise<void>
-  declare du?: (path: PathSpec) => Promise<number>
-  declare find?: (path: PathSpec, options?: FindOptions) => Promise<string[]>
 
   constructor(options: GenericVFSOptions<A>) {
-    super()
+    super(options.io)
     if (options.name === '') throw new Error('GenericVFS requires a non-empty name')
     this.kind = options.name
     this.accessor = options.accessor
-    this.io = options.io
+    const io = this.io
     this.prompt = options.prompt ?? ''
     this.writePrompt = options.writePrompt ?? ''
     this.cachesReads = options.cachesReads ?? false
@@ -163,9 +141,8 @@ export class GenericVFS<A extends Accessor = Accessor> extends BaseVFS implement
     this.supportsSnapshot = options.supportsSnapshot ?? false
     this.readRevalidatable = options.readRevalidatable ?? false
     if (options.index !== undefined) this.setIndex(options.index)
-    this.#glob = resolveGlobOf(options.io)
     this.#commands = [
-      ...makeGenericCommands<A>(options.name, options.io, {
+      ...makeGenericCommands<A>(options.name, io, {
         ...(options.overrides !== undefined ? { overrides: options.overrides } : {}),
         ...(options.provisionOverrides !== undefined
           ? { provisionOverrides: options.provisionOverrides }
@@ -179,34 +156,8 @@ export class GenericVFS<A extends Accessor = Accessor> extends BaseVFS implement
     // registering both cannot leave two handlers competing for one key.
     const shadowed = new Set(userOps.filter((ro) => ro.filetype === null).map((ro) => ro.name))
     const derived =
-      options.autoOps === false
-        ? []
-        : makeGenericOps<A>(options.name, options.io, { overrides: shadowed })
+      options.autoOps === false ? [] : makeGenericOps<A>(options.name, io, { overrides: shadowed })
     this.#ops = [...derived, ...userOps]
-    this.#installOptional(options.io)
-  }
-
-  // Each forwarder reads `this.index` when called rather than capturing
-  // it, because `setIndex` can replace it after construction.
-  #installOptional(io: CommandIO<A>): void {
-    const { write, append, exists, mkdir, rmdir, unlink } = io
-    const { rename, truncate, copy, rmR, du, find } = io
-    if (write !== undefined) this.writeFile = (p, d) => write(this.accessor, p, d)
-    if (append !== undefined) this.appendFile = (p, d) => append(this.accessor, p, d)
-    if (exists !== undefined) this.exists = (p) => exists(this.accessor, p)
-    if (mkdir !== undefined) this.mkdir = (p, o) => mkdir(this.accessor, p, o?.recursive)
-    if (rmdir !== undefined) this.rmdir = (p) => rmdir(this.accessor, p)
-    if (unlink !== undefined) this.unlink = (p) => unlink(this.accessor, p)
-    if (rename !== undefined) this.rename = (s, d) => rename(this.accessor, s, d)
-    if (truncate !== undefined) this.truncate = (p, n) => truncate(this.accessor, p, n)
-    if (copy !== undefined) this.copy = (s, d) => copy(this.accessor, s, d)
-    if (rmR !== undefined) this.rmR = (p) => rmR(this.accessor, p)
-    if (du !== undefined) this.du = (p) => du.size(this.accessor, p, this.index)
-    if (find !== undefined) this.find = (p, o) => find(this.accessor, p, o ?? {})
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
   }
 
   // The base cannot know a subclass's constructor, so by default a
@@ -230,31 +181,5 @@ export class GenericVFS<A extends Accessor = Accessor> extends BaseVFS implement
 
   ops(): readonly RegisteredOp[] {
     return this.#ops
-  }
-
-  glob(paths: readonly PathSpec[], _prefix = ''): Promise<PathSpec[]> {
-    return this.#glob(this.accessor, paths, this.index)
-  }
-
-  // The four table fields every backend must supply, forwarded so a
-  // GenericVFS answers the direct calls builtin VFS answer.
-  // These are unconditional because the table cannot omit them; the rest
-  // are installed per instance above. What stays banned either way is a
-  // forwarder that throws for a field the backend never filled, which
-  // would answer a feature probe with a lie.
-  readFile(path: PathSpec): Promise<Uint8Array> {
-    return this.io.readBytes(this.accessor, path, this.index)
-  }
-
-  readdir(path: PathSpec): Promise<string[]> {
-    return this.io.readdir(this.accessor, path, this.index)
-  }
-
-  stat(path: PathSpec): Promise<FileStat> {
-    return this.io.stat(this.accessor, path, this.index)
-  }
-
-  streamPath(path: PathSpec): AsyncIterable<Uint8Array> {
-    return this.io.readStream(this.accessor, path, this.index)
   }
 }

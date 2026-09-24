@@ -37,7 +37,7 @@ import { Policies, PolicyDenied, postOpsGate, preOpsGate } from '../../policy/in
 import { PolicyError } from '../../policy/errors.ts'
 import { mountKey } from '../../utils/key_prefix.ts'
 import { normDir, ownerPrefix, rstripSlash } from '../../utils/slash.ts'
-import { record, runWithMountPrefix, runWithRevisions, startOp } from '../../observe/context.ts'
+import { record, runWithMountContext, runWithRevisions, startOp } from '../../observe/context.ts'
 import { wrapOpStream } from '../mount/mount.ts'
 import type { OpRecord } from '../../observe/record.ts'
 import type { OpsRegistry } from '../../ops/registry.ts'
@@ -284,6 +284,36 @@ export class Dispatcher {
       return [await this.xattrOp(opName, p, kwargs ?? {}, report, issuer), new IOResult()]
     }
     const resolvedOwner = this.namespace.tryMountFor(p.virtual)
+    const opWrite = POLICY_WRITE_OPS.has(opName)
+    if (resolvedOwner !== null) {
+      // Admission policies fire at the door, before the warm-cache early
+      // return below: a cached read must be refused exactly like a cold
+      // one, or the cache becomes a policy bypass. This dispatcher is the
+      // one door in TypeScript: shell internals, programmatic access, the
+      // op facade, and FUSE all end up here.
+      await preOpsGate(this.policies, opName, p, opWrite, resolvedOwner.prefix, sessionId(), issuer)
+      // A rename's destination is a create there: it passes the same gate
+      // as the source, so a path rule holds against moving into a
+      // protected scope (or onto the directory that holds one) the way it
+      // holds against writing there.
+      if (opName === 'rename' && dstArg instanceof PathSpec) {
+        await preOpsGate(
+          this.policies,
+          opName,
+          dstArg,
+          true,
+          resolvedOwner.prefix,
+          sessionId(),
+          issuer,
+        )
+      }
+      if (opWrite) {
+        requireTurfWritable(resolvedOwner, p)
+        if (opName === 'rename' && dstArg instanceof PathSpec) {
+          requireTurfWritable(this.namespace.tryMountFor(dstArg.virtual), dstArg)
+        }
+      }
+    }
     let resolved: [VFS, PathSpec, MountMode]
     try {
       resolved = await this.namespace.resolve(p.virtual, false)
@@ -334,19 +364,11 @@ export class Dispatcher {
     const mount = this.namespace.mountFor(p.virtual)
     if (mount !== resolvedOwner) throw ebusy(p.virtual)
     const mountPrefix = mount.prefix
-    // Admission policies fire at the door, before the warm-cache early
-    // return below: a cached read must be refused exactly like a cold
-    // one, or the cache becomes a policy bypass. This dispatcher is the
-    // one door in TypeScript: shell internals, programmatic access, the
-    // op facade, and FUSE all end up here.
-    const opWrite = POLICY_WRITE_OPS.has(opName)
-    await preOpsGate(this.policies, opName, p, opWrite, mountPrefix, sessionId(), issuer)
-    // A rename's destination is a create there: it passes the same gate
-    // as the source, so a path rule holds against moving into a
-    // protected scope (or onto the directory that holds one) the way it
-    // holds against writing there.
-    if (opName === 'rename' && dstArg instanceof PathSpec) {
-      await preOpsGate(this.policies, opName, dstArg, true, mountPrefix, sessionId(), issuer)
+    if (
+      opName === 'rmdir' &&
+      this.namespace.linkStatsBelow(p.virtual).some(([link]) => pathAllowed(link))
+    ) {
+      throw enotempty(p.virtual)
     }
     const caches = cachesReads(vfs)
     // The file cache is keyed on the path alone, and what a command put
@@ -427,13 +449,9 @@ export class Dispatcher {
     const opOverride = mount.commandLimits.get(opName) ?? null
     const opTimeout = opOverride !== null ? opOverride.timeoutSeconds : null
     let result
-    // Backends name their records against the mount-relative key, so the
-    // prefix has to be active while the op runs or the record loses the
-    // mount it belongs to. Mirrors Python's Ops._call.
     try {
       result = await mount.use(async () => {
-        const answer = await runWithMountPrefix(
-          rstripSlash(mountPrefix),
+        const answer = await runWithMountContext(
           () =>
             runWithRevisions(mount.revisions.size > 0 ? mount.revisions : null, async () =>
               runWithTimeout(
@@ -455,7 +473,7 @@ export class Dispatcher {
             ),
           mount.mountId,
         )
-        return wrapOpStream(answer, rstripSlash(mountPrefix), mount.mountId, mount.activity)
+        return wrapOpStream(answer, mount.mountId, mount.activity)
       })
     } catch (err) {
       const code = (err as { code?: string }).code
@@ -493,6 +511,18 @@ export class Dispatcher {
         // the shell's rm already drops it: a file created there next
         // starts bare on every surface.
         await this.namespace.dropOverlay(p.virtual)
+        if (opName === 'rmdir') {
+          // The link check ran before the backend was asked, so a visible
+          // link below now was created since: it is younger than this
+          // rmdir, lands after it in the serial order (a link synthesizes
+          // its parents), and the purge taking the directory's hidden nodes
+          // must not take it too.
+          const arrived = new Set<string>()
+          for (const [link] of this.namespace.linkStatsBelow(p.virtual)) {
+            if (pathAllowed(link)) arrived.add(link)
+          }
+          await this.namespace.purgeUnder(p.virtual, arrived)
+        }
       }
       if (renameDst !== null) {
         await this.invalidateAfterRenameByPath(p.virtual, renameDst.virtual)
@@ -600,8 +630,7 @@ export class Dispatcher {
     await mount.ensureReady()
     try {
       return await mount.use(async () => {
-        const answer = await runWithMountPrefix(
-          rstripSlash(mountPrefix),
+        const answer = await runWithMountContext(
           () =>
             runWithRevisions(mount.revisions.size > 0 ? mount.revisions : null, () =>
               this.opsRegistry.call(
@@ -615,7 +644,7 @@ export class Dispatcher {
             ),
           mount.mountId,
         )
-        return wrapOpStream(answer, rstripSlash(mountPrefix), mount.mountId, mount.activity)
+        return wrapOpStream(answer, mount.mountId, mount.activity)
       })
     } finally {
       if (write) await this.invalidateAfterWriteByPath(spec.virtual)

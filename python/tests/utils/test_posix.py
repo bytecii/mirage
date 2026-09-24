@@ -47,3 +47,22 @@ def test_escapes_and_mixed_brackets():
     compiled = re.compile(translate_classes('^[][:digit:]_]+$'))
     assert compiled.fullmatch(']_123')
     assert not compiled.fullmatch('abc')
+
+
+@pytest.mark.parametrize('pattern,nested', [
+    ('a++', '(?:a+)+'),
+    ('a+?', '(?:a+)?'),
+    ('a{1,2}?', '(?:a{1,2})?'),
+    ('(ab)+?', '(?:(ab)+)?'),
+    ('a|[bc]**', 'a|(?:[bc]*)*'),
+    (r'\++', r'\++'),
+    ('a{', 'a{'),
+])
+def test_stacked_quantifiers_nest(pattern, nested):
+    assert translate_classes(pattern) == nested
+    assert translate_classes(pattern, nest=False) == pattern
+
+
+def test_nested_quantifier_keeps_backtracking():
+    assert re.sub(translate_classes('a+?'), 'X', 'aaa', count=1) == 'X'
+    assert re.fullmatch(translate_classes('a++a'), 'aaa')

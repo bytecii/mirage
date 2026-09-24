@@ -15,6 +15,8 @@
 import { compareCodePoints } from '../utils/sort.ts'
 import { BuiltinGroup, BuiltinTier, NodeType, ShellBuiltin } from './types.ts'
 
+export const PARAMETER_NAME = /^(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])/
+
 // Bash arithmetic tokens: integer literals (base#value/decimal/hex/
 // octal), variable names, then operators longest-first so `<<=` never
 // lexes as `<<` + `=`.

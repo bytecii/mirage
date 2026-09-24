@@ -1,6 +1,12 @@
 {
   "_meta": {
     "by_vfs": {
+      "airtable": {
+        "filetypes": [],
+        "has_aggregate": false,
+        "has_provision": false,
+        "has_write": false
+      },
       "bin": {
         "filetypes": [],
         "has_aggregate": false,
@@ -199,6 +205,7 @@
     "has_provision": false,
     "has_write": false,
     "vfs_names": [
+      "airtable",
       "bin",
       "box",
       "chroma",

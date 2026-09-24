@@ -23,6 +23,7 @@ from mirage.core.notion.stat import stat
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.dates import matches_mtime
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
+from mirage.utils.stat_view import DIR_SIZE
 
 
 async def _collect(
@@ -105,7 +106,8 @@ async def find(
                     other != entry_path and other.startswith(child_prefix)
                     for other, _ in collected)
             else:
-                is_empty = (file_stat.size or 0) == 0
+                is_empty = (file_stat.type is FileType.FILE
+                            and file_stat.size == 0)
         entry = FindEntry(key=rel,
                           name=entry_name,
                           kind="d" if is_dir else "f",
@@ -114,9 +116,7 @@ async def find(
         if not keep(entry, tree, mindepth):
             continue
         if min_size is not None or max_size is not None:
-            # Directories count as size 0 for -size (deliberate GNU
-            # divergence).
-            size = 0 if is_dir else (file_stat.size or 0)
+            size = DIR_SIZE if is_dir else (file_stat.size or 0)
             if min_size is not None and size < min_size:
                 continue
             if max_size is not None and size > max_size:

@@ -25,6 +25,7 @@ from mirage.shell.errors import ArithError, ExitSignal
 from mirage.shell.escapes import (decode_ansi_c, unescape_dquoted,
                                   unescape_unquoted)
 from mirage.shell.helpers import byte_offset, get_text
+from mirage.shell.parameter import scan_parameter
 from mirage.shell.parse import parse
 from mirage.shell.types import NodeType as NT
 from mirage.shell.types import TSNodeLike
@@ -345,13 +346,11 @@ async def expand_node_marked(
     if ntype == NT.SIMPLE_EXPANSION:
         prefix = _folded_whitespace(ts_node)
         raw = get_text(ts_node)[len(prefix):]
-        for child in ts_node.named_children:
-            if child.type == NT.SPECIAL_VARIABLE_NAME:
-                return prefix + _lookup_var(get_text(child), session,
-                                            call_stack)
-        # Slice past the leading "$" rather than searching for it, so
-        # `$$` keeps its name instead of splitting into prefix + "".
-        return prefix + _lookup_var(raw[1:], session, call_stack)
+        ref = scan_parameter(raw, 0)
+        if ref is None:
+            return prefix + raw
+        name, end = ref
+        return prefix + _lookup_var(name, session, call_stack) + raw[end:]
 
     if ntype == NT.EXPANSION:
         prefix = _folded_whitespace(ts_node)

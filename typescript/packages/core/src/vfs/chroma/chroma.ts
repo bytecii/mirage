@@ -12,17 +12,16 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { BoundVFS } from '../bound.ts'
+import { CHROMA_IO } from '../../commands/builtin/chroma/io.ts'
 import { ChromaAccessor } from '../../accessor/chroma.ts'
 import { CHROMA_COMMANDS } from '../../commands/builtin/chroma/index.ts'
 import type { RegisteredCommand } from '../../commands/config.ts'
-import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
-import { readBytes } from '../../core/chroma/read.ts'
-import { readdir as chromaReaddir } from '../../core/chroma/readdir.ts'
-import { stat as chromaStat } from '../../core/chroma/stat.ts'
+
 import { CHROMA_OPS } from '../../ops/chroma/index.ts'
 import type { RegisteredOp } from '../../ops/registry.ts'
-import { VFSName, type FileStat, type PathSpec } from '../../types.ts'
-import { BaseVFS, type VFS } from '../base.ts'
+import { VFSName } from '../../types.ts'
+import { type VFS } from '../base.ts'
 import {
   type ChromaConfigRedacted,
   redactChromaConfig,
@@ -31,8 +30,6 @@ import {
   type ChromaConfigResolved,
 } from './config.ts'
 import { CHROMA_PROMPT } from './prompt.ts'
-
-const resolveGlob = makeResolveGlob(chromaReaddir)
 
 export interface ChromaVFSOptions {
   config: ChromaConfig
@@ -44,7 +41,7 @@ export interface ChromaVFSState {
   needs_override: true
 }
 
-export class ChromaVFS extends BaseVFS implements VFS {
+export class ChromaVFS extends BoundVFS<ChromaAccessor> implements VFS {
   readonly kind: string = VFSName.CHROMA
   readonly cachesReads: boolean = false
   readonly supportsSnapshot: boolean = false
@@ -57,7 +54,7 @@ export class ChromaVFS extends BaseVFS implements VFS {
   readonly accessor: ChromaAccessor
 
   constructor(options: ChromaVFSOptions | ChromaConfig) {
-    super()
+    super(CHROMA_IO)
     const config = 'config' in options ? options.config : options
     this.config = resolveChromaConfig(config)
     this.accessor = new ChromaAccessor(this.config)
@@ -76,37 +73,11 @@ export class ChromaVFS extends BaseVFS implements VFS {
     }
   }
 
-  // Nothing to take back: the bytes live in the remote store, so a
-  // restored mount reaches them through its config alone.
-  override loadState(_state: ChromaVFSState): Promise<void> {
-    return Promise.resolve()
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   ops(): readonly RegisteredOp[] {
     return CHROMA_OPS
   }
 
   commands(): readonly RegisteredCommand[] {
     return CHROMA_COMMANDS
-  }
-
-  glob(paths: readonly PathSpec[], _prefix = ''): Promise<PathSpec[]> {
-    return resolveGlob(this.accessor, paths, this.index)
-  }
-
-  readFile(p: PathSpec): Promise<Uint8Array> {
-    return readBytes(this.accessor, p, this.index)
-  }
-
-  readdir(p: PathSpec): Promise<string[]> {
-    return chromaReaddir(this.accessor, p, this.index)
-  }
-
-  stat(p: PathSpec): Promise<FileStat> {
-    return chromaStat(this.accessor, p, this.index)
   }
 }

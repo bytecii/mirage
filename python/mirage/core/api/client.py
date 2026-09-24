@@ -16,8 +16,8 @@ import asyncio
 import json
 import logging
 import math
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Literal
 
@@ -58,6 +58,17 @@ class RetryPolicy:
         retry_transport (bool): also retry connection-level failures and
             timeouts, which never carry a response; the wait for those is
             the exponential backoff.
+        retryable (Callable[[int, str], bool] | None): a veto over a listed
+            status, given the status and the body text, for an API whose
+            one status means two things. Airtable answers both "slow
+            down" and "monthly quota spent" with a 429, and only the
+            first is worth waiting for; a vetoed response maps through
+            ``error_of`` at once. None retries every listed status.
+        min_delays (Mapping[int, float]): per-status floor under the wait,
+            for an API that documents a penalty window: after a 429,
+            Airtable refuses every request for 30 seconds, so a shorter
+            backoff only spends the retries inside the window.
+            ``max_backoff`` still caps the result.
     """
 
     statuses: frozenset[int] = frozenset()
@@ -65,6 +76,8 @@ class RetryPolicy:
     max_backoff: float = 30.0
     delay_source: Literal["header", "body"] = "header"
     retry_transport: bool = False
+    retryable: Callable[[int, str], bool] | None = None
+    min_delays: Mapping[int, float] = field(default_factory=dict)
 
 
 NO_RETRY = RetryPolicy()
@@ -245,8 +258,24 @@ def _retry_delay(retry_state: RetryCallState, retry: RetryPolicy) -> float:
         # a transport failure carries no response to read a delay from
         return min(2.0**(retry_state.attempt_number - 1), retry.max_backoff)
     if retry.delay_source == "body":
-        return _body_delay(error.text, retry)
-    return header_delay(error.resp, retry_state.attempt_number - 1, retry)
+        delay = _body_delay(error.text, retry)
+    else:
+        delay = header_delay(error.resp, retry_state.attempt_number - 1, retry)
+    return floored_delay(delay, error.resp.status, retry)
+
+
+def floored_delay(delay: float, status: int, retry: RetryPolicy) -> float:
+    """Raise a wait to the policy's floor for this status, then cap it.
+
+    Args:
+        delay (float): the wait the delay source chose.
+        status (int): the retryable response's status.
+        retry (RetryPolicy): supplies the floor and the cap.
+    """
+    floor = retry.min_delays.get(status)
+    if floor is None:
+        return delay
+    return min(max(delay, floor), retry.max_backoff)
 
 
 def _retry_condition(retry: RetryPolicy) -> Any:
@@ -305,7 +334,10 @@ async def _attempt(
                                   data=data)
     async with request as resp:
         if resp.status in retry.statuses:
-            raise _RetryableStatus(resp, await resp.text())
+            text = await resp.text()
+            if retry.retryable is None or retry.retryable(resp.status, text):
+                raise _RetryableStatus(resp, text)
+            raise error_of(resp, text)
         if resp.status >= 400:
             raise error_of(resp, await resp.text())
         if read == "none":

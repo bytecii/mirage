@@ -16,7 +16,7 @@ import { constants as fsConstants } from 'node:fs'
 import { runWithSession } from '@struktoai/mirage-core/context/session_context'
 import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
 import { ContentType, FileStat, FileType, MountMode } from '@struktoai/mirage-core/types'
-import { mtimeMs } from '@struktoai/mirage-core/utils/stat_view'
+import { DIR_SIZE, mtimeMs } from '@struktoai/mirage-core/utils/stat_view'
 import { describe, expect, it, vi } from 'vitest'
 import { Workspace } from '../workspace.ts'
 import { MountCore } from './core.ts'
@@ -103,7 +103,9 @@ describe('MountCore', () => {
 
   it('reports directories', async () => {
     const core = await mkCore()
-    expect((await core.getattr('/data/sub')).mode & 0o170000).toBe(0o040000)
+    const attr = await core.getattr('/data/sub')
+    expect(attr.mode & 0o170000).toBe(0o040000)
+    expect(attr.size).toBe(DIR_SIZE)
   })
 
   it('throws a plain error for a missing path, not an errno code', async () => {
@@ -492,4 +494,23 @@ describe('applyStatAttrs', () => {
     expect(got.mtime.getTime()).toBe(0)
     expect(got.ctime.getTime()).toBe(0)
   })
+})
+
+describe('open handles across rename', () => {
+  it.each([false, true])(
+    'keeps writes attached to the moved file (directory=%s)',
+    async (directory) => {
+      const ws = new Workspace({ '/': new RAMVFS() }, { mode: MountMode.WRITE })
+      await ws.shell('mkdir /sub; echo nested > /sub/file')
+      const core = new MountCore(ws.vfs)
+      const fd = await core.open('/sub/file')
+      await core.write('/sub/file', fd, new TextEncoder().encode('BEFORE'), 0)
+      await core.rename(directory ? '/sub' : '/sub/file', '/moved')
+      await core.write('/sub/file', fd, new TextEncoder().encode('AFTER'), 6)
+      await core.release(fd)
+      const target = directory ? '/moved/file' : '/moved'
+      expect(new TextDecoder().decode(await core.read(target, -1, 0, 100))).toBe('BEFOREAFTER')
+      await expect(core.getattr('/sub/file')).rejects.toThrow()
+    },
+  )
 })

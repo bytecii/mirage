@@ -335,15 +335,7 @@ async function openTarget(
   scope: PathSpec,
   append: boolean,
 ): Promise<boolean> {
-  if (append) {
-    try {
-      await dispatch('stat', scope)
-      return false
-    } catch (err) {
-      if (!isFsError(err)) throw err
-    }
-  }
-  await createFile(dispatch, session, scope, new Uint8Array(0))
+  await createFile(dispatch, session, scope, new Uint8Array(), append)
   return true
 }
 
@@ -444,18 +436,8 @@ async function appendTo(
 ): Promise<void> {
   if (target === CLOSED) return
   const scope = toScope(target)
-  let existing: Uint8Array = new Uint8Array(0)
   try {
-    const [prior] = await dispatch('read', scope)
-    existing = await materialize(prior as ByteSource)
-  } catch (err) {
-    if (!isFsError(err)) throw err
-  }
-  const combined: Uint8Array<ArrayBuffer> = new Uint8Array(existing.byteLength + data.byteLength)
-  combined.set(existing, 0)
-  combined.set(data, existing.byteLength)
-  try {
-    await dispatch('write', scope, [combined])
+    await dispatch('append', scope, [data])
     session.execOpened.add(target)
   } catch (err) {
     if (!isFsError(err)) throw err

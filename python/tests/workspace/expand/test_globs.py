@@ -645,3 +645,46 @@ def test_trailing_slash_glob_drives_the_issue_loop():
     line = ("cd /data/records && for d in */; do for f in \"$d\"*.txt; do "
             "[ -f \"$f\" ] || continue; cat \"$f\"; done; done")
     assert _out(ws, line) == "sample\nsample\n"
+
+
+class PrefixBlindRAM(RAMVFS):
+    """A RAM mount that ignores the glob hook's ``prefix``, the way the
+    API backends do, and records the keys it was handed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: list[tuple[str, str]] = []
+
+    async def resolve_glob(self,
+                           paths: list[PathSpec],
+                           prefix: str = "") -> list[PathSpec]:
+        for p in paths:
+            self.seen.append((p.virtual, p.vfs_path))
+        return await super().resolve_glob(paths, prefix="")
+
+
+def test_glob_hook_is_handed_keys_below_a_non_root_prefix():
+    # ``prefix`` is the mount prefix, and every caller stamps each spec's
+    # ``vfs_path`` with ``mount_key(virtual, prefix)`` before the hook runs.
+    # So the two ways a backend treats ``prefix`` (re-derive the key from
+    # it, or read ``vfs_path`` and ignore it) agree, which is why the
+    # storage backends' remap and the API backends' disregard are both
+    # correct. Pinned the same way in typescript's globs.test.ts.
+    vfs = PrefixBlindRAM()
+    ws = Workspace({"/mnt/x/": vfs}, mode=MountMode.WRITE)
+    ws.create_session("s")
+    for line in ("mkdir -p /mnt/x/team/sub", "printf 1 > /mnt/x/team/f1",
+                 "printf 2 > /mnt/x/tea.txt", "printf 3 > /mnt/x/other"):
+        _run(ws.shell(line, session_id="s"))
+    cases = [
+        ("echo /mnt/x/*", "/mnt/x/other /mnt/x/tea.txt /mnt/x/team"),
+        ("echo /mnt/x/*/f*", "/mnt/x/team/f1"),
+        ("cd /mnt/x && echo tea*", "tea.txt team"),
+        ("shopt -s globstar; echo /mnt/x/**/f1", "/mnt/x/team/f1"),
+        ("touch /mnt/x/tea* && echo touched", "touched"),
+    ]
+    for line, want in cases:
+        assert _out(ws, line).strip() == want, line
+    assert vfs.seen
+    assert [(v, key) for v, key in vfs.seen
+            if key != mount_key(v, "/mnt/x")] == []

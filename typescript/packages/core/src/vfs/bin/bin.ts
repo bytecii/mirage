@@ -41,7 +41,7 @@ export class BinViewVFS extends BaseVFS implements VFS {
     this.accessor = new BinAccessor(programs, note)
   }
 
-  open(): Promise<void> {
+  override open(): Promise<void> {
     return Promise.resolve()
   }
 

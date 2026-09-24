@@ -14,7 +14,8 @@
 
 import { Language, type Node, Parser } from 'web-tree-sitter'
 
-import { ARITH_OPEN_TOKEN, DIGIT, NAME_CONT, QUOTES } from './constants.ts'
+import { scanParameter } from '../parameter.ts'
+import { ARITH_OPEN_TOKEN, QUOTES } from './constants.ts'
 import { heredocOperators, protectedSource, sameShape } from './heredoc/index.ts'
 import { discoverHeredocs } from './heredoc/reader.ts'
 import { lowerHeredocs, rebaseSource } from './heredoc/lower.ts'
@@ -149,8 +150,8 @@ export function stripLineContinuation(command: string): string {
  * word when a name-terminating character follows it, so
  * `> /api/$c/$id.json` parses as `/api/$c/$` plus a sibling word
  * `id.json`: the `$` lands in the tree as a literal token and the
- * expansion is gone. A literal `$` directly followed by a name
- * character is a shape no correct bash lex produces (bash would have
+ * expansion is gone. A literal `$` starting a recognized unbraced
+ * parameter is a shape no correct bash lex produces (bash would have
  * read an expansion), so each one marks a mis-parse. The `$` opening a
  * simple_expansion is that expansion's own token and is skipped.
  */
@@ -165,7 +166,8 @@ function orphanedDollarOffsets(root: Node, text: string): number[] {
         !child.isNamed &&
         child.type === '$' &&
         node.type !== 'simple_expansion' &&
-        NAME_CONT.test(text[child.endIndex] ?? '')
+        text[child.endIndex] !== '{' &&
+        scanParameter(text, child.startIndex) !== null
       ) {
         offsets.push(child.startIndex)
       }
@@ -183,13 +185,10 @@ function orphanedDollarOffsets(root: Node, text: string): number[] {
  * `$` as one positional parameter, so `$12` rebraces as `${1}2`.
  */
 function rebraceDollar(text: string, offset: number): string {
-  let end = offset + 1
-  if (DIGIT.test(text[end] ?? '')) {
-    end += 1
-  } else {
-    while (end < text.length && NAME_CONT.test(text[end] ?? '')) end += 1
-  }
-  return `${text.slice(0, offset)}\${${text.slice(offset + 1, end)}}${text.slice(end)}`
+  const ref = scanParameter(text, offset)
+  if (ref === null) return text
+  const [name, end] = ref
+  return `${text.slice(0, offset)}\${${name}}${text.slice(end)}`
 }
 
 /**

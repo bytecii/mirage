@@ -91,7 +91,9 @@ export function parseFlags(
   // deliberately partial.
   unknownIsOperand = false,
 ): ParsedCommand {
-  const argv: string[] = parts.map((item) => (item instanceof PathSpec ? item.virtual : item))
+  const argv: string[] = parts.map((item) =>
+    item instanceof PathSpec ? (item.rawPath === '-' ? '-' : item.virtual) : item,
+  )
   const scopeMap = new Map<string, PathSpec>()
   for (const item of parts) {
     if (item instanceof PathSpec) {

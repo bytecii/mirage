@@ -1,7 +1,20 @@
 {
   "capabilities": {
+    "airtable": {
+      "caches_reads": false,
+      "has_prompt": true,
+      "has_write_prompt": true,
+      "index_ttl": 600,
+      "read_revalidatable": false,
+      "sizes_always_known": false,
+      "statfs": false,
+      "storage_id": false,
+      "supports_snapshot": false
+    },
     "aliyun": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -11,6 +24,8 @@
     },
     "backblaze": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -20,6 +35,8 @@
     },
     "box": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 86400,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -29,6 +46,8 @@
     },
     "ceph": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -38,6 +57,8 @@
     },
     "chroma": {
       "caches_reads": false,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -47,6 +68,8 @@
     },
     "dify": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": false,
       "sizes_always_known": false,
@@ -56,6 +79,8 @@
     },
     "digitalocean": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -65,6 +90,8 @@
     },
     "discord": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": true,
       "index_ttl": 600,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -74,6 +101,8 @@
     },
     "dropbox": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 86400,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -84,6 +113,8 @@
     "email": null,
     "gcal": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": true,
       "index_ttl": 300,
       "read_revalidatable": false,
       "sizes_always_known": false,
@@ -93,6 +124,8 @@
     },
     "gcs": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -102,6 +135,8 @@
     },
     "gdocs": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": true,
       "index_ttl": 86400,
       "read_revalidatable": false,
       "sizes_always_known": false,
@@ -111,6 +146,8 @@
     },
     "gdrive": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 86400,
       "read_revalidatable": false,
       "sizes_always_known": false,
@@ -120,6 +157,8 @@
     },
     "github": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 86400,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -129,6 +168,8 @@
     },
     "gmail": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": true,
       "index_ttl": 86400,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -138,6 +179,8 @@
     },
     "gsheets": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": true,
       "index_ttl": 86400,
       "read_revalidatable": false,
       "sizes_always_known": false,
@@ -147,6 +190,8 @@
     },
     "gslides": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": true,
       "index_ttl": 86400,
       "read_revalidatable": false,
       "sizes_always_known": false,
@@ -157,6 +202,8 @@
     "lancedb": null,
     "langfuse": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": false,
       "sizes_always_known": false,
@@ -166,6 +213,8 @@
     },
     "linear": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": true,
       "index_ttl": 600,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -175,6 +224,8 @@
     },
     "mem0": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -184,6 +235,8 @@
     },
     "minio": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -193,6 +246,8 @@
     },
     "mongodb": {
       "caches_reads": false,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 0,
       "read_revalidatable": false,
       "sizes_always_known": false,
@@ -202,6 +257,8 @@
     },
     "notion": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": true,
       "index_ttl": 600,
       "read_revalidatable": false,
       "sizes_always_known": false,
@@ -211,6 +268,8 @@
     },
     "oci": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -220,6 +279,8 @@
     },
     "onedrive": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 86400,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -229,6 +290,8 @@
     },
     "opfs": {
       "caches_reads": false,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -238,6 +301,8 @@
     },
     "postgres": {
       "caches_reads": false,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 0,
       "read_revalidatable": false,
       "sizes_always_known": false,
@@ -247,6 +312,8 @@
     },
     "qdrant": {
       "caches_reads": false,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -256,6 +323,8 @@
     },
     "qingstor": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -265,6 +334,8 @@
     },
     "r2": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -274,6 +345,8 @@
     },
     "ram": {
       "caches_reads": false,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 0,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -283,6 +356,8 @@
     },
     "redis": {
       "caches_reads": false,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 0,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -292,6 +367,8 @@
     },
     "s3": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -301,6 +378,8 @@
     },
     "scaleway": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -310,6 +389,8 @@
     },
     "seaweedfs": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -319,6 +400,8 @@
     },
     "sharepoint": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 86400,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -328,6 +411,8 @@
     },
     "slack": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": true,
       "index_ttl": 600,
       "read_revalidatable": false,
       "sizes_always_known": true,
@@ -337,6 +422,8 @@
     },
     "supabase": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -346,6 +433,8 @@
     },
     "tencent": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -355,6 +444,8 @@
     },
     "trello": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": true,
       "index_ttl": 600,
       "read_revalidatable": false,
       "sizes_always_known": false,
@@ -364,6 +455,8 @@
     },
     "wandb": {
       "caches_reads": false,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": false,
       "sizes_always_known": false,
@@ -373,6 +466,8 @@
     },
     "wasabi": {
       "caches_reads": true,
+      "has_prompt": true,
+      "has_write_prompt": false,
       "index_ttl": 600,
       "read_revalidatable": true,
       "sizes_always_known": true,
@@ -382,6 +477,18 @@
     }
   },
   "command_io": {
+    "airtable": {
+      "local": false,
+      "max_du_entries": 10000,
+      "max_glob_matches": 10000,
+      "slots": [
+        "is_mounted",
+        "read_bytes",
+        "read_stream",
+        "readdir",
+        "stat"
+      ]
+    },
     "bin": {
       "local": false,
       "max_du_entries": 10000,
@@ -424,10 +531,12 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -436,6 +545,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "append",
         "copy",
         "create",
         "exists",
@@ -485,11 +595,13 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_range",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -498,6 +610,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_range",
@@ -534,6 +647,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -546,6 +660,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -584,6 +699,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 5000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -596,6 +712,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -608,6 +725,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -620,6 +738,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -632,6 +751,8 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
+        "find",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -644,6 +765,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -656,10 +778,12 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -668,10 +792,12 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -680,6 +806,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -692,10 +819,12 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -704,10 +833,12 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -716,6 +847,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -780,10 +912,12 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -792,10 +926,12 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -858,6 +994,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 5000,
       "slots": [
+        "append",
         "copy",
         "create",
         "du",
@@ -909,6 +1046,7 @@
       "max_du_entries": 500,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_range",
@@ -922,6 +1060,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -934,6 +1073,7 @@
       "max_du_entries": 1000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -943,6 +1083,7 @@
     }
   },
   "command_vfs_names": [
+    "airtable",
     "bin",
     "box",
     "chroma",
@@ -978,6 +1119,27 @@
     "wandb"
   ],
   "configs": {
+    "airtable": {
+      "fields": {
+        "baseIds": {
+          "required": false
+        },
+        "baseUrl": {
+          "required": false
+        },
+        "maxReadRecords": {
+          "required": false
+        },
+        "requestsPerSecond": {
+          "required": false
+        },
+        "token": {
+          "required": true
+        }
+      },
+      "rename": {},
+      "validates": true
+    },
     "aliyun": {
       "fields": {
         "bucket": {
@@ -1045,6 +1207,9 @@
           "required": false
         },
         "endpoint": {
+          "required": false
+        },
+        "enterpriseId": {
           "required": false
         },
         "onRefreshTokenRotated": {
@@ -1530,12 +1695,6 @@
         "databases": {
           "required": false
         },
-        "defaultDocLimit": {
-          "required": false
-        },
-        "defaultSearchLimit": {
-          "required": false
-        },
         "elideFields": {
           "required": false
         },
@@ -1630,9 +1789,6 @@
     "postgres": {
       "fields": {
         "defaultRowLimit": {
-          "required": false
-        },
-        "defaultSearchLimit": {
           "required": false
         },
         "dsn": {
@@ -2034,6 +2190,7 @@
     }
   },
   "registry": [
+    "airtable",
     "aliyun",
     "backblaze",
     "box",

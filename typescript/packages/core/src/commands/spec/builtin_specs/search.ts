@@ -51,7 +51,7 @@ export const SPECS: Record<string, CommandSpec> = {
       new Option({ short: '-B', type: 'str' }),
       new Option({ short: '-C', type: 'str' }),
       new Option({ short: '-e', type: 'str', multiple: true }),
-      new Option({ short: '-f', type: 'path', multiple: true }),
+      new Option({ short: '-f', long: '--file', type: 'path', multiple: true }),
       new Option({ short: '-a', long: '--text' }),
       new Option({ short: '-b', long: '--byte-offset' }),
       new Option({ long: '--include', type: 'str', multiple: true }),

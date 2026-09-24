@@ -9,16 +9,7 @@
       "hf_buckets": "hf"
     }
   },
-  "commands": {
-    "grep": {
-      "by_vfs": {
-        "github": [
-          "has_provision"
-        ]
-      },
-      "reason": "TypeScript has no github grep provision. Python's is a bespoke cost model that walks the index to sum matched bytes and read ops, and it reaches IndexCacheStore internals, so porting it needs its own change rather than riding along with the parity gate."
-    }
-  },
+  "commands": {},
   "config_fields": {
     "dropbox": {
       "refreshFn": "TypeScript's delegated-refresh hook for browser PKCE and secret-proxy setups, a callback no YAML block can carry. Python's seam for a caller that owns the OAuth dance is the `access_token` provider callable, which both sides have."

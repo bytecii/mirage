@@ -10,16 +10,19 @@ from mirage.commands.builtin.find_parse import (parse_depth,
 from mirage.commands.builtin.find_printf import printf_kind
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.config import CommandOpts
+from mirage.commands.errors import is_entry_error
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.context import path_allowed
+from mirage.errors.classify import failure_text
 from mirage.io.types import ByteSource, IOResult
 from mirage.ops.types import LinkView, StatPath
 from mirage.types import FileStat, FileType, FindType, PathSpec
 from mirage.utils.dates import iso_timestamp, matches_mtime
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
-from mirage.utils.path import respell_raw
+from mirage.utils.path import respell_one, respell_raw
+from mirage.utils.stat_view import DIR_SIZE
 
 
 def parse_find_args(
@@ -306,8 +309,7 @@ def start_point_results(
     if args.empty:
         # GNU -empty matches only a size-0 regular file here; a device
         # start point is never empty-eligible.
-        empty = (start.size
-                 or 0) == 0 if start.type is FileType.FILE else False
+        empty = start.size == 0 if start.type is FileType.FILE else False
     find_eval.emit_start_path(results,
                               search_path.mount_path,
                               find_eval.start_basename(search_path),
@@ -612,7 +614,10 @@ async def _stat_entry(
     path: str,
     prefix: str,
     index: IndexCacheStore | None,
+    unstatted: dict[str, Exception] | None = None,
 ) -> FileStat | None:
+    if unstatted is not None and path in unstatted:
+        return None
     spec = PathSpec(virtual=path,
                     directory=path,
                     resolved=False,
@@ -620,8 +625,13 @@ async def _stat_entry(
     try:
         return await stat(spec, index)
     except FileNotFoundError:
-        # Only missing entries resolve to None; API errors (rate limit, auth)
-        # propagate.
+        return None
+    except Exception as exc:
+        # Any other failure resolves to None too when the caller collects
+        # it; otherwise it (a rate limit, an auth failure) propagates.
+        if unstatted is None or not is_entry_error(exc):
+            raise
+        unstatted[path] = exc
         return None
 
 
@@ -634,6 +644,7 @@ async def _is_empty_entry(
     prefix: str,
     index: IndexCacheStore | None,
     links: LinkView | None = None,
+    unstatted: dict[str, Exception] | None = None,
 ) -> bool:
     if is_dir:
         if find_eval.has_link_children(links, path):
@@ -646,8 +657,8 @@ async def _is_empty_entry(
             return len(await readdir(spec, index)) == 0
         except FileNotFoundError:
             return False
-    st = await _stat_entry(stat, path, prefix, index)
-    return st is not None and (st.size or 0) == 0
+    st = await _stat_entry(stat, path, prefix, index, unstatted)
+    return st is not None and st.type is FileType.FILE and st.size == 0
 
 
 async def _walk_collect(
@@ -660,6 +671,7 @@ async def _walk_collect(
     depth: int,
     acc: list[tuple[str, str]],
     unreadable: list[str] | None = None,
+    unstatted: dict[str, Exception] | None = None,
 ) -> None:
     if maxdepth is not None and depth > maxdepth:
         return
@@ -691,7 +703,7 @@ async def _walk_collect(
             kind = "d"
         else:
             trimmed = child
-            st = await _stat_entry(stat, trimmed, prefix, index)
+            st = await _stat_entry(stat, trimmed, prefix, index, unstatted)
             is_dir = st is not None and st.type == FileType.DIRECTORY
             kind = printf_kind(st)
         acc.append((trimmed, kind))
@@ -701,7 +713,7 @@ async def _walk_collect(
                                   resolved=False,
                                   vfs_path=mount_key(trimmed, prefix))
             await _walk_collect(readdir, stat, child_spec, index, maxdepth,
-                                depth + 1, acc, unreadable)
+                                depth + 1, acc, unreadable, unstatted)
 
 
 async def link_results(
@@ -804,7 +816,30 @@ async def walk_find(
     links: LinkView | None = None,
     follow: bool = False,
     unreadable: list[str] | None = None,
+    unstatted: dict[str, Exception] | None = None,
 ) -> list[str]:
+    """Walk readdir/stat under one start point and match every entry.
+
+    A directory the guarded readdir refuses lands in ``unreadable``. An
+    entry whose stat fails lands in ``unstatted`` with its error, in
+    walk order: GNU's find names it and carries on, and the entry stays
+    in the walk unclassified, a leaf, as a missing one already does,
+    that fails every test only its stat could answer. It is never
+    statted again. A caller that passes neither gets the failure
+    propagated instead.
+
+    Args:
+        search_path (PathSpec): the start point.
+        readdir (Callable): bound readdir, ``readdir(p, index)``.
+        stat (Callable): bound stat, ``stat(p, index)``.
+        index (IndexCacheStore | None): listing cache.
+        args (find_eval.FindArgs): parsed find expression.
+        links (LinkView | None): the namespace's symlink facts.
+        follow (bool): ``-L``.
+        unreadable (list[str] | None): collects refused directories.
+        unstatted (dict[str, Exception] | None): collects entries whose
+            stat failed.
+    """
     collected: list[tuple[str, str]] = []
     prefix = mount_prefix_of(search_path.virtual, search_path.vfs_path)
     search_key = search_path.mount_path.strip("/")
@@ -819,7 +854,7 @@ async def walk_find(
     # (Box answers ENOTDIR) or a wasted round trip everywhere else.
     if root_stat is None or root_stat.type == FileType.DIRECTORY:
         await _walk_collect(readdir, stat, search_path, index, args.maxdepth,
-                            1, collected, unreadable)
+                            1, collected, unreadable, unstatted)
     tree = find_eval.bind_tree(find_eval.args_to_tree(args), prefix,
                                search_path.virtual, search_path.raw_path)
     need_empty = find_eval.tree_has_empty(tree)
@@ -842,14 +877,14 @@ async def walk_find(
         is_empty = None
         if need_empty:
             is_empty = await _is_empty_entry(readdir, stat, p, is_dir, prefix,
-                                             index, links)
+                                             index, links, unstatted)
         # With a time test in the tree the stat comes first, so the entry
         # answers the test itself and a -prune after it fires only where
         # GNU's would; the stat that -size alone needs waits for the rows
         # the tree kept.
         st = None
         if need_mtime:
-            st = await _stat_entry(stat, p, prefix, index)
+            st = await _stat_entry(stat, p, prefix, index, unstatted)
             if st is None:
                 continue
             learned[key] = _modified_ts(st.modified)
@@ -862,13 +897,13 @@ async def walk_find(
         if not find_eval.keep(entry, tree, args.mindepth):
             continue
         if need_size and not is_dir and st is None:
-            st = await _stat_entry(stat, p, prefix, index)
+            st = await _stat_entry(stat, p, prefix, index, unstatted)
             if st is None:
                 continue
         if need_size:
-            # Directories count as size 0 for -size: GNU compares the inode
-            # size (e.g. 4096 on ext4); see CLAUDE.md Rules.
-            size = 0 if is_dir else ((st.size if st is not None else 0) or 0)
+            size = DIR_SIZE
+            if not is_dir:
+                size = (st.size if st is not None else 0) or 0
             if args.min_size is not None and size < args.min_size:
                 continue
             if args.max_size is not None and size > args.max_size:
@@ -1022,6 +1057,7 @@ async def find_walk_generic(
             rows = start.results
         else:
             unreadable: list[str] = []
+            unstatted: dict[str, Exception] = {}
             walked = await walk_find(search,
                                      readdir=readdir,
                                      stat=stat,
@@ -1029,7 +1065,8 @@ async def find_walk_generic(
                                      args=args,
                                      links=links,
                                      follow=parsed.follow,
-                                     unreadable=unreadable)
+                                     unreadable=unreadable,
+                                     unstatted=unstatted)
             rows = respell_raw(walked, search.virtual, search.raw_path)
             # GNU names a directory it may not open in the walk's own
             # order, lists the directory itself, and exits 1 like a
@@ -1037,6 +1074,11 @@ async def find_walk_generic(
             missing.extend(f"find: '{shown}': Permission denied"
                            for shown in respell_raw(unreadable, search.virtual,
                                                     search.raw_path))
+            # An entry the walk could not stat is named the same way, and
+            # stays listed where no test needed its stat.
+            missing.extend(
+                f"find: '{respell_one(path, search.virtual, search.raw_path)}'"
+                f": {failure_text(exc)}" for path, exc in unstatted.items())
         results.extend(rows)
         matched_runs.append([_matched_path(row, search) for row in rows])
     if missing:

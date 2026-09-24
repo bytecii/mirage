@@ -300,7 +300,7 @@ describe('parseCommand — multiple value flags accumulate newline-joined', () =
 describe('parseCommand — grep -f pattern file', () => {
   it('frees the positional slot and routes the pattern file', () => {
     const p = parseCommand(specOf('grep'), ['-f', 'pats.txt', 'a.txt'], '/data')
-    expect(p.flags['-f']).toEqual(['/data/pats.txt'])
+    expect(p.flags['--file']).toEqual(['/data/pats.txt'])
     expect(p.texts()).toEqual([])
     expect(p.paths()).toEqual(['/data/a.txt'])
     expect(p.routingPaths()).toContain('/data/pats.txt')
@@ -309,13 +309,13 @@ describe('parseCommand — grep -f pattern file', () => {
   it('keeps -e and -f together', () => {
     const p = parseCommand(specOf('grep'), ['-e', 'foo', '-f', '/p.txt', '/a.txt'], '/')
     expect(p.flags['-e']).toEqual(['foo'])
-    expect(p.flags['-f']).toEqual(['/p.txt'])
+    expect(p.flags['--file']).toEqual(['/p.txt'])
     expect(p.paths()).toEqual(['/a.txt'])
   })
 
   it('repeated -f accumulates and routes each file', () => {
     const p = parseCommand(specOf('grep'), ['-f', 'p1.txt', '-f', 'p2.txt', 'a.txt'], '/data')
-    expect(p.flags['-f']).toEqual(['/data/p1.txt', '/data/p2.txt'])
+    expect(p.flags['--file']).toEqual(['/data/p1.txt', '/data/p2.txt'])
     expect(p.paths()).toEqual(['/data/a.txt'])
     expect(p.routingPaths()).toContain('/data/p1.txt')
     expect(p.routingPaths()).toContain('/data/p2.txt')

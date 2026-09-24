@@ -329,6 +329,9 @@ def test_strip_line_continuation(command, expected):
     ("echo hi > /w/$a/$b/$c", "/w/$a/${b}/$c"),
     ("echo hi > ${a}.$b.json", "${a}.${b}.json"),
     ("echo hi > /w/$c/$1.json", "/w/$c/${1}.json"),
+    ("echo hi > /w/$c/$12.json", "/w/$c/${1}2.json"),
+    ("echo hi > /é💡/$c/$123abc.json", "/é💡/$c/${1}23abc.json"),
+    ("echo hi > /w/$c/$_id9.json", "/w/$c/${_id9}.json"),
 ])
 def test_redirect_target_later_unbraced_var_stays_one_word(command, target):
     node = parse(command).named_children[0]

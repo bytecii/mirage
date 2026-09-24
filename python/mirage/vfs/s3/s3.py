@@ -12,70 +12,26 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import dataclasses
 from typing import Any
 
 from mirage.accessor.s3 import S3Accessor, S3Config
 from mirage.commands.builtin.s3 import COMMANDS as S3_COMMANDS
-from mirage.core.s3.constants import SCOPE_ERROR
-from mirage.core.s3.copy import copy
-from mirage.core.s3.create import create
-from mirage.core.s3.du import entries as du_entries
-from mirage.core.s3.du import size as du_size
-from mirage.core.s3.exists import exists
-from mirage.core.s3.find import find
-from mirage.core.s3.mkdir import mkdir
-from mirage.core.s3.read import read_bytes
-from mirage.core.s3.readdir import readdir
-from mirage.core.s3.rename import rename
-from mirage.core.s3.rm import rm_r
-from mirage.core.s3.rmdir import rmdir
-from mirage.core.s3.stat import stat as s3_stat
-from mirage.core.s3.stream import range_read, read_stream
-from mirage.core.s3.truncate import truncate
-from mirage.core.s3.unlink import unlink
+from mirage.commands.builtin.s3.io import IO
 from mirage.core.s3.watch import build_delta_hook
-from mirage.core.s3.write import write_bytes
 from mirage.ops.s3 import OPS as S3_OPS
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.utils.key_prefix import mount_key
-from mirage.vfs.base import BaseVFS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.s3.prompt import PROMPT
 from mirage.watch.base import DeltaHook
 
-_resolve_glob = make_resolve_glob(readdir, SCOPE_ERROR)
 
-_S3_OPS = {
-    "read_bytes": read_bytes,
-    "write": write_bytes,
-    "readdir": readdir,
-    "stat": s3_stat,
-    "unlink": unlink,
-    "rmdir": rmdir,
-    "copy": copy,
-    "rename": rename,
-    "mkdir": mkdir,
-    "read_stream": read_stream,
-    "range_read": range_read,
-    "rm_recursive": rm_r,
-    "du_size": du_size,
-    "du_entries": du_entries,
-    "create": create,
-    "truncate": truncate,
-    "exists": exists,
-    "find_flat": find,
-}
-
-
-class S3VFS(BaseVFS):
+class S3VFS(BoundVFS):
 
     accessor: S3Accessor
     name: str = VFSName.S3
     # byte store: stat() sizes every file from metadata
     SIZES_ALWAYS_KNOWN: bool = True
     caches_reads: bool = True
-    _ops: dict[str, Any] = _S3_OPS
     PROMPT: str = PROMPT
     SUPPORTS_SNAPSHOT: bool = True
     # stat and read both stamp the ETag, so the gate compares like with
@@ -83,7 +39,7 @@ class S3VFS(BaseVFS):
     READ_REVALIDATABLE: bool = True
 
     def __init__(self, config: S3Config) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self.accessor = S3Accessor(self.config)
         for fn in S3_COMMANDS:
@@ -105,22 +61,5 @@ class S3VFS(BaseVFS):
     def delta_hook(self) -> DeltaHook:
         return build_delta_hook(self.accessor)
 
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        if prefix:
-            paths = [
-                dataclasses.replace(p, vfs_path=mount_key(p.virtual, prefix))
-                if isinstance(p, PathSpec) else p for p in paths
-            ]
-        return await _resolve_glob(self.accessor, paths, self._index)
-
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        # No-op: S3VFS holds no local content. Reconstruction
-        # happens via the mounts= override at load time.
-        pass

@@ -15,17 +15,16 @@
 from typing import Any
 
 from mirage.accessor.slack import SlackAccessor
+from mirage.commands.builtin.slack import COMMANDS
+from mirage.commands.builtin.slack.io import IO
 from mirage.core.slack.config import SlackConfig
-from mirage.core.slack.readdir import readdir
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.vfs.base import BaseVFS
+from mirage.ops.slack import OPS as SLACK_VFS_OPS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.slack.prompt import PROMPT, WRITE_PROMPT
 
-_resolve_glob = make_resolve_glob(readdir)
 
-
-class SlackVFS(BaseVFS):
+class SlackVFS(BoundVFS):
 
     accessor: SlackAccessor
     name: str = VFSName.SLACK
@@ -39,26 +38,13 @@ class SlackVFS(BaseVFS):
     WRITE_PROMPT: str = WRITE_PROMPT
 
     def __init__(self, config: SlackConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self.accessor = SlackAccessor(self.config)
-        from mirage.commands.builtin.slack import COMMANDS
-        from mirage.ops.slack import OPS as SLACK_VFS_OPS
-
         for fn in COMMANDS:
             self.register(fn)
         for fn in SLACK_VFS_OPS:
             self.register_op(fn)
 
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        return await _resolve_glob(self.accessor, paths, index=self._index)
-
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        pass

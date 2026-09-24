@@ -73,12 +73,15 @@ function cursorStart(ctx: Ctx<C>, prefix: string, keys: string[]): number | null
 export async function conversationsList(ctx: Ctx<C>): Promise<Reply> {
   const args = argsOf(ctx)
   const types = (args.get('types') ?? '').split(',').filter((t) => t !== '')
-  const kinds = types.map((t) =>
-    t === 'public_channel' || t === 'private_channel' ? 'channel' : t,
-  )
+  const requested = types.length > 0 ? types : ['public_channel', 'private_channel']
+  const filters: Record<string, JsonValue>[] = []
+  if (requested.includes('public_channel')) filters.push({ kind: 'channel', isPrivate: false })
+  if (requested.includes('private_channel')) filters.push({ kind: 'channel', isPrivate: true })
+  if (requested.includes('im')) filters.push({ kind: 'im' })
+  if (requested.includes('mpim')) filters.push({ kind: 'mpim' })
   const where: Record<string, JsonValue> = {
     tenant: ctx.tenant,
-    kind: { in: kinds.length > 0 ? kinds : ['channel'] },
+    OR: filters,
   }
   if (args.get('exclude_archived') === 'true') where.isArchived = false
   const rows = await ctx.db.channel.findMany({ where, orderBy: { id: 'asc' } })

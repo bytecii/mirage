@@ -976,7 +976,13 @@ export function parseCommand(
       flags[flagName] = paired
       pathFlagValues.push(...paired.filter((_, index) => index % 2 === 1))
     } else if (Array.isArray(val)) {
-      const resolvedList = val.map((part) => resolvePath(part, cwd))
+      const resolvedList = val.map((part) =>
+        part === '-' &&
+        ['grep', 'sed', 'awk'].includes(cmdName) &&
+        ['-f', '--file'].includes(flagName)
+          ? '-'
+          : resolvePath(part, cwd),
+      )
       flags[flagName] = resolvedList
       pathFlagValues.push(...resolvedList)
     } else if (typeof val === 'string') {

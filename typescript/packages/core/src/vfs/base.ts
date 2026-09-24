@@ -140,14 +140,12 @@ export interface VFS {
    * fire.
    *
    * onedrive and sharepoint look like they qualify and do not: both stamp
-   * a cTag on stat and on read, so on token kind alone the refusal reads
-   * as unnecessary. It is correct for a second reason this flag does not
-   * name -- both label the read record with the slashless `vfsPath`, so
-   * the record key comes out malformed (`/oda/b.txt` rather than
-   * `/od/a/b.txt`) and the cTag can never be matched against the cache
-   * entry. The backends that do qualify pass the mount path instead.
-   * gdrive carries the same slashless label on top of its token-kind
-   * mismatch. Fix the label before reconsidering the flag.
+   * a cTag on stat and on read, and both label the read record with the
+   * virtual path, so on token kind alone the refusal reads as unnecessary.
+   * The read-side cTag, though, is captured only while a recorder is
+   * active (a gated metadata call), so an unrecorded read stamps nothing
+   * to compare. The flag stays withheld pending the #1165 read-token
+   * contract. gdrive additionally mismatches token kinds.
    *
    * Mirrors Python's `BaseVFS.READ_REVALIDATABLE`.
    */
@@ -183,6 +181,21 @@ export interface VFS {
   rmR?(path: PathSpec): Promise<void>
   du?(path: PathSpec): Promise<number>
   find?(path: PathSpec, options?: FindOptions): Promise<string[]>
+  /**
+   * Expand the patterned specs in `paths` against this backend.
+   *
+   * `prefix` is the mount prefix without its trailing slash (`/mnt/lin`).
+   * Every caller stamps each spec's `vfsPath` with `mountKey(virtual,
+   * prefix)` before calling: the workspace expander, its mid-path and
+   * globstar walks, and the builtins' `expandOperands` (commands never come
+   * here; they glob through their `CommandIO.resolveGlob`, which takes no
+   * prefix). So an implementation may read `vfsPath` and ignore `prefix`,
+   * as the chroma/dify/mem0/qdrant/onedrive/sharepoint mounts and python's
+   * API backends do, and one that re-derives `vfsPath` from `prefix` computes
+   * the same key. The re-derivation only matters to a caller outside the
+   * workspace handing over an unstamped spec (`PathSpec.fromStrPath` keys it
+   * from the root). Mirrors Python `BaseVFS.resolve_glob`.
+   */
   glob?(paths: readonly PathSpec[], prefix?: string): Promise<PathSpec[]>
   // Capacity for df. Absent -> treated as UNKNOWN (rendered `-`). Implement
   // only where a truthful number exists (a real filesystem, or a provider
@@ -291,6 +304,17 @@ export abstract class BaseVFS {
 
   get isClosed(): boolean {
     return this.#closed
+  }
+
+  /**
+   * Prepare the backend before a mount first uses it. A no-op by
+   * default: an API backend reaches its service lazily, on the first
+   * request, which is the only way Python's `BaseVFS` works (it has no
+   * open step at all). A VFS that must load or connect before its first
+   * read (disk, OPFS, redis) overrides this.
+   */
+  open(): Promise<void> {
+    return Promise.resolve()
   }
 
   /**

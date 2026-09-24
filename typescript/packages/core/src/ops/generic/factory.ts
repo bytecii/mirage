@@ -16,8 +16,8 @@ import type { Accessor } from '../../accessor/base.ts'
 import type { OpKwargs, RegisteredOp } from '../registry.ts'
 import { extractWriteData } from '../write_args.ts'
 import { isUnsatisfiableRange, sliceWindow } from '../../utils/ranges.ts'
-import { isMissingPath } from '../../utils/errors.ts'
-import type { PathSpec } from '../../types.ts'
+import { eisdir, isMissingPath } from '../../utils/errors.ts'
+import { FileStat, FileType, type PathSpec } from '../../types.ts'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type OpCoreFn = (...args: any[]) => unknown
@@ -177,6 +177,22 @@ export function makeGenericOps<A extends Accessor>(
       'append',
       async (accessor, path, args, kwargs) => {
         const data = extractWriteData(args)
+        // A zero-byte append is an open for appending with nothing written
+        // after it (`exec >> f`, `: >> f`): it creates a missing file and
+        // leaves an existing one alone. Reading and rewriting the whole
+        // object to add nothing would move it twice and could put back bytes
+        // a concurrent writer had just replaced.
+        if (data.length === 0) {
+          let found: unknown
+          try {
+            found = await table.stat(asA(accessor), path, kwargs.index)
+          } catch (error) {
+            if (!isMissingPath(error)) throw error
+            return write(asA(accessor), path, data)
+          }
+          if (found instanceof FileStat && found.type === FileType.DIRECTORY) throw eisdir(path)
+          return
+        }
         let existing: Uint8Array
         // The read takes the caller's index, like every other read here: an
         // id-addressed backend (Box, Drive) turns a path into an id through

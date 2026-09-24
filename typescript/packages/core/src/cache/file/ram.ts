@@ -194,7 +194,7 @@ export class RAMFileCacheStore extends RAMVFS implements FileCache {
     })
   }
 
-  override exists(key: string | PathSpec): Promise<boolean> {
+  override exists = (key: string | PathSpec): Promise<boolean> => {
     const k = typeof key === 'string' ? key : key.mountPath
     const entry = this.entries.get(k)
     return Promise.resolve(entry !== undefined && !entry.expired)

@@ -193,6 +193,34 @@
         "stdout": "public\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "cmd_profile_virtual_program_needs_no_command_helper",
+      "seq": 923190,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "reviewer",
+      "command": "/usr/bin/cat /scratch/locked/y",
+      "expect": {
+        "exit": 0,
+        "stdout": "y\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "cmd_profile_virtual_program_keeps_target_policy",
+      "seq": 923191,
+      "targets": [
+        "ram-commands"
+      ],
+      "session": "reviewer",
+      "command": "/usr/bin/git -C /repo add letters.txt",
+      "expect": {
+        "exit": 126,
+        "stdout": "",
+        "stderr": "git: Permission denied\n"
+      }
     }
   ]
 }

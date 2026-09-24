@@ -239,6 +239,33 @@
         "stdout": "-rwxr-xr-x\n",
         "stderr": "/usr/bin/ls: Read-only file system\nchmod: read-only mount at /usr/bin/\n"
       }
+    },
+    {
+      "id": "usr_bin_metadata_counts_rendered_bytes",
+      "seq": 991517,
+      "targets": [
+        "ram"
+      ],
+      "note": "Virtual stubs have the same size contract as a regular script; stat and wc agree (GNU pinned on debian:stable-slim).",
+      "command": "stat -c %s /usr/bin/ls; wc -c < /usr/bin/ls; find /usr/bin/ls -size 0c",
+      "expect": {
+        "exit": 0,
+        "stdout": "69\n69\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "usr_bin_stubs_are_searchable_text",
+      "seq": 991518,
+      "targets": [
+        "ram"
+      ],
+      "command": "grep Help /usr/bin/ls; head -n 1 /usr/bin/ls; file /usr/bin/ls",
+      "expect": {
+        "exit": 0,
+        "stdout": "# ls is built into mirage. Help: ls --help\n#!/bin/sh\n/usr/bin/ls: text\n",
+        "stderr": ""
+      }
     }
   ]
 }

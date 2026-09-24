@@ -82,11 +82,11 @@ async def test_path_pattern_is_honored():
 
 
 @pytest.mark.asyncio
-async def test_size_is_honored_dirs_count_as_zero():
+async def test_size_counts_a_directory_as_dir_size():
     lines = await _run([_spec("/channels")], maxdepth="1", size="+0c")
-    assert lines == []
-    lines = await _run([_spec("/channels")], maxdepth="1", size="-1k")
     assert GENERAL in lines
+    lines = await _run([_spec("/channels")], maxdepth="1", size="-1k")
+    assert lines == []
 
 
 FILE_CHANNELS = [{"id": "C1", "name": "general", "created": 1700000000}]

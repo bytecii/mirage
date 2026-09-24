@@ -309,7 +309,7 @@
       "command": "stat /ghost",
       "expect": {
         "exit": 0,
-        "stdout": "name=ghost size=None modified=None type=directory\n",
+        "stdout": "name=ghost size=4096 modified=None type=directory\n",
         "stderr": ""
       }
     },
@@ -361,7 +361,7 @@
       "command": "stat /data/inner",
       "expect": {
         "exit": 0,
-        "stdout": "name=inner size=None modified=None type=directory\n",
+        "stdout": "name=inner size=4096 modified=None type=directory\n",
         "stderr": ""
       }
     },
@@ -374,7 +374,7 @@
       "command": "stat /ghost/deep",
       "expect": {
         "exit": 0,
-        "stdout": "name=deep size=None modified=None type=directory\n",
+        "stdout": "name=deep size=4096 modified=None type=directory\n",
         "stderr": ""
       }
     },

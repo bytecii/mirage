@@ -20,9 +20,6 @@ import { classifyWord } from './heuristic.ts'
 
 class StubVFS extends BaseVFS implements VFS {
   readonly kind = 'stub'
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
   override close(): Promise<void> {
     return Promise.resolve()
   }

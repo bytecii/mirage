@@ -12,17 +12,16 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { BoundVFS } from '../bound.ts'
+import { DIFY_IO } from '../../commands/builtin/dify/io.ts'
 import { DifyAccessor } from '../../accessor/dify.ts'
 import { DIFY_COMMANDS } from '../../commands/builtin/dify/index.ts'
 import type { RegisteredCommand } from '../../commands/config.ts'
-import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
-import { readBytes } from '../../core/dify/read.ts'
-import { readdir as difyReaddir } from '../../core/dify/readdir.ts'
-import { stat as difyStat } from '../../core/dify/stat.ts'
+
 import { DIFY_OPS } from '../../ops/dify/index.ts'
 import type { RegisteredOp } from '../../ops/registry.ts'
-import { VFSName, type FileStat, type PathSpec } from '../../types.ts'
-import { BaseVFS, type VFS } from '../base.ts'
+import { VFSName } from '../../types.ts'
+import { type VFS } from '../base.ts'
 import {
   type DifyConfigRedacted,
   redactDifyConfig,
@@ -31,8 +30,6 @@ import {
   type DifyConfigResolved,
 } from './config.ts'
 import { DIFY_PROMPT } from './prompt.ts'
-
-const resolveGlob = makeResolveGlob(difyReaddir)
 
 export interface DifyVFSOptions {
   config: DifyConfig
@@ -44,7 +41,7 @@ export interface DifyVFSState {
   needs_override: true
 }
 
-export class DifyVFS extends BaseVFS implements VFS {
+export class DifyVFS extends BoundVFS<DifyAccessor> implements VFS {
   readonly kind: string = VFSName.DIFY
   readonly cachesReads: boolean = true
   readonly supportsSnapshot: boolean = false
@@ -53,7 +50,7 @@ export class DifyVFS extends BaseVFS implements VFS {
   readonly accessor: DifyAccessor
 
   constructor(options: DifyVFSOptions | DifyConfig) {
-    super()
+    super(DIFY_IO)
     const config = 'config' in options ? options.config : options
     this.config = resolveDifyConfig(config)
     this.accessor = new DifyAccessor(this.config)
@@ -72,37 +69,11 @@ export class DifyVFS extends BaseVFS implements VFS {
     }
   }
 
-  // Nothing to take back: the bytes live in the remote store, so a
-  // restored mount reaches them through its config alone.
-  override loadState(_state: DifyVFSState): Promise<void> {
-    return Promise.resolve()
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   ops(): readonly RegisteredOp[] {
     return DIFY_OPS
   }
 
   commands(): readonly RegisteredCommand[] {
     return DIFY_COMMANDS
-  }
-
-  glob(paths: readonly PathSpec[], _prefix = ''): Promise<PathSpec[]> {
-    return resolveGlob(this.accessor, paths, this.index)
-  }
-
-  readFile(p: PathSpec): Promise<Uint8Array> {
-    return readBytes(this.accessor, p, this.index)
-  }
-
-  readdir(p: PathSpec): Promise<string[]> {
-    return difyReaddir(this.accessor, p, this.index)
-  }
-
-  stat(p: PathSpec): Promise<FileStat> {
-    return difyStat(this.accessor, p, this.index)
   }
 }

@@ -147,7 +147,7 @@ async def reset(
                                       state.entries, found)
     except GitError as exc:
         return fatal(exc)
-    if not unstaged:
+    if not unstaged or fl.as_bool("quiet"):
         return None, IOResult()
     lines = [UNSTAGED_HEADER]
     lines.extend(f"{letter}\t{path}"

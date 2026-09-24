@@ -44,7 +44,7 @@ class MockVFS extends BaseVFS implements VFS {
   readonly kind = 'mock'
   opens = 0
   closes = 0
-  open(): Promise<void> {
+  override open(): Promise<void> {
     this.opens++
     return Promise.resolve()
   }
@@ -499,9 +499,6 @@ describe('Workspace custom cache option', () => {
     getCalls = 0
     setCalls = 0
     maxDrainBytes: number | null = null
-    open(): Promise<void> {
-      return Promise.resolve()
-    }
     override close(): Promise<void> {
       return Promise.resolve()
     }

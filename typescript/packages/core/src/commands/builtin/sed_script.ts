@@ -344,7 +344,7 @@ export function breToEre(pat: string): string {
 }
 
 function compilePattern(pat: string, flags: string, extended: boolean): RegExp {
-  return new RegExp(translateClasses(extended ? pat : breToEre(pat)), flags)
+  return new RegExp(translateClasses(extended ? pat : breToEre(pat), extended), flags)
 }
 
 function addrMatches(
@@ -425,14 +425,20 @@ function regexReplace(
   // `count` is the 1-based occurrence the substitution starts at (GNU sed's
   // numeric `s///N` flag, default 1). Without `g` only that single occurrence
   // is replaced; with `g` that occurrence and every later one are. Iterate all
-  // matches and decide per match so `N` and `Ng` both work.
+  // matches and decide per match so `N` and `Ng` both work. An empty match
+  // touching the previous match is no match at all, so `s/b*/X/g` turns
+  // "abbb" into "XaX", not "XaXX".
   const baseFlags = ignoreCase ? 'i' : ''
-  const erePat = translateClasses(extended ? pat : breToEre(pat))
+  const erePat = translateClasses(extended ? pat : breToEre(pat), extended)
   const scan = new RegExp(erePat, baseFlags + 'g')
   const single = new RegExp(erePat, baseFlags)
   const jsRepl = translateReplacement(repl)
   let n = 0
-  return text.replace(scan, (m: string) => {
+  let lastEnd = -1
+  return text.replace(scan, (m: string, ...rest: unknown[]) => {
+    const at = rest.find((arg): arg is number => typeof arg === 'number') ?? 0
+    if (m === '' && at === lastEnd) return ''
+    if (m !== '') lastEnd = at + m.length
     n += 1
     const hit = global ? n >= count : n === count
     return hit ? m.replace(single, jsRepl) : m

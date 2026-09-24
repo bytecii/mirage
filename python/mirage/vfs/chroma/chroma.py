@@ -2,27 +2,15 @@ from typing import Any
 
 from mirage.accessor.chroma import ChromaAccessor
 from mirage.commands.builtin.chroma import COMMANDS
-from mirage.core.chroma.read import read_bytes, read_stream
-from mirage.core.chroma.readdir import readdir
-from mirage.core.chroma.stat import stat
+from mirage.commands.builtin.chroma.io import IO
 from mirage.ops.chroma import OPS as CHROMA_VFS_OPS
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.vfs.base import BaseVFS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.chroma.config import ChromaConfig
 from mirage.vfs.chroma.prompt import PROMPT
 
-_resolve_glob = make_resolve_glob(readdir)
 
-_CHROMA_OPS = {
-    "read_bytes": read_bytes,
-    "read_stream": read_stream,
-    "readdir": readdir,
-    "stat": stat,
-}
-
-
-class ChromaVFS(BaseVFS):
+class ChromaVFS(BoundVFS):
 
     accessor: ChromaAccessor
     name: str = VFSName.CHROMA
@@ -31,12 +19,11 @@ class ChromaVFS(BaseVFS):
     # caller stats; the path tree's own size is the producer's source
     # number and never becomes the reported byte length.
     SIZES_ALWAYS_KNOWN: bool = True
-    _ops = _CHROMA_OPS
     PROMPT: str = PROMPT
     SUPPORTS_SNAPSHOT: bool = False
 
     def __init__(self, config: ChromaConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self.accessor = ChromaAccessor(config)
 
@@ -45,13 +32,6 @@ class ChromaVFS(BaseVFS):
         for fn in CHROMA_VFS_OPS:
             self.register_op(fn)
 
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        return await _resolve_glob(self.accessor, paths, index=self._index)
-
     def get_state(self) -> dict[str, Any]:
         return {
             "type": self.name,
@@ -59,6 +39,3 @@ class ChromaVFS(BaseVFS):
             "redacted_fields": [],
             "config": self.config.model_dump(),
         }
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        pass

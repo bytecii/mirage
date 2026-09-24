@@ -53,6 +53,7 @@ from mirage.shell.console import JobConsole
 from mirage.shell.console.redis import RedisConsoleStore
 from mirage.shell.job_table import ConsoleFactory
 from mirage.types import ReadSpec
+from mirage.vfs.airtable import AirtableConfig, AirtableVFS
 from mirage.vfs.aliyun import AliyunConfig, AliyunVFS
 from mirage.vfs.backblaze import BackblazeConfig, BackblazeVFS
 from mirage.vfs.box import BoxConfig, BoxVFS
@@ -136,6 +137,14 @@ EMAIL_ACCOUNTS = ("integ", "alpha", "beta")
 EMAIL_MANIFEST_DIR = "email"
 # Doubles as the workspace id on the fake notion server.
 NOTION_TOKEN = "integ-test"
+
+# The fixture's full-access token (integ/fixtures/airtable/v1.json). Airtable
+# tokens are data in that world rather than tenants, so it is the same value
+# on both hosts; the run in the base URL is what keeps them apart.
+AIRTABLE_TOKEN = "patIntegFullAccess.fake"
+# The bases the airtable CLI install is scoped to: the fixture's Roadmap and
+# Ops bases, leaving its read-only Archive outside.
+AIRTABLE_CLI_BASES = ("appRoadmapBase001", "appOpsFinance0002")
 MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT")
 S3_REGION = os.environ.get("S3_REGION", "us-east-1")
@@ -1414,9 +1423,12 @@ class TrelloService:
 
     def vfs(self, mount: dict) -> TrelloVFS:
         return TrelloVFS(
-            TrelloConfig(api_key="integ-key",
-                         api_token="integ-token",
-                         base_url=self.base))
+            TrelloConfig.model_validate({
+                "api_key": "integ-key",
+                "api_token": "integ-token",
+                "base_url": self.base,
+                **mount.get("config", {}),
+            }))
 
     async def teardown(self) -> None:
         return None
@@ -1629,6 +1641,70 @@ class SharePointService:
                              site="Main",
                              drive=mount["drive"],
                              key_prefix=mount.get("prefix")))
+
+    async def teardown(self) -> None:
+        return None
+
+
+class AirtableService:
+    """Points airtable mounts at the shared fake Airtable Web API.
+
+    The server (integ/server/airtable/) is external, Prisma-backed and shared
+    across both hosts. Each run takes its own world through a leading
+    `/_run/<id>` segment on the base URL, so the hosts reset and read
+    concurrently without a shared lane; the token is the fixture's, the same
+    on both, because Airtable tokens are data there rather than tenants.
+
+    Args:
+        url (str): AIRTABLE_URL origin (the REST surface lives under /v0).
+        run_id (str): this run's id, which names its own server-side file.
+    """
+
+    def __init__(self, url: str, run_id: str) -> None:
+        self.url = url
+        self.run_id = run_id
+
+    @property
+    def base(self) -> str:
+        """Return the run-scoped origin every mount is pointed at.
+
+        Returns:
+            str: the origin with this run's `/_run/<id>` prefix.
+        """
+        return f"{self.url}/_run/{self.run_id}"
+
+    @classmethod
+    async def create(cls, run_id: str) -> "AirtableService":
+        made = cls(os.environ["AIRTABLE_URL"].rstrip("/"), run_id)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{made.base}/reset", json={}) as resp:
+                resp.raise_for_status()
+        return made
+
+    def vfs(self, mount: dict) -> AirtableVFS:
+        # max_read_records is set below the fixture's 25-record Backlog so a
+        # full read of it is refused while head still answers; the fake meters
+        # nothing, so pacing is relaxed to keep the battery quick.
+        return AirtableVFS(config=AirtableConfig(
+            token=AIRTABLE_TOKEN,
+            base_url=f"{self.base}/v0",
+            base_ids=mount.get("base_ids"),
+            max_read_records=20,
+            requests_per_second=50.0,
+        ))
+
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        # The same bounds as the mount, scoped to two of the fixture's three
+        # bases so the battery can show a refused one (the Archive).
+        return {
+            "airtable": (cli_spec_for("airtable"), {
+                "token": AIRTABLE_TOKEN,
+                "base_url": f"{self.base}/v0",
+                "base_ids": list(AIRTABLE_CLI_BASES),
+                "max_read_records": 20,
+                "requests_per_second": 50.0,
+            }),
+        }
 
     async def teardown(self) -> None:
         return None
@@ -2033,7 +2109,11 @@ class MongoDBService:
 
     def vfs(self, mount: dict) -> MongoDBVFS:
         return MongoDBVFS(
-            config=MongoDBConfig(uri=self.uri, databases=[MONGODB_DB]))
+            config=MongoDBConfig.model_validate({
+                "uri": self.uri,
+                "databases": [MONGODB_DB],
+                **mount.get("config", {}),
+            }))
 
     async def teardown(self) -> None:
         return None
@@ -2051,6 +2131,14 @@ POSTGRES_AUTHORS = [
     (1, "ada", 2),
     (2, "ben", 2),
     (3, "cara", 1),
+]
+
+POSTGRES_PROBES = [
+    (1, "Ada\ttab", True),
+    (2, "left\u2028right", False),
+    (3, "left\u2029right", True),
+    (4, "left\u0085right", False),
+    (5, None, True),
 ]
 
 
@@ -2088,18 +2176,47 @@ class PostgresService:
             await conn.execute('CREATE SCHEMA ".hidden"')
             await conn.execute(
                 'CREATE TABLE ".hidden".ghost (id int PRIMARY KEY)')
+            await conn.execute('DROP SCHEMA IF EXISTS contract CASCADE')
+            await conn.execute('CREATE SCHEMA contract')
+            await conn.execute(
+                'CREATE TABLE contract.probes '
+                '(id int PRIMARY KEY, body text, active boolean)')
+            await conn.executemany(
+                'INSERT INTO contract.probes VALUES ($1, $2, $3)',
+                POSTGRES_PROBES)
+            await conn.execute('ANALYZE contract.probes')
+            await conn.execute('DROP SCHEMA IF EXISTS byte_budget CASCADE')
+            await conn.execute('CREATE SCHEMA byte_budget')
+            await conn.execute('CREATE TABLE byte_budget.wide (body text) '
+                               'WITH (autovacuum_enabled = false)')
+            await conn.execute("INSERT INTO byte_budget.wide VALUES ('x')")
+            await conn.execute('ANALYZE byte_budget.wide')
+            await conn.execute(
+                "UPDATE byte_budget.wide SET body = repeat('é', 1000000)")
+            await conn.execute('CREATE TABLE byte_budget.empty (body text)')
+            await conn.execute(
+                'CREATE TABLE byte_budget.exact (__mirage_bytes text)')
+            await conn.execute("INSERT INTO byte_budget.exact VALUES (NULL)")
+            await conn.execute('ANALYZE byte_budget.empty')
+            await conn.execute('ANALYZE byte_budget.exact')
         finally:
             await conn.close()
         return cls(dsn)
 
     def vfs(self, mount: dict) -> PostgresVFS:
-        return PostgresVFS(PostgresConfig(dsn=self.dsn, max_read_rows=200))
+        return PostgresVFS(
+            PostgresConfig.model_validate({
+                "dsn": self.dsn,
+                "max_read_rows": 200,
+                **mount.get("config", {}),
+            }))
 
     async def teardown(self) -> None:
         return None
 
 
-Service = (S3Service | OneDriveService | SharePointService | Mem0Service
+Service = (AirtableService | S3Service | OneDriveService | SharePointService
+           | Mem0Service
            | SSHService | PostgresService | MongoDBService | ChromaService
            | QdrantService | LanceDBService | NotionService
            | NextcloudService | GwsService | HfService | HfHubService
@@ -2211,6 +2328,14 @@ def build_lancedb(
         mount: dict, run_id: str, service: Service | None
 ) -> tuple[object, Callable[[], Awaitable[None]]]:
     assert isinstance(service, LanceDBService)
+    vfs = service.vfs(mount)
+    return vfs, vfs.accessor.close
+
+
+def build_airtable(
+        mount: dict, run_id: str, service: Service | None
+) -> tuple[object, Callable[[], Awaitable[None]]]:
+    assert isinstance(service, AirtableService)
     vfs = service.vfs(mount)
     return vfs, vfs.accessor.close
 
@@ -2376,6 +2501,9 @@ def build_slack(
 # github needs a live repo at construct, notion an OAuth provider, and
 # hf_buckets validates the bucket id.
 ARG_ERROR_VFS: dict[str, tuple[type, type, dict[str, object]]] = {
+    "airtable": (AirtableVFS, AirtableConfig, {
+        "token": "t"
+    }),
     "databricks": (DatabricksVolumeVFS, DatabricksVolumeConfig, {
         "host": "h",
         "token": "t",
@@ -2475,6 +2603,7 @@ BUILDERS = {
     "chroma": build_chroma,
     "qdrant": build_qdrant,
     "lancedb": build_lancedb,
+    "airtable": build_airtable,
     "notion": build_notion,
     "ssh": build_ssh,
     "nextcloud": build_nextcloud,
@@ -2528,6 +2657,8 @@ async def make_service(target: dict, run_id: str) -> "Service | None":
         return await QdrantService.create(target)
     if target.get("service") == "lancedb":
         return await LanceDBService.create(target)
+    if target.get("service") == "airtable":
+        return await AirtableService.create(run_id)
     if target.get("service") == "notion":
         return await NotionService.create(run_id)
     if target.get("service") == "ssh":
@@ -2630,8 +2761,9 @@ def cli_install(service: "Service | None",
         return cli_spec_for(cli_name), None
     # Widen the assert when another service grows a CLI.
     assert isinstance(
-        service, (DiscordService, EmailService, GitHubService, GwsService,
-                  HfHubService, LinearService, NotionService, SlackService))
+        service,
+        (AirtableService, DiscordService, EmailService, GitHubService,
+         GwsService, HfHubService, LinearService, NotionService, SlackService))
     return service.cli_installs()[cli_name]
 
 

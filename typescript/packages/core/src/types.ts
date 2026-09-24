@@ -436,6 +436,7 @@ export const VFSName = Object.freeze({
   SHAREPOINT: 'sharepoint',
   DROPBOX: 'dropbox',
   BOX: 'box',
+  AIRTABLE: 'airtable',
   SLACK: 'slack',
   DISCORD: 'discord',
   GMAIL: 'gmail',

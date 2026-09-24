@@ -15,15 +15,14 @@
 import errno
 import functools
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any, Protocol, overload
 
 from mirage.accessor.base import Accessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.commands.builtin.generic.du import (DEFAULT_MAX_DU_ENTRIES,
-                                                DuEntries)
+from mirage.commands.builtin.generic.du import DEFAULT_MAX_DU_ENTRIES
 from mirage.commands.config import CommandFnResult, CommandOpts, ProvisionFn
 from mirage.context import (effective_path_mode, get_admission,
                             get_current_session, get_mount_gate,
@@ -37,193 +36,9 @@ from mirage.utils.glob_walk import DEFAULT_MAX_GLOB_MATCHES, make_resolve_glob
 from mirage.utils.hidden import move_reveals
 from mirage.utils.path import norm, parent
 from mirage.utils.remnants import remove_remnants, visible_below
-
-OperationFn = Callable[..., Any]
-
-# Per-slot op shapes, the twins of adapter.ts's ReaddirOp/StatOp/...
-# generics. The accessor parameter stays Any on purpose: every backend
-# annotates its own concrete accessor, and a `accessor: Accessor`
-# protocol parameter would reject all of them under contravariance
-# (TS solves this with `<A extends Accessor>`; a generic frozen
-# dataclass plus functools.partial makes that plumbing cost more here
-# than the accessor check is worth — the slot SHAPE is the guard that
-# stops readdir being wired where stat belongs). The leading two
-# parameters are positional-only because backends name the path
-# parameter both `path` and `path_spec`.
-
-
-class ReaddirOp(Protocol):
-
-    def __call__(self,
-                 accessor: Any,
-                 path: PathSpec,
-                 /,
-                 index: IndexCacheStore = ...) -> Awaitable[list[str]]:
-        ...
-
-
-class ReadBytesOp(Protocol):
-
-    def __call__(self,
-                 accessor: Any,
-                 path: PathSpec,
-                 /,
-                 index: IndexCacheStore = ...) -> Awaitable[bytes]:
-        ...
-
-
-class ReadStreamOp(Protocol):
-    """Backend streams are async iterators; the polymorphic reader
-    contract (bytes / awaitable) exists only at the generics' bound-
-    reader boundary (``normalized_read``), never on the slot itself:
-    the cache wrapper and the dir-refusing chokepoint both ``async
-    for`` over this directly."""
-
-    def __call__(self,
-                 accessor: Any,
-                 path: PathSpec,
-                 /,
-                 index: IndexCacheStore = ...) -> AsyncIterator[bytes]:
-        ...
-
-
-class StatOp(Protocol):
-
-    def __call__(self,
-                 accessor: Any,
-                 path: PathSpec,
-                 /,
-                 index: IndexCacheStore = ...) -> Awaitable[FileStat]:
-        ...
-
-
-class ReadRangeOp(Protocol):
-    """A byte window without reading the whole object.
-
-    Called as ``(accessor, path, index, offset, size)``; most backends
-    point it at their own ``read_bytes``, which already takes the
-    window.
-    """
-
-    def __call__(self,
-                 accessor: Any,
-                 path: PathSpec,
-                 /,
-                 index: IndexCacheStore = ...,
-                 offset: int = ...,
-                 size: int | None = ...) -> Awaitable[bytes]:
-        ...
-
-
-class WriteOp(Protocol):
-
-    def __call__(self, accessor: Any, path: PathSpec, data: bytes,
-                 /) -> Awaitable[None]:
-        ...
-
-
-class ExistsOp(Protocol):
-
-    def __call__(self, accessor: Any, path: PathSpec, /) -> Awaitable[bool]:
-        ...
-
-
-class PathOp(Protocol):
-
-    def __call__(self, accessor: Any, path: PathSpec, /) -> Awaitable[None]:
-        ...
-
-
-class RmdirOp(Protocol):
-    """Remove an empty directory. ``index`` joins the read-family slots'
-    contract because the hidden-remnant guard turns a refused rmdir into
-    a raw listing of the same directory, and an indexed backend cannot
-    list a nested path through ``NULL_INDEX``; the backend itself does
-    not consult it."""
-
-    def __call__(self,
-                 accessor: Any,
-                 path: PathSpec,
-                 /,
-                 index: IndexCacheStore = ...) -> Awaitable[None]:
-        ...
-
-
-class RmTreeOp(Protocol):
-    """Remove a subtree. The builders ignore any returned value
-    (databricks reports the removed keys for its own rename path), so
-    the return stays loose where unlink/rmdir pin None."""
-
-    def __call__(self, accessor: Any, path: PathSpec, /) -> Awaitable[Any]:
-        ...
-
-
-class MkdirOp(Protocol):
-
-    def __call__(self,
-                 accessor: Any,
-                 path: PathSpec,
-                 /,
-                 parents: bool = ...) -> Awaitable[None]:
-        ...
-
-
-class PairOp(Protocol):
-    """Rename/copy/dir-copy: two paths on the same backend."""
-
-    def __call__(self, accessor: Any, src: PathSpec, dst: PathSpec,
-                 /) -> Awaitable[None]:
-        ...
-
-
-class TruncateOp(Protocol):
-
-    def __call__(self, accessor: Any, path: PathSpec, length: int,
-                 /) -> Awaitable[None]:
-        ...
-
-
-class IsMountedOp(Protocol):
-
-    def __call__(self, accessor: Any, /) -> bool:
-        ...
-
-
-class DuSizeOp(Protocol):
-
-    def __call__(self,
-                 accessor: Any,
-                 path: PathSpec,
-                 /,
-                 index: IndexCacheStore = ...) -> Awaitable[int]:
-        ...
-
-
-class DuEntriesOp(Protocol):
-
-    def __call__(self,
-                 accessor: Any,
-                 path: PathSpec,
-                 /,
-                 index: IndexCacheStore = ...) -> Awaitable[DuEntries]:
-        ...
-
-
-class ResolveGlobOp(Protocol):
-    """Glob resolution as the builders consume it.
-
-    Paths only, no text words: the dispatcher has split the command line
-    before a builder runs, and every backend resolver takes PathSpec.
-    The union this used to carry is the argv type (workspace/expand),
-    where a word really can be either, leaking one layer down.
-    """
-
-    def __call__(self,
-                 accessor: Any,
-                 paths: Sequence[PathSpec],
-                 /,
-                 index: IndexCacheStore = ...) -> Awaitable[list[PathSpec]]:
-        ...
+from mirage.vfs.types import (IsMountedOp, NativeReadOps, OperationFn, ReadOps,
+                              ReadStreamOp, ResolveGlobOp, SearchOps, StatOp,
+                              WriteOps)
 
 
 class BuilderFn(Protocol):
@@ -584,26 +399,6 @@ class Operation(StrEnum):
     TRUNCATE = "truncate"
 
 
-@dataclass(frozen=True, slots=True)
-class DuOps:
-    """A backend's native ``du`` implementation, both halves at once.
-
-    ``size`` and ``entries`` are not independent: the generic derives its
-    per-directory rows from ``entries``, so a backend offering only the
-    cheaper ``size`` would silently print operand totals with no
-    directory rows and an inert ``-a``. Pairing them in one value makes
-    native du all-or-nothing, so that degraded shape cannot be reached
-    by omission.
-
-    Args:
-        size (DuSizeOp): recursive byte total for one path.
-        entries (DuEntriesOp): per-file breakdown, leaf files only.
-    """
-
-    size: DuSizeOp
-    entries: DuEntriesOp
-
-
 @dataclass(frozen=True)
 class Builder:
     name: str
@@ -616,48 +411,17 @@ class Builder:
 
 
 @dataclass(frozen=True)
-class CommandIO:
-    readdir: ReaddirOp
-    read_bytes: ReadBytesOp
-    read_stream: ReadStreamOp
-    stat: StatOp
-    is_mounted: IsMountedOp
+class CommandIO(ReadOps, NativeReadOps, WriteOps):
+    read_stream: ReadStreamOp = field()
+    is_mounted: IsMountedOp = field()
     local: bool = True
     max_glob_matches: int | None = DEFAULT_MAX_GLOB_MATCHES
-    # Fetch a byte range without pulling the whole object. Absent means
-    # the generic read fetches everything and slices, which is correct
-    # everywhere and is the only meaningful behavior for a backend that
-    # renders its content rather than storing it: there is no remote
-    # range to ask for when the bytes do not exist until we make them.
-    # Called as (accessor, path, index, offset, size), so most backends
-    # point it at their own read_bytes, which already takes the window;
-    # disk needs a separate function because its read_bytes does not.
-    read_range: ReadRangeOp | None = None
-    write: WriteOp | None = None
-    exists: ExistsOp | None = None
-    mkdir: MkdirOp | None = None
-    unlink: PathOp | None = None
-    rmdir: RmdirOp | None = None
-    rm_r: RmTreeOp | None = None
-    rename: PairOp | None = None
-    copy: PairOp | None = None
-    dir_copy: PairOp | None = None
-    create: PathOp | None = None
-    truncate: TruncateOp | None = None
-    # Filter kwargs drift per backend (name/type/size bounds/...), the
-    # repo's kwargs spelling of TS's FindOptions object; a Protocol
-    # naming them would reject every backend, so the slot stays loose.
-    find: OperationFn | None = None
-    du: DuOps | None = None
     max_du_entries: int | None = DEFAULT_MAX_DU_ENTRIES
-    # Typed like `write`, now that the tee generic actually calls it.
-    append: WriteOp | None = None
-    # Kwargs vary per backend (mode/times/owner); loose like TS's any.
-    set_attrs: OperationFn | None = None
     # Child names the namespace owes a directory (nested mount roots and
     # symlinks). Stamped per invocation from opts.ns.child_mounts by the
     # factory, because it is session-scoped state and the adapter itself
     # is built once per backend.
+    search: SearchOps | None = None
     glob_children: ChildMounts | None = None
     # What an owed name points at, the namespace's own stat resolved
     # through the workspace. Stamped beside glob_children from

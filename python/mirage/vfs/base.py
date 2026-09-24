@@ -90,15 +90,13 @@ class BaseVFS:
     # Distinct from caches_reads, which asks whether the gate can fire.
     #
     # onedrive and sharepoint look like they qualify and do not: both
-    # stamp a cTag on stat and on read, so on token kind alone the
-    # refusal reads as unnecessary. It is correct for a second reason
-    # the flag does not name -- both label the read record with
-    # `path.vfs_path`, which carries no leading slash, so `record()`
-    # builds a malformed key ("/oda/b.txt" rather than "/od/a/b.txt")
-    # and the cTag can never be matched against the cache entry. The
-    # backends that do qualify pass `path_spec.mount_path` instead.
-    # gdrive carries the same slashless label on top of its token-kind
-    # mismatch. Fix the label before reconsidering the flag.
+    # stamp a cTag on stat and on read, and both label the read record
+    # with the virtual path, so on token kind alone the refusal reads as
+    # unnecessary. The read-side cTag, though, is captured only while a
+    # recorder is active (a gated metadata call), so an unrecorded read
+    # stamps nothing to compare. The flag stays withheld pending the
+    # #1165 read-token contract. gdrive additionally mismatches token
+    # kinds.
     READ_REVALIDATABLE: bool = False
 
     def __init__(
@@ -136,6 +134,28 @@ class BaseVFS:
     async def resolve_glob(self,
                            paths: list[PathSpec],
                            prefix: str = "") -> list[PathSpec]:
+        """Expand the patterned specs in ``paths`` against this backend.
+
+        ``prefix`` is the mount prefix without its trailing slash
+        (``/mnt/lin``). Every caller stamps each spec's ``vfs_path`` with
+        ``mount_key(virtual, prefix)`` before calling: the workspace
+        expander, its mid-path and globstar walks, and the builtins'
+        ``expand_operands`` (commands never come here; they glob through
+        their ``CommandIO.resolve_glob``, which takes no prefix). So an
+        implementation may read ``vfs_path`` and ignore ``prefix``, as the
+        API backends do, and one that re-derives ``vfs_path`` from
+        ``prefix``, as the storage backends and the typescript twins do,
+        computes the same key. The re-derivation only matters to a caller
+        outside the workspace handing over an unstamped spec
+        (``PathSpec.from_str_path`` keys it from the root).
+
+        Args:
+            paths (list[PathSpec]): specs to expand, keyed under the mount.
+            prefix (str): the owning mount's prefix, no trailing slash.
+
+        Returns:
+            list[PathSpec]: one spec per match.
+        """
         raise NotImplementedError
 
     def storage_id(self) -> str:
@@ -163,13 +183,6 @@ class BaseVFS:
         return CapacityResult(state=CapacityState.UNKNOWN)
 
     def __getattr__(self, name: str) -> Any:
-        # Read through the instance, not the class. A builtin sets ``_ops``
-        # as a class attribute and resolves the same either way, but a kit
-        # backend has no class of its own to hang one on and builds the map
-        # per instance in ``GenericVFS.__init__``; ``type(self)._ops``
-        # read past it and reported every op the table carried as missing.
-        # No recursion: ``_ops`` is always found, on the class if nowhere
-        # else, so this lookup never re-enters ``__getattr__``.
         fn = self._ops.get(name)
         if fn is not None:
             return partial(fn, self.accessor)
@@ -225,7 +238,16 @@ class BaseVFS:
         }
 
     def load_state(self, state: dict[str, Any]) -> None:
-        pass
+        """Take back what ``get_state`` put out.
+
+        A no-op by default, which is right for every VFS whose bytes live
+        in the remote service: its state is a redacted config, and the
+        restored mount reaches its data through that config alone. Only a
+        VFS holding content of its own (ram, disk, redis) overrides this.
+
+        Args:
+            state (dict[str, Any]): the payload ``get_state`` produced.
+        """
 
     @property
     def is_closed(self) -> bool:

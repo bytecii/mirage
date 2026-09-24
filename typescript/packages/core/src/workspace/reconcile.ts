@@ -143,7 +143,7 @@ export class Reconciler {
       if (err instanceof TypeError || err instanceof ReferenceError) throw err
       await this.cache.remove(path)
       await mount.index?.clear()
-      console.debug(`probe failed for ${path}: ${String(err)}`)
+      console.warn(`probe failed for ${path}: ${String(err)}`)
       return Verdict.UNKNOWN
     }
   }
@@ -206,7 +206,7 @@ export class Reconciler {
     } catch (err) {
       await this.cache.remove(path)
       await mount.index?.clear()
-      console.debug(`reconcile probe failed for ${path}: ${String(err)}`)
+      console.warn(`reconcile probe failed for ${path}: ${String(err)}`)
     }
   }
 
