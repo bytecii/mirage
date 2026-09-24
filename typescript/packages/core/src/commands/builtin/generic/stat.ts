@@ -25,7 +25,7 @@ import {
 } from '../../../types.ts'
 import { isoToEpoch } from '../../../utils/dates.ts'
 import { fsErrorLine, isFsError } from '../../../utils/errors.ts'
-import { contentSize, deviceRdev } from '../../../utils/stat_view.ts'
+import { DIR_SIZE, contentSize, deviceRdev, isDir } from '../../../utils/stat_view.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { lsModeString } from '../utils/formatting.ts'
 import { groupName, identityOf, ownerName, type Identity } from '../utils/identity.ts'
@@ -356,7 +356,10 @@ export async function statGeneric(
     if (fmt !== null) {
       lines.push(formatStat(fmt, s, p.rawPath, identity))
     } else {
-      const sizeStr = s.size === null ? 'None' : String(s.size)
+      // A directory's size= is DIR_SIZE, as `%s` prints it; anything else
+      // keeps its own, None when unknown.
+      const size = isDir(s) ? DIR_SIZE : s.size
+      const sizeStr = size === null ? 'None' : String(size)
       const modStr = s.modified ?? 'None'
       lines.push(`name=${s.name} size=${sizeStr} modified=${modStr} type=${shownType(s)}`)
     }

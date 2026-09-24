@@ -28,6 +28,7 @@ import {
   MountMode,
   PathSpec,
 } from '../../../types.ts'
+import { DIR_SIZE } from '../../../utils/stat_view.ts'
 import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
 import { Workspace } from '../../../workspace/workspace/workspace.ts'
 import { statGeneric } from './stat.ts'
@@ -143,6 +144,26 @@ describe('stat -c directive formatting', () => {
     expect(await render('%s', fs({ size: null }))).toBe('0')
     expect(await render('%F', fs())).toBe('regular file')
     expect(await render('%F', fs({ type: FileType.DIRECTORY }))).toBe('directory')
+  })
+
+  // A directory is DIR_SIZE whatever the backend put in size: null for a
+  // synthetic one, a subtree total for a Graph folder. A file keeps its own
+  // size, None when unknown.
+  it('sizes a directory in the default record as %s does', async () => {
+    const plain = { ...opts(''), flags: {} } as CommandOpts
+    const cases: [FileStat, string][] = [
+      [fs({ type: FileType.DIRECTORY, size: null }), `size=${String(DIR_SIZE)} `],
+      [fs({ type: FileType.DIRECTORY, size: 123456 }), `size=${String(DIR_SIZE)} `],
+      [fs({ size: null }), 'size=None '],
+    ]
+    for (const [s, want] of cases) {
+      const result = await statGeneric([PathSpec.fromStrPath('/data/f.txt')], plain, () =>
+        Promise.resolve(s),
+      )
+      if (result === null) throw new Error('statGeneric returned null')
+      expect(result[1].exitCode).toBe(0)
+      expect(DEC.decode(await materialize(result[0]))).toContain(want)
+    }
   })
 
   it('renders mode directives with defaults and explicit bits', async () => {
