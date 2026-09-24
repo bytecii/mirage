@@ -195,6 +195,25 @@ async def paginate_list(
         partial(_list_page, config, path, merged, session=session))
 
 
+def complete_page(page: dict[str, Any]) -> dict[str, Any]:
+    """Refuse a list response Notion marked incomplete.
+
+    Args:
+        page (dict[str, Any]): one list response.
+
+    Returns:
+        dict[str, Any]: the same response, when it is complete.
+
+    Raises:
+        NotionAPIError: when ``request_status`` says the rows stop short.
+    """
+    status = page.get("request_status")
+    if isinstance(status, dict) and status.get("type") == "incomplete":
+        reason = status.get("incomplete_reason", "unknown")
+        raise NotionAPIError(f"Notion query incomplete: {reason}", code=reason)
+    return page
+
+
 async def _post_page(config: NotionConfig,
                      path: str,
                      body: dict[str, Any],
@@ -203,12 +222,10 @@ async def _post_page(config: NotionConfig,
     merged = dict(body)
     if cursor is not None:
         merged["start_cursor"] = cursor
-    page = await notion_post(config, path, merged, session=session)
-    status = page.get("request_status")
-    if isinstance(status, dict) and status.get("type") == "incomplete":
-        reason = status.get("incomplete_reason", "unknown")
-        raise NotionAPIError(f"Notion query incomplete: {reason}", code=reason)
-    return page
+    return complete_page(await notion_post(config,
+                                           path,
+                                           merged,
+                                           session=session))
 
 
 async def paginate_post(
