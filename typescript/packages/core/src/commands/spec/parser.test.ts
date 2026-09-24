@@ -320,6 +320,13 @@ describe('parseCommand — grep -f pattern file', () => {
     expect(p.routingPaths()).toContain('/data/p1.txt')
     expect(p.routingPaths()).toContain('/data/p2.txt')
   })
+
+  it('keeps rg -f - as stdin, as grep does', () => {
+    // Resolved against the cwd, `-` became a pattern file named `/-`.
+    const p = parseCommand(specOf('rg'), ['-f', '-', '/a.txt'], '/data', 'rg')
+    expect(p.flags['-f']).toEqual(['-'])
+    expect(p.paths()).toEqual(['/a.txt'])
+  })
 })
 
 describe('parseCommand — GNU long flag =value syntax', () => {

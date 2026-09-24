@@ -1,3 +1,4 @@
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -15,7 +16,8 @@ from mirage.commands.builtin.rg_scan import rg_full
 from mirage.commands.builtin.utils.lines import split_lines
 from mirage.commands.builtin.utils.output import (format_optional_records,
                                                   format_records)
-from mirage.commands.builtin.utils.stream import resolve_source
+from mirage.commands.builtin.utils.stream import (is_stdin, resolve_source,
+                                                  stdin_stream)
 from mirage.commands.builtin.utils.wrap import (call_read_bytes, call_readdir,
                                                 call_stat,
                                                 mount_parent_readdir,
@@ -24,7 +26,7 @@ from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
-from mirage.io.types import ByteSource, IOResult
+from mirage.io.types import ByteSource, IOResult, materialize
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import FS_ERRORS, WALK_ERRORS, fs_strerror
 from mirage.utils.key_prefix import mount_prefix_of
@@ -32,6 +34,62 @@ from mirage.utils.path import respell_raw
 
 # ripgrep's own words for a line with no pattern, exit 2 (14.1.1).
 RG_NO_PATTERN = "rg: ripgrep requires at least one pattern to execute a search"
+# ripgrep's name for stdin wherever it names the file a line came from.
+STDIN_NAME = "<stdin>"
+
+
+def operand_name(p: PathSpec) -> str:
+    """The name ripgrep prints for an operand.
+
+    ``-`` is ``<stdin>``. ``/dev/stdin`` reads the same bytes, but
+    ripgrep opens it as the path it is and names it as typed.
+
+    Args:
+        p (PathSpec): the operand.
+    """
+    return STDIN_NAME if p.raw_path == "-" else p.raw_path
+
+
+async def fifo_stat(path: str) -> FileStat:
+    """A stdin operand's stat: a stream, never a directory to walk.
+
+    Args:
+        path (str): the operand's name.
+    """
+    return FileStat(name=path, type=FileType.FIFO)
+
+
+async def read_all(source: AsyncIterator[bytes], path: str) -> bytes:
+    """A stdin operand's bytes, behind the one-file reader rg_full calls.
+
+    Args:
+        source (AsyncIterator[bytes]): the operand's turn on stdin.
+        path (str): the operand's name, which the source already is.
+    """
+    return await materialize(source)
+
+
+async def selects_any(source: AsyncIterator[bytes], pat: re.Pattern[str],
+                      invert: bool) -> bool:
+    """Whether ``source`` selects a line, read no further than the first.
+
+    The listing modes need only that one bit, so an unbounded pipe is
+    never buffered whole to answer them.
+
+    Args:
+        source (AsyncIterator[bytes]): the input to probe.
+        pat (re.Pattern[str]): the compiled pattern list.
+        invert (bool): -v, select the lines that do not match.
+    """
+    probe = IOResult(exit_code=1)
+    async for _ in grep_stream(source,
+                               pat,
+                               invert=invert,
+                               max_count=1,
+                               count_only=True,
+                               io=probe):
+        pass
+    return probe.exit_code == 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +195,8 @@ async def rg(
         read_bytes (Callable[..., Awaitable[bytes]]): Whole-file reader.
         read_stream (Callable[..., AsyncIterator[bytes]] | None): Optional
             stream reader.
+        stdin (ByteSource | None): the invocation's input, which a ``-``
+            operand reads, as does a line with no operand at all.
 
     Returns:
         tuple[ByteSource | None, IOResult]: Output stream and exit metadata.
@@ -144,6 +204,9 @@ async def rg(
     read_bytes = cache_aware_bound_bytes(read_bytes)
     if read_stream is not None:
         read_stream = cache_aware_bound_stream(read_stream)
+    # Every `-` operand reads stdin through one cursor, as grep's do.
+    operand_stream = stdin_stream(
+        read_stream if read_stream is not None else read_bytes, stdin)
     fl = FlagView(opts.flags, spec=SPECS["rg"])
     pattern, never_match = await resolve_pattern(texts, fl, read_bytes,
                                                  RG_NO_PATTERN)
@@ -161,7 +224,8 @@ async def rg(
         is_dir = False
         unreadable: BaseException | None = None
         try:
-            s = await st(paths[0].virtual)
+            s = await (fifo_stat(paths[0].raw_path)
+                       if is_stdin(paths[0]) else st(paths[0].virtual))
             is_dir = s.type == FileType.DIRECTORY
         except WALK_ERRORS as exc:
             try:
@@ -181,6 +245,8 @@ async def rg(
         needs_full = (is_dir or f.files_only or f.files_without_match
                       or f.context_before or f.context_after or f.file_type
                       or f.glob_pattern)
+        pat = compile_pattern(pattern, f.ignore_case, f.fixed_string,
+                              f.whole_word)
         if needs_full:
             warnings_f: list[str] = []
             results: list[str] = []
@@ -190,11 +256,29 @@ async def rg(
             # `grep -r` reads its status the same way.
             full_io = IOResult(exit_code=1)
             for p in paths:
+                fed = is_stdin(p)
+                if fed and (f.files_only or f.files_without_match):
+                    # Decided at the first selected line, like the listing
+                    # of a line with no operand; -m0 reads nothing at all.
+                    if f.max_count != 0:
+                        hit = await selects_any(operand_stream(p), pat,
+                                                f.invert)
+                        if hit:
+                            full_io.exit_code = 0
+                        # -l lists a stdin that selected a line,
+                        # --files-without-match one that selected none.
+                        if hit == f.files_only:
+                            results.append(operand_name(p))
+                    continue
+                # stdin is an explicit operand, which ripgrep never
+                # filters by --type or --glob. An explicit file still is
+                # filtered here: the search push-downs hand the candidates
+                # they narrowed a walk to in as explicit files.
                 hits_full = await rg_full(
                     rd,
-                    st,
-                    rb,
-                    p.virtual,
+                    fifo_stat if fed else st,
+                    partial(read_all, operand_stream(p)) if fed else rb,
+                    operand_name(p) if fed else p.virtual,
                     pattern,
                     ignore_case=f.ignore_case,
                     invert=f.invert,
@@ -208,16 +292,17 @@ async def rg(
                     whole_word=f.whole_word,
                     context_before=f.context_before,
                     context_after=f.context_after,
-                    file_type=f.file_type,
-                    glob_pattern=f.glob_pattern,
+                    file_type=None if fed else f.file_type,
+                    glob_pattern=None if fed else f.glob_pattern,
                     hidden=f.hidden,
                     warnings=warnings_f,
-                    file_prefix=p.raw_path if label else None,
+                    file_prefix=operand_name(p) if label else None,
                     no_filename=f.no_filename,
                     byte_offsets=f.byte_offsets,
                     io=full_io,
                 )
-                results.extend(respell_raw(hits_full, p.virtual, p.raw_path))
+                results.extend(hits_full if fed else respell_raw(
+                    hits_full, p.virtual, p.raw_path))
             stderr = format_optional_records(warnings_f)
             # ripgrep's status under --files-without-match follows the
             # listing, not the matching: 0 when a file was listed, 1 when
@@ -230,9 +315,6 @@ async def rg(
             return format_records(results), IOResult(exit_code=code,
                                                      stderr=stderr)
 
-        pat = compile_pattern(pattern, f.ignore_case, f.fixed_string,
-                              f.whole_word)
-
         if len(paths) > 1 or f.with_filename:
             all_results: list[str] = []
             warnings: list[str] = []
@@ -244,7 +326,8 @@ async def rg(
             matched = False
             for p in paths:
                 try:
-                    raw = await rb(p.virtual)
+                    raw = (await materialize(operand_stream(p))
+                           if is_stdin(p) else await rb(p.virtual))
                 except FS_ERRORS as exc:
                     # ripgrep reports the failed operand and keeps
                     # searching the rest.
@@ -258,19 +341,19 @@ async def rg(
                 # bytes in `grep_stream`) both say 2.
                 data = split_lines(decode_line(raw))
                 file_io = IOResult(exit_code=1)
-                hits = grep_lines(p.raw_path, data, pat, f.invert,
-                                  f.line_numbers, f.count_only, f.files_only,
-                                  f.only_matching, f.max_count, file_io,
-                                  f.byte_offsets)
+                name = operand_name(p)
+                hits = grep_lines(name, data, pat, f.invert, f.line_numbers,
+                                  f.count_only, f.files_only, f.only_matching,
+                                  f.max_count, file_io, f.byte_offsets)
                 matched = matched or file_io.exit_code == 0
                 if f.count_only:
                     if grep_count_has_matches(hits):
                         all_results.append(
-                            f"{p.raw_path}:{hits[0]}" if label else hits[0])
+                            f"{name}:{hits[0]}" if label else hits[0])
                 elif f.files_only:
                     all_results.extend(hits)
                 elif label:
-                    all_results.extend(f"{p.raw_path}:{r}" for r in hits)
+                    all_results.extend(f"{name}:{r}" for r in hits)
                 else:
                     all_results.extend(hits)
             stderr = format_optional_records(warnings)
@@ -285,8 +368,10 @@ async def rg(
                       f"{fs_strerror(unreadable)}\n").encode()
             return b"", IOResult(exit_code=2, stderr=stderr)
 
-        if read_stream is not None:
-            source: AsyncIterator[bytes] = read_stream(paths[0])
+        if is_stdin(paths[0]):
+            source: AsyncIterator[bytes] = operand_stream(paths[0])
+        elif read_stream is not None:
+            source = read_stream(paths[0])
         else:
             raw_bytes = await rb(paths[0].virtual)
             source = _wrap_bytes(raw_bytes)
@@ -314,21 +399,11 @@ async def rg(
     if f.files_without_match and not f.count_only:
         # ripgrep names a matchless stdin `<stdin>`, exit 0 for the
         # listing, and lists nothing under -m0, where it reads nothing.
-        # The probe streams through the scanner and stops at the first
-        # selected line, so an unbounded pipe is never buffered whole.
         if f.max_count == 0:
             return b"", IOResult(exit_code=1)
-        probe = IOResult(exit_code=1)
-        async for _ in grep_stream(source,
-                                   pat,
-                                   invert=f.invert,
-                                   max_count=1,
-                                   count_only=True,
-                                   io=probe):
-            pass
-        if probe.exit_code == 0:
+        if await selects_any(source, pat, f.invert):
             return b"", IOResult(exit_code=1)
-        return b"<stdin>\n", IOResult()
+        return f"{STDIN_NAME}\n".encode(), IOResult()
     io = IOResult(exit_code=1)
     stream = grep_stream(
         source,

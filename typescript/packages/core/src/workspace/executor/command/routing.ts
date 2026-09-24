@@ -15,6 +15,7 @@
 import { findExprTail } from '../../../commands/builtin/find_parse.ts'
 import { walk } from '../../../commands/cli/walk.ts'
 import { SPECS } from '../../../commands/spec/index.ts'
+import { FlagView } from '../../../commands/spec/flag_view.ts'
 import { parseCommand, parseToKwargs } from '../../../commands/spec/parser.ts'
 import type { ByteSource } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
@@ -27,7 +28,8 @@ import { classifyBarePath } from '../../expand/classify/index.ts'
 // grep -r and bare rg print bare relative names (empty raw). Two gates:
 // grep only defaults under -r/-R (and ignores stdin, GNU's rule); rg
 // yields to an attached stdin, even an empty one (its readable-stdin
-// rule). All pinned on debian:stable-slim / ripgrep 14.
+// rule), unless `-f -` reads it for patterns. All pinned on
+// debian:stable-slim / ripgrep 14.
 export const CWD_DEFAULT_RAW: Record<string, string> = {
   grep: '',
   rg: '',
@@ -50,7 +52,11 @@ export function defaultCwdOperand(
 ): PathSpec | null {
   const spec = SPECS[cmdName]
   if (spec === undefined) return null
-  let argv = parts.slice(1).map((p) => (typeof p === 'string' ? p : p.virtual))
+  // A typed `-` goes back to the parser as itself, as it does from
+  // parseFlags, so `rg -f -` reads as stdin rather than a file `/-`.
+  let argv = parts
+    .slice(1)
+    .map((p) => (typeof p === 'string' ? p : p.rawPath === '-' ? '-' : p.virtual))
   if (cmdName === 'find') {
     // Only the words before the expression can be start points: an
     // `-exec` command word or a `-newer` reference is the parser's.
@@ -61,7 +67,13 @@ export function defaultCwdOperand(
   if (cmdName === 'grep') {
     const kwargs = parseToKwargs(parsed)
     if (kwargs.r !== true && kwargs.R !== true) return null
-  } else if (cmdName === 'rg' && stdin !== null) {
+  } else if (
+    cmdName === 'rg' &&
+    stdin !== null &&
+    !new FlagView(parseToKwargs(parsed), spec).asList('f').includes('-')
+  ) {
+    // `-f -` reads the attached stdin for patterns first, which leaves
+    // ripgrep nothing to search there but the cwd.
     return null
   }
   const operand = classifyBarePath('.', registry, cwd)
@@ -81,7 +93,7 @@ export function pathFlagScopes(cmdName: string, argv: string[], cwd: string): Pa
   if (spec === undefined) return []
   const parsed = parseCommand(spec, argv, cwd, cmdName)
   const key = (
-    { grep: '--file', sed: '-f', awk: '-f', jq: '--from-file' } as Record<string, string>
+    { grep: '--file', rg: '-f', sed: '-f', awk: '-f', jq: '--from-file' } as Record<string, string>
   )[cmdName]
   const program = key === undefined ? undefined : parsed.flags[key]
   const programPaths = Array.isArray(program) ? program : [program]

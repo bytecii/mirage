@@ -17,9 +17,20 @@ import { describe, expect, it } from 'vitest'
 import { cliSpecFor } from '../../../commands/cli/specs.ts'
 import { OpsRegistry } from '../../../ops/registry.ts'
 import { RAMVFS } from '../../../vfs/ram/ram.ts'
-import { MountMode } from '../../../types.ts'
+import { MountMode, PathSpec } from '../../../types.ts'
 import { Workspace } from '../../workspace/workspace.ts'
-import { programTokens } from './routing.ts'
+import { defaultCwdOperand, pathFlagScopes, programTokens } from './routing.ts'
+
+describe('pathFlagScopes', () => {
+  it('leaves a program file out', () => {
+    // The program file is read before routing, so a pattern file on
+    // another mount does not make the line cross-mount; rg's -f is one,
+    // exactly as grep's is.
+    for (const cmd of ['grep', 'rg']) {
+      expect(pathFlagScopes(cmd, ['-f', '/other/p', '/data/in'], '/')).toEqual([])
+    }
+  })
+})
 
 describe('programTokens', () => {
   it('walks a CLI verb path and keeps the rest raw', async () => {
@@ -48,6 +59,32 @@ describe('programTokens', () => {
       expect(programTokens(reg, 'git', [], '/')).toEqual([['git'], ['git']])
       // Anything else is the name and the raw argv.
       expect(programTokens(reg, 'rm', ['-rf', '/x'], '/')).toEqual([['rm', '-rf', '/x'], ['rm']])
+    } finally {
+      await ws.close()
+    }
+  })
+})
+
+describe('defaultCwdOperand', () => {
+  it('searches the cwd once rg -f - takes stdin', async () => {
+    // ripgrep 14.1.1: an attached stdin wins over the cwd, but `-f -` reads
+    // it for patterns first, which leaves only the cwd to search. The `-`
+    // arrives classified, so its spelling is what says stdin.
+    const ws = new Workspace({ '/ram': new RAMVFS() }, { mode: MountMode.WRITE })
+    try {
+      const reg = ws.registry
+      const stdin = new TextEncoder().encode('a\n')
+      const dash = new PathSpec({
+        virtual: '/ram/-',
+        directory: '/ram/',
+        vfsPath: '',
+        resolved: true,
+        rawPath: '-',
+      })
+      expect(defaultCwdOperand(['rg', '-f', dash], 'rg', reg, '/ram', stdin)?.rawPath).toBe('')
+      const file = new PathSpec({ virtual: '/ram/p', directory: '/ram/', vfsPath: '' })
+      expect(defaultCwdOperand(['rg', '-f', file], 'rg', reg, '/ram', stdin)).toBeNull()
+      expect(defaultCwdOperand(['rg', 'a'], 'rg', reg, '/ram', stdin)).toBeNull()
     } finally {
       await ws.close()
     }

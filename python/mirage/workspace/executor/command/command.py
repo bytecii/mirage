@@ -278,7 +278,7 @@ async def handle_command(
                                           stderr=program_msg)
             result = await prepare_program(cmd_name, prepared.texts,
                                            prepared.flag_kwargs, stdin,
-                                           dispatch)
+                                           dispatch, prepared.paths)
             program_texts, program_flags, stdin, program_error = result
             if program_error is not None:
                 return None, program_error, await exec_node(
