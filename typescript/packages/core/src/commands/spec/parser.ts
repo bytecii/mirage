@@ -504,22 +504,17 @@ export function parseCommand(
   // rawIndices[k] = argv position of rawArgs[k]
   const rawIndices: number[] = []
   // Per-position operand kinds aligned with the caller's argv (null =
-  // flag token or ignored word). Positions, not value sets, so the
-  // same word can be TEXT in one slot and PATH in another:
-  //   grep  *.txt  *.txt               -> [TEXT, PATH]
-  //   find  /data  -name  *.txt        -> [PATH, null, TEXT]
-  //   grep  --cache  /c  pat  f.txt    -> [null, null, TEXT, PATH]
+  // a word the scan never reads, such as a --cache token). Positions,
+  // not value sets, so the same word can be TEXT in one slot and PATH
+  // in another:
+  //   grep  *.txt  *.txt                  -> [TEXT, PATH]
+  //   find  /data  -name  *.txt           -> [PATH, TEXT, TEXT]
+  //   grep  --cache  /c  -e  pat  f.txt   -> [null, null, TEXT, TEXT, PATH]
   // origIndices/rawIndices map the parser's shrunken views back to
   // argv slots (filteredArgv drops --cache tokens, rawArgs keeps only
   // operands); kinds must be written at the original positions or one
   // dropped token shifts every later kind onto the wrong word.
   const wordKinds: (ValueType | null)[] = new Array<ValueType | null>(argv.length).fill(null)
-  if (old !== null && old.cluster !== null) {
-    // A cluster carries no dash, so leaving it null would send it to the
-    // shape heuristic and a path-shaped one (`tar sub/a.tgz`) would reach
-    // dispatch resolved and unreadable as letters.
-    wordKinds[0] = 'str'
-  }
   // The directory the next path operand resolves against, and where it
   // was for each word already read. It only ever moves for a spec that
   // declares operandBase, so every other command records null throughout
@@ -598,15 +593,22 @@ export function parseCommand(
   while (i < filteredArgv.length) {
     const tok = filteredArgv[i]
     if (tok === undefined) break
+    // A word the scan starts on is TEXT unless the operand pass below
+    // re-kinds it: an option is the parser's own syntax, and so are `--`,
+    // expression tokens and tar's old-style letters (all synthesized onto
+    // the cluster's slot). Only a value read off the next word takes its
+    // option's kind. The kind is stated rather than left null, because
+    // null means "guess from the shape" and the shape of a grammar token
+    // says nothing about it: the heuristic reads `-o/data/s1.txt` as a
+    // path relative to the cwd, because `-o` is a well-formed directory
+    // name, while the value inside the word is this parser's to resolve.
+    wordKinds[origIndices[i] ?? -1] = 'str'
 
     if (!endOfFlags && spec.ignoreTokens.has(tok)) {
       // Expression syntax, never an operand of the declared kind: `find
       // /d \( -name x \) ! -empty` would otherwise classify "(", ")" and
       // "!" as PATH operands, giving find three phantom start points on
-      // top of the real one. The kind is stated rather than left null,
-      // because null means "guess from the shape" and the shape of a
-      // grammar token says nothing about it.
-      wordKinds[origIndices[i] ?? -1] = 'str'
+      // top of the real one.
       i += 1
       continue
     }

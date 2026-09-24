@@ -31,6 +31,118 @@
       "flags": [
         "o"
       ]
+    },
+    {
+      "id": "sort_o_attached",
+      "seq": 610209,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/sort-oatt && printf 'b\\na\\n' > /data/sort-oatt/in.txt && sort -o/data/sort-oatt/out.txt /data/sort-oatt/in.txt && cat /data/sort-oatt/out.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "a\nb\n",
+        "stderr": ""
+      },
+      "flags": [
+        "o"
+      ]
+    },
+    {
+      "id": "sort_o_attached_in_cluster",
+      "seq": 610210,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/sort-ouatt && printf 'b\\na\\nb\\n' > /data/sort-ouatt/in.txt && sort -uo/data/sort-ouatt/out.txt /data/sort-ouatt/in.txt && cat /data/sort-ouatt/out.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "a\nb\n",
+        "stderr": ""
+      },
+      "flags": [
+        "u",
+        "o"
+      ]
+    },
+    {
+      "id": "sort_o_attached_relative",
+      "seq": 610211,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/sort-orel/sub && printf 'b\\na\\n' > /data/sort-orel/in.txt && (cd /data/sort-orel && sort -osub/out.txt in.txt) && cat /data/sort-orel/sub/out.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "a\nb\n",
+        "stderr": ""
+      },
+      "flags": [
+        "o"
+      ]
     }
   ]
 }
