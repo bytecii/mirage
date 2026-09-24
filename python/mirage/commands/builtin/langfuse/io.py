@@ -22,8 +22,9 @@ from mirage.core.langfuse.stat import stat as _stat
 
 # Langfuse traces/observations/sessions/prompts are read through the generic
 # factory (find walks readdir, classifying via stat); grep and rg keep
-# wrappers because grep matches structured fields (session id, prompt name)
-# and rg pushes down to the Langfuse search API. Langfuse is read-only, so the
+# wrappers that share one set of searchers (grep.py), which filter the list
+# endpoints client-side (trace summaries, session ids, prompt and dataset
+# names); there is no server-side search. Langfuse is read-only, so the
 # generic byte-mutation commands are intentionally absent (no write op wired).
 IO = CommandIO(
     readdir=_readdir,

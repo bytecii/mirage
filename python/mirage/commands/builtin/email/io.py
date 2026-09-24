@@ -22,9 +22,10 @@ from mirage.core.email.stat import stat as _stat
 
 # Email folders/messages/attachments are read through the generic factory
 # (with filetype commands for columnar attachments); find, grep and rg keep
-# wrappers because they push down to the mailbox search API. The email_*
-# commands are the bespoke send/reply/forward/triage surface; the generic
-# byte-mutation commands are intentionally absent (no write op wired).
+# wrappers because they push down to the mailbox search API. The `himalaya`
+# CLI (commands/cli/builtin/himalaya) is the send/reply/forward/triage
+# surface; the generic byte-mutation commands are intentionally absent (no
+# write op wired).
 IO = CommandIO(
     readdir=_readdir,
     read_bytes=_read,
