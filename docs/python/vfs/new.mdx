@@ -97,57 +97,77 @@ Snapshots and versions rebuild a saved mount through the same door: the register
 
 ## Contribute a Builtin VFS
 
-Builtins live inside the Mirage repo with the four-layer layout below. Keep the core I/O layer independent from command parsing, and check whether the same VFS or behavior should also be added to TypeScript.
+Builtins live inside the Mirage repo: one backend is four layers with one name (accessor, core, ops, VFS) plus its commands, and every layer has a TypeScript twin. Change both languages in the same PR; where they disagree, the more correct side wins.
 
-Use a recent VFS such as Dify or Databricks Volume as the structural reference. Paths are always `PathSpec` values inside the VFS; do not pass filesystem paths as raw strings.
+Most of a backend is already written as a kit. Reach for one before writing a layer by hand:
+
+| Kit | Module | For |
+| --- | --- | --- |
+| API client | `mirage.core.api` (`api_request`, `cursor_items`, `TokenManager`, `RetryPolicy`) | every HTTP call: one status-to-error mapping (`error_of`), retry, pagination, OAuth refresh, and the mount's session pool |
+| Hierarchy | `mirage.core.hierarchy` (`Scope`, `Slot`, `make_detect_scope`, `make_readdir`, `make_stat`, `entry_stat`, `make_read`, `DirListing`, `SearchQuery`) | an API tree of `<label>__<id>` directories: one scope table classifies every path for readdir, stat, read and search |
+| Object store | `mirage.core.object_store` | a flat key space (S3-style buckets, GridFS) |
+| Render | `mirage.core.render` (`json_bytes`, `jsonl_bytes`) | records rendered as the bytes the tree's files hold |
+
+Two builtins are the references. Trello is the hierarchy kit end to end: a scope table, listers, id-addressed readers, and nested `trello <noun> <verb>` commands. Jaeger is the client shape to copy: its `_get(accessor, ...)` takes the accessor and passes `accessor.pool` itself, so no call can forget the pool. Paths are always `PathSpec` values inside the VFS; never pass a path as a raw string.
 
 ## File Structure
 
 ```text
 python/mirage/
-  vfs/<name>/
-    __init__.py
-    config.py
-    prompt.py
-    <name>.py
-  accessor/<name>.py
+  accessor/<name>.py         # the client handle; owns config and the session pool
   core/<name>/
-    read.py
-    readdir.py
-    stat.py
-  ops/<name>/
-    __init__.py          # OPS derived from the CommandIO table
+    client.py                # API calls, all through mirage.core.api
+    scope.py                 # SCOPES and detect_scope (hierarchy kit)
+    pathing.py               # <label>__<id> names (sanitize_name, make_id_name)
+    normalize.py             # the JSON a file renders
+    readdir.py stat.py read.py
+  ops/<name>/__init__.py     # OPS derived from the CommandIO table
   commands/builtin/<name>/
-    __init__.py
-    io.py                # the CommandIO table
-    <vfs-specific commands>.py
+    io.py                    # the CommandIO table
+    __init__.py              # COMMANDS
+    <bespoke commands>.py    # push-downs and verbs
+  vfs/<name>/
+    __init__.py config.py prompt.py <name>.py
 ```
 
-Add matching tests under `python/tests/` without creating `__init__.py` files in the test tree.
+Tests mirror `mirage/` one to one under `python/tests/`, with no `__init__.py` in the test tree. Patch a client call where the module under test imports it.
 
 ## 1. Config, Accessor, and Registry
 
-Define a typed Pydantic config and keep secrets in `SecretStr` fields.
+Define a typed Pydantic config that refuses unknown keys, and keep secrets in `SecretStr` fields. `build_vfs`, YAML and snapshots all construct through it, so a misspelled knob fails by name instead of being dropped:
 
 ```python
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 
 class MyConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     token: SecretStr
+    board_ids: list[str] | None = None
 ```
 
-Create an `Accessor` that owns the client or transport. Add the VFS name to `VFSName`, export the config/VFS from `vfs/<name>/__init__.py`, and add a lazy `VFSEntry` to `mirage/vfs/registry.py`. The registry entry is required for YAML, snapshots, and the daemon to construct the VFS.
+Create an `Accessor` subclass that owns the client; the base class gives it `pool`, the `SessionPool` every request of the mount rides. Add the VFS name to `VFSName`, export the config and VFS from `vfs/<name>/__init__.py`, and add a lazy `VFSEntry` to `mirage/vfs/registry.py`. The registry entry is required for YAML, snapshots, and the daemon to construct the VFS.
 
 Keep every import at module scope. If that creates a cycle, change the dependency direction instead of adding a function-local import.
 
 ## 2. Core VFS Operations
 
-Implement only the operations the backend supports. Read-only API-backed mounts usually start with:
+Implement only the operations the backend supports. A read-only API-backed mount usually starts with:
 
-- `readdir(accessor, path, index)` returning child names.
+- `readdir(accessor, path, index)` returning child paths.
 - `read_bytes(accessor, path, index)` returning bytes.
 - `stat(accessor, path, index)` returning `FileStat`.
+
+Every client call passes `session=accessor.pool` (or takes the accessor, as Jaeger's does); without it `api_request` opens a fresh session per request. `tests/commands/test_client_calls_pass_session.py` fails a call that omits it.
+
+A hierarchy backend writes its tree once, as `SCOPES` in `core/<name>/scope.py`, and builds the three operations from it: `make_readdir(detect_scope, listers=...)`, `make_stat(detect_scope, readdir, entry_stats=...)` and `make_read(detect_scope, readers, stat=stat)`. The kit holds these rules, and a new backend keeps them:
+
+- A reader that reaches the API by the ids in the path slots passes `stat=` so the kit proves the file's parent through the listing first. Without it, a path outside the configured scope (Trello's `workspace_id` and `board_ids`) reads while `ls` and `stat` say it does not exist.
+- A listing that is a filtered or truncated view (one page of a bounded query, a time window, a glob-scoped span) returns `DirListing(entries, partial=True)`. Cached as the whole directory, it would prove every entry it left out absent.
+- `entry_stat("<id_key>", ...)` names the id under the key its path slot declares.
+- `FileStat.size` is the rendered byte length or `None`, never a storage-side number. Set `SIZES_ALWAYS_KNOWN` only when every listed size is computed from the same payload a read renders.
+- Id-addressed commands honor the same scope knobs the listing does (Trello's `commands/builtin/trello/_scope.py`).
 
 Glob resolution is not a per-backend file: bind it from readdir with `make_resolve_glob(readdir, cap)` (`mirage.utils.glob_walk`), or use the `CommandIO.resolve_glob` property.
 
@@ -167,7 +187,7 @@ async def stat(
     ...
 ```
 
-Add write, append, create, unlink, rename, or directory operations only when the backend has matching semantics. I/O should remain async-native.
+Add write, append, create, unlink, rename, or directory operations only when the backend has matching semantics. I/O stays async-native.
 
 ## 3. Ops Layer
 
@@ -180,38 +200,18 @@ from mirage.ops.generic import make_generic_ops
 OPS = make_generic_ops("my_vfs", IO)
 ```
 
-`make_generic_ops` emits read/readdir/stat plus whatever mutations the table carries — a `CommandIO` slot updates commands and ops together, and ops whose table field is `None` are omitted. Knobs mirror backend semantics, e.g. `make_generic_ops("databricks_volume", IO, mkdir_parents=True)`.
+`make_generic_ops` emits read/readdir/stat plus whatever mutations the table carries: a `CommandIO` slot updates commands and ops together, and ops whose table field is `None` are omitted. Knobs mirror backend semantics, e.g. `make_generic_ops("databricks_volume", IO, mkdir_parents=True)`.
 
-Write a dedicated op module only for an irregular handler with no generic equivalent (a native `grep` push-down, a semantic `search`), and append it to the derived list:
-
-```python
-from mirage.core.my_vfs.grep import grep_bytes
-from mirage.ops.registry import op
-from mirage.types import PathSpec
-
-
-@op("grep", vfs="my_vfs")
-async def grep(accessor, paths: list[PathSpec], pattern: str, *, index,
-               **kwargs) -> bytes:
-    return await grep_bytes(accessor, paths, pattern, index)
-
-
-OPS = [*make_generic_ops("my_vfs", IO), grep]
-```
-
-Mark a hand-written mutation op with `write=True` so `MountMode.READ` remains a real boundary (derived ops carry this from the table).
+Write a dedicated op module only for an irregular handler with no generic equivalent (a native `grep` push-down, a semantic `search`), and append it to the derived list. Mark a hand-written mutation op with `write=True` so `MountMode.READ` remains a real boundary (derived ops carry this from the table).
 
 ## 4. Commands
 
-Build standard commands with `CommandIO` and `make_generic_commands`; the generic command owns flag interpretation. Backend wrappers should only connect glob resolution and I/O functions.
+Build the standard set with `make_generic_commands("<name>", IO, overrides={...})`; the generic command owns flag interpretation, so a backend wrapper is wiring only. `overrides` names the builders a bespoke command replaces, and a name no builder has is refused.
 
-For a VFS-specific command:
-
-- Use the shared command spec.
-- Mark every mutation with `write=True` so `MountMode.READ` remains a real boundary.
+- A bespoke command (a search push-down, a find over the index) goes through `with_default_provisions(commands, IO.stat, IO.resolve_glob, IO.readdir)`, which keeps the cost estimate the replaced builder would have carried. A command the catalog prices but that has no provision plans as `precision=unknown`, and the gate in `tests/commands/builtin/generic_bind/test_provision.py` fails it.
+- A search push-down built with `make_search` answers only what it can answer exactly as grep over the files would; anything else falls back to the generic scan.
+- A verb (`trello card create`) declares its own `CommandSpec` with every id as a flag, reads flags through `FlagView(opts.flags, spec=SPEC)` (never `flags.get(...)`), registers `write=True` for a mutation, and calls `require_mount_writable()` before the client. Specs declared inline are dumped to `spec/python/vfs_commands/` and compared with TypeScript's, and a prompt that teaches the verbs is pinned against their specs (`tests/vfs/trello/test_prompt.py`).
 - Declare injected parameters such as `stdin`, `index`, and `prefix` explicitly.
-- Use `FlagView(flags, spec=...)` when the command itself must read a flag; never use `flags.get(...)`.
-- Add a provision estimator when a useful estimate is possible. Otherwise the planner reports `precision=unknown`.
 
 Export the final list as `COMMANDS` from `commands/builtin/<name>/__init__.py`.
 
@@ -242,7 +242,7 @@ class MyVFS(BaseVFS):
             self.register_op(fn)
 ```
 
-Set `caches_reads=True` only for stable, read-mostly content. Implement `get_state()` with credentials redacted and close any network clients in `close()`.
+Set `caches_reads=True` only for stable, read-mostly content. Implement `get_state()` with credentials redacted (`self.config_state(self.config)`) and close any network clients in `close()`.
 
 ## 6. Snapshot Support
 
@@ -256,4 +256,6 @@ Setting the flag without recording fingerprints does not provide drift detection
 
 ## 7. Verification
 
-Add tests for config validation, path layout, every VFS op, command behavior, read-only enforcement, state redaction, and cleanup. For major features, add or update integration coverage under `integ/` and check Python/TypeScript parity before opening the PR.
+- Unit tests for config validation (an unknown key refused), path layout, every VFS op, command behavior, read-only enforcement, scope enforcement, state redaction, and cleanup.
+- Regenerate `spec/` with `scripts/gen_specs.py` and `typescript/scripts/gen-specs.ts`, then run `scripts/check_spec_parity.py` and `scripts/check_layout_parity.py --strict`.
+- An integration target in `integ/targets.json` with cases under `integ/vfs/<name>/`, run by both hosts' runners against the same goldens; a SaaS backend gets a fake under `integ/server/`. Any change in observable shell behavior adds a case.

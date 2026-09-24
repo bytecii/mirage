@@ -92,36 +92,46 @@ See `examples/typescript/other/custom_vfs.ts` for a complete runnable backend in
 
 ## Contribute a Builtin VFS
 
-Builtins live inside the Mirage repo with the four-layer layout below. Keep the core I/O layer independent from command parsing, and check whether the same VFS or behavior should also be added to Python.
+Builtins live inside the Mirage repo: one backend is four layers with one name (accessor, core, ops, VFS) plus its commands, and every layer has a Python twin. Change both languages in the same PR; where they disagree, the more correct side wins.
 
-Pick the package by runtime, not by preference: `packages/core` for a backend that works in both the browser and Node, `packages/node` for one that needs Node APIs, `packages/browser` for one that needs a browser transport. Use a recent VFS such as Qdrant or LanceDB as the structural reference. Paths are always `PathSpec` values inside the VFS; do not pass filesystem paths as raw strings.
+Pick the package by runtime, not by preference: `packages/core` for a backend that works in both the browser and Node, `packages/node` for one that needs Node APIs, `packages/browser` for one that needs a browser transport. Paths are always `PathSpec` values inside the VFS; never pass a path as a raw string.
+
+Most of a backend is already written as a kit. Reach for one before writing a layer by hand:
+
+| Kit | Module (`packages/core/src/`) | For |
+| --- | --- | --- |
+| API client | `core/api/` (`apiRequest`, `cursorItems`, `TokenManager`, `RetryPolicy`) | every HTTP call: one status-to-error mapping, retry, pagination, OAuth refresh |
+| Hierarchy | `core/hierarchy/` (`Scope`, `Slot`, `makeDetectScope`, `makeReaddir`, `makeStat`, `entryStat`, `makeRead`, `DirListing`) | an API tree of `<label>__<id>` directories: one scope table classifies every path for readdir, stat, read and search |
+| Object store | `core/object_store/` | a flat key space (S3-style buckets, GridFS) |
+| Render | `core/render/json.ts` (`jsonBytes`, `jsonlBytes`) | records rendered as the bytes the tree's files hold |
+
+Two builtins are the references. Trello is the hierarchy kit end to end: a scope table, listers, id-addressed readers, and nested `trello <noun> <verb>` commands. Jaeger is the client shape to copy: every call takes the mount's transport, the one handle the accessor owns.
 
 ## File Structure
 
 ```text
 typescript/packages/<core|node|browser>/src/
-  vfs/<name>/
-    config.ts
-    prompt.ts
-    <name>.ts
-  accessor/<name>.ts
+  accessor/<name>.ts           # the client handle: transport and config
   core/<name>/
-    read.ts
-    readdir.ts
-    stat.ts
-  ops/<name>/
-    index.ts
+    client.ts                  # API calls, through core/api
+    scope.ts                   # the scope table and detectScope (hierarchy kit)
+    pathing.ts                 # <label>__<id> names (sanitizeName, makeIdName)
+    normalize.ts               # the JSON a file renders
+    readdir.ts stat.ts read.ts
+  ops/<name>/index.ts          # ops derived from the CommandIO table
   commands/builtin/<name>/
-    index.ts
-    io.ts
-    <vfs-specific commands>.ts
+    io.ts                      # the CommandIO table
+    index.ts                   # <NAME>_COMMANDS
+    <bespoke commands>.ts      # push-downs and verbs
+  vfs/<name>/
+    config.ts prompt.ts <name>.ts
 ```
 
 Tests are colocated: `<name>.test.ts` beside the source it covers.
 
 ## 1. Config, Accessor, and Registry
 
-Define the config as an interface plus a `resolve<Name>Config` that fills every default, and keep secrets out of anything that gets serialized. Create an `Accessor` subclass that owns the client or transport. Add the VFS name to `VFSName`, and add a factory to the runtime package's `vfs/registry.ts`; that entry is what workspace config, snapshots, and the daemon construct through.
+Define the config as a zod schema and parse it through `parseConfigWithSchema`, which refuses an unknown key by name, the way Python's `extra="forbid"` does; mark credentials with `secretStr()` so the redactor masks them. Create an `Accessor` subclass that owns the transport. Add the VFS name to `VFSName`, and add a factory to the runtime package's `vfs/registry.ts`; that entry is what workspace config, snapshots, and the daemon construct through.
 
 Config keys arrive snake_case from YAML shared with Python and are mapped by `normalizeFields`, which already sends every unlisted key through `snakeToCamel`. Add a rename entry only for a key that mapping gets wrong.
 
@@ -135,7 +145,14 @@ Implement only the operations the backend supports. A read-only API-backed VFS u
 - `read(accessor, path, index?)` returning bytes.
 - `stat(accessor, path, index?)` returning a `FileStat`.
 
-`FileStat.size` must be the rendered content's byte length or `null`, never a storage-side number: a confidently wrong size makes `wc -c` and `ls -l` lie over FUSE, while `null` rides the unknown-size machinery. Put the storage number in `extra` if it is worth reporting.
+A hierarchy backend writes its tree once, as the scope table in `core/<name>/scope.ts`, and builds the three operations from it: `makeReaddir(detectScope, { listers })`, `makeStat(detectScope, readdir, { entryStats })` and `makeRead(detectScope, readers, { stat })`. The kit holds these rules, and a new backend keeps them:
+
+- A reader that reaches the API by the ids in the path slots passes `stat` so the kit proves the file's parent through the listing first. Without it, a path outside the configured scope (Trello's `workspaceId` and `boardIds`) reads while `ls` and `stat` say it does not exist.
+- A listing that is a filtered or truncated view (one page of a bounded query, a time window, a glob-scoped span) returns `{ entries, seeds: {}, partial: true }`. Cached as the whole directory, it would prove every entry it left out absent.
+- `entryStat('<idKey>', ...)` names the id under the key its path slot declares.
+- Id-addressed commands honor the same scope knobs the listing does (Trello's `commands/builtin/trello/_scope.ts`).
+
+`FileStat.size` must be the rendered content's byte length or `null`, never a storage-side number: a confidently wrong size makes `wc -c` and `ls -l` lie over FUSE, while `null` rides the unknown-size machinery. Put the storage number in `extra` if it is worth reporting. Set `sizesAlwaysKnown` only when every listed size is computed from the same payload a read renders.
 
 Glob resolution is not a per-backend file: bind it from readdir with `makeResolveGlob(readdir, cap)`, or let `GenericVFS` derive it from the table.
 
@@ -156,14 +173,11 @@ Write an op by hand only for an irregular handler, and pass its name through `ov
 
 ## 4. Commands
 
-Build the standard command set with `makeGenericCommands` over the same table; the generic command owns flag interpretation, so a backend wrapper is wiring only. Export the result as `<NAME>_COMMANDS` from `commands/builtin/<name>/index.ts`.
+Build the standard set with `makeGenericCommands(VFSName.X, X_IO, { overrides })` over the same table; the generic command owns flag interpretation, so a backend wrapper is wiring only. `overrides` names the builders a bespoke command replaces, and a name no builder has is refused. Export the result as `<NAME>_COMMANDS` from `commands/builtin/<name>/index.ts`.
 
-For a VFS-specific command:
-
-- Use the shared command spec (`specOf`), or a `new CommandSpec({...})` for a verb with its own grammar.
-- Mark every mutation `write: true` so `MountMode.READ` stays a real boundary.
-- Read a flag through `new FlagView(flags, specOf('<name>'))`, never `flags.get(...)`.
-- Add a provision estimator when a useful estimate is possible; otherwise the planner reports `precision: unknown`.
+- A bespoke command (a search push-down, a find over the index) goes through `withDefaultProvisions(commands, X_IO.stat, resolveGlobOf(X_IO), X_IO.readdir)`, which keeps the cost estimate the replaced builder would have carried. A command the catalog prices but that has no provision plans as `precision: unknown`, and the gates in `generic_bind/provision.test.ts` (core) and `commands/builtin/provision.test.ts` (node) fail it.
+- A search push-down built with `makeSearch` answers only what it can answer exactly as grep over the files would; anything else falls back to the generic scan.
+- A verb (`trello card create`) declares its own `new CommandSpec({...})` with every id as a flag, reads flags through `new FlagView(opts.flags, SPEC)` (never `flags.get(...)`), registers `write: true` for a mutation, and calls `requireMountWritable(...)` before the client. Specs declared inline are dumped to `spec/typescript/<node|browser>/vfs_commands/` and compared with Python's, and a prompt that teaches the verbs is pinned against their specs (`vfs/trello/prompt.test.ts`).
 
 ## 5. VFS Class
 
@@ -208,4 +222,6 @@ Setting the flag without recording fingerprints does not provide drift detection
 
 ## 7. Verification
 
-Add tests for config resolution, path layout, every VFS op, command behavior, read-only enforcement, state redaction, and cleanup. For major features, add or update integration coverage under `integ/`, and check Python/TypeScript parity before opening the PR.
+- Tests for config parsing (an unknown key refused), path layout, every VFS op, command behavior, read-only enforcement, scope enforcement, state redaction, and cleanup.
+- Rebuild the dists (core, then node, then browser), regenerate `spec/` with `typescript/scripts/gen-specs.ts` and `scripts/gen_specs.py`, then run `scripts/check_spec_parity.py`, `scripts/check_layout_parity.py --strict` and `pnpm typecheck`.
+- An integration target in `integ/targets.json` with cases under `integ/vfs/<name>/`, run by both hosts' runners against the same goldens; a SaaS backend gets a fake under `integ/server/`. Any change in observable shell behavior adds a case.
