@@ -37,13 +37,16 @@ export interface RateLimiterOptions {
  * base, then refuses everything for 30 seconds), spacing the calls up front
  * is cheaper than any retry. Each call reserves the next free slot for its
  * key before it awaits anything, so concurrent callers queue in arrival
- * order with no lock.
+ * order with no lock. A caller woken late (a blocked event loop, a throttled
+ * browser timer) moves every slot behind it back by as much, so a stall
+ * cannot release the callers queued behind it in one burst.
  */
 export class RateLimiter {
   private readonly interval: number
   private readonly clock: () => number
   private readonly sleep: (seconds: number) => Promise<void>
   private readonly next = new Map<string, number>()
+  private readonly shift = new Map<string, number>()
 
   constructor(rate: number, options: RateLimiterOptions = {}) {
     if (!(rate > 0)) throw new RangeError(`rate must be positive, got ${String(rate)}`)
@@ -54,9 +57,22 @@ export class RateLimiter {
 
   /** Wait for this key's next slot (an Airtable base id). */
   async acquire(key: string): Promise<void> {
-    const now = this.clock()
-    const slot = Math.max(now, this.next.get(key) ?? now)
+    let now = this.clock()
+    let slot = Math.max(now, this.next.get(key) ?? now)
     this.next.set(key, slot + this.interval)
-    if (slot > now) await this.sleep(slot - now)
+    if (slot <= now) return
+    let seen = this.shift.get(key) ?? 0
+    await this.sleep(slot - now)
+    for (let moved = this.shift.get(key) ?? 0; moved !== seen; moved = this.shift.get(key) ?? 0) {
+      slot += moved - seen
+      seen = moved
+      now = this.clock()
+      if (slot > now) await this.sleep(slot - now)
+    }
+    const late = this.clock() - slot
+    if (late > 0) {
+      this.shift.set(key, seen + late)
+      this.next.set(key, (this.next.get(key) ?? slot) + late)
+    }
   }
 }
