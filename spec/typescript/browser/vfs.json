@@ -524,6 +524,7 @@
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -532,6 +533,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "append",
         "copy",
         "create",
         "exists",
@@ -587,6 +589,7 @@
         "read_range",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -737,6 +740,7 @@
       "max_glob_matches": 10000,
       "slots": [
         "exists",
+        "find",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -767,6 +771,7 @@
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -807,6 +812,7 @@
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -913,6 +919,7 @@
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -975,6 +982,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 5000,
       "slots": [
+        "append",
         "copy",
         "create",
         "du",

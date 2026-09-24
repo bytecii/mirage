@@ -7,8 +7,8 @@ from mirage.commands.builtin.generic_bind.adapter import CommandIO
 from mirage.commands.builtin.utils.wrap import stream_from_bytes
 from mirage.types import PathSpec
 from mirage.utils.glob_walk import DEFAULT_MAX_GLOB_MATCHES
-from mirage.vfs.types import (IsMountedOp, NativeReadOps, ReadOps, SearchOps,
-                              StatOp, WriteOps)
+from mirage.vfs.types import (IsMountedOp, NativeReadOps, ReadBytesOp, ReadOps,
+                              SearchOps, StatOp, WriteOp, WriteOps)
 
 
 def _mounted(accessor: Accessor) -> bool:
@@ -78,3 +78,21 @@ class VFSAdapter:
             max_glob_matches=self.max_glob_matches,
             max_du_entries=self.max_du_entries,
         )
+
+
+def append_from_read(read: ReadBytesOp, write: WriteOp) -> WriteOp:
+    """Explicitly opt a byte store into non-atomic read/modify/write append.
+
+    Args:
+        read (ReadBytesOp): whole-file reader; only ENOENT means empty.
+        write (WriteOp): whole-file replacement.
+    """
+
+    async def append(accessor: Accessor, path: PathSpec, data: bytes) -> None:
+        try:
+            previous = await read(accessor, path)
+        except FileNotFoundError:
+            previous = b""
+        await write(accessor, path, previous + data)
+
+    return append

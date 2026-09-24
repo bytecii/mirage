@@ -285,22 +285,25 @@ Write an op by hand only for an irregular handler, and pass its name through `ov
 Build the standard set with `makeGenericCommands(VFSName.X, X_IO, { overrides })` over the same table; the generic command owns flag interpretation, so a backend wrapper is wiring only. `overrides` names the builders a bespoke command replaces, and a name no builder has is refused. Export the result as `<NAME>_COMMANDS` from `commands/builtin/<name>/index.ts`.
 
 - A bespoke command (a search push-down, a find over the index) goes through `withDefaultProvisions(commands, X_IO.stat, resolveGlobOf(X_IO), X_IO.readdir)`, which keeps the cost estimate the replaced builder would have carried. A command the catalog prices but that has no provision plans as `precision: unknown`, and the gates in `generic_bind/provision.test.ts` (core) and `commands/builtin/provision.test.ts` (node) fail it.
-- Declare native text search in `new VFSAdapter({ read, search })`. Generic grep/rg builders consume it automatically. The hierarchy kit supplies `makeSearchOp` for scope-based core functions; unsupported requests fall back to scanning. Existing wrappers may call `runSearch(X_IO, name, ...)` when preserving a custom provision or registration.
+- Declare native text search in `new VFSAdapter({ read, search })`. Generic grep/rg builders consume it only when `search.meta.grep` opts in; semantic search does not opt in. The hierarchy kit supplies `makeSearchOp` for scope-based core functions; unsupported requests fall back to scanning. Existing wrappers may call `runSearch(X_IO, name, ...)` when preserving a custom provision or registration.
 - A verb (`trello card create`) declares its own `new CommandSpec({...})` with every id as a flag, reads flags through `new FlagView(opts.flags, SPEC)` (never `flags.get(...)`), registers `write: true` for a mutation, and calls `requireMountWritable(...)` before the client. Specs declared inline are dumped to `spec/typescript/<node|browser>/vfs_commands/` and compared with Python's, and a prompt that teaches the verbs is pinned against their specs (`vfs/trello/prompt.test.ts`).
 
 ## 5. VFS Class
 
-Import the command and op arrays at module scope and return them from `commands()` and `ops()`:
+Bind the same I/O table through `BoundVFS`, then return the command and op arrays from `commands()` and `ops()`. Core functions stay independent of the VFS class:
 
 ```ts
-export class MyVFS extends BaseVFS implements VFS {
+import { MY_IO } from '../../commands/builtin/my_vfs/io.ts'
+import { BoundVFS } from '../bound.ts'
+
+export class MyVFS extends BoundVFS<MyAccessor> implements VFS {
   readonly kind: string = VFSName.MY_VFS
   readonly cachesReads: boolean = true
   readonly prompt: string = MY_PROMPT
   readonly accessor: MyAccessor
 
   constructor(config: MyConfig) {
-    super()
+    super(MY_IO)
     this.config = resolveMyConfig(config)
     this.accessor = new MyAccessor(this.config)
   }
@@ -344,3 +347,53 @@ Mount configs now reject unknown fields. Remove PostgreSQL's `default_search_lim
 `BaseVFS` now provides `open`, `loadState`, and `indexTtl` defaults. Subclasses that replace them need `override` when `noImplicitOverride` is enabled. The hierarchy name helpers sanitize empty and dot-leading labels to reachable names; regenerate stored paths from the listing and keep the provider id as the stable identifier. Enforce read and mutation scope on every entry point, including direct ids, rather than relying on a previous listing.
 
 PostgreSQL whole-file reads check a bounded result’s database JSON byte size before transferring rows, then check the rendered JSONL size. Database formatting can make the first check conservative; use an explicit row window when that guard refuses a read.
+
+
+### Check the adapter contract
+
+The read-contract helper accepts either an adapter or its compiled I/O table.
+Supply a small known file, its parent directory, an absent sibling, and the
+expected bytes. It checks listing, metadata, reads, streams, native ranges,
+existence, and missing-path errors without mutating the resource.
+
+```ts
+import { checkReadContract, type ReadFixture } from '@struktoai/mirage-node'
+
+const fixture: ReadFixture = {
+  file: filePath,
+  directory: parentPath,
+  missing: missingPath,
+  content: new TextEncoder().encode('known fixture bytes'),
+}
+await checkReadContract(adapter, accessor, fixture)
+```
+
+Use disposable fixtures to test supported writes and verify read-only mounts
+refuse mutations. Resource-specific tests should cover pagination, scope,
+authorization failures, and query options.
+
+Builtin VFS classes and `GenericVFS` share the same internal binding. Their
+commands, filesystem ops, glob expansion, and direct methods use the backend's
+I/O table. Backend classes keep configuration, client lifecycle, storage identity,
+watch hooks, and snapshot behavior.
+
+### Batch resource search
+
+`{ search: searchOne, searchMany }` optionally supplies a batch callback with
+`(accessor, paths, query, index)`. Use it when ranking and `top_k` must apply once
+across several paths. The single-path callback remains required. The shared
+`searchResources` helper uses the batch callback when provided and otherwise
+concatenates single-path results; a declined request reports an error rather
+than no matches.
+
+Chroma, Dify, Qdrant, LanceDB, and Mem0 use this capability for their existing
+resource search commands. Their options remain backend-specific: for example,
+`top_k`, `threshold`, and `method`. These declarations do not opt into grep.
+
+### Start from a packaged example
+
+The `mirage-vfs-authoring` skill in the Mirage plugin includes self-contained
+Python and TypeScript starters and `scripts/new_adapter.py`. It creates an
+adapter file in your project, refuses to overwrite existing files, and includes
+the contract check plus a mounted shell smoke test. Replace its fixture client
+with your resource API, then expand capabilities as needed.

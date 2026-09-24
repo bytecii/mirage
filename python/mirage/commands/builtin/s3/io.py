@@ -30,7 +30,7 @@ from mirage.core.s3.stream import read_stream as _read_stream
 from mirage.core.s3.truncate import truncate as _truncate
 from mirage.core.s3.unlink import unlink as _unlink
 from mirage.core.s3.write import write_bytes as _write
-from mirage.vfs.adapter import VFSAdapter
+from mirage.vfs.adapter import VFSAdapter, append_from_read
 from mirage.vfs.types import DuOps, NativeReadOps, ReadOps, WriteOps
 
 IO = VFSAdapter(read=ReadOps(readdir=_readdir, read_bytes=_read, stat=_stat),
@@ -41,6 +41,7 @@ IO = VFSAdapter(read=ReadOps(readdir=_readdir, read_bytes=_read, stat=_stat),
                                      du=DuOps(size=_du_size,
                                               entries=_du_entries)),
                 writes=WriteOps(write=_write,
+                                append=append_from_read(_read, _write),
                                 mkdir=_mkdir,
                                 unlink=_unlink,
                                 rmdir=_rmdir,

@@ -12,10 +12,12 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { BoundVFS } from '../bound.ts'
+import { GITHUB_IO } from '../../commands/builtin/github/io.ts'
 import { GitHubAccessor } from '../../accessor/github.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
-import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+
 import { GITHUB_COMMANDS } from '../../commands/builtin/github/index.ts'
 import type { RegisteredCommand } from '../../commands/config.ts'
 import {
@@ -23,27 +25,22 @@ import {
   fetchRepoInfo as fetchGitHubRepoInfo,
   fetchTree as fetchGitHubTree,
 } from '../../core/github/client.ts'
-import { read as githubRead } from '../../core/github/read.ts'
-import { readdir as githubReaddir } from '../../core/github/readdir.ts'
-import { stat as githubStat } from '../../core/github/stat.ts'
+
 import { buildTreeMap as githubBuildTreeMap } from '../../core/github/tree.ts'
 import { buildDeltaHook } from '../../core/github/watch.ts'
 import { GITHUB_OPS } from '../../ops/github/index.ts'
 import type { RegisteredOp } from '../../ops/registry.ts'
-import { BaseVFS } from '../base.ts'
+
 import type { VFS } from '../base.ts'
 import { GITHUB_PROMPT } from './prompt.ts'
-import { PathSpec, VFSName } from '../../types.ts'
-import type { FileStat } from '../../types.ts'
-import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
+import { VFSName } from '../../types.ts'
+
 import type { DeltaHook } from '../../watch/index.ts'
 import {
   redactGitHubConfig,
   type GitHubConfig,
   type GitHubConfigRedacted,
 } from '../../core/github/config.ts'
-
-const githubResolveGlob = makeResolveGlob(githubReaddir)
 
 export interface GitHubVFSState {
   type: string
@@ -52,7 +49,7 @@ export interface GitHubVFSState {
   truncated: boolean
 }
 
-export class GitHubVFS extends BaseVFS implements VFS {
+export class GitHubVFS extends BoundVFS<GitHubAccessor> implements VFS {
   readonly kind: string = VFSName.GITHUB
   readonly cachesReads: boolean = true
   // The git tree API reports the exact blob size for every file; the
@@ -68,7 +65,7 @@ export class GitHubVFS extends BaseVFS implements VFS {
   readonly accessor: GitHubAccessor
 
   private constructor(config: GitHubConfig, accessor: GitHubAccessor, index: IndexCacheStore) {
-    super()
+    super(GITHUB_IO)
     this.config = config
     this.accessor = accessor
     this._index = index
@@ -103,36 +100,6 @@ export class GitHubVFS extends BaseVFS implements VFS {
 
   ops(): readonly RegisteredOp[] {
     return GITHUB_OPS
-  }
-
-  readFile(p: PathSpec): Promise<Uint8Array> {
-    return githubRead(this.accessor, p, this.index)
-  }
-
-  readdir(p: PathSpec): Promise<string[]> {
-    return githubReaddir(this.accessor, p, this.index)
-  }
-
-  stat(p: PathSpec): Promise<FileStat> {
-    return githubStat(this.accessor, p, this.index)
-  }
-
-  glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {
-    const effective =
-      prefix !== ''
-        ? paths.map((p) =>
-            mountPrefixOf(p.virtual, p.vfsPath) !== ''
-              ? p
-              : new PathSpec({
-                  virtual: p.virtual,
-                  directory: p.directory,
-                  ...(p.pattern !== null ? { pattern: p.pattern } : {}),
-                  resolved: p.resolved,
-                  vfsPath: mountKey(p.virtual, prefix),
-                }),
-          )
-        : paths
-    return githubResolveGlob(this.accessor, effective, this.index)
   }
 
   deltaHook(): DeltaHook {

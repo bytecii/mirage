@@ -17,11 +17,12 @@ from typing import TypeVar, overload
 from mirage.accessor.ram import RAMAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.dev import COMMANDS
+from mirage.commands.builtin.dev.io import IO
 from mirage.context import get_current_session
 from mirage.ops.dev import OPS as DEV_OPS
 from mirage.types import VFSName
 from mirage.utils.errors import eacces, enoent
-from mirage.vfs.base import BaseVFS
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.ram.store import RAMStore
 
 _DEV_NAMES = frozenset({"null", "zero"})
@@ -225,7 +226,7 @@ class DevStore(RAMStore):
         self.attrs = {}
 
 
-class DevVFS(BaseVFS):
+class DevVFS(BoundVFS):
 
     accessor: RAMAccessor
     name: str = VFSName.RAM
@@ -233,7 +234,7 @@ class DevVFS(BaseVFS):
     SIZES_ALWAYS_KNOWN: bool = True
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self._store = DevStore()
         self.accessor = RAMAccessor(self._store)
         for fn in COMMANDS:

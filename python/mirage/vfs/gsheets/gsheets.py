@@ -16,19 +16,16 @@ from typing import Any
 
 from mirage.accessor.gsheets import GSheetsAccessor
 from mirage.commands.builtin.gsheets import COMMANDS
+from mirage.commands.builtin.gsheets.io import IO
 from mirage.core.google.client import TokenManager
-from mirage.core.gsheets.readdir import readdir
 from mirage.ops.gsheets import OPS as GSHEETS_VFS_OPS
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.vfs.base import BaseVFS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.gsheets.config import GSheetsConfig
 from mirage.vfs.gsheets.prompt import PROMPT, WRITE_PROMPT
 
-_resolve_glob = make_resolve_glob(readdir)
 
-
-class GSheetsVFS(BaseVFS):
+class GSheetsVFS(BoundVFS):
 
     accessor: GSheetsAccessor
     name: str = VFSName.GSHEETS
@@ -41,7 +38,7 @@ class GSheetsVFS(BaseVFS):
     WRITE_PROMPT: str = WRITE_PROMPT
 
     def __init__(self, config: GSheetsConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self._token_manager = TokenManager(config)
         self.accessor = GSheetsAccessor(self.config, self._token_manager)
@@ -54,13 +51,6 @@ class GSheetsVFS(BaseVFS):
         """Drain the token manager's connection pool with the VFS."""
         await self._token_manager.close()
         await super().close()
-
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        return await _resolve_glob(self.accessor, paths, index=self._index)
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)

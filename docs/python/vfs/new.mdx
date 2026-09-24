@@ -308,7 +308,7 @@ Write a dedicated op module only for an irregular handler with no generic equiva
 Build the standard set with `make_generic_commands("<name>", IO, overrides={...})`; the generic command owns flag interpretation, so a backend wrapper is wiring only. `overrides` names the builders a bespoke command replaces, and a name no builder has is refused.
 
 - A bespoke command (a search push-down, a find over the index) goes through `with_default_provisions(commands, IO.stat, IO.resolve_glob, IO.readdir)`, which keeps the cost estimate the replaced builder would have carried. A command the catalog prices but that has no provision plans as `precision=unknown`, and the gate in `tests/commands/builtin/generic_bind/test_provision.py` fails it.
-- Declare native text search in `VFSAdapter(search=SearchOps(...))`. The generic grep/rg builders consume it automatically. The hierarchy kit supplies `make_search_op` for scope-based core functions; unsupported requests fall back to scanning. Existing wrappers may call `run_search(IO, name, ...)` when preserving a custom provision or registration.
+- Declare native text search in `VFSAdapter(search=SearchOps(...))`. The generic grep/rg builders consume it only when `search.meta["grep"]` opts in; semantic search does not opt in. The hierarchy kit supplies `make_search_op` for scope-based core functions; unsupported requests fall back to scanning. Existing wrappers may call `run_search(IO, name, ...)` when preserving a custom provision or registration.
 - A verb (`trello card create`) declares its own `CommandSpec` with every id as a flag, reads flags through `FlagView(opts.flags, spec=SPEC)` (never `flags.get(...)`), registers `write=True` for a mutation, and calls `require_mount_writable()` before the client. Specs declared inline are dumped to `spec/python/vfs_commands/` and compared with TypeScript's, and a prompt that teaches the verbs is pinned against their specs (`tests/vfs/trello/test_prompt.py`).
 - Handlers take `(accessor, paths, texts, opts)`. Read `stdin`, `index`, `prefix`, and namespace facts from `opts`; do not add injected parameters or a second handler convention.
 
@@ -316,23 +316,24 @@ Export the final list as `COMMANDS` from `commands/builtin/<name>/__init__.py`.
 
 ## 5. VFS Class
 
-Import commands and ops at module scope, then register them in the constructor:
+Bind the same I/O table through `BoundVFS`, then register commands and ops in the constructor. Core functions stay independent of the VFS class:
 
 ```python
 from mirage.accessor.my_vfs import MyAccessor
 from mirage.commands.builtin.my_vfs import COMMANDS
+from mirage.commands.builtin.my_vfs.io import IO
 from mirage.ops.my_vfs import OPS as MY_VFS_OPS
-from mirage.vfs.base import BaseVFS
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.my_vfs.config import MyConfig
 from mirage.types import VFSName
 
 
-class MyVFS(BaseVFS):
+class MyVFS(BoundVFS):
     name: str = VFSName.MY_VFS
     caches_reads: bool = True
 
     def __init__(self, config: MyConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self.accessor = MyAccessor(config)
         for fn in COMMANDS:
@@ -368,3 +369,52 @@ Mount configs now reject unknown fields. Remove PostgreSQL's `default_search_lim
 The hierarchy name helpers sanitize empty and dot-leading labels to reachable names. Regenerate stored paths from the listing instead of retaining an old sanitized label; the provider id remains the stable identifier. Keep read and mutation scope checks on every entry point, including direct ids, rather than relying on what a previous listing exposed.
 
 PostgreSQL whole-file reads check a bounded result’s database JSON byte size before transferring rows, then check the rendered JSONL size. Database formatting can make the first check conservative; use an explicit row window when that guard refuses a read.
+
+
+### Check the adapter contract
+
+The read-contract helper accepts either an adapter or its compiled I/O table.
+Supply a small known file, its parent directory, an absent sibling, and the
+expected bytes. It checks listing, metadata, reads, streams, native ranges,
+existence, and missing-path errors without mutating the resource.
+
+```python
+from mirage import ReadFixture, check_read_contract
+
+await check_read_contract(adapter, accessor, ReadFixture(
+    file=file_path,
+    directory=parent_path,
+    missing=missing_path,
+    content=b"known fixture bytes",
+))
+```
+
+Use disposable fixtures to test supported writes and verify read-only mounts
+refuse mutations. Resource-specific tests should cover pagination, scope,
+authorization failures, and query options.
+
+Builtin VFS classes and `GenericVFS` share the same internal binding. Their
+commands, filesystem ops, glob expansion, and direct methods use the backend's
+I/O table. Backend classes keep configuration, client lifecycle, storage identity,
+watch hooks, and snapshot behavior.
+
+### Batch resource search
+
+`SearchOps(search=search_one, search_many=search_many)` optionally accepts a
+batch callback with `(accessor, paths, query, index)`. Use it when ranking and
+`top_k` must apply once across several paths. The single-path callback remains
+required. `mirage.vfs.search.search_resources` uses the batch callback when
+provided and otherwise concatenates single-path results; a declined request
+raises an error rather than reporting no matches.
+
+Chroma, Dify, Qdrant, LanceDB, and Mem0 use this capability for their existing
+resource search commands. Their options remain backend-specific: for example,
+`top_k`, `threshold`, and `method`. These declarations do not opt into grep.
+
+### Start from a packaged example
+
+The `mirage-vfs-authoring` skill in the Mirage plugin includes self-contained
+Python and TypeScript starters and `scripts/new_adapter.py`. It creates an
+adapter file in your project, refuses to overwrite existing files, and includes
+the contract check plus a mounted shell smoke test. Replace its fixture client
+with your resource API, then expand capabilities as needed.
