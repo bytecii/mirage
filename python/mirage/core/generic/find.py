@@ -8,6 +8,7 @@ from mirage.commands.builtin.find_eval import (FindEntry, PredNode, build_tree,
 from mirage.types import FileStat, PathSpec
 from mirage.utils.dates import matches_mtime
 from mirage.utils.key_prefix import mount_prefix_of
+from mirage.utils.stat_view import DIR_SIZE
 
 
 class ResolvedPath(Protocol):
@@ -123,15 +124,14 @@ async def _matches(
                       is_empty=is_empty)
     if not keep(entry, tree, mindepth):
         return False
-    # Directories count as size 0 for -size (deliberate GNU divergence).
     if min_size is not None or max_size is not None:
         if kind == "d":
-            size = 0
+            size = DIR_SIZE
         else:
             if item_stat is None:
                 item_stat = await stat(accessor, spec, index)
-            # Sizeless rendered files count as size 0, same as dirs and the
-            # FUSE view (CLAUDE.md find -size rules); never drop them.
+            # Sizeless rendered files count as size 0, as the FUSE view
+            # reports them before a first open; never drop them.
             size = item_stat.size if item_stat.size is not None else 0
         if min_size is not None and size < min_size:
             return False

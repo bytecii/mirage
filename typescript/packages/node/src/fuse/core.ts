@@ -22,7 +22,7 @@ import type { FileStat } from '@struktoai/mirage-core/types'
 import { isMissingOp } from '@struktoai/mirage-core/utils/errors'
 import { rstripSlash } from '@struktoai/mirage-core/utils/slash'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
-import { DIR_MODE, FILE_MODE, mtimeMs } from '@struktoai/mirage-core/utils/stat_view'
+import { DIR_MODE, DIR_SIZE, FILE_MODE, mtimeMs } from '@struktoai/mirage-core/utils/stat_view'
 import type { SessionState } from '@struktoai/mirage-core/workspace/session/session'
 import { errnoError } from './errors.ts'
 import { isMacosMetadata } from './platform/macos.ts'
@@ -125,7 +125,7 @@ export class MountCore {
       atime: this.now,
       ctime: this.now,
       nlink: 2,
-      size: 0,
+      size: DIR_SIZE,
       mode: DIR_MODE,
       uid: this.uid,
       gid: this.gid,

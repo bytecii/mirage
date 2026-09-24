@@ -45,6 +45,7 @@ import {
   uploadChunk,
 } from './client.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
+import { DIR_SIZE } from '../../utils/stat_view.ts'
 
 const SIMPLE_UPLOAD_MAX = 4 * 1024 * 1024
 const UPLOAD_CHUNK = 10 * 327680
@@ -512,7 +513,7 @@ export async function findItems(
       isEmpty: options.empty === true ? (folder ? folderChildCount(item) === 0 : size === 0) : null,
     }
     if (!keep(entry, tree, options.minDepth)) continue
-    const effective = folder ? 0 : size
+    const effective = folder ? DIR_SIZE : size
     if (options.minSize != null && effective < options.minSize) continue
     if (options.maxSize != null && effective > options.maxSize) continue
     results.push(entry.key)

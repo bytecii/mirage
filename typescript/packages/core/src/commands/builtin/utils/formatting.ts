@@ -22,6 +22,7 @@ import {
 import { strftime } from './strftime.ts'
 import { UINTMAX } from '../constants.ts'
 import { UTC_ZONE } from '../../../utils/timezone.ts'
+import { contentSize, isDir } from '../../../utils/stat_view.ts'
 import {
   DEFAULT_MODES,
   EPOCH_LS_TIME,
@@ -348,8 +349,9 @@ export function lsName(s: FileStat): string {
 
 // The size and time columns of one `ls -l` row. A device row carries its
 // major and minor numbers where GNU puts them. An entry with neither a
-// size nor a time (a synthetic API-backend directory) shows `-` in both
-// rather than inventing size 0 and the epoch, mirroring the python
+// size nor a time (a synthetic API-backend directory) shows `-` for the
+// time rather than inventing the epoch; its size is `-` too unless it is
+// a directory, whose size is always DIR_SIZE. Mirrors the python
 // formatter.
 function lsSizeAndTime(
   s: FileStat,
@@ -374,8 +376,9 @@ function lsSizeAndTime(
       whenIso === null ? UNKNOWN_NAME : renderTime(),
     ]
   }
-  if (s.size == null && s.modified == null) return [UNKNOWN_NAME, UNKNOWN_NAME]
-  return [scaledSize(s.size ?? 0, columns.blockSize, human), renderTime()]
+  const size = scaledSize(contentSize(s), columns.blockSize, human)
+  if (s.size == null && s.modified == null) return [isDir(s) ? size : UNKNOWN_NAME, UNKNOWN_NAME]
+  return [size, renderTime()]
 }
 
 // `ls -l` rows: mode, links, owner, group, size, time, name. The owner is

@@ -23,6 +23,7 @@ import { stat } from './stat.ts'
 import { stripSlash } from '../../utils/slash.ts'
 import { buildTree, keep, startBasename } from '../../commands/builtin/find_eval.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
+import { DIR_SIZE } from '../../utils/stat_view.ts'
 
 async function collect(
   accessor: NotionAccessor,
@@ -93,8 +94,7 @@ export async function find(
       continue
     }
     if (options.minSize != null || options.maxSize != null) {
-      // Directories count as size 0 for -size (deliberate GNU divergence).
-      const size = isDir ? 0 : (fileStat.size ?? 0)
+      const size = isDir ? DIR_SIZE : (fileStat.size ?? 0)
       if (options.minSize != null && size < options.minSize) continue
       if (options.maxSize != null && size > options.maxSize) continue
     }

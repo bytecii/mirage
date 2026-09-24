@@ -28,7 +28,8 @@ from mirage.fuse.platform.macos import is_macos_metadata
 from mirage.ops import Ops
 from mirage.runtime.handles import FileTable, merge_writes
 from mirage.types import FileStat, FileType
-from mirage.utils.stat_view import DIR_MODE, FILE_MODE, LINK_MODE, mtime_ns
+from mirage.utils.stat_view import (DIR_MODE, DIR_SIZE, FILE_MODE, LINK_MODE,
+                                    mtime_ns)
 from mirage.workspace.session.session import SessionState
 
 # How long prefetched bytes for size-unknown files outlive their handle, so a
@@ -160,7 +161,7 @@ class MountCore:
             "st_nlink": 2,
             "st_uid": self._uid,
             "st_gid": self._gid,
-            "st_size": 0,
+            "st_size": DIR_SIZE,
             "st_atime": self._now,
             "st_mtime": self._now,
             "st_ctime": self._now,

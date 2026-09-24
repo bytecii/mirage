@@ -24,7 +24,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "find: invalid argument 'abc' to '-size'\n"
+        "stderr": "find: Invalid argument `abc' to -size\n"
       }
     },
     {
@@ -51,7 +51,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "find: invalid argument '12ab' to '-size'\n"
+        "stderr": "find: Invalid argument `12ab' to -size\n"
       }
     }
   ]

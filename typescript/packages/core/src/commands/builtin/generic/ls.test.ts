@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ContentType, FileStat, FileType, LINK_TARGET_KEY, PathSpec } from '../../../types.ts'
 import type { LinkView, MountView } from '../../../ops/types.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
+import { DIR_SIZE } from '../../../utils/stat_view.ts'
 import type { CommandOpts } from '../../config.ts'
 import {
   LS_FAILURE,
@@ -697,6 +698,18 @@ describe('honest per-entry errors', () => {
     expect(stderr).toBe("ls: cannot access '/apple.txt': Input/output error\n")
   })
 
+  // GNU (coreutils 9.7, both entries' stat denied) zeroes a failed stat, so
+  // -S sorts the rows as size 0 even where readdir marked a directory.
+  it('-S counts an unstattable directory as size 0', async () => {
+    const marking = (p: PathSpec): Promise<string[]> =>
+      Promise.resolve(key(p) === '/' ? ['/afile', '/zdir/'] : [])
+    const denying = (p: PathSpec): Promise<FileStat> =>
+      key(p) === '/' ? stat(p) : Promise.reject(stamped(key(p), 'EACCES'))
+    const result = await lsGeneric([spec('/')], opts({ S: true }), marking, denying)
+    expect(result?.[1].exitCode).toBe(LS_MINOR_PROBLEM)
+    expect(DEC.decode(result?.[0] as Uint8Array)).toBe('afile\nzdir\n')
+  })
+
   it('still ends the command on a timeout or an abort', async () => {
     await expect(run({}, new CommandTimeoutError('stat', 5))).rejects.toThrow('timed out')
     await expect(run({}, new DOMException('execute aborted', 'AbortError'))).rejects.toThrow(
@@ -831,6 +844,19 @@ describe('lsGeneric sort orders', () => {
       (name) => new FileStat({ name, type: FileType.FILE }),
     )
     expect(names(sortStats(wide, 'width', false))).toEqual(['a', 'é', 'aa', 'e\u0301x', '界'])
+  })
+
+  it('sortStats: -S counts a directory as DIR_SIZE bytes', () => {
+    const rows = [
+      new FileStat({ name: 'small.txt', type: FileType.FILE, size: 3 }),
+      new FileStat({ name: 'sub', type: FileType.DIRECTORY }),
+      new FileStat({ name: 'big.txt', type: FileType.FILE, size: DIR_SIZE + 1 }),
+    ]
+    expect(sortStats(rows, 'size', false).map((s) => s.name)).toEqual([
+      'big.txt',
+      'sub',
+      'small.txt',
+    ])
   })
 
   it('filevercmp orders bytes past the letters', () => {

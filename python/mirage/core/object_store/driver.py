@@ -189,15 +189,13 @@ class FindHints:
     Args:
         name (str | None): -name glob.
         iname (str | None): -iname glob.
-        type (str | None): "f" or "d".
         min_size (int | None): inclusive lower size bound.
         max_size (int | None): inclusive upper size bound.
-        pushdown (bool): False when a complex predicate tree is present;
-            only the prefix condition may be used then.
+        pushdown (bool): a ``-type f`` find with no complex predicate
+            tree; only the prefix condition may be used otherwise.
     """
     name: str | None
     iname: str | None
-    type: str | None
     min_size: int | None
     max_size: int | None
     pushdown: bool

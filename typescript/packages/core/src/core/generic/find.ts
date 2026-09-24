@@ -35,6 +35,7 @@ import { FileType, PathSpec, type FileStat } from '../../types.ts'
 import type { LinkView } from '../../ops/types.ts'
 import { lstripSlash, rstripSlash, stripSlash } from '../../utils/slash.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
+import { DIR_SIZE } from '../../utils/stat_view.ts'
 
 export interface WalkFindDeps {
   readdir: (spec: PathSpec, index?: IndexCacheStore) => Promise<string[]>
@@ -242,8 +243,7 @@ export async function walkFind(
       if (st === null) continue
     }
     if (needSize) {
-      // Directories count as size 0 for -size: GNU compares the inode size (e.g. 4096 on ext4); see CLAUDE.md Rules.
-      const size = entry.file ? (st?.size ?? 0) : 0
+      const size = entry.file ? (st?.size ?? 0) : DIR_SIZE
       if (options.minSize != null && size < options.minSize) continue
       if (options.maxSize != null && size > options.maxSize) continue
     }
@@ -332,13 +332,12 @@ async function searchMatches<A>(
     isEmpty,
   }
   if (!keep(entry, tree, options.minDepth)) return false
-  // Directories count as size 0 for -size (deliberate GNU divergence).
   if (options.minSize != null || options.maxSize != null) {
-    let size = 0
+    let size = DIR_SIZE
     if (kind === 'f') {
       itemStat ??= await deps.stat(accessor, spec, index)
-      // Sizeless rendered files count as size 0, same as dirs and the FUSE
-      // view (CLAUDE.md find -size rules); never drop them.
+      // Sizeless rendered files count as size 0, as the FUSE view reports
+      // them before a first open; never drop them.
       size = itemStat.size ?? 0
     }
     if (options.minSize != null && size < options.minSize) return false

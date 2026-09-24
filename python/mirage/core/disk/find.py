@@ -23,6 +23,7 @@ from mirage.commands.builtin.find_eval import (FindEntry, PredNode, build_tree,
                                                emit_start_path, keep,
                                                start_basename)
 from mirage.types import PathSpec
+from mirage.utils.stat_view import DIR_SIZE
 
 
 def _resolve(root: Path, path: str) -> Path:
@@ -120,8 +121,6 @@ def _find_sync(
             if not keep(entry, tree, mindepth):
                 continue
 
-            # Directories count as size 0 for -size (deliberate GNU
-            # divergence).
             if min_size is not None or max_size is not None:
                 if kind == "f":
                     try:
@@ -129,7 +128,7 @@ def _find_sync(
                     except OSError:
                         continue
                 else:
-                    size = 0
+                    size = DIR_SIZE
                 if min_size is not None and size < min_size:
                     continue
                 if max_size is not None and size > max_size:
