@@ -23,7 +23,7 @@ from mirage.core.airtable.stat import stat
 from mirage.ops.airtable import OPS
 from mirage.types import PathSpec, VFSName
 from mirage.utils.glob_walk import make_resolve_glob
-from mirage.vfs.airtable.prompt import PROMPT
+from mirage.vfs.airtable.prompt import PROMPT, WRITE_PROMPT
 from mirage.vfs.base import BaseVFS
 
 _resolve_glob = make_resolve_glob(readdir)
@@ -51,6 +51,7 @@ class AirtableVFS(BaseVFS):
     caches_reads: bool = False
     _ops: dict[str, Any] = _AIRTABLE_OPS
     PROMPT: str = PROMPT
+    WRITE_PROMPT: str = WRITE_PROMPT
 
     def __init__(self, config: AirtableConfig) -> None:
         super().__init__()

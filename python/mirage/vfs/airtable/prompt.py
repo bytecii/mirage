@@ -34,4 +34,19 @@ PROMPT = """\
   records.jsonl lists in the API's own order; a view file applies the
   view's filter and sort. A file over max_read_records records is
   refused whole (File too large), while head -n N fetches just N records:
-    head -n 20 {prefix}/bases/<base>/<table>/records.jsonl | jq .fields"""
+    head -n 20 {prefix}/bases/<base>/<table>/records.jsonl | jq .fields
+  The airtable CLI, if installed, reaches what a file cannot: server-side
+  filters (airtable record list --formula or --view), one record by id
+  (airtable record get), and comments (airtable comment list)."""
+
+WRITE_PROMPT = """\
+  Writes go through the airtable CLI if installed; a record line is the
+  records.jsonl shape, and the ids are the ones after the LAST "__":
+    airtable record create --base <base-id> --table <table-id> \\
+      --fields '{"Name": "New feature"}'
+    jq -c 'select(.fields.Status == "Todo") | .fields.Status = "Done"' \\
+      {prefix}/bases/<base>/<table>/records.jsonl \\
+      | airtable record update --base <base-id> --table <table-id>
+    airtable comment add --base <base-id> --table <table-id> <record-id> \\
+      --text "comment"
+  See airtable --help for every verb."""
