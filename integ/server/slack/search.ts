@@ -30,6 +30,7 @@ interface Scope {
   count: number
   display: (id: string) => string
   userName: Map<string, string>
+  realName: Map<string, string>
 }
 
 function userToken(ctx: Ctx<C>): boolean {
@@ -77,8 +78,10 @@ async function scopeOf(ctx: Ctx<C>): Promise<Scope> {
   }
   let fromUserId: string | undefined
   let fromMissing = false
-  if (parsed.fromName !== undefined) {
-    const from = people.find((u) => u.name === parsed.fromName)
+  if (parsed.fromName !== undefined || parsed.fromId !== undefined) {
+    const from = people.find((u) =>
+      parsed.fromId !== undefined ? u.id === parsed.fromId : u.name === parsed.fromName,
+    )
     if (from !== undefined) fromUserId = from.id
     else fromMissing = true
   }
@@ -91,10 +94,22 @@ async function scopeOf(ctx: Ctx<C>): Promise<Scope> {
     count: Math.min(100, Math.max(1, Number.parseInt(raw ?? '20', 10) || 20)),
     display,
     userName,
+    realName: new Map(people.map((u) => [u.id, u.realName || u.name])),
   }
   if (channelId !== undefined) out.channelId = channelId
   if (fromUserId !== undefined) out.fromUserId = fromUserId
   return out
+}
+
+// Search renders emphasis and named mentions; history keeps the stored mrkdwn.
+// Pinned by MCP-Atlas's live search/history recordings (#1218).
+function searchText(text: string, names: Map<string, string>): string {
+  return text
+    .replace(/(^|[\s(])_([^_\n]+)_(?=$|[\s.,!?;:)])/g, '$1$2')
+    .replace(/<@([A-Z0-9]+)>/g, (mention: string, id: string) => {
+      const name = names.get(id)
+      return name === undefined ? mention : `<@${id}|${name}>`
+    })
 }
 
 export async function searchMessages(ctx: Ctx<C>): Promise<Reply> {
@@ -113,6 +128,7 @@ export async function searchMessages(ctx: Ctx<C>): Promise<Reply> {
   const matches = rows
     .filter(
       (m) =>
+        m.text !== '' &&
         m.subtype !== 'channel_join' &&
         m.subtype !== 'channel_leave' &&
         withinDates(Number(m.ts), s.parsed),
@@ -124,7 +140,7 @@ export async function searchMessages(ctx: Ctx<C>): Promise<Reply> {
       user: m.userId,
       username: s.userName.get(m.userId) ?? m.userId,
       ts: m.ts,
-      text: m.text,
+      text: searchText(m.text, s.realName),
       channel: { id: m.channelId, name: s.display(m.channelId) },
     }))
   return {
@@ -152,7 +168,7 @@ export async function searchFiles(ctx: Ctx<C>): Promise<Reply> {
   // search.files has no author field in this model, so a from: query can never
   // match a file; return an empty set rather than silently ignoring it.
   const rows: FileRow[] =
-    s.channelMissing || s.parsed.fromName !== undefined
+    s.channelMissing || s.parsed.fromName !== undefined || s.parsed.fromId !== undefined
       ? []
       : await ctx.db.slackFile.findMany({ where, orderBy: { id: 'asc' } })
   const matches = rows
