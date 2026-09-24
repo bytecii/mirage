@@ -106,7 +106,8 @@ async def find(
                     other != entry_path and other.startswith(child_prefix)
                     for other, _ in collected)
             else:
-                is_empty = (file_stat.size or 0) == 0
+                is_empty = (file_stat.type is FileType.FILE
+                            and file_stat.size == 0)
         entry = FindEntry(key=rel,
                           name=entry_name,
                           kind="d" if is_dir else "f",

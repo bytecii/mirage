@@ -18,7 +18,8 @@ from mirage.context import DEFAULT_UMASK
 from mirage.io import IOResult
 from mirage.runtime.types import DispatchFn
 from mirage.types import FileType, PathSpec
-from mirage.utils.errors import FS_ERRORS, fs_strerror
+from mirage.utils.errors import (FS_ERRORS, OperationNotSupportedError,
+                                 fs_strerror)
 from mirage.utils.path import resolve_path
 from mirage.workspace.executor.builtins.metadata.metadata import (
     apply_link_attrs, follow_operand, now_iso, parse_touch_stamp,
@@ -113,14 +114,16 @@ async def handle_touch(
             except FileNotFoundError:
                 if "c" in flags:
                     continue
-                mount = namespace.mount_for(resolved.virtual)
-                if not mount.supports_op("write", resolved.virtual):
+                try:
+                    await dispatch("write", resolved, data=b"")
+                except OperationNotSupportedError:
                     # Stat-only backend (e.g. an API surface): creation is
-                    # impossible, which GNU reports as EROFS.
+                    # impossible, which GNU reports as EROFS. A read-only
+                    # mount has already refused at the door, as for any
+                    # write, so this is the writable mount's answer.
                     errors.append(f"touch: cannot touch '{target.raw_path}': "
                                   f"Read-only file system\n")
                     continue
-                await dispatch("write", resolved, data=b"")
                 writes[resolved.virtual] = b""
                 # A file touch creates is 0666 under the session's
                 # umask; only a mask away from bash's default is worth

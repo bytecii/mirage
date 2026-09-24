@@ -12,11 +12,14 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import errno
+import os
+
 from mirage.accessor.base import Accessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.ops.generic.table import OpFn, OpsTable
 from mirage.ops.registry import RegisteredOp
-from mirage.types import PathSpec
+from mirage.types import FileType, PathSpec
 from mirage.utils.ranges import is_unsatisfiable_range, slice_window
 
 
@@ -90,7 +93,8 @@ def _make_data_write(fn: OpFn) -> OpFn:
     return write
 
 
-def _make_emulated_append(read_bytes: OpFn, write_bytes: OpFn) -> OpFn:
+def _make_emulated_append(stat: OpFn, read_bytes: OpFn,
+                          write_bytes: OpFn) -> OpFn:
 
     async def append(accessor: Accessor,
                      path: PathSpec,
@@ -98,6 +102,22 @@ def _make_emulated_append(read_bytes: OpFn, write_bytes: OpFn) -> OpFn:
                      *,
                      index: IndexCacheStore | None = None,
                      **kwargs) -> None:
+        # A zero-byte append is an open for appending with nothing
+        # written after it (`exec >> f`, `: >> f`): it creates a missing
+        # file and leaves an existing one alone. Reading and rewriting
+        # the whole object to add nothing would move it twice and could
+        # put back bytes a concurrent writer had just replaced.
+        if not data:
+            try:
+                found = await stat(accessor, path, index)
+            except FileNotFoundError:
+                await write_bytes(accessor, path, data)
+                return
+            if found.type == FileType.DIRECTORY:
+                raise IsADirectoryError(errno.EISDIR,
+                                        os.strerror(errno.EISDIR),
+                                        path.virtual)
+            return
         # The read takes the caller's index, like every other read here:
         # an id-addressed backend (Box, Drive) turns a path into an id
         # through it, and without one every read is a miss, so each append
@@ -261,8 +281,8 @@ def make_generic_ops(
               None, skip)
     elif table.write is not None:
         _emit(ops, vfs_names, "append",
-              _make_emulated_append(table.read_bytes, table.write), True, None,
-              skip)
+              _make_emulated_append(table.stat, table.read_bytes, table.write),
+              True, None, skip)
     if table.create is not None:
         _emit(ops, vfs_names, "create", _make_path_write(table.create), True,
               None, skip)

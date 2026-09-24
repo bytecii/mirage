@@ -5,7 +5,7 @@ from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.find_eval import (FindEntry, PredNode, build_tree,
                                                keep, start_basename,
                                                tree_has_empty, tree_has_type)
-from mirage.types import FileStat, PathSpec
+from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.dates import matches_mtime
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.utils.stat_view import DIR_SIZE
@@ -116,7 +116,7 @@ async def _matches(
         else:
             if item_stat is None:
                 item_stat = await stat(accessor, spec, index)
-            is_empty = (item_stat.size or 0) == 0
+            is_empty = item_stat.type is FileType.FILE and item_stat.size == 0
     entry = FindEntry(key=item,
                       name=item_name,
                       kind=kind,

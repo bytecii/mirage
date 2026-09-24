@@ -113,8 +113,7 @@ async function ledger(vfs: VFS, setup: string | null): Promise<[string, string][
 
 const NATIVE_APPEND: [string, string][] = [
   ['write', K],
-  ['read', K],
-  ['write', K],
+  ['append', K],
   ['append', K],
   ['write', NEW],
   ['truncate', NEW],
@@ -195,9 +194,9 @@ describe('record paths name the virtual path (node backends)', () => {
     }
     const vfs = new SSHVFS({ host: 'example.com', username: 'alice', password: 'secret' })
     ;(vfs as { accessor: SSHAccessor }).accessor = makeFakeAccessor(state, '/')
-    // TS ssh records `write` only (python also records read, create, truncate).
+    // TS ssh records `write` only (python also records read, create, truncate),
+    // so `>>`, which reaches its native append, records nothing.
     expect(await ledger(vfs, null)).toEqual([
-      ['write', K],
       ['write', K],
       ['write', NEW],
       ['write', NEW],

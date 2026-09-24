@@ -266,6 +266,7 @@ export async function handleRedirect(
   const fds: FdDest[] = [stdinDest(session), TO_STDOUT, TO_STDERR]
   const fileBufs = new Map<string, Uint8Array>()
   const fileScopes = new Map<string, PathSpec>()
+  const appends = new Set<string>()
 
   for (const r of redirects) {
     if (typeof r.target === 'number') {
@@ -277,7 +278,8 @@ export async function handleRedirect(
         // through bash's shared offset do.
         const scope = ensureScope(dest)
         fileScopes.set(dest, scope)
-        fileBufs.set(dest, await readExisting(dispatch, scope))
+        fileBufs.set(dest, new Uint8Array())
+        appends.add(dest)
       }
       continue
     }
@@ -305,10 +307,12 @@ export async function handleRedirect(
     fileScopes.set(path, scope)
     if (r.append) {
       if (!fileBufs.has(path)) {
-        fileBufs.set(path, await readExisting(dispatch, scope))
+        fileBufs.set(path, new Uint8Array())
+        appends.add(path)
       }
     } else {
       fileBufs.set(path, new Uint8Array())
+      appends.delete(path)
     }
 
     if (r.fd === FD_BOTH) {
@@ -343,7 +347,7 @@ export async function handleRedirect(
       const scope = fileScopes.get(path)
       if (scope === undefined) continue
       try {
-        await createFile(dispatch, session, scope, data)
+        await createFile(dispatch, session, scope, data, appends.has(path))
         io.writes[path] = data
       } catch (err) {
         if (!isFsError(err)) throw err
@@ -577,19 +581,6 @@ function stdinDest(session: SessionState): FdDest {
   if (id === EXEC_TO_STDOUT) return TO_STDOUT
   if (id === EXEC_TO_STDERR) return TO_STDERR
   return id
-}
-
-async function readExisting(dispatch: DispatchFn, scope: PathSpec): Promise<Uint8Array> {
-  try {
-    const [existing] = await dispatch('read', scope)
-    if (existing instanceof Uint8Array) return existing
-  } catch (err) {
-    // file doesn't exist yet, or not readable — appending starts fresh and
-    // the write that follows reports the real failure as a shell-attributed
-    // line. Non-filesystem errors are bugs and still propagate.
-    if (!isFsError(err)) throw err
-  }
-  return new Uint8Array()
 }
 
 function ensureScope(target: unknown): PathSpec {

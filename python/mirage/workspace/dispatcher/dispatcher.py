@@ -351,6 +351,16 @@ class Dispatcher:
         if op == "rename" and isinstance(dst, PathSpec):
             await pre_ops_gate(policies, op, dst, True, mount.prefix,
                                _session_id())
+        if write:
+            require_turf_writable(mount, path)
+            if op == "rename" and isinstance(dst, PathSpec):
+                require_turf_writable(
+                    self._namespace.try_mount_for(dst.virtual), dst)
+        if op == "rmdir" and any(
+                path_allowed(link)
+                for link, _ in self._namespace.link_stats_below(path.virtual)):
+            raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY),
+                          path.virtual)
         await mount.ensure_ready()
         caches_reads = mount.vfs.caches_reads
         # The file cache is keyed on the path alone, and what a command
@@ -444,6 +454,18 @@ class Dispatcher:
                 # with it, as the shell's rm already drops it: a file
                 # created there next starts bare on every surface.
                 await self._namespace.drop_overlay(path.virtual)
+                if op == "rmdir":
+                    # The link check ran before the backend was asked, so
+                    # a visible link below now was created since: it is
+                    # younger than this rmdir, lands after it in the
+                    # serial order (a link synthesizes its parents), and
+                    # the purge taking the directory's hidden nodes must
+                    # not take it too.
+                    arrived = frozenset(
+                        link for link, _ in self._namespace.link_stats_below(
+                            path.virtual) if path_allowed(link))
+                    await self._namespace.purge_under(path.virtual,
+                                                      keep=arrived)
             if op == "rename" and isinstance(kwargs.get("dst"), PathSpec):
                 await self.invalidate_after_rename(mount, path, kwargs["dst"])
                 # rename(2) replaces the destination, so a node the

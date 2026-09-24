@@ -265,14 +265,7 @@ async def _open_target(dispatch: DispatchFn, session: SessionState,
         scope (PathSpec): the target.
         append (bool): whether the redirect is `>>`.
     """
-    if append:
-        try:
-            await dispatch("stat", scope)
-            return False
-        except FS_ERRORS as exc:
-            logger.debug("exec append target %s is new: %s", scope.raw_path,
-                         exc)
-    await create_file(dispatch, session, scope, b"")
+    await create_file(dispatch, session, scope, b"", append=append)
     return True
 
 
@@ -510,17 +503,8 @@ async def _append(dispatch: DispatchFn, session: SessionState, target: str,
     if target == CLOSED:
         return
     scope = _to_scope(target)
-    # The target exists by now, since `exec` opened it: every write is
-    # read-then-append. A file deleted since then reads empty rather
-    # than failing, which is where the debug line below comes from.
-    existing = b""
     try:
-        prior, _ = await dispatch("read", scope)
-        existing = await materialize(prior) or b""
-    except FS_ERRORS as exc:
-        logger.debug("exec append pre-read failed for %s: %s", target, exc)
-    try:
-        await dispatch("write", scope, data=existing + data)
+        await dispatch("append", scope, data=data)
         session._exec_opened.add(target)
     except FS_ERRORS as exc:
         logger.debug("exec write failed for %s: %s", target, exc)

@@ -15,7 +15,7 @@
 import { compareCodePoints } from '../../utils/sort.ts'
 import { contentSize } from '../../utils/stat_view.ts'
 import { resolvePath } from '../../utils/path.ts'
-import { gnuStrerror } from '../../utils/errors.ts'
+import { enoent, gnuStrerror } from '../../utils/errors.ts'
 import { failureText } from '../../errors/classify.ts'
 import { formatFindLs } from '../../commands/builtin/utils/formatting.ts'
 import {
@@ -29,12 +29,7 @@ import type { Identity } from '../../commands/builtin/utils/identity.ts'
 import { PolicyDenied } from '../../policy/errors.ts'
 import { shellJoin } from '../../shell/join.ts'
 import { type ByteSource, materialize } from '../../io/types.ts'
-import {
-  getCurrentSession,
-  runAsProgram,
-  runWithSuspendedOpPolicies,
-} from '../../context/session_context.ts'
-import { preOpsGate } from '../../policy/policies.ts'
+import { getCurrentSession, runAsProgram } from '../../context/session_context.ts'
 import type { FileStat, PathSpec } from '../../types.ts'
 import type { MountRegistry } from '../mount/registry.ts'
 import { SHELL_ONLY_BUILTINS } from '../lookup/constants.ts'
@@ -43,7 +38,6 @@ import { Consumer } from '../lookup/types.ts'
 import type { NamespaceView, StatPath } from '../../ops/types.ts'
 import { yieldBytes } from '../../io/stream.ts'
 import { FileType } from '../../types.ts'
-import type { Namespace } from '../mount/namespace/namespace.ts'
 import {
   execActions,
   type FindExpr,
@@ -74,7 +68,6 @@ export interface FindActionDoors {
   dispatch?: DispatchFn | null
   // Who the session is, for the owner and group columns of `-ls`.
   identity?: Identity | null
-  namespace?: Namespace | null
   // find's own input, which its `-exec` children share as one cursor, as
   // GNU's do (a pipe feeds one reader, and a child that never reads leaves
   // it for the next).
@@ -255,80 +248,26 @@ async function runExec(
   return io.exitCode === 0
 }
 
-/**
- * Delete one accepted row; returns whether it succeeded.
- *
- * A symlink row came from the namespace, which no backend can see, so
- * it is unlinked through the op dispatcher the way `rm link` is
- * (`stripLinkOperands`): that door is where the path gate, the turf's
- * mode and the op ledger fire, and it removes the node the mount's `rm`
- * would only report as absent. Every other row is a backend entry,
- * removed by the mount's own `rm`.
- */
+/** Remove a matched entry through the operation door, which owns admission,
+ * backend support, cache invalidation and namespace cleanup. */
 async function deleteRow(
   ps: PathSpec,
-  registry: MountRegistry,
-  cwd: string,
   ns: NamespaceView | null,
   dispatch: DispatchFn | null,
   errors: Uint8Array[],
-  namespace: Namespace | null,
   statPath: StatPath | null,
 ): Promise<boolean> {
   const path = ps.rawPath || ps.virtual
-  const link = dispatch !== null && (ns?.links?.statAt(ps.virtual) ?? null) !== null
-  const mount = registry.tryMountFor(ps.virtual)
-  if (mount === null && !link) {
-    errors.push(enc.encode(`find: cannot delete '${path}': no mount\n`))
+  if (dispatch === null) {
+    errors.push(enc.encode('find: -delete requires an operation dispatcher\n'))
     return false
   }
   try {
-    if (link) {
-      await dispatch('unlink', ps)
-      return true
-    }
-    if (mount === null) return false
-    // -delete is find's own action, not an `rm` line, so no command rule
-    // sees it; it is a removal all the same, so it clears the op door a
-    // path rule guards (the same gate `ws.vfs`, FUSE and a redirect
-    // clear), by the session the line runs under, and a refusal reports
-    // in find's voice. The delegated rm's own slots are suspended for the
-    // call, so the deletion admits exactly once. -d so a directory
-    // emptied by the rows before it in -depth order is removable,
-    // matching GNU -delete's rmdir behavior.
-    // Admitted as the op the row's removal is: a directory row is an
-    // rmdir, so a rule that refuses rmdir and allows unlink judges `find
-    // emptydir -delete` as it judges `rmdir emptydir`.
-    const st = statPath === null ? null : await statPath(ps.virtual)
+    const link = (ns?.links?.statAt(ps.virtual) ?? null) !== null
+    const st = link || statPath === null ? null : await statPath(ps.virtual)
+    if (!link && statPath !== null && st === null) throw enoent(ps)
     const op = st !== null && st.type === FileType.DIRECTORY ? 'rmdir' : 'unlink'
-    await preOpsGate(
-      registry.policies,
-      op,
-      ps,
-      true,
-      mount.prefix,
-      getCurrentSession()?.sessionId ?? '',
-    )
-    const [, rmIo] = await runWithSuspendedOpPolicies(() =>
-      mount.executeCmd('rm', [ps], [], { d: true }, { stdin: null, cwd }),
-    )
-    if (rmIo.exitCode !== 0) {
-      // rm names the reason last (`rm: cannot remove '/w/d': Directory
-      // not empty`), and find says the same thing about the row as it
-      // was typed.
-      const line = new TextDecoder().decode(await materialize(rmIo.stderr)).trim()
-      const why = line.slice(line.lastIndexOf(': ') + 2)
-      errors.push(enc.encode(`find: cannot delete '${path}'${why ? `: ${why}` : ''}\n`))
-      return false
-    }
-    if (namespace !== null) {
-      // The row's node meta (a chmod/chown overlay) goes with it and a
-      // directory's subtree purges, as the `rm` command path does in
-      // command_dispatch: a file later created at the same name must not
-      // inherit the removed one's mode.
-      await namespace.unlink(ps.virtual)
-      await namespace.purgeUnder(ps.virtual)
-    }
+    await dispatch(op, ps)
     return true
   } catch (err) {
     errors.push(enc.encode(`find: cannot delete '${path}': ${refusalWhy(err)}\n`))
@@ -553,7 +492,6 @@ export async function applyFindActions(
   const dispatch = doors.dispatch ?? null
   const identity = doors.identity ?? null
   const starts = doors.starts ?? []
-  const namespace = doors.namespace ?? null
   const signal = doors.signal
   const once =
     doors.stdin === undefined || doors.stdin === null ? null : new SharedStdin(doors.stdin)
@@ -632,7 +570,7 @@ export async function applyFindActions(
         // A structural row is skipped, not refused, the way Unix leaves
         // a mount point in place.
         if (structural(match, registry)) continue
-        if (!(await deleteRow(match, registry, cwd, ns, dispatch, errors, namespace, statPath))) {
+        if (!(await deleteRow(match, ns, dispatch, errors, statPath))) {
           exitCode = 1
           break
         }

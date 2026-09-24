@@ -16,7 +16,7 @@ import { stripSlash } from '../../../utils/slash.ts'
 import { describe, expect, it } from 'vitest'
 import type { IOResult } from '../../../io/types.ts'
 import type { FindOptions } from '../../../vfs/base.ts'
-import { ContentType, type FileStat, FileType, PathSpec } from '../../../types.ts'
+import { ContentType, FileStat, FileType, PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
 import type { LinkView } from '../../../ops/types.ts'
 import { findGeneric, linkResults } from './find.ts'
@@ -86,6 +86,16 @@ describe('generic command find', () => {
     function unreachedFind(): Promise<string[]> {
       throw new Error('find op must not be called for a file start point')
     }
+
+    it.each([null, 0, 1])('-empty requires known zero size (%s)', async (size) => {
+      const result = await findGeneric(
+        [spec('/mnt/a.txt')],
+        [],
+        optsWith(new FileStat({ name: 'a.txt', type: FileType.FILE, size }), { empty: true }),
+        unreachedFind,
+      )
+      expect(DEC.decode(result?.[0] as Uint8Array)).toBe(size === 0 ? '/mnt/a.txt\n' : '')
+    })
 
     it('reports the file and never asks the backend to walk it', async () => {
       const result = await findGeneric([spec('/mnt/a.txt')], [], optsWith(fileStat), unreachedFind)

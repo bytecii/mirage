@@ -23,26 +23,22 @@ from mirage.commands.builtin.types import (ExecAction, FindAction,
                                            PrintfAction, RowAction)
 from mirage.commands.builtin.utils.formatting import format_find_ls
 from mirage.commands.builtin.utils.identity import Identity
-from mirage.commands.config import ExecContext
 from mirage.commands.errors import is_entry_error
-from mirage.context import (get_current_session, reset_op_policies,
-                            reset_program_invocation, set_program_invocation,
-                            suspend_op_policies)
+from mirage.context import (get_current_session, reset_program_invocation,
+                            set_program_invocation)
 from mirage.errors.classify import failure_text
 from mirage.io.stream import materialize
 from mirage.io.types import ByteSource
 from mirage.ops.types import NamespaceView, StatPath
-from mirage.policy import pre_ops_gate
 from mirage.runtime.types import DispatchFn
 from mirage.types import FileStat, FileType, PathSpec
-from mirage.utils.errors import fs_strerror
+from mirage.utils.errors import enoent, fs_strerror
 from mirage.utils.path import resolve_path
 from mirage.utils.stream import ensure_stream
 from mirage.workspace.lookup.constants import SHELL_ONLY_BUILTINS
 from mirage.workspace.lookup.lookup import lookup_all
 from mirage.workspace.lookup.types import Consumer
 from mirage.workspace.mount import MountRegistry
-from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.types import ExecuteLine
 
 
@@ -235,95 +231,41 @@ async def _run_exec(execute_fn: ExecuteLine, session_id: str,
     return io.exit_code == 0
 
 
-async def _delete(ps: PathSpec, registry: MountRegistry, cwd: str,
-                  ns: NamespaceView | None, dispatch: DispatchFn | None,
-                  errors: list[bytes], namespace: Namespace | None,
+async def _delete(ps: PathSpec, ns: NamespaceView | None,
+                  dispatch: DispatchFn | None, errors: list[bytes],
                   stat_path: StatPath | None) -> bool:
-    """Delete one accepted row; returns whether it succeeded.
+    """Remove a matched entry through the shared operation door.
 
-    A symlink row came from the namespace, which no backend can see, so
-    it is unlinked through the op dispatcher the way ``rm link`` is
-    (``strip_link_operands``): that door is where the path gate, the
-    turf's mode and the op ledger fire, and it removes the node the
-    mount's ``rm`` would only report as absent. Every other row is a
-    backend entry, removed by the mount's own ``rm``.
+    The dispatcher owns admission, backend support, cache invalidation and
+    namespace cleanup. A find action never resolves a shell command.
 
     Args:
         ps (PathSpec): the selected row, with its display spelling.
-        registry (MountRegistry): used to route the removal.
-        cwd (str): the session's working directory.
-        ns (NamespaceView | None): the name plane's facts, whose link
-            view tells a namespace row from a backend one.
-        dispatch (DispatchFn | None): the op dispatcher a link is
-            unlinked through; None outside a workspace, where there is
-            no namespace to hold one.
-        errors (list[bytes]): where a failure's line is appended.
-        namespace (Namespace | None): the node table a removed row's
-            meta is dropped from; None outside a workspace.
-        stat_path (StatPath | None): dispatcher stat, which tells a
-            directory row (admitted as ``rmdir``) from a file (``unlink``).
+        ns (NamespaceView | None): the namespace's link facts.
+        dispatch (DispatchFn | None): workspace operation door.
+        errors (list[bytes]): receives a failure in find's voice.
+        stat_path (StatPath | None): distinguishes files from directories.
     """
     path = ps.raw_path or ps.virtual
-    link = (dispatch is not None and ns is not None and ns.links is not None
-            and ns.links.stat_at(ps.virtual) is not None)
-    mount = registry.try_mount_for(ps.virtual)
-    if mount is None and not link:
-        errors.append(f"find: cannot delete '{path}': no mount\n".encode())
+    if dispatch is None:
+        errors.append(b"find: -delete requires an operation dispatcher\n")
         return False
     try:
-        if link:
-            assert dispatch is not None
-            await dispatch("unlink", ps)
-            return True
-        assert mount is not None
-        # -delete is find's own action, not an `rm` line, so no command
-        # rule sees it; it is a removal all the same, so it clears the op
-        # door a path rule guards (the same gate `ws.vfs`, FUSE and a
-        # redirect clear), by the session the line runs under, and a
-        # refusal reports in find's voice. The delegated rm's own slots
-        # are suspended for the call, so the deletion admits exactly
-        # once. -d so a directory emptied by the rows before it in -depth
-        # order is removable, matching GNU -delete's rmdir behavior.
-        # Admitted as the op the row's removal is: a directory row is an
-        # rmdir, so a rule that refuses rmdir and allows unlink judges
-        # `find emptydir -delete` as it judges `rmdir emptydir`.
-        st = await stat_path(ps.virtual) if stat_path is not None else None
+        link = (ns is not None and ns.links is not None
+                and ns.links.stat_at(ps.virtual) is not None)
+        st = (await stat_path(ps.virtual)
+              if not link and stat_path is not None else None)
+        if not link and stat_path is not None and st is None:
+            raise enoent(ps)
         op = ("rmdir" if st is not None and st.type == FileType.DIRECTORY else
               "unlink")
-        sess = get_current_session()
-        await pre_ops_gate(registry.policies, op, ps, True, mount.prefix,
-                           sess.session_id if sess is not None else "")
-        token = suspend_op_policies()
-        try:
-            _, rm_io = await mount.execute_cmd("rm", [ps], [], {"d": True},
-                                               ExecContext(cwd=cwd))
-        finally:
-            reset_op_policies(token)
-    except (FileNotFoundError, NotADirectoryError, PermissionError,
-            ValueError) as exc:
-        # GNU words it with the errno text; a policy refusal carries its
-        # reason there.
-        why = (exc.strerror or str(exc)) if isinstance(exc,
-                                                       OSError) else str(exc)
+        await dispatch(op, ps)
+        return True
+    except (OSError, ValueError) as exc:
+        why = ((exc.strerror if isinstance(exc, OSError) else None)
+               or failure_text(exc))
         errors.append(f"find: cannot delete '{path}': {why}\n".encode())
         return False
-    if rm_io.exit_code != 0:
-        err = await materialize(rm_io.stderr) if rm_io.stderr else b""
-        # rm names the reason last (`rm: cannot remove '/w/d': Directory
-        # not empty`), and find says the same thing about the row as it
-        # was typed.
-        why = err.decode("utf-8", errors="replace").strip().rsplit(": ", 1)[-1]
-        errors.append(f"find: cannot delete '{path}'"
-                      f"{': ' + why if why else ''}\n".encode())
-        return False
-    if namespace is not None:
-        # The row's node meta (a chmod/chown overlay) goes with it and a
-        # directory's subtree purges, as the `rm` command path does in
-        # command_dispatch: a file later created at the same name must
-        # not inherit the removed one's mode.
-        await namespace.unlink(ps.virtual)
-        await namespace.purge_under(ps.virtual)
-    return True
 
 
 async def _row_stat(ps: PathSpec, ns: NamespaceView | None,
@@ -504,7 +446,6 @@ async def _apply_find_actions(
     stat_path: StatPath | None = None,
     dispatch: DispatchFn | None = None,
     identity: Identity | None = None,
-    namespace: Namespace | None = None,
     stdin: ByteSource | None = None,
     starts: list[PathSpec] | None = None,
 ) -> tuple[ByteSource | None, bytes, int]:
@@ -564,9 +505,8 @@ async def _apply_find_actions(
             a symlink) renders the way ``ls -l`` renders it.
         stat_path (StatPath | None): dispatcher stat, threaded with it
             and used to find a slash-carrying ``-exec`` head.
-        dispatch (DispatchFn | None): the op dispatcher a ``-delete``
-            unlinks a symlink row through, since the row is namespace
-            state no mount's ``rm`` can reach.
+        dispatch (DispatchFn | None): removes matched rows through the
+            operation door, which owns admission and cleanup.
         identity (Identity | None): who the session is, for the owner
             and group columns of ``-ls``.
 
@@ -649,8 +589,7 @@ async def _apply_find_actions(
                 # leaves a mount point in place.
                 if _structural(match, registry):
                     continue
-                if not await _delete(match, registry, cwd, ns, dispatch,
-                                     errors, namespace, stat_path):
+                if not await _delete(match, ns, dispatch, errors, stat_path):
                     exit_code = 1
                     break
             else:

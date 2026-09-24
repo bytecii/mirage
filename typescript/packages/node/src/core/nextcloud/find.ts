@@ -243,9 +243,7 @@ async function collectScanCandidates(
 }
 
 function emptyState(candidate: Candidate, nonemptyDirectories: Set<string>): boolean {
-  return candidate.kind === 'd'
-    ? !nonemptyDirectories.has(candidate.key)
-    : (candidate.size ?? 0) === 0
+  return candidate.kind === 'd' ? !nonemptyDirectories.has(candidate.key) : candidate.size === 0
 }
 
 async function hydrateScanCandidate(

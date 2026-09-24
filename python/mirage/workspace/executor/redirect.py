@@ -303,6 +303,7 @@ async def handle_redirect(
     fds: list[_Fd | str] = [_stdin_dest(session), _TO_STDOUT, _TO_STDERR]
     file_bufs: dict[str, bytearray] = {}
     file_scopes: dict[str, PathSpec] = {}
+    appends: set[str] = set()
 
     for r in redirects:
         if isinstance(r.target, int):
@@ -314,8 +315,8 @@ async def handle_redirect(
                 # appends, as writes through bash's shared offset do.
                 scope = _ensure_scope(dest)
                 file_scopes[dest] = scope
-                file_bufs[dest] = bytearray(await
-                                            _read_existing(dispatch, scope))
+                file_bufs[dest] = bytearray()
+                appends.add(dest)
             continue
 
         if r.kind in (RedirectKind.STDIN, RedirectKind.HEREDOC,
@@ -337,10 +338,11 @@ async def handle_redirect(
         file_scopes[path] = scope
         if r.append:
             if path not in file_bufs:
-                file_bufs[path] = bytearray(await
-                                            _read_existing(dispatch, scope))
+                file_bufs[path] = bytearray()
+                appends.add(path)
         else:
             file_bufs[path] = bytearray()
+            appends.discard(path)
 
         if r.fd == FD_BOTH:
             fds[FD_STDOUT] = path
@@ -376,7 +378,11 @@ async def handle_redirect(
             data = bytes(buf)
             scope = file_scopes[path]
             try:
-                await create_file(dispatch, session, scope, data)
+                await create_file(dispatch,
+                                  session,
+                                  scope,
+                                  data,
+                                  append=path in appends)
             except FS_ERRORS as exc:
                 out_stderr += _redirect_error_line(scope, exc)
                 io.exit_code = 1
@@ -611,21 +617,6 @@ async def _apply_pending_opens(
         except FS_ERRORS as exc:
             return _redirect_failure(scope, exc)
     return None
-
-
-async def _read_existing(dispatch, scope) -> bytes:
-    try:
-        existing, _ = await dispatch("read", scope)
-        if isinstance(existing, bytes):
-            return existing
-    except FS_ERRORS as exc:
-        # appending starts from empty when the target is missing or
-        # unreadable; the write that follows reports the real failure as
-        # a shell-attributed line. Narrower than FS_ERRORS would let a
-        # PermissionError escape to the workspace-level OSError handler,
-        # which kills the rest of the line and misattributes the message.
-        logger.debug("append pre-read failed for %s: %s", scope.raw_path, exc)
-    return b""
 
 
 def _ensure_scope(target):

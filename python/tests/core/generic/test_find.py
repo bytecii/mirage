@@ -10,7 +10,7 @@ KEYS = ["/", "/guides", "/guides/quickstart", "/api", "/api/reference"]
 
 DIRS = {"/", "/guides", "/api"}
 
-SIZES = {"/guides/quickstart": 40, "/api/reference": 900}
+SIZES = {"/guides/quickstart": 40, "/api/reference": 900, "/empty": 0}
 
 
 @dataclass(frozen=True)
@@ -141,10 +141,10 @@ async def test_empty_reads_a_directory_off_the_walked_list():
 
 
 @pytest.mark.asyncio
-async def test_empty_keeps_a_zero_length_file():
-    ops = Ops(keys=["/", "/api", "/api/reference", "/unsized"])
+async def test_empty_requires_a_known_zero_length_file():
+    ops = Ops(keys=["/", "/api", "/api/reference", "/unsized", "/empty"])
     find = build(ops)
-    assert await find(object(), ROOT, empty=True) == ["/unsized"]
+    assert await find(object(), ROOT, empty=True) == ["/empty"]
 
 
 @pytest.mark.asyncio

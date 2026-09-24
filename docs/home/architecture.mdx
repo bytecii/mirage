@@ -23,6 +23,23 @@ The action surface. **Mirage Bash** parses commands with tree-sitter and runs th
 
 The **Mirage Dispatcher** routes each operation to the mount that owns the path, joining pipelines that span systems. The **Index & File Cache** absorbs repeats: the first directory walk hits the API, the next serves from cache; the first read streams bytes, later reads are local.
 
+Mount mode and session grants govern every mutation at the operation dispatcher,
+including symlinks, permissions and extended attributes stored in the namespace.
+Write admission precedes backend initialization and capability lookup. A read-only
+mount therefore returns a read-only refusal even when its backend has no handler
+for that operation. Backend capabilities describe what an admitted operation can do;
+they do not grant permission.
+
+Shell actions use these same operations: `>>` dispatches `append`, and `find -delete`
+dispatches `unlink` or `rmdir`. Any append emulation runs below admission, so a refused
+append never fetches file contents. The dispatcher also owns cache invalidation and
+namespace cleanup after mutations.
+
+File sizes describe rendered bytes. An unknown size remains unknown: `find -empty`
+requires a confirmed zero-length regular file or a directory with no entries. It does
+not fetch a rendered file merely to determine its size. This differs from GNU's local
+filesystem view, where a regular file's size is available from `stat`.
+
 ## 4. Infrastructure and Remote
 
 Whatever you mount: RAM, Disk, Redis, S3 / R2 / GCS / OCI / Supabase, Gmail / GDrive / GDocs / GSheets / GSlides, GitHub / Linear / Notion / Trello, Slack / Discord / Email, MongoDB / Postgres / LanceDB / Qdrant, SSH, and more. Each speaks the same filesystem semantics from the agent's point of view.
