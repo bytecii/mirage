@@ -94,8 +94,12 @@ async def narrow_scope(
                   ))
     if use_search:
         assert query is not None
-        narrowed = await narrow_paths(accessor.config, accessor.owner,
-                                      accessor.repo, query, paths)
+        narrowed = await narrow_paths(accessor.config,
+                                      accessor.owner,
+                                      accessor.repo,
+                                      query,
+                                      paths,
+                                      session=accessor.pool)
         if narrowed:
             return narrowed, len(narrowed), True
     resolved = await resolve_glob(accessor, paths, index)

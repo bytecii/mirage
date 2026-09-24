@@ -15,7 +15,9 @@
 from typing import Any
 
 from mirage.accessor.trello import TrelloAccessor
+from mirage.commands.builtin.trello import COMMANDS
 from mirage.core.trello.readdir import readdir
+from mirage.ops.trello import OPS as TRELLO_VFS_OPS
 from mirage.types import PathSpec, VFSName
 from mirage.utils.glob_walk import make_resolve_glob
 from mirage.vfs.base import BaseVFS
@@ -37,9 +39,6 @@ class TrelloVFS(BaseVFS):
         super().__init__()
         self.config = config
         self.accessor = TrelloAccessor(self.config)
-        from mirage.commands.builtin.trello import COMMANDS
-        from mirage.ops.trello import OPS as TRELLO_VFS_OPS
-
         for fn in COMMANDS:
             self.register(fn)
         for fn in TRELLO_VFS_OPS:
@@ -54,6 +53,3 @@ class TrelloVFS(BaseVFS):
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        pass

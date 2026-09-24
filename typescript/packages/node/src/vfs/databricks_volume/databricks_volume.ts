@@ -80,7 +80,6 @@ export class DatabricksVolumeVFS extends BaseVFS implements VFS {
   // Content-Length, both the exact byte count the download returns;
   // readdir backfills any lister-omitted size with one HEAD.
   readonly sizesAlwaysKnown: boolean = true
-  override readonly indexTtl: number = 600
   readonly prompt: string = DATABRICKS_VOLUME_PROMPT
   readonly config: DatabricksVolumeConfig
   readonly accessor: DatabricksVolumeAccessor
@@ -111,10 +110,6 @@ export class DatabricksVolumeVFS extends BaseVFS implements VFS {
     const [host, token] = await resolveAuth(config)
     const accessor = new DatabricksVolumeAccessor(config, host, token)
     return new DatabricksVolumeVFS(config, accessor)
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
   }
 
   commands(): readonly RegisteredCommand[] {
@@ -226,9 +221,5 @@ export class DatabricksVolumeVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactDatabricksVolumeConfig(this.config),
     })
-  }
-
-  override loadState(_state: DatabricksVolumeVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

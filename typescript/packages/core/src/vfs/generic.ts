@@ -16,15 +16,16 @@ import type { Accessor } from '../accessor/base.ts'
 import type { IndexConfig } from '../cache/index/config.ts'
 import {
   type CommandIO,
-  type ResolveGlobOp,
   makeGenericCommands,
   resolveGlobOf,
 } from '../commands/builtin/generic_bind/index.ts'
+import { type ResolveGlobOp } from './types.ts'
 import type { ProvisionFn, RegisteredCommand } from '../commands/config.ts'
 import { makeGenericOps } from '../ops/generic/factory.ts'
 import type { RegisteredOp } from '../ops/registry.ts'
 import type { FileStat, PathSpec } from '../types.ts'
 import { BaseVFS, type FindOptions, type VFS, type VFSStateBase } from './base.ts'
+import { VFSAdapter } from './adapter.ts'
 
 export interface GenericVFSOptions<A extends Accessor = Accessor> {
   /**
@@ -35,8 +36,8 @@ export interface GenericVFSOptions<A extends Accessor = Accessor> {
   name: string
   /** Backend handle passed to every core fn on the table. */
   accessor: A
-  /** The backend's IO table. */
-  io: CommandIO<A>
+  /** Resource capabilities or a prebuilt command/dispatcher table. */
+  io: CommandIO<A> | VFSAdapter<A>
   /** LLM-facing description of the mounted layout. */
   prompt?: string
   /** Appended to `prompt` when the mount is writable. */
@@ -96,12 +97,12 @@ export interface GenericVFSOptions<A extends Accessor = Accessor> {
 }
 
 /**
- * A whole backend generated from one {@link CommandIO} table.
+ * A whole backend generated from resource capabilities or a CommandIO table.
  *
  * The one-file path for a custom backend: supply an accessor and the
- * core functions on a table (readdir/readBytes/readStream/stat at
- * minimum) and the generic command set arrives wired, along with glob
- * resolution and the VFS/FUSE ops. Optional fields on the table unlock
+ * three core functions on a VFSAdapter (readdir/readBytes/stat), and the
+ * generic commands, glob resolution and VFS/FUSE ops arrive wired.
+ * Optional fields on the table unlock
  * more surface (`write` enables the byte-mutation family, `find` and
  * `du` become native fast paths), and a command whose requirements the
  * table cannot meet is never registered rather than registered and
@@ -155,7 +156,8 @@ export class GenericVFS<A extends Accessor = Accessor> extends BaseVFS implement
     if (options.name === '') throw new Error('GenericVFS requires a non-empty name')
     this.kind = options.name
     this.accessor = options.accessor
-    this.io = options.io
+    const io = options.io instanceof VFSAdapter ? options.io.toCommandIO() : options.io
+    this.io = io
     this.prompt = options.prompt ?? ''
     this.writePrompt = options.writePrompt ?? ''
     this.cachesReads = options.cachesReads ?? false
@@ -163,9 +165,9 @@ export class GenericVFS<A extends Accessor = Accessor> extends BaseVFS implement
     this.supportsSnapshot = options.supportsSnapshot ?? false
     this.readRevalidatable = options.readRevalidatable ?? false
     if (options.index !== undefined) this.setIndex(options.index)
-    this.#glob = resolveGlobOf(options.io)
+    this.#glob = resolveGlobOf(io)
     this.#commands = [
-      ...makeGenericCommands<A>(options.name, options.io, {
+      ...makeGenericCommands<A>(options.name, io, {
         ...(options.overrides !== undefined ? { overrides: options.overrides } : {}),
         ...(options.provisionOverrides !== undefined
           ? { provisionOverrides: options.provisionOverrides }
@@ -179,11 +181,9 @@ export class GenericVFS<A extends Accessor = Accessor> extends BaseVFS implement
     // registering both cannot leave two handlers competing for one key.
     const shadowed = new Set(userOps.filter((ro) => ro.filetype === null).map((ro) => ro.name))
     const derived =
-      options.autoOps === false
-        ? []
-        : makeGenericOps<A>(options.name, options.io, { overrides: shadowed })
+      options.autoOps === false ? [] : makeGenericOps<A>(options.name, io, { overrides: shadowed })
     this.#ops = [...derived, ...userOps]
-    this.#installOptional(options.io)
+    this.#installOptional(io)
   }
 
   // Each forwarder reads `this.index` when called rather than capturing
@@ -203,10 +203,6 @@ export class GenericVFS<A extends Accessor = Accessor> extends BaseVFS implement
     if (rmR !== undefined) this.rmR = (p) => rmR(this.accessor, p)
     if (du !== undefined) this.du = (p) => du.size(this.accessor, p, this.index)
     if (find !== undefined) this.find = (p, o) => find(this.accessor, p, o ?? {})
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
   }
 
   // The base cannot know a subclass's constructor, so by default a

@@ -15,7 +15,9 @@
 import type { GSheetsAccessor } from '../../../accessor/gsheets.ts'
 import { VFSName } from '../../../types.ts'
 import type { ProvisionFn, RegisteredCommand } from '../../config.ts'
+import { resolveGlobOf } from '../generic_bind/adapter.ts'
 import { makeGenericCommands } from '../generic_bind/index.ts'
+import { withDefaultProvisions } from '../generic_bind/provision.ts'
 import { GSHEETS_IO } from './io.ts'
 import { fileReadProvision } from './_provision.ts'
 import { GSHEETS_RM } from './rm.ts'
@@ -30,5 +32,10 @@ export const GSHEETS_COMMANDS: readonly RegisteredCommand[] = [
       rg: fileReadProvision as ProvisionFn,
     },
   }),
-  ...GSHEETS_RM,
+  ...withDefaultProvisions(
+    [...GSHEETS_RM],
+    GSHEETS_IO.stat,
+    resolveGlobOf(GSHEETS_IO),
+    GSHEETS_IO.readdir,
+  ),
 ]

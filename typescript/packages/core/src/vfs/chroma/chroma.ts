@@ -76,16 +76,6 @@ export class ChromaVFS extends BaseVFS implements VFS {
     }
   }
 
-  // Nothing to take back: the bytes live in the remote store, so a
-  // restored mount reaches them through its config alone.
-  override loadState(_state: ChromaVFSState): Promise<void> {
-    return Promise.resolve()
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   ops(): readonly RegisteredOp[] {
     return CHROMA_OPS
   }

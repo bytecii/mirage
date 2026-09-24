@@ -115,7 +115,7 @@ jobs:
               - 'typescript/packages/core/src/core/jaeger/**'
               - 'typescript/packages/core/src/accessor/langfuse.ts'
               - 'typescript/packages/core/src/accessor/jaeger.ts'
-              - 'typescript/packages/node/src/vfs/langfuse/**'
+              - 'typescript/packages/core/src/vfs/langfuse/**'
               - 'typescript/packages/node/src/vfs/jaeger/**'
               - '.github/workflows/test_integ.yml'
               - '.github/actions/setup-node-pnpm/action.yml'
@@ -968,11 +968,12 @@ jobs:
 
       # Its own process on its own port, and seeded EMPTY: the watch battery
       # creates the one repository it watches, where the corpus batteries read
-      # a seeded tree.
+      # a seeded tree. 5103 is no fake's default (gate_selftest checks), so a
+      # fake started without --port cannot take it.
       - name: Start the fake GitHub server
         working-directory: integ
         run: |
-          nohup pnpm exec tsx server/github/main.ts --port 5087 --fixture empty \
+          nohup pnpm exec tsx server/github/main.ts --port 5103 --fixture empty \
             > /tmp/github-watch.log 2>&1 &
           for i in $(seq 1 30); do
             grep -q "GITHUB_URL=" /tmp/github-watch.log && break
@@ -997,7 +998,7 @@ jobs:
           BOX_URL: http://127.0.0.1:5096
           ONEDRIVE_URL: http://127.0.0.1:5089
           HF_URL: http://127.0.0.1:5099
-          GITHUB_URL: http://127.0.0.1:5087
+          GITHUB_URL: http://127.0.0.1:5103
           WATCH_RESULTS_FILE: /tmp/watch-battery-results.txt
         run: ./python/.venv/bin/python integ/watch/run.py
 

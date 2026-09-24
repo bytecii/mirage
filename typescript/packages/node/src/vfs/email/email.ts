@@ -31,7 +31,7 @@ import {
   type EmailConfig,
   type EmailConfigRedacted,
 } from '../../core/email/config.ts'
-import { EMAIL_PROMPT } from './prompt.ts'
+import { EMAIL_PROMPT, EMAIL_WRITE_PROMPT } from './prompt.ts'
 
 const resolveGlob = makeResolveGlob(emailReaddir)
 
@@ -49,6 +49,7 @@ export class EmailVFS extends BaseVFS implements VFS {
   readonly sizesAlwaysKnown: boolean = true
   override readonly indexTtl: number = 86_400
   readonly prompt: string = EMAIL_PROMPT
+  readonly writePrompt: string = EMAIL_WRITE_PROMPT
   readonly config: EmailConfig
   readonly accessor: EmailAccessor
 
@@ -56,10 +57,6 @@ export class EmailVFS extends BaseVFS implements VFS {
     super()
     this.config = config
     this.accessor = new EmailAccessor(config)
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
   }
 
   override async close(): Promise<void> {
@@ -110,9 +107,5 @@ export class EmailVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactEmailConfig(this.config),
     })
-  }
-
-  override loadState(_state: EmailVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

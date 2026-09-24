@@ -28,13 +28,13 @@
       "gcal": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": true
       },
       "gdocs": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": true
       },
       "gdrive": {
@@ -52,13 +52,13 @@
       "gsheets": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": true
       },
       "gslides": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": true
       },
       "hf_buckets": {

@@ -288,6 +288,15 @@ def make_generic_commands(
     skip = overrides or set()
     prov_over = provision_overrides or {}
     ops_over = ops_overrides or {}
+    # A name no builder has does nothing at all, so a misspelled override
+    # left the generic registered beside the bespoke one, and an override
+    # for a command the table never had (mem0's `search`) read as if it
+    # displaced something. Refused at registration, which is import time.
+    known = {b.name for b in BUILDERS}
+    unknown = sorted((set(skip) | set(prov_over) | set(ops_over)) - known)
+    if unknown:
+        raise ValueError(f"make_generic_commands({vfs!r}): no generic "
+                         f"builder named {', '.join(unknown)}")
     commands: list[Callable[..., Any]] = []
     for b in BUILDERS:
         if b.name in skip:

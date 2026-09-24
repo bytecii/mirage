@@ -26,7 +26,7 @@ from mirage.types import PathSpec
 from mirage.vfs.mongodb.config import MongoDBConfig
 
 GENERICS = "mirage.commands.builtin.generic_bind.search._GENERICS"
-SEARCH_COLLECTION = "mirage.core.mongodb.search.search_collection"
+SEARCH_COLLECTION = "mirage.core.mongodb.search.search_entity"
 
 
 @pytest.fixture
