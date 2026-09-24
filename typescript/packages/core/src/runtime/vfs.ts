@@ -284,8 +284,7 @@ export class RuntimeVFS {
         let st: VFSStat
         try {
           st = await this.stat(raw)
-        } catch (err) {
-          console.debug(`runtime vfs: readdir ${path}: stat ${raw}: ${String(err)}`)
+        } catch {
           return unclassified
         } finally {
           release()
