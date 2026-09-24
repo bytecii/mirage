@@ -666,7 +666,6 @@
         "langfuse",
         "jaeger",
         "dify",
-        "mem0",
         "trello",
         "linear",
         "slack",
@@ -678,6 +677,19 @@
         "exit": 1,
         "stdout": "",
         "stderr": "touch: cannot touch '{mount}/__nf_new__': Read-only file system\n"
+      }
+    },
+    {
+      "id": "ro_mount_touch_refused",
+      "seq": 620044,
+      "targets": [
+        "mem0"
+      ],
+      "command": "touch {mount}/__nf_new__",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "touch: read-only mount at {mount}/\n"
       }
     },
     {
