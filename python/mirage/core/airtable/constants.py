@@ -18,10 +18,14 @@ PAGE_SIZE = 100
 # per base; they pace under their own key.
 META_KEY = "meta"
 
+# A view is looked up by id when the value is shaped like one, and by name
+# otherwise; each miss has its own type.
 NOT_FOUND_TYPES = frozenset({
     "NOT_FOUND",
     "MODEL_ID_NOT_FOUND",
     "INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND",
+    "VIEW_ID_NOT_FOUND",
+    "VIEW_NAME_NOT_FOUND",
 })
 
 # Airtable takes at most ten records in one create, update or delete.

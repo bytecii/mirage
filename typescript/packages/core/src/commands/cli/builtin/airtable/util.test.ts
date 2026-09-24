@@ -13,13 +13,11 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { formatFsError } from '../../../../utils/errors.ts'
+import { isEacces } from '../../../../utils/errors.ts'
 import { UsageError } from '../../../errors.ts'
 import { findTable, jsonObject, oneOperand, scopedBase, stdinText } from './util.ts'
 
 // Mirrors python/tests/commands/cli/builtin/airtable/test_util.py.
-
-const DEC = new TextDecoder()
 
 describe('airtable cli util', () => {
   it('admits the scoped bases and refuses the rest', () => {
@@ -31,9 +29,8 @@ describe('airtable cli util', () => {
     } catch (err) {
       refused = err
     }
-    expect(DEC.decode(formatFsError('airtable base get', refused))).toBe(
-      'airtable base get: appB: Permission denied\n',
-    )
+    expect(isEacces(refused)).toBe(true)
+    expect((refused as Error).message).toBe('appB: Permission denied')
   })
 
   it('finds a table by id before name', () => {
@@ -48,17 +45,17 @@ describe('airtable cli util', () => {
   })
 
   it('refuses non-finite numbers as JSON', () => {
-    expect(jsonObject('p', '--fields', '{"a": 1.5}')).toEqual({ a: 1.5 })
+    expect(jsonObject('--fields', '{"a": 1.5}')).toEqual({ a: 1.5 })
     for (const text of ['NaN', '[Infinity]', '{"a": -Infinity}']) {
-      expect(() => jsonObject('p', '--fields', text)).toThrow(UsageError)
+      expect(() => jsonObject('--fields', text)).toThrow(UsageError)
     }
-    expect(() => jsonObject('p', '--fields', '[]')).toThrow(/must be a JSON object/)
+    expect(() => jsonObject('--fields', '[]')).toThrow(/must be a JSON object/)
   })
 
   it('words operand refusals like argparse', () => {
-    expect(oneOperand('p', ['x'], 'BASE')).toBe('x')
-    expect(() => oneOperand('p', [], 'BASE')).toThrow(/are required: BASE/)
-    expect(() => oneOperand('p', ['x', 'y', 'z'], 'BASE')).toThrow(/unrecognized arguments: y z/)
+    expect(oneOperand(['x'], 'BASE')).toBe('x')
+    expect(() => oneOperand([], 'BASE')).toThrow(/are required: BASE/)
+    expect(() => oneOperand(['x', 'y', 'z'], 'BASE')).toThrow(/unrecognized arguments: y z/)
   })
 
   it('drops a leading byte order mark from stdin', async () => {

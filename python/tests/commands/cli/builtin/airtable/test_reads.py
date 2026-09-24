@@ -16,8 +16,8 @@ import json
 
 import pytest
 
-from tests.fixtures.airtable_api import (DONE, DONE_FORMULA, FEATURES, OPS,
-                                         ROADMAP)
+from tests.fixtures.airtable_api import (DONE, DONE_FORMULA, FEATURES,
+                                         MODEL_NOT_FOUND, OPS, ROADMAP)
 
 BASE_DIR = "/at/bases/Product_Roadmap__appRoadmapBase001"
 TABLE_DIR = f"{BASE_DIR}/Features__tblFeatures000001"
@@ -93,8 +93,7 @@ async def test_max_records_is_honored_as_asked(airtable_ws, airtable_api):
     assert len(out.splitlines()) == 7
     assert airtable_api.record_calls()[0]["maxRecords"] == "7"
     assert await _run(ws, f"airtable record list {AT} --max-records 0") == (
-        2, "", "airtable record list: --max-records must be at least 1\n"
-        "Try 'airtable record list --help' for more information.\n")
+        2, "", "--max-records must be at least 1\n")
 
 
 @pytest.mark.asyncio
@@ -117,8 +116,8 @@ async def test_record_get_prints_one_line(airtable_ws):
     assert json.loads(out)["record_id"] == FIRST
     assert await _run(ws, f"airtable record get {AT} recZZZZZZZZZZZZZZ") == (
         1, "", "airtable record get: Airtable API error (GET "
-        f"/{ROADMAP}/{FEATURES}/recZZZZZZZZZZZZZZ): HTTP 404: "
-        "MODEL_ID_NOT_FOUND: Record not found\n")
+        f"/{ROADMAP}/{FEATURES}/recZZZZZZZZZZZZZZ): HTTP 403: "
+        f"INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND: {MODEL_NOT_FOUND}\n")
 
 
 @pytest.mark.asyncio
@@ -164,8 +163,5 @@ async def test_a_base_outside_the_scope_is_refused_unsent(
 ])
 async def test_operand_refusals_are_usage_errors(airtable_ws, airtable_api,
                                                  line, message):
-    prog = " ".join(line.split()[:3])
-    assert await _run(airtable_ws(),
-                      line) == (2, "", f"{prog}: {message}\n"
-                                f"Try '{prog} --help' for more information.\n")
+    assert await _run(airtable_ws(), line) == (2, "", f"{message}\n")
     assert airtable_api.calls == []

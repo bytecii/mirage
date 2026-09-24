@@ -64,9 +64,8 @@ function named(n: number): Row[] {
   return Array.from({ length: n }, (_, i) => ({ fields: { Name: `New ${String(i + 1)}` } }))
 }
 
-function usage(verb: string, message: string): [number, string, string] {
-  const prog = `airtable ${verb}`
-  return [2, '', `${prog}: ${message}\nTry '${prog} --help' for more information.\n`]
+function usage(message: string): [number, string, string] {
+  return [2, '', `${message}\n`]
 }
 
 function bodies(fake: FakeAirtable): Row[] {
@@ -196,7 +195,7 @@ describe('airtable write verbs', () => {
     expect(code).toBe(1)
     expect(out.split('\n').filter((l) => l !== '')).toHaveLength(10)
     expect(err).toBe(
-      `airtable record create: Airtable API error (POST /${ROADMAP}/${FEATURES}): HTTP 422: ` +
+      `Airtable API error (POST /${ROADMAP}/${FEATURES}): HTTP 422: ` +
         'UNKNOWN_FIELD_NAME: Unknown field name: "Nope"\n',
     )
     expect(fake.records[FEATURES]).toHaveLength(17)
@@ -239,7 +238,7 @@ describe('airtable write verbs', () => {
   ])('refuses missing or malformed input: %s', async (line, message) => {
     const fake = new FakeAirtable()
     const run = await open(fake)
-    expect(await run(line)).toEqual(usage(line.split(' ').slice(1, 3).join(' '), message))
+    expect(await run(line)).toEqual(usage(message))
     expect(fake.calls).toEqual([])
   })
 
@@ -258,9 +257,7 @@ describe('airtable write verbs', () => {
     const fake = new FakeAirtable()
     const run = await open(fake)
     await run(`printf '%s' '${text}' > /s/in.jsonl`)
-    expect(await run(`airtable record ${verb} ${AT} < /s/in.jsonl`)).toEqual(
-      usage(`record ${verb}`, message),
-    )
+    expect(await run(`airtable record ${verb} ${AT} < /s/in.jsonl`)).toEqual(usage(message))
     expect(fake.calls).toEqual([])
   })
 

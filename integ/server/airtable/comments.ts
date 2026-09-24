@@ -29,14 +29,15 @@ import {
   intParam,
   invalidRequest,
   isId,
+  modelNotFound,
   notPermitted,
   offsetToken,
   ok,
   onlyKeys,
   parseOffset,
-  recordNotFound,
   refuse,
   resumeAt,
+  rowCommentDoesNotExist,
 } from './wire.ts'
 import type { JsonObject } from './wire.ts'
 import { mintId } from './writes.ts'
@@ -99,7 +100,7 @@ interface Target {
 async function targetOf(ctx: Ctx<C>, who: Principal): Promise<Target> {
   const world = await baseFor(ctx, who, ctx.params.base ?? '')
   const table = tableOf(world, ctx.params.table ?? '')
-  const rec = recordIn(table, ctx.params.record ?? '') ?? refuse(recordNotFound())
+  const rec = recordIn(table, ctx.params.record ?? '') ?? refuse(modelNotFound())
   return { world, rec }
 }
 
@@ -169,11 +170,16 @@ export const createComment = guard(async (ctx: Ctx<C>): Promise<Reply> => {
 })
 
 // Only its author may edit or delete a comment through the API.
-async function ownComment(ctx: Ctx<C>, who: Principal): Promise<{ world: World; row: CommentRow }> {
+async function ownComment(
+  ctx: Ctx<C>,
+  who: Principal,
+  named: boolean,
+): Promise<{ world: World; row: CommentRow }> {
   const { world, rec } = await targetOf(ctx, who)
   requireComment(world)
   const all = await commentsOf(ctx, rec.id)
-  const row = all.find((c) => c.id === ctx.params.comment) ?? refuse(commentNotFound())
+  const id = ctx.params.comment ?? ''
+  const row = all.find((c) => c.id === id) ?? refuse(rowCommentDoesNotExist(named ? id : null))
   if (row.authorId !== who.user.id) return refuse(notPermitted())
   return { world, row }
 }
@@ -187,7 +193,7 @@ export const updateComment = guard(async (ctx: Ctx<C>): Promise<Reply> => {
   const body = bodyOf(ctx)
   onlyKeys(body, ['text'], invalidRequest)
   const text = textOf(body)
-  const { world, row } = await ownComment(ctx, who)
+  const { world, row } = await ownComment(ctx, who, true)
   const updated: CommentRow = { ...row, text, lastUpdatedTime: ctx.clock.nowIso() }
   await ctx.db.airtableComment.update({
     where: idWhere<Prisma.AirtableCommentWhereUniqueInput>(ctx.tenant, row.id, KIND),
@@ -200,7 +206,7 @@ export const deleteComment = guard(async (ctx: Ctx<C>): Promise<Reply> => {
   requireIds(ctx, COMMENT_IDS)
   const who = await authenticate(ctx)
   onlyQuery(ctx, () => false)
-  const { row } = await ownComment(ctx, who)
+  const { row } = await ownComment(ctx, who, false)
   await ctx.db.airtableComment.delete({
     where: idWhere<Prisma.AirtableCommentWhereUniqueInput>(ctx.tenant, row.id, KIND),
   })

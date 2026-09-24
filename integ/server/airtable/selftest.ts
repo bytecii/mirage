@@ -66,8 +66,18 @@ const INVALID = {
   },
 }
 const BODY = { error: { type: 'INVALID_REQUEST_BODY', message: 'Could not parse request body' } }
-const RECORD_404 = { error: { type: 'MODEL_ID_NOT_FOUND', message: 'Record not found' } }
+const MISSING_ID = 'recZZZZZZZZZZZZZZ'
+const ROW_MISSING = {
+  error: {
+    type: 'ROW_DOES_NOT_EXIST',
+    message: `Record ID ${MISSING_ID} does not exist in this table`,
+  },
+}
+const DELETE_MISSING = {
+  error: { type: 'NOT_FOUND', message: `Could not find a record with ID "${MISSING_ID}".` },
+}
 const COMMENT_404 = { error: { type: 'MODEL_ID_NOT_FOUND', message: 'Comment not found' } }
+const COMMENT_MISSING = { error: { type: 'ROW_COMMENT_DOES_NOT_EXIST' } }
 const UPDATE_RECORDS = {
   error: {
     type: 'INVALID_RECORDS',
@@ -103,7 +113,7 @@ const badValue = (name: string): Json => ({
 const badChoice = (v: string): Json => ({
   error: {
     type: 'INVALID_MULTIPLE_CHOICE_OPTIONS',
-    message: `Insufficient permissions to create new select option "${v}"`,
+    message: `Insufficient permissions to create new select option "${JSON.stringify(v)}"`,
   },
 })
 const badOffset = (v: string): Json => ({
@@ -112,6 +122,9 @@ const badOffset = (v: string): Json => ({
 const noView = (v: string): Json => ({
   error: { type: 'VIEW_NAME_NOT_FOUND', message: `View ${v} not found` },
 })
+const VIEW_ID_MISSING = {
+  error: { type: 'VIEW_ID_NOT_FOUND', message: 'View viwZZZZZZZZZZZZZZ not found' },
+}
 const FORMULA_INVALID = {
   error: {
     type: 'INVALID_FILTER_BY_FORMULA',
@@ -488,6 +501,13 @@ async function reads(origin: string): Promise<void> {
   const kanban = await listAll(features, [['view', 'By owner / priority']])
   eq('a two-key view sort, empty owners first', kanban.ids, [5, 9, 1, 8, 4, 6, 2, 10, 7, 3].map(F))
   await expect('an unknown view is refused', `${features}?view=Nope`, {}, 422, noView('Nope'))
+  await expect(
+    'an unknown view id is refused as an id',
+    `${features}?view=viwZZZZZZZZZZZZZZ`,
+    {},
+    422,
+    VIEW_ID_MISSING,
+  )
   const resorted = await listAll(features, [
     ['view', 'Done'],
     ['sort[0][field]', 'Name'],
@@ -846,11 +866,11 @@ async function single(origin: string): Promise<void> {
   const byId = await http(`${v0}/${ROADMAP}/Features/${F(3)}?returnFieldsByFieldId=true`)
   eq('get a record keyed by field id', fieldsOf(byId.body).fldFeatName000001, 'Dark mode')
   await expect(
-    'a well-formed missing record is 404 MODEL_ID_NOT_FOUND',
+    'a well-formed missing record is the 403 an ungranted one gets',
     `${v0}/${ROADMAP}/Features/recZZZZZZZZZZZZZZ`,
     {},
-    404,
-    RECORD_404,
+    403,
+    MODEL,
   )
   await expect(
     'a malformed record id is 404 NOT_FOUND before auth',
@@ -1088,8 +1108,8 @@ async function writes(origin: string): Promise<void> {
     'PATCH a missing record',
     features,
     { method: 'PATCH', json: { records: [{ id: 'recZZZZZZZZZZZZZZ', fields: {} }] } },
-    404,
-    RECORD_404,
+    422,
+    ROW_MISSING,
   )
   await expect(
     'PATCH a computed field',
@@ -1241,14 +1261,14 @@ async function writes(origin: string): Promise<void> {
     'single-record PATCH of a missing record',
     `${features}/recZZZZZZZZZZZZZZ`,
     { method: 'PATCH', json: { fields: {} } },
-    404,
-    RECORD_404,
+    403,
+    MODEL,
   )
   await expect('single-record DELETE', `${features}/${F(10)}`, { method: 'DELETE' }, 200, {
     id: F(10),
     deleted: true,
   })
-  await expect('a deleted record is gone', `${features}/${F(10)}`, {}, 404, RECORD_404)
+  await expect('a deleted record is gone', `${features}/${F(10)}`, {}, 403, MODEL)
   eq('and gone from the other side of its link', (await get(REL(3), RELEASES)).Features, [F(4)])
 
   await expect(
@@ -1286,7 +1306,7 @@ async function writes(origin: string): Promise<void> {
     `${features}?records[]=recZZZZZZZZZZZZZZ`,
     { method: 'DELETE' },
     404,
-    RECORD_404,
+    DELETE_MISSING,
   )
   await expect(
     'delete the record with comments',
@@ -1295,7 +1315,7 @@ async function writes(origin: string): Promise<void> {
     200,
     { id: F(1), deleted: true },
   )
-  await expect('its comments went with it', `${features}/${F(1)}/comments`, {}, 404, RECORD_404)
+  await expect('its comments went with it', `${features}/${F(1)}/comments`, {}, 403, MODEL)
   eq('and its link', (await get(REL(1), RELEASES)).Features, [F(3)])
 
   const after = await listAll(features)
@@ -1397,8 +1417,8 @@ async function comments(origin: string): Promise<void> {
     'comments of a missing record',
     `${v0}/${ROADMAP}/${FEATURES}/recZZZZZZZZZZZZZZ/comments`,
     {},
-    404,
-    RECORD_404,
+    403,
+    MODEL,
   )
 
   const made = await http(on(3), { method: 'POST', json: { text: 'Ship it' } })
@@ -1465,11 +1485,23 @@ async function comments(origin: string): Promise<void> {
     NOT_FOUND,
   )
   await expect(
-    'a missing comment',
+    'an edit of a missing comment names it',
+    `${on(1)}/comZZZZZZZZZZZZZZ`,
+    { method: 'PATCH', json: { text: 'x' } },
+    422,
+    {
+      error: {
+        type: 'ROW_COMMENT_DOES_NOT_EXIST',
+        message: 'Row comment with id comZZZZZZZZZZZZZZ does not exist',
+      },
+    },
+  )
+  await expect(
+    'a delete of a missing comment answers the type alone',
     `${on(1)}/comZZZZZZZZZZZZZZ`,
     { method: 'DELETE' },
-    404,
-    COMMENT_404,
+    422,
+    COMMENT_MISSING,
   )
   await expect('delete your own comment', `${on(3)}/${NEW('com', 1)}`, { method: 'DELETE' }, 200, {
     id: NEW('com', 1),
@@ -1499,7 +1531,7 @@ async function isolation(origin: string): Promise<void> {
   const id = String(obj(made.body).id)
   eq('the write landed in its run', (await listAll(features('iso-a'))).ids.length, 11)
   eq('another run never sees it', (await listAll(features('iso-b'))).ids.length, 10)
-  await expect('not even by id', `${features('iso-b')}/${id}`, {}, 404, RECORD_404)
+  await expect('not even by id', `${features('iso-b')}/${id}`, {}, 403, MODEL)
   eq(
     'nor does the bare origin',
     (await listAll(`${origin}/v0/${ROADMAP}/${FEATURES}`)).ids.length,

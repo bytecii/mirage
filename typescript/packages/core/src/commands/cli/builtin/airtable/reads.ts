@@ -32,15 +32,15 @@ import { IOResult } from '../../../../io/types.ts'
 import type { CommandFnResult } from '../../../config.ts'
 import type { FlagView } from '../../../spec/flag_view.ts'
 import type { CLIInvocation } from '../../types.ts'
-import { config, findTable, noOperands, oneOperand, run, scopedBase, usageError } from './util.ts'
+import { UsageError } from '../../../errors.ts'
+import { config, findTable, noOperands, oneOperand, run, scopedBase } from './util.ts'
 
 async function baseListBody(
   accessor: AirtableAccessor,
   inv: CLIInvocation,
   _fl: FlagView,
-  prog: string,
 ): Promise<CommandFnResult> {
-  noOperands(prog, inv.texts)
+  noOperands(inv.texts)
   const bases = await listBases(accessor)
   return [toJsonBytes(bases.map(normalizeBaseSummary)), new IOResult()]
 }
@@ -49,9 +49,8 @@ async function baseGetBody(
   accessor: AirtableAccessor,
   inv: CLIInvocation,
   _fl: FlagView,
-  prog: string,
 ): Promise<CommandFnResult> {
-  const baseId = scopedBase(config(inv), oneOperand(prog, inv.texts, 'BASE'))
+  const baseId = scopedBase(config(inv), oneOperand(inv.texts, 'BASE'))
   for (const base of await listBases(accessor)) {
     if (base.id === baseId) {
       const tables = await listTables(accessor, baseId)
@@ -65,9 +64,8 @@ async function tableGetBody(
   accessor: AirtableAccessor,
   inv: CLIInvocation,
   fl: FlagView,
-  prog: string,
 ): Promise<CommandFnResult> {
-  const ref = oneOperand(prog, inv.texts, 'TABLE')
+  const ref = oneOperand(inv.texts, 'TABLE')
   const baseId = scopedBase(config(inv), fl.asStr('base') ?? '')
   const table = findTable(await listTables(accessor, baseId), ref)
   if (table === undefined) throw new Error(`${ref}: no such table in ${baseId}`)
@@ -78,11 +76,10 @@ async function recordListBody(
   accessor: AirtableAccessor,
   inv: CLIInvocation,
   fl: FlagView,
-  prog: string,
 ): Promise<CommandFnResult> {
-  noOperands(prog, inv.texts)
+  noOperands(inv.texts)
   const asked = fl.asInt('max_records')
-  if (asked !== undefined && asked < 1) throw usageError(prog, '--max-records must be at least 1')
+  if (asked !== undefined && asked < 1) throw new UsageError('--max-records must be at least 1')
   const baseId = scopedBase(config(inv), fl.asStr('base') ?? '')
   const cap = accessor.maxReadRecords
   const view = fl.asStr('view')
@@ -105,9 +102,8 @@ async function recordGetBody(
   accessor: AirtableAccessor,
   inv: CLIInvocation,
   fl: FlagView,
-  prog: string,
 ): Promise<CommandFnResult> {
-  const recordId = oneOperand(prog, inv.texts, 'RECORD')
+  const recordId = oneOperand(inv.texts, 'RECORD')
   const baseId = scopedBase(config(inv), fl.asStr('base') ?? '')
   const record = await getRecord(accessor, baseId, fl.asStr('table') ?? '', recordId)
   return [recordsJsonl([record]), new IOResult()]
@@ -117,17 +113,16 @@ async function commentListBody(
   accessor: AirtableAccessor,
   inv: CLIInvocation,
   fl: FlagView,
-  prog: string,
 ): Promise<CommandFnResult> {
-  const recordId = oneOperand(prog, inv.texts, 'RECORD')
+  const recordId = oneOperand(inv.texts, 'RECORD')
   const baseId = scopedBase(config(inv), fl.asStr('base') ?? '')
   const comments = await listComments(accessor, baseId, fl.asStr('table') ?? '', recordId)
   return [toJsonBytes(comments.map(normalizeComment)), new IOResult()]
 }
 
-export const baseList = run('base list', baseListBody)
-export const baseGet = run('base get', baseGetBody)
-export const tableGet = run('table get', tableGetBody)
-export const recordList = run('record list', recordListBody)
-export const recordGet = run('record get', recordGetBody)
-export const commentList = run('comment list', commentListBody)
+export const baseList = run(baseListBody)
+export const baseGet = run(baseGetBody)
+export const tableGet = run(tableGetBody)
+export const recordList = run(recordListBody)
+export const recordGet = run(recordGetBody)
+export const commentList = run(commentListBody)

@@ -18,6 +18,7 @@ import {
   DONE_FORMULA,
   FEATURES,
   FakeAirtable,
+  MODEL_NOT_FOUND,
   OPS,
   ROADMAP,
   TOKEN,
@@ -57,8 +58,8 @@ async function open(fake: FakeAirtable, overrides: Record<string, unknown> = {})
   }
 }
 
-function usage(prog: string, message: string): [number, string, string] {
-  return [2, '', `${prog}: ${message}\nTry '${prog} --help' for more information.\n`]
+function usage(message: string): [number, string, string] {
+  return [2, '', `${message}\n`]
 }
 
 describe('airtable read verbs', () => {
@@ -129,7 +130,7 @@ describe('airtable read verbs', () => {
     expect(out.split('\n').filter((l) => l !== '')).toHaveLength(7)
     expect(fake.recordCalls()[0]?.maxRecords).toBe('7')
     expect(await run(`airtable record list ${AT} --max-records 0`)).toEqual(
-      usage('airtable record list', '--max-records must be at least 1'),
+      usage('--max-records must be at least 1'),
     )
   })
 
@@ -155,7 +156,7 @@ describe('airtable read verbs', () => {
       1,
       '',
       `airtable record get: Airtable API error (GET /${ROADMAP}/${FEATURES}/recZZZZZZZZZZZZZZ): ` +
-        'HTTP 404: MODEL_ID_NOT_FOUND: Record not found\n',
+        `HTTP 403: INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND: ${MODEL_NOT_FOUND}\n`,
     ])
   })
 
@@ -200,7 +201,7 @@ describe('airtable read verbs', () => {
   ])('refuses operands as usage errors: %s', async (line, message) => {
     const fake = new FakeAirtable()
     const run = await open(fake)
-    expect(await run(line)).toEqual(usage(line.split(' ').slice(0, 3).join(' '), message))
+    expect(await run(line)).toEqual(usage(message))
     expect(fake.calls).toEqual([])
   })
 })

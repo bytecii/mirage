@@ -82,7 +82,7 @@ async def _render_records(accessor: AirtableAccessor, match: ScopeMatch,
                                      view=view,
                                      max_records=wanted)
     except AirtableAPIError as exc:
-        if exc.not_found or exc.error_type == "VIEW_NAME_NOT_FOUND":
+        if exc.not_found:
             raise enoent(path.virtual) from None
         raise
     if len(records) > cap:

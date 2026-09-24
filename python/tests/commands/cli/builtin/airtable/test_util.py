@@ -19,7 +19,6 @@ from mirage.commands.cli.builtin.airtable.util import (find_table, json_object,
                                                        scoped_base, stdin_text)
 from mirage.commands.errors import UsageError
 from mirage.core.airtable.config import AirtableConfig
-from mirage.utils.errors import format_fs_error
 
 
 def test_the_scope_admits_its_bases_and_refuses_the_rest():
@@ -28,9 +27,7 @@ def test_the_scope_admits_its_bases_and_refuses_the_rest():
     assert scoped_base(AirtableConfig(token="t"), "appB") == "appB"
     with pytest.raises(PermissionError) as exc:
         scoped_base(scoped, "appB")
-    assert format_fs_error(
-        "airtable base get",
-        exc.value) == (b"airtable base get: appB: Permission denied\n")
+    assert str(exc.value) == "appB: Permission denied"
 
 
 def test_a_table_is_found_by_id_before_name():
@@ -47,16 +44,16 @@ def test_json_is_strict_about_non_finite_numbers():
         with pytest.raises(ValueError):
             parse_json(text)
     with pytest.raises(UsageError) as exc:
-        json_object("airtable record create", "--fields", "[]")
+        json_object("--fields", "[]")
     assert exc.value.exit_code == 2
 
 
 def test_one_operand_words_its_refusals_like_argparse():
-    assert one_operand("p", ("x", ), "BASE") == "x"
+    assert one_operand(("x", ), "BASE") == "x"
     with pytest.raises(UsageError, match="are required: BASE"):
-        one_operand("p", (), "BASE")
+        one_operand((), "BASE")
     with pytest.raises(UsageError, match="unrecognized arguments: y z"):
-        one_operand("p", ("x", "y", "z"), "BASE")
+        one_operand(("x", "y", "z"), "BASE")
 
 
 @pytest.mark.asyncio

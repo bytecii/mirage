@@ -166,7 +166,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "airtable record get: Airtable API error (GET /appRoadmapBase001/tblFeatures000001/recZZZZZZZZZZZZZZ): HTTP 404: MODEL_ID_NOT_FOUND: Record not found\n"
+        "stderr": "airtable record get: Airtable API error (GET /appRoadmapBase001/tblFeatures000001/recZZZZZZZZZZZZZZ): HTTP 403: INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND: Invalid permissions, or the requested model was not found. Check that both your user and your token have the required permissions, and that the model names and/or ids are correct.\n"
       }
     },
     {
@@ -231,7 +231,7 @@
       "expect": {
         "exit": 2,
         "stdout": "",
-        "stderr": "airtable record create: --fields must be valid JSON\nTry 'airtable record create --help' for more information.\n"
+        "stderr": "--fields must be valid JSON\n"
       }
     },
     {
@@ -244,7 +244,7 @@
       "expect": {
         "exit": 2,
         "stdout": "",
-        "stderr": "airtable record update: stdin line 2: unknown key \"id\"\nTry 'airtable record update --help' for more information.\n"
+        "stderr": "stdin line 2: unknown key \"id\"\n"
       }
     },
     {
@@ -257,7 +257,7 @@
       "expect": {
         "exit": 2,
         "stdout": "",
-        "stderr": "airtable record delete: RECORD or records on stdin are required\nTry 'airtable record delete --help' for more information.\n"
+        "stderr": "RECORD or records on stdin are required\n"
       }
     },
     {
@@ -270,7 +270,7 @@
       "expect": {
         "exit": 2,
         "stdout": "",
-        "stderr": "airtable record update: --fields is required with RECORD\nTry 'airtable record update --help' for more information.\n"
+        "stderr": "--fields is required with RECORD\n"
       }
     },
     {
@@ -465,7 +465,7 @@
       "expect": {
         "exit": 0,
         "stdout": "exit=1\n10\nLine 10\n15\n",
-        "stderr": "airtable record create: Airtable API error (POST /appOpsFinance0002/tblQ3Budget000004): HTTP 422: UNKNOWN_FIELD_NAME: Unknown field name: \"Nope\"\n"
+        "stderr": "Airtable API error (POST /appOpsFinance0002/tblQ3Budget000004): HTTP 422: UNKNOWN_FIELD_NAME: Unknown field name: \"Nope\"\n"
       }
     },
     {

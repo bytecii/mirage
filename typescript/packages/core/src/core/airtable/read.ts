@@ -90,12 +90,7 @@ async function renderRecords(
       maxRecords: wanted,
     })
   } catch (err) {
-    if (
-      err instanceof AirtableApiError &&
-      (err.notFound || err.errorType === 'VIEW_NAME_NOT_FOUND')
-    ) {
-      throw enoent(path)
-    }
+    if (err instanceof AirtableApiError && err.notFound) throw enoent(path)
     throw err
   }
   // EFBIG, reported per operand as `<cmd>: <path>: File too large`: the

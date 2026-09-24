@@ -49,6 +49,13 @@ GRID = "viwGrid0000000001"
 DONE = "viwDone0000000001"
 DONE_FORMULA = "{Status}='Done'"
 MAX_BATCH = 10
+
+MODEL_NOT_FOUND = ("Invalid permissions, or the requested model was not "
+                   "found. Check that both your user and your token have the "
+                   "required permissions, and that the model names and/or "
+                   "ids are correct.")
+
+VIEW_ID = re.compile(r"viw[A-Za-z0-9]{14}")
 ADA = {"id": "usrAda0000000001", "email": "ada@example.com", "name": "Ada"}
 BEN = {"id": "usrBen0000000002", "email": "ben@example.com", "name": "Ben"}
 WRITER = ADA
@@ -106,6 +113,11 @@ def _error(status: int, kind: str, message: str | None = None) -> Any:
     if message is not None:
         body["message"] = message
     return CallbackResult(status=status, payload={"error": body})
+
+
+def _model_not_found() -> Any:
+    return _error(403, "INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND",
+                  MODEL_NOT_FOUND)
 
 
 @dataclass
@@ -242,7 +254,7 @@ class FakeAirtable:
         base_id = str(url).split("/meta/bases/")[1].split("/")[0]
         self.calls.append(("tables", {"base": base_id}))
         if base_id not in self.tables:
-            return _error(403, "INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND")
+            return _model_not_found()
         return CallbackResult(payload={"tables": self.tables[base_id]})
 
     def _records(self, url: Any, **kwargs: Any) -> Any:
@@ -251,14 +263,15 @@ class FakeAirtable:
         table = self._table(base_id, ref)
         self.calls.append(("records", {**params, "table": ref}))
         if table is None:
-            return _error(403, "INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND")
+            return _model_not_found()
         pool = self.records[table["id"]]
         view = params.get("view")
         if view is not None:
             keep = self.views.get(view)
             if keep is None:
-                return _error(422, "VIEW_NAME_NOT_FOUND",
-                              f"View {view} not found")
+                kind = ("VIEW_ID_NOT_FOUND"
+                        if VIEW_ID.fullmatch(view) else "VIEW_NAME_NOT_FOUND")
+                return _error(422, kind, f"View {view} not found")
             pool = [r for r in pool if keep(r)]
         formula = params.get("filterByFormula")
         if formula is not None:
@@ -294,11 +307,11 @@ class FakeAirtable:
     def _find(self, base_id: str, ref: str, record_id: str) -> Any:
         table = self._table(base_id, ref)
         if table is None:
-            return _error(403, "INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND")
+            return _model_not_found()
         for record in self.records[table["id"]]:
             if record["id"] == record_id:
                 return record
-        return _error(404, "MODEL_ID_NOT_FOUND", "Record not found")
+        return _model_not_found()
 
     def _cells(self, table: dict[str, Any], before: dict[str, Any],
                cells: Any) -> Any:
@@ -326,7 +339,7 @@ class FakeAirtable:
             return fault
         table = self._table(base_id, ref)
         if table is None:
-            return _error(403, "INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND")
+            return _model_not_found()
         if (not isinstance(body, dict) or set(body) - {"records", "typecast"}
                 or not isinstance(body.get("typecast", False), bool)):
             return _error(422, "INVALID_REQUEST_UNKNOWN",
@@ -369,7 +382,9 @@ class FakeAirtable:
         for row in rows:
             record = pool.get(row["id"])
             if record is None:
-                return _error(404, "MODEL_ID_NOT_FOUND", "Record not found")
+                return _error(
+                    422, "ROW_DOES_NOT_EXIST",
+                    f"Record ID {row['id']} does not exist in this table")
             cells = self._cells(table, record["fields"], row["fields"])
             if not isinstance(cells, dict):
                 return cells or _error(422, "INVALID_RECORDS",
@@ -389,13 +404,15 @@ class FakeAirtable:
             return fault
         table = self._table(base_id, ref)
         if table is None:
-            return _error(403, "INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND")
+            return _model_not_found()
         if not 1 <= len(ids) <= MAX_BATCH:
             return _error(422, "INVALID_RECORDS", BATCH_MESSAGES["delete"])
         pool = self.records[table["id"]]
         known = {r["id"] for r in pool}
-        if any(i not in known for i in ids):
-            return _error(404, "MODEL_ID_NOT_FOUND", "Record not found")
+        missing = next((i for i in ids if i not in known), None)
+        if missing is not None:
+            return _error(404, "NOT_FOUND",
+                          f'Could not find a record with ID "{missing}".')
         self.records[table["id"]] = [r for r in pool if r["id"] not in ids]
         return CallbackResult(
             payload={"records": [{

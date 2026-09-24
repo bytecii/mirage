@@ -15,15 +15,12 @@
 import { AirtableAccessor } from '../../../../accessor/airtable.ts'
 import type { AirtableConfig } from '../../../../core/airtable/config.ts'
 import type { Row } from '../../../../core/airtable/normalize.ts'
-import { IOResult, materialize, type ByteSource } from '../../../../io/types.ts'
-import { eacces, formatFsError, isEacces } from '../../../../utils/errors.ts'
+import { materialize, type ByteSource } from '../../../../io/types.ts'
+import { eaccesRefused } from '../../../../utils/errors.ts'
 import type { CommandFnResult } from '../../../config.ts'
 import { UsageError } from '../../../errors.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
-import { usageHint } from '../../../spec/usage.ts'
 import type { CLIInvocation, CLIVerbFn } from '../../types.ts'
-
-export const PROG = 'airtable'
 
 const DEC = new TextDecoder()
 
@@ -31,7 +28,6 @@ export type Verb = (
   accessor: AirtableAccessor,
   inv: CLIInvocation,
   fl: FlagView,
-  prog: string,
 ) => Promise<CommandFnResult>
 
 /** The line's install, validated against the program's config model. */
@@ -39,38 +35,37 @@ export function config(inv: CLIInvocation): AirtableConfig {
   return inv.config as AirtableConfig
 }
 
-/** A refusal in the voice the parser refuses a bad flag in, exit 2. */
-export function usageError(prog: string, message: string): UsageError {
-  return new UsageError(`${prog}: ${message}\n${usageHint(prog)}`)
-}
-
 /** Refuse an operand on a verb that takes none. */
-export function noOperands(prog: string, texts: readonly string[]): void {
-  if (texts.length > 0) throw usageError(prog, `unrecognized arguments: ${texts.join(' ')}`)
+export function noOperands(texts: readonly string[]): void {
+  if (texts.length > 0) throw new UsageError(`unrecognized arguments: ${texts.join(' ')}`)
 }
 
 /** The one operand a verb requires, named as its usage line names it. */
-export function oneOperand(prog: string, texts: readonly string[], name: string): string {
+export function oneOperand(texts: readonly string[], name: string): string {
   const first = texts[0]
-  if (first === undefined) throw usageError(prog, `the following arguments are required: ${name}`)
-  noOperands(prog, texts.slice(1))
+  if (first === undefined) throw new UsageError(`the following arguments are required: ${name}`)
+  noOperands(texts.slice(1))
   return first
 }
 
 /** The operand a verb may take once, null when the line has none. */
-export function optionalOperand(prog: string, texts: readonly string[]): string | null {
-  noOperands(prog, texts.slice(1))
+export function optionalOperand(texts: readonly string[]): string | null {
+  noOperands(texts.slice(1))
   return texts[0] ?? null
 }
 
 /**
  * The base a line addresses, refused (EACCES) when `baseIds` excludes it.
  * Refused here, before any request, so a base the install was not given is
- * never reached: the scope the mount enforces on reads.
+ * never reached: the scope the mount enforces on reads. The executor
+ * prefixes the refusal with the words the line was typed under, `<head> base
+ * get: <base-id>: Permission denied`, exit 1.
  */
 export function scopedBase(config: AirtableConfig, baseId: string): string {
   const wanted = config.baseIds
-  if (wanted !== undefined && !wanted.includes(baseId)) throw eacces(baseId)
+  if (wanted !== undefined && !wanted.includes(baseId)) {
+    throw eaccesRefused(`${baseId}: Permission denied`, baseId)
+  }
   return baseId
 }
 
@@ -84,15 +79,15 @@ export function findTable(tables: readonly Row[], ref: string): Row | undefined 
 }
 
 /** A flag's value decoded as a JSON object. */
-export function jsonObject(prog: string, flag: string, text: string): Record<string, unknown> {
+export function jsonObject(flag: string, text: string): Record<string, unknown> {
   let value: unknown
   try {
     value = JSON.parse(text) as unknown
   } catch {
-    throw usageError(prog, `${flag} must be valid JSON`)
+    throw new UsageError(`${flag} must be valid JSON`)
   }
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw usageError(prog, `${flag} must be a JSON object`)
+    throw new UsageError(`${flag} must be a JSON object`)
   }
   return value as Record<string, unknown>
 }
@@ -103,21 +98,11 @@ export async function stdinText(stdin: ByteSource): Promise<string> {
 }
 
 /**
- * Run one verb on its own accessor. The verb's display path (`airtable base
- * get`) prefixes its refusals, as the executor prefixes a leaf's failure, so
- * a base outside the install's scope answers `airtable base get: <base-id>:
- * Permission denied`, exit 1.
+ * Run one verb on its own accessor. A verb never names itself: the CLI may
+ * be installed under any head word, so a refusal is left to the executor,
+ * which prefixes it with the words the line was typed under.
  */
-export function run(path: string, verb: Verb): CLIVerbFn {
-  const prog = `${PROG} ${path}`
-  return async (inv: CLIInvocation): Promise<CommandFnResult> => {
-    const fl = new FlagView(inv.flags, inv.spec)
-    const accessor = new AirtableAccessor(config(inv))
-    try {
-      return await verb(accessor, inv, fl, prog)
-    } catch (err) {
-      if (!isEacces(err)) throw err
-      return [null, new IOResult({ exitCode: 1, stderr: formatFsError(prog, err) })]
-    }
-  }
+export function run(verb: Verb): CLIVerbFn {
+  return (inv: CLIInvocation): Promise<CommandFnResult> =>
+    verb(new AirtableAccessor(config(inv)), inv, new FlagView(inv.flags, inv.spec))
 }

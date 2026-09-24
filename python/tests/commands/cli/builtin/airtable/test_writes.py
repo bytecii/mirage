@@ -38,10 +38,8 @@ def _named(n: int) -> list[dict]:
     return [{"fields": {"Name": f"New {i}"}} for i in range(1, n + 1)]
 
 
-def _usage(verb: str, message: str) -> tuple[int, str, str]:
-    prog = f"airtable {verb}"
-    return (2, "", f"{prog}: {message}\n"
-            f"Try '{prog} --help' for more information.\n")
+def _usage(message: str) -> tuple[int, str, str]:
+    return (2, "", f"{message}\n")
 
 
 @pytest.mark.asyncio
@@ -180,7 +178,7 @@ async def test_a_failed_batch_still_prints_what_landed(airtable_ws,
                                 f"airtable record create {AT} < /s/new.jsonl")
     assert code == 1
     assert len(out.splitlines()) == 10
-    assert err == ("airtable record create: Airtable API error (POST "
+    assert err == ("Airtable API error (POST "
                    f"/{ROADMAP}/{FEATURES}): HTTP 422: UNKNOWN_FIELD_NAME: "
                    "Unknown field name: \"Nope\"\n")
     assert len(airtable_api.records[FEATURES]) == 17
@@ -239,8 +237,8 @@ async def test_comment_add_takes_text_or_stdin(airtable_ws, airtable_api):
 ])
 async def test_missing_or_malformed_input_is_a_usage_error(
         airtable_ws, airtable_api, line, message):
-    verb = " ".join(line.split()[1:3])
-    assert await _run(airtable_ws(), line) == _usage(verb, message)
+    " ".join(line.split()[1:3])
+    assert await _run(airtable_ws(), line) == _usage(message)
     assert airtable_api.calls == []
 
 
@@ -267,9 +265,8 @@ async def test_every_stdin_line_is_checked_before_anything_is_sent(
         airtable_ws, airtable_api, verb, text, message):
     ws = airtable_ws()
     await ws.shell(f"printf '%s' '{text}' > /s/in.jsonl")
-    assert await _run(ws,
-                      f"airtable record {verb} {AT} < /s/in.jsonl") == (_usage(
-                          f"record {verb}", message))
+    assert await _run(
+        ws, f"airtable record {verb} {AT} < /s/in.jsonl") == _usage(message)
     assert airtable_api.calls == []
 
 

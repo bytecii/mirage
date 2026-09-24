@@ -14,7 +14,13 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AirtableConfigSchema } from '../../../../core/airtable/config.ts'
-import { FakeAirtable, TOKEN } from '../../../../core/airtable/_test_util.ts'
+import {
+  FEATURES,
+  FakeAirtable,
+  OPS,
+  ROADMAP,
+  TOKEN,
+} from '../../../../core/airtable/_test_util.ts'
 import { getTestParser } from '../../../../workspace/fixtures/workspace_fixture.ts'
 import { Workspace } from '../../../../workspace/workspace/workspace.ts'
 import { UsageStyle } from '../../../spec/types.ts'
@@ -108,6 +114,37 @@ describe('airtable tree', () => {
 
   it('renders the tree as help', async () => {
     expect(await shell('airtable --help')).toEqual([0, HELP, ''])
+  })
+
+  it('answers a second install under its own name', async () => {
+    vi.stubGlobal('fetch', new FakeAirtable().fetch)
+    const ws = new Workspace({}, { shellParser: await getTestParser() })
+    ws.registerCli('work', AIRTABLE, {
+      token: TOKEN,
+      base_ids: [ROADMAP],
+      requests_per_second: 10_000,
+    })
+    try {
+      const refused = await ws.shell(`work base get ${OPS}`)
+      expect([refused.exitCode, DEC.decode(refused.stderr)]).toEqual([
+        1,
+        `work base get: ${OPS}: Permission denied\n`,
+      ])
+      const usage = await ws.shell(`work record get --base ${ROADMAP} --table ${FEATURES}`)
+      expect([usage.exitCode, DEC.decode(usage.stderr)]).toEqual([
+        2,
+        'the following arguments are required: RECORD\n',
+      ])
+      const missing = await ws.shell(
+        `work record get --base ${ROADMAP} --table ${FEATURES} recZZZZZZZZZZZZZZ`,
+      )
+      expect(missing.exitCode).toBe(1)
+      expect(DEC.decode(missing.stderr)).toMatch(
+        new RegExp(`^work record get: Airtable API error \\(GET /${ROADMAP}/`),
+      )
+    } finally {
+      await ws.close()
+    }
   })
 
   it('leaves a missing base to the parser', async () => {

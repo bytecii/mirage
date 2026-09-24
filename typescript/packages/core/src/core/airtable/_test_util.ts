@@ -25,6 +25,10 @@ export const GRID = 'viwGrid0000000001'
 export const DONE = 'viwDone0000000001'
 export const DONE_FORMULA = "{Status}='Done'"
 const MAX_BATCH = 10
+export const MODEL_NOT_FOUND =
+  'Invalid permissions, or the requested model was not found. Check that both your user and ' +
+  'your token have the required permissions, and that the model names and/or ids are correct.'
+const VIEW_ID = /^viw[A-Za-z0-9]{14}$/
 const ADA = { id: 'usrAda0000000001', email: 'ada@example.com', name: 'Ada' }
 const BEN = { id: 'usrBen0000000002', email: 'ben@example.com', name: 'Ben' }
 const WRITE_KINDS = new Set(['create', 'update', 'delete', 'comment'])
@@ -79,6 +83,10 @@ function json(body: unknown, status = 200): Response {
 
 function airtableError(status: number, type: string, message?: string): Response {
   return json({ error: message === undefined ? { type } : { type, message } }, status)
+}
+
+function modelNotFound(): Response {
+  return airtableError(403, 'INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND', MODEL_NOT_FOUND)
 }
 
 /**
@@ -186,9 +194,9 @@ export class FakeAirtable {
 
   private find(baseId: string, ref: string, recordId: string): Row | Response {
     const table = this.table(baseId, ref)
-    if (table === undefined) return airtableError(403, 'INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND')
+    if (table === undefined) return modelNotFound()
     const found = (this.records[String(table.id)] ?? []).find((r) => r.id === recordId)
-    return found ?? airtableError(404, 'MODEL_ID_NOT_FOUND', 'Record not found')
+    return found ?? modelNotFound()
   }
 
   private cells(table: Row, before: Row, given: unknown): Row | Response | null {
@@ -216,7 +224,7 @@ export class FakeAirtable {
     const fault = this.fault()
     if (fault !== null) return fault
     const table = this.table(baseId, ref)
-    if (table === undefined) return airtableError(403, 'INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND')
+    if (table === undefined) return modelNotFound()
     if (
       !isRow(body) ||
       Object.keys(body).some((k) => k !== 'records' && k !== 'typecast') ||
@@ -265,7 +273,13 @@ export class FakeAirtable {
     const planned: [Row, Row][] = []
     for (const row of rows) {
       const record = pool.find((r) => r.id === row.id)
-      if (record === undefined) return airtableError(404, 'MODEL_ID_NOT_FOUND', 'Record not found')
+      if (record === undefined) {
+        return airtableError(
+          422,
+          'ROW_DOES_NOT_EXIST',
+          `Record ID ${String(row.id)} does not exist in this table`,
+        )
+      }
       const cells = this.cells(table, record.fields as Row, row.fields)
       if (cells instanceof Response) return cells
       if (cells === null) return airtableError(422, 'INVALID_RECORDS', BATCH_MESSAGES.update)
@@ -281,13 +295,14 @@ export class FakeAirtable {
     const fault = this.fault()
     if (fault !== null) return fault
     const table = this.table(baseId, ref)
-    if (table === undefined) return airtableError(403, 'INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND')
+    if (table === undefined) return modelNotFound()
     if (ids.length < 1 || ids.length > MAX_BATCH) {
       return airtableError(422, 'INVALID_RECORDS', BATCH_MESSAGES.delete)
     }
     const pool = this.records[String(table.id)] ?? []
-    if (ids.some((id) => !pool.some((r) => r.id === id))) {
-      return airtableError(404, 'MODEL_ID_NOT_FOUND', 'Record not found')
+    const missing = ids.find((id) => !pool.some((r) => r.id === id))
+    if (missing !== undefined) {
+      return airtableError(404, 'NOT_FOUND', `Could not find a record with ID "${missing}".`)
     }
     this.records[String(table.id)] = pool.filter((r) => !ids.includes(String(r.id)))
     return json({ records: ids.map((id) => ({ id, deleted: true })) })
@@ -326,12 +341,13 @@ export class FakeAirtable {
   private list(baseId: string, ref: string, params: Record<string, string>): Response {
     this.calls.push({ kind: 'records', params: { ...params, table: ref } })
     const table = this.table(baseId, ref)
-    if (table === undefined) return airtableError(403, 'INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND')
+    if (table === undefined) return modelNotFound()
     let pool = this.records[String(table.id)] ?? []
     if (params.view !== undefined) {
       const keep = this.views[params.view]
       if (keep === undefined) {
-        return airtableError(422, 'VIEW_NAME_NOT_FOUND', `View ${params.view} not found`)
+        const type = VIEW_ID.test(params.view) ? 'VIEW_ID_NOT_FOUND' : 'VIEW_NAME_NOT_FOUND'
+        return airtableError(422, type, `View ${params.view} not found`)
       }
       pool = pool.filter(keep)
     }
@@ -396,7 +412,7 @@ export class FakeAirtable {
       this.calls.push({ kind: 'tables', params: { base: baseId } })
       const schema = this.tables[baseId]
       if (schema === undefined) {
-        return Promise.resolve(airtableError(403, 'INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND'))
+        return Promise.resolve(modelNotFound())
       }
       return Promise.resolve(json({ tables: schema }))
     }

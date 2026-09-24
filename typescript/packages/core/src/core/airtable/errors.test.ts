@@ -34,4 +34,10 @@ describe('airtable errors', () => {
     )
     expect(new AirtableApiError('m', 422, 'INVALID_REQUEST').notFound).toBe(false)
   })
+
+  it('counts a missing view as not found by id or by name', () => {
+    for (const type of ['VIEW_ID_NOT_FOUND', 'VIEW_NAME_NOT_FOUND']) {
+      expect(new AirtableApiError('m', 422, type).notFound).toBe(true)
+    }
+  })
 })

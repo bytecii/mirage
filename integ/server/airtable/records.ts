@@ -36,11 +36,11 @@ import {
   isListKey,
   isObject,
   listParam,
+  modelNotFound,
   offsetToken,
   ok,
   onlyKeys,
   parseOffset,
-  recordNotFound,
   refuse,
   resumeAt,
   unknownField,
@@ -392,6 +392,6 @@ export const getRecord = guard(async (ctx: Ctx<C>): Promise<Reply> => {
       ? world.tables.find((t) => recordIn(t, id) !== undefined)
       : table
   const rec = home === undefined ? undefined : recordIn(home, id)
-  if (home === undefined || rec === undefined) return refuse(recordNotFound())
+  if (home === undefined || rec === undefined) return refuse(modelNotFound())
   return ok(renderRecord(world, home, rec, byId))
 })

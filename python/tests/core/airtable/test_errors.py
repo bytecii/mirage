@@ -33,3 +33,8 @@ def test_not_found_covers_airtables_403_answer():
         error_type="INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND").not_found
     assert not AirtableAPIError("m", status=422,
                                 error_type="INVALID_REQUEST").not_found
+
+
+def test_a_missing_view_is_not_found_by_id_or_by_name():
+    for kind in ("VIEW_ID_NOT_FOUND", "VIEW_NAME_NOT_FOUND"):
+        assert AirtableAPIError("m", status=422, error_type=kind).not_found

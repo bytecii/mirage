@@ -31,6 +31,7 @@ import {
   DONE_FORMULA,
   FEATURES,
   FakeAirtable,
+  MODEL_NOT_FOUND,
   OPS,
   ROADMAP,
   TOKEN,
@@ -135,9 +136,10 @@ describe('airtable client writes and comments', () => {
     expect((record.fields as Record<string, unknown>).Name).toBe('Feature 1')
     const missing = getRecord(accessor, ROADMAP, FEATURES, 'recZZZZZZZZZZZZZZ')
     await expect(missing).rejects.toThrow(
-      `Airtable API error (GET /${ROADMAP}/${FEATURES}/recZZZZZZZZZZZZZZ): HTTP 404: MODEL_ID_NOT_FOUND: Record not found`,
+      `Airtable API error (GET /${ROADMAP}/${FEATURES}/recZZZZZZZZZZZZZZ): HTTP 403: ` +
+        `INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND: ${MODEL_NOT_FOUND}`,
     )
-    await expect(missing).rejects.toMatchObject({ status: 404, notFound: true })
+    await expect(missing).rejects.toMatchObject({ status: 403, notFound: true })
   })
 
   it('creates ten records to a request', async () => {

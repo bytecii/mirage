@@ -19,6 +19,7 @@ from mirage.commands.cli.specs import cli_spec_for
 from mirage.commands.cli.types import CLISpec
 from mirage.commands.spec.types import UsageStyle
 from mirage.core.airtable.config import AirtableConfig
+from tests.fixtures.airtable_api import FEATURES, OPS, ROADMAP, TOKEN
 
 VERBS = {
     "base": ["list", "get"],
@@ -94,3 +95,27 @@ async def test_a_missing_base_is_the_parsers_refusal(airtable_ws):
     assert await io.stderr_str() == (
         "airtable record list: option '--base' is required\n"
         "Try 'airtable record list --help' for more information.\n")
+
+
+@pytest.mark.asyncio
+async def test_a_second_install_answers_under_its_own_name(airtable_ws):
+    ws = airtable_ws()
+    ws.register_cli("work", AIRTABLE, {
+        "token": TOKEN,
+        "base_ids": [ROADMAP],
+        "requests_per_second": 10_000.0,
+    })
+    refused = await ws.shell(f"work base get {OPS}")
+    assert refused.exit_code == 1
+    assert await refused.stderr_str() == (
+        f"work base get: {OPS}: Permission denied\n")
+    usage = await ws.shell(f"work record get --base {ROADMAP} "
+                           f"--table {FEATURES}")
+    assert usage.exit_code == 2
+    assert await usage.stderr_str() == (
+        "the following arguments are required: RECORD\n")
+    missing = await ws.shell(f"work record get --base {ROADMAP} "
+                             f"--table {FEATURES} recZZZZZZZZZZZZZZ")
+    assert missing.exit_code == 1
+    assert (await missing.stderr_str()).startswith(
+        f"work record get: Airtable API error (GET /{ROADMAP}/")

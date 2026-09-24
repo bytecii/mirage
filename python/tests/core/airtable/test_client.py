@@ -25,7 +25,8 @@ from mirage.core.airtable.client import (RETRY, WRITE_RETRY, create_comment,
                                          list_records, list_tables,
                                          update_records)
 from mirage.core.airtable.errors import AirtableAPIError
-from tests.fixtures.airtable_api import (DONE_FORMULA, FEATURES, OPS, ROADMAP,
+from tests.fixtures.airtable_api import (DONE_FORMULA, FEATURES,
+                                         MODEL_NOT_FOUND, OPS, ROADMAP,
                                          FakeAirtable, make_accessor)
 
 FIRST = "rec00000000000001"
@@ -126,11 +127,11 @@ async def test_get_record_reads_one_by_id(airtable_api):
     with pytest.raises(AirtableAPIError) as exc:
         await get_record(make_accessor(), ROADMAP, FEATURES,
                          "recZZZZZZZZZZZZZZ")
-    assert exc.value.status == 404
+    assert exc.value.status == 403
     assert exc.value.not_found
     assert str(exc.value) == (
         f"Airtable API error (GET /{ROADMAP}/{FEATURES}/recZZZZZZZZZZZZZZ): "
-        "HTTP 404: MODEL_ID_NOT_FOUND: Record not found")
+        f"HTTP 403: INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND: {MODEL_NOT_FOUND}")
 
 
 @pytest.mark.asyncio

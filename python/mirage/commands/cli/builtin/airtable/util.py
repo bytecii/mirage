@@ -20,64 +20,45 @@ from mirage.accessor.airtable import AirtableAccessor
 from mirage.commands.cli.types import CLIInvocation
 from mirage.commands.errors import UsageError
 from mirage.commands.spec.flag_view import FlagView
-from mirage.commands.spec.usage import usage_hint
 from mirage.core.airtable.config import AirtableConfig
 from mirage.io.types import ByteSource, IOResult, materialize
-from mirage.utils.errors import eacces, format_fs_error
-
-PROG = "airtable"
 
 Outcome = tuple[ByteSource | None, IOResult]
 
-Verb = Callable[
-    [AirtableAccessor, CLIInvocation[AirtableConfig], FlagView, str],
-    Awaitable[Outcome]]
+Verb = Callable[[AirtableAccessor, CLIInvocation[AirtableConfig], FlagView],
+                Awaitable[Outcome]]
 
 
-def usage_error(prog: str, message: str) -> UsageError:
-    """A refusal in the voice the parser refuses a bad flag in, exit 2.
-
-    Args:
-        prog (str): the verb's display path ("airtable record create").
-        message (str): what is wrong with the line.
-    """
-    return UsageError(f"{prog}: {message}\n{usage_hint(prog)}")
-
-
-def no_operands(prog: str, texts: tuple[str, ...]) -> None:
+def no_operands(texts: tuple[str, ...]) -> None:
     """Refuse an operand on a verb that takes none.
 
     Args:
-        prog (str): the verb's display path.
         texts (tuple[str, ...]): the line's operands.
     """
     if texts:
-        raise usage_error(prog, f"unrecognized arguments: {' '.join(texts)}")
+        raise UsageError(f"unrecognized arguments: {' '.join(texts)}")
 
 
-def one_operand(prog: str, texts: tuple[str, ...], name: str) -> str:
+def one_operand(texts: tuple[str, ...], name: str) -> str:
     """The one operand a verb requires.
 
     Args:
-        prog (str): the verb's display path.
         texts (tuple[str, ...]): the line's operands.
         name (str): the operand's name in the verb's usage line.
     """
     if not texts:
-        raise usage_error(prog,
-                          f"the following arguments are required: {name}")
-    no_operands(prog, texts[1:])
+        raise UsageError(f"the following arguments are required: {name}")
+    no_operands(texts[1:])
     return texts[0]
 
 
-def optional_operand(prog: str, texts: tuple[str, ...]) -> str | None:
+def optional_operand(texts: tuple[str, ...]) -> str | None:
     """The operand a verb may take once, None when the line has none.
 
     Args:
-        prog (str): the verb's display path.
         texts (tuple[str, ...]): the line's operands.
     """
-    no_operands(prog, texts[1:])
+    no_operands(texts[1:])
     return texts[0] if texts else None
 
 
@@ -85,7 +66,9 @@ def scoped_base(config: AirtableConfig, base_id: str) -> str:
     """The base a line addresses, refused when ``base_ids`` excludes it.
 
     Refused here, before any request, so a base the install was not
-    given is never reached: the scope the mount enforces on reads.
+    given is never reached: the scope the mount enforces on reads. The
+    executor prefixes the refusal with the words the line was typed
+    under, ``<head> base get: <base-id>: Permission denied``, exit 1.
 
     Args:
         config (AirtableConfig): the install and its scope.
@@ -96,7 +79,7 @@ def scoped_base(config: AirtableConfig, base_id: str) -> str:
     """
     wanted = config.base_ids
     if wanted is not None and base_id not in wanted:
-        raise eacces(base_id)
+        raise PermissionError(f"{base_id}: Permission denied")
     return base_id
 
 
@@ -128,20 +111,19 @@ def parse_json(text: str) -> Any:
     return json.loads(text, parse_constant=_no_constant)
 
 
-def json_object(prog: str, flag: str, text: str) -> dict[str, Any]:
+def json_object(flag: str, text: str) -> dict[str, Any]:
     """A flag's value decoded as a JSON object.
 
     Args:
-        prog (str): the verb's display path.
         flag (str): the flag's spelling, for the refusal.
         text (str): the value as typed.
     """
     try:
         value = parse_json(text)
     except ValueError as exc:
-        raise usage_error(prog, f"{flag} must be valid JSON") from exc
+        raise UsageError(f"{flag} must be valid JSON") from exc
     if not isinstance(value, dict):
-        raise usage_error(prog, f"{flag} must be a JSON object")
+        raise UsageError(f"{flag} must be a JSON object")
     return value
 
 
@@ -154,26 +136,17 @@ async def stdin_text(stdin: ByteSource) -> str:
     return (await materialize(stdin)).decode("utf-8-sig", errors="replace")
 
 
-async def run(path: str, verb: Verb,
-              inv: CLIInvocation[AirtableConfig]) -> Outcome:
-    """Run one verb on its own accessor, rendering a scope refusal.
+async def run(verb: Verb, inv: CLIInvocation[AirtableConfig]) -> Outcome:
+    """Run one verb on its own accessor.
 
     The accessor lives for the invocation and closes with it, the way a
-    one-shot ``SessionAccessor`` is used. The verb's display path
-    (``airtable base get``) prefixes its refusals, as the executor
-    prefixes a leaf's failure, so a base outside the install's scope
-    answers ``airtable base get: <base-id>: Permission denied``, exit 1.
+    one-shot ``SessionAccessor`` is used. A verb never names itself: the
+    CLI may be installed under any head word, so a refusal is left to the
+    executor, which prefixes it with the words the line was typed under.
 
     Args:
-        path (str): the verb's words below the head ("base get").
-        verb (Verb): the verb's body, handed its display path.
+        verb (Verb): the verb's body.
         inv (CLIInvocation[AirtableConfig]): the line.
     """
-    prog = f"{PROG} {path}"
-    fl = FlagView(inv.flags, inv.spec)
     async with AirtableAccessor(inv.config) as accessor:
-        try:
-            return await verb(accessor, inv, fl, prog)
-        except PermissionError as exc:
-            return None, IOResult(exit_code=1,
-                                  stderr=format_fs_error(prog, exc))
+        return await verb(accessor, inv, FlagView(inv.flags, inv.spec))
