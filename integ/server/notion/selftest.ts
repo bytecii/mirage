@@ -484,6 +484,17 @@ async function main(): Promise<void> {
       } while (cursor !== null)
       eq(`keyset pagination preserves ${direction} order`, paged, all)
     }
+    const folded = await request(at, 'POST', '/v1/pages', {
+      parent: { page_id: PAGE },
+      properties: { title: { title: [{ text: { content: 'Équipe plan' } }] } },
+    })
+    const unicode = await request(at, 'POST', '/v1/search', { query: 'équipe', page_size: 1 })
+    eq(
+      'search folds a non-ASCII title query',
+      results(unicode).map((row) => row.id!),
+      [folded.id!],
+    )
+    eq('a folded query that fits one page has no next page', unicode.has_more, false)
     await liveReads(at)
     process.stdout.write(`notion selftest: ${String(checks)} checks passed\n`)
   } finally {

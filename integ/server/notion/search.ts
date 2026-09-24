@@ -41,12 +41,12 @@ export async function searchResults(
   version: string = DEFAULT_API_VERSION,
 ): Promise<Json[]> {
   const kind = asObject(args.filter).value
-  const query = typeof args.query === 'string' ? args.query : ''
-  const where = {
-    tenant,
-    inTrash: false,
-    ...(query === '' ? {} : { titleText: { contains: query } }),
-  }
+  // SQLite LIKE folds ASCII only, so a title query is folded here: `équipe`
+  // still finds `Équipe`, as it does on live Notion.
+  const query = typeof args.query === 'string' ? args.query.toLowerCase() : ''
+  const matches = (row: { titleText: string }): boolean =>
+    query === '' || row.titleText.toLowerCase().includes(query)
+  const where = { tenant, inTrash: false }
   const ascending = asObject(args.sort).direction === 'ascending'
   const direction = ascending ? ('asc' as const) : ('desc' as const)
   const orderBy = [
@@ -103,12 +103,12 @@ export async function searchResults(
     database: boolean
   }[] = []
   if (includeDatabases) {
-    const rows = await db.notionDatabase.findMany({
-      where: { ...where, ...bounds(true) },
-      orderBy,
-      take,
-    })
-    for (const row of rows)
+    const scan = { where: { ...where, ...bounds(true) }, orderBy }
+    const rows =
+      query === ''
+        ? await db.notionDatabase.findMany({ ...scan, take })
+        : await db.notionDatabase.findMany(scan)
+    for (const row of rows.filter(matches).slice(0, take))
       found.push({
         row,
         database: true,
@@ -116,12 +116,13 @@ export async function searchResults(
       })
   }
   if (!onlyDatabases) {
-    const rows = await db.notionPage.findMany({
-      where: { ...where, ...bounds(false) },
-      orderBy,
-      take,
-    })
-    for (const row of rows) found.push({ row, database: false, item: pageJson(row, version) })
+    const scan = { where: { ...where, ...bounds(false) }, orderBy }
+    const rows =
+      query === ''
+        ? await db.notionPage.findMany({ ...scan, take })
+        : await db.notionPage.findMany(scan)
+    for (const row of rows.filter(matches).slice(0, take))
+      found.push({ row, database: false, item: pageJson(row, version) })
   }
   const sign = ascending ? 1 : -1
   found.sort((a, b) => {
