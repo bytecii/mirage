@@ -102,7 +102,7 @@ describe('generic command find', () => {
         optsWith(new FileStat({ name: 'a.txt', type: FileType.FILE, size }), { empty: true }),
         unreachedFind,
       )
-      expect(DEC.decode(result?.[0] as Uint8Array)).toBe(size === 0 ? '/mnt/a.txt\n' : '')
+      expect(DEC.decode(result?.[0] ?? undefined)).toBe(size === 0 ? '/mnt/a.txt\n' : '')
     })
 
     it('reports the file and never asks the backend to walk it', async () => {
