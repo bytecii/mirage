@@ -173,7 +173,7 @@ export class RedisFileCacheStore extends RedisVFS implements FileCache {
     await pipe.exec()
   }
 
-  override async exists(key: string | PathSpec): Promise<boolean> {
+  override exists = async (key: string | PathSpec): Promise<boolean> => {
     const k = typeof key === 'string' ? key : key.mountPath
     const c = await this.cacheClient()
     return (await c.exists(this.dataKey(k))) > 0
