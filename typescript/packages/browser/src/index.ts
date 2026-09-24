@@ -16,6 +16,15 @@ export * from '@struktoai/mirage-core'
 // Named rather than left to the `export *` above: the three VFS classes come
 // through it, but core's front door carries no config type of theirs, so
 // dropping these lines would take them out of this package's API too.
+export {
+  normalizeAirtableConfig,
+  redactAirtableConfig,
+} from '@struktoai/mirage-core/core/airtable/config'
+export type {
+  AirtableConfig,
+  AirtableConfigRedacted,
+} from '@struktoai/mirage-core/core/airtable/config'
+export type { AirtableVFSState } from '@struktoai/mirage-core/vfs/airtable/airtable'
 export type { Mem0Config } from '@struktoai/mirage-core/vfs/mem0/config'
 export type { OneDriveConfig } from '@struktoai/mirage-core/accessor/onedrive'
 export type { SharePointConfig } from '@struktoai/mirage-core/accessor/sharepoint'

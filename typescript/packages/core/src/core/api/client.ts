@@ -36,6 +36,21 @@ export interface RetryPolicy {
    * the wait for those is the exponential backoff.
    */
   readonly retryTransport?: boolean
+  /**
+   * A veto over a listed status, given the status and the body text, for
+   * an API whose one status means two things. Airtable answers both "slow
+   * down" and "monthly quota spent" with a 429, and only the first is worth
+   * waiting for; a vetoed response maps through `errorOf` at once. Absent
+   * retries every listed status.
+   */
+  readonly retryable?: (status: number, text: string) => boolean
+  /**
+   * Per-status floor under the wait, for an API that documents a penalty
+   * window: after a 429, Airtable refuses every request for 30 seconds, so
+   * a shorter backoff only spends the retries inside the window.
+   * `maxBackoff` still caps the result.
+   */
+  readonly minDelays?: Readonly<Record<number, number>>
 }
 
 export const NO_RETRY: RetryPolicy = {
@@ -117,22 +132,39 @@ export function headerDelay(response: Response, attempt: number, retry: RetryPol
   return Math.min(2 ** attempt, retry.maxBackoff)
 }
 
-export async function bodyDelay(response: Response, retry: RetryPolicy): Promise<number> {
-  const data = (await response.json().catch(() => ({}))) as { retry_after?: unknown }
+function textDelay(text: string, retry: RetryPolicy): number {
+  let data: unknown = {}
+  try {
+    data = JSON.parse(text) as unknown
+  } catch {
+    data = {}
+  }
+  const value =
+    typeof data === 'object' && data !== null
+      ? (data as { retry_after?: unknown }).retry_after
+      : undefined
   // JSON.parse rejects a bare NaN literal but overflows 1e999 to Infinity,
   // so a body delay needs the same guard as a header one.
-  return typeof data.retry_after === 'number' && usableDelay(data.retry_after)
-    ? Math.min(data.retry_after, retry.maxBackoff)
+  return typeof value === 'number' && usableDelay(value)
+    ? Math.min(value, retry.maxBackoff)
     : Math.min(1, retry.maxBackoff)
 }
 
-async function retryDelay(
-  response: Response,
-  attempt: number,
-  retry: RetryPolicy,
-): Promise<number> {
-  if (retry.delaySource === 'body') return bodyDelay(response, retry)
-  return headerDelay(response, attempt, retry)
+export async function bodyDelay(response: Response, retry: RetryPolicy): Promise<number> {
+  return textDelay(await response.text(), retry)
+}
+
+/** Raise a wait to the policy's floor for this status, then cap it. */
+export function flooredDelay(delay: number, status: number, retry: RetryPolicy): number {
+  const floor = retry.minDelays?.[status]
+  if (floor === undefined) return delay
+  return Math.min(Math.max(delay, floor), retry.maxBackoff)
+}
+
+function retryDelay(response: Response, text: string, attempt: number, retry: RetryPolicy): number {
+  const delay =
+    retry.delaySource === 'body' ? textDelay(text, retry) : headerDelay(response, attempt, retry)
+  return flooredDelay(delay, response.status, retry)
 }
 
 /**
@@ -176,10 +208,17 @@ export async function apiRequest(
       }
       throw err
     }
-    if (retry.statuses.has(response.status) && attempt < retry.maxRetries) {
-      await sleep(await retryDelay(response, attempt, retry))
-      attempt += 1
-      continue
+    if (retry.statuses.has(response.status)) {
+      const text = await response.text()
+      const retryable = retry.retryable === undefined || retry.retryable(response.status, text)
+      if (retryable && attempt < retry.maxRetries) {
+        await sleep(retryDelay(response, text, attempt, retry))
+        attempt += 1
+        continue
+      }
+      // retries ran dry or were vetoed: the final retryable response maps
+      // through the same hook a plain error status does
+      throw options.errorOf(response, text)
     }
     if (response.status >= 400) throw options.errorOf(response, await response.text())
     const read = options.read ?? 'json'

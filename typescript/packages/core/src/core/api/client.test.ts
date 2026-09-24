@@ -13,7 +13,14 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it, vi } from 'vitest'
-import { NO_RETRY, apiRequest, bodyDelay, headerDelay, type RetryPolicy } from './client.ts'
+import {
+  NO_RETRY,
+  apiRequest,
+  bodyDelay,
+  flooredDelay,
+  headerDelay,
+  type RetryPolicy,
+} from './client.ts'
 
 const TARGET = 'https://api.test/v1/thing'
 
@@ -295,5 +302,59 @@ describe('retry delays', () => {
     // the 1s fallback bows to a ceiling below it
     const tight: RetryPolicy = { ...NO_RETRY, statuses: new Set([429]), maxBackoff: 0.5 }
     expect(await bodyDelay(new Response('not json'), tight)).toBe(0.5)
+  })
+
+  it('a vetoed retryable status maps through the hook at once', async () => {
+    const retry: RetryPolicy = {
+      ...NO_RETRY,
+      statuses: new Set([429]),
+      maxRetries: 2,
+      retryable: (_status, text) => !text.includes('QUOTA'),
+    }
+    const fakeFetch = vi.fn<typeof fetch>(() =>
+      Promise.resolve(jsonResponse({ error: { type: 'QUOTA' } }, 429)),
+    )
+    const failure = apiRequest('GET', TARGET, { errorOf, fetchFn: fakeFetch, retry })
+    await expect(failure).rejects.toMatchObject({ status: 429 })
+    expect(fakeFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('an unvetoed status waits out its floor before retrying', async () => {
+    vi.useFakeTimers()
+    try {
+      const retry: RetryPolicy = {
+        ...NO_RETRY,
+        statuses: new Set([429]),
+        maxRetries: 1,
+        retryable: (_status, text) => !text.includes('QUOTA'),
+        minDelays: { 429: 30 },
+      }
+      const fakeFetch = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse({ error: { type: 'SLOW_DOWN' } }, 429))
+        .mockResolvedValueOnce(jsonResponse({ ok: 4 }))
+      const pending = apiRequest('GET', TARGET, { errorOf, fetchFn: fakeFetch, retry })
+      await vi.advanceTimersByTimeAsync(29_000)
+      expect(fakeFetch).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(await pending).toEqual({ ok: 4 })
+      expect(fakeFetch).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('flooredDelay raises to the status floor under the cap', () => {
+    const retry: RetryPolicy = {
+      ...NO_RETRY,
+      statuses: new Set([429, 503]),
+      maxBackoff: 20,
+      minDelays: { 429: 30 },
+    }
+    expect(flooredDelay(1, 429, retry)).toBe(20)
+    expect(flooredDelay(1, 503, retry)).toBe(1)
+    const wide: RetryPolicy = { ...NO_RETRY, statuses: new Set([429]), minDelays: { 429: 5 } }
+    expect(flooredDelay(1, 429, wide)).toBe(5)
+    expect(flooredDelay(8, 429, wide)).toBe(8)
   })
 })

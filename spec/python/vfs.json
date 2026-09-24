@@ -1,5 +1,16 @@
 {
   "capabilities": {
+    "airtable": {
+      "caches_reads": false,
+      "has_prompt": true,
+      "has_write_prompt": false,
+      "index_ttl": 600,
+      "read_revalidatable": false,
+      "sizes_always_known": false,
+      "statfs": false,
+      "storage_id": false,
+      "supports_snapshot": false
+    },
     "aliyun": {
       "caches_reads": true,
       "has_prompt": true,
@@ -585,6 +596,18 @@
     }
   },
   "command_io": {
+    "airtable": {
+      "local": false,
+      "max_du_entries": 10000,
+      "max_glob_matches": 10000,
+      "slots": [
+        "is_mounted",
+        "read_bytes",
+        "read_stream",
+        "readdir",
+        "stat"
+      ]
+    },
     "box": {
       "local": false,
       "max_du_entries": 10000,
@@ -1296,6 +1319,7 @@
     }
   },
   "command_vfs_names": [
+    "airtable",
     "box",
     "chroma",
     "databricks_volume",
@@ -1338,6 +1362,25 @@
     "wandb"
   ],
   "configs": {
+    "airtable": {
+      "fields": {
+        "base_ids": {
+          "required": false
+        },
+        "base_url": {
+          "required": false
+        },
+        "max_read_records": {
+          "required": false
+        },
+        "requests_per_second": {
+          "required": false
+        },
+        "token": {
+          "required": true
+        }
+      }
+    },
     "aliyun": {
       "fields": {
         "access_key_id": {
@@ -2764,6 +2807,7 @@
     }
   },
   "registry": [
+    "airtable",
     "aliyun",
     "backblaze",
     "box",

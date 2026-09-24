@@ -100,6 +100,7 @@ describe('VFSName', () => {
     // A count would only say "expected 54, got 53"; comparing the set names the
     // VFS that was added or removed, and needs no magic number bumped.
     expect(Object.values(VFSName).sort()).toEqual([
+      'airtable',
       'aliyun',
       'backblaze',
       'box',
