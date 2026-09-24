@@ -732,4 +732,29 @@ describe('rmdir namespace entries', () => {
       }
     },
   )
+
+  it('keeps a link created while the backend removes the directory', async () => {
+    const parser = await getTestParser()
+    const ws = new Workspace(
+      { '/data': new RAMVFS() },
+      { mode: MountMode.WRITE, shellParser: parser },
+    )
+    try {
+      await ws.shell('mkdir /data/d; ln -s nowhere /data/d/old')
+      const call = ws.opsRegistry.call.bind(ws.opsRegistry)
+      vi.spyOn(ws.opsRegistry, 'call').mockImplementation(async (name, ...rest) => {
+        if (name === 'rmdir')
+          await ws.dispatch('symlink', '/data/d/late', [], { target: 'nowhere' })
+        return call(name, ...rest)
+      })
+      const session = ws.createSession('remover', {
+        profile: { paths: { hide: ['/data/d/old'] } },
+      })
+      await runWithSession(session, () => ws.vfs.rmdir('/data/d'))
+      expect(ws.namespace.isLink('/data/d/old')).toBe(false)
+      expect(ws.namespace.readlink('/data/d/late')).toBe('nowhere')
+    } finally {
+      await ws.close()
+    }
+  })
 })

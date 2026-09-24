@@ -886,3 +886,31 @@ async def test_rmdir_accounts_for_a_directory_containing_only_a_link(hidden):
         finally:
             reset_current_session(token)
         assert ws.namespace.is_link("/data/d/link") is not hidden
+
+
+@pytest.mark.asyncio
+async def test_rmdir_keeps_a_link_created_while_the_backend_removes():
+    with Workspace({"/data": RAMVFS()}, mode=MountMode.WRITE) as ws:
+        await ws.shell("mkdir /data/d; ln -s nowhere /data/d/old")
+        mount = ws.namespace.mount_for("/data/d")
+        execute = mount.execute_op
+
+        async def link_arrives(op, *args, **kwargs):
+            if op == "rmdir":
+                await ws.dispatch("symlink",
+                                  PathSpec.from_str_path("/data/d/late"),
+                                  target="nowhere")
+            return await execute(op, *args, **kwargs)
+
+        mount.execute_op = link_arrives
+        session = ws.create_session(
+            "remover", profile={"paths": {
+                "hide": ["/data/d/old"]
+            }})
+        token = set_current_session(session)
+        try:
+            await ws.vfs.rmdir("/data/d")
+        finally:
+            reset_current_session(token)
+        assert not ws.namespace.is_link("/data/d/old")
+        assert ws.namespace.readlink("/data/d/late") == "nowhere"

@@ -455,7 +455,17 @@ class Dispatcher:
                 # created there next starts bare on every surface.
                 await self._namespace.drop_overlay(path.virtual)
                 if op == "rmdir":
-                    await self._namespace.purge_under(path.virtual)
+                    # The link check ran before the backend was asked, so
+                    # a visible link below now was created since: it is
+                    # younger than this rmdir, lands after it in the
+                    # serial order (a link synthesizes its parents), and
+                    # the purge taking the directory's hidden nodes must
+                    # not take it too.
+                    arrived = frozenset(
+                        link for link, _ in self._namespace.link_stats_below(
+                            path.virtual) if path_allowed(link))
+                    await self._namespace.purge_under(path.virtual,
+                                                      keep=arrived)
             if op == "rename" and isinstance(kwargs.get("dst"), PathSpec):
                 await self.invalidate_after_rename(mount, path, kwargs["dst"])
                 # rename(2) replaces the destination, so a node the

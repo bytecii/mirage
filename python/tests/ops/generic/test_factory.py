@@ -21,7 +21,7 @@ from mirage.cache.index import NULL_INDEX
 from mirage.commands.builtin.generic_bind import CommandIO
 from mirage.ops.generic import make_generic_ops
 from mirage.ops.registry import OpsRegistry
-from mirage.types import PathSpec
+from mirage.types import FileStat, FileType, PathSpec
 
 
 class _S3Error(Exception):
@@ -146,6 +146,27 @@ async def test_emulated_append_does_not_overwrite_after_read_failure():
     with pytest.raises(PermissionError):
         await op.fn(NOOPAccessor(), PATH, b"new")
     table.write.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_emulated_empty_append_stats_instead_of_rewriting():
+    table = make_table(write=AsyncMock())
+    table.stat.side_effect = [
+        FileStat(name="a.txt", type=FileType.FILE),
+        FileNotFoundError(),
+        FileStat(name="a.txt", type=FileType.DIRECTORY),
+    ]
+    op = next(o for o in make_generic_ops("x", table) if o.name == "append")
+    acc = NOOPAccessor()
+    await op.fn(acc, PATH, b"", index=NULL_INDEX)
+    table.stat.assert_awaited_once_with(acc, PATH, NULL_INDEX)
+    table.write.assert_not_awaited()
+    await op.fn(acc, PATH, b"")
+    table.write.assert_awaited_once_with(acc, PATH, b"")
+    with pytest.raises(IsADirectoryError):
+        await op.fn(acc, PATH, b"")
+    table.read_bytes.assert_not_awaited()
+    assert table.write.await_count == 1
 
 
 @pytest.mark.asyncio

@@ -511,7 +511,18 @@ export class Dispatcher {
         // the shell's rm already drops it: a file created there next
         // starts bare on every surface.
         await this.namespace.dropOverlay(p.virtual)
-        if (opName === 'rmdir') await this.namespace.purgeUnder(p.virtual)
+        if (opName === 'rmdir') {
+          // The link check ran before the backend was asked, so a visible
+          // link below now was created since: it is younger than this
+          // rmdir, lands after it in the serial order (a link synthesizes
+          // its parents), and the purge taking the directory's hidden nodes
+          // must not take it too.
+          const arrived = new Set<string>()
+          for (const [link] of this.namespace.linkStatsBelow(p.virtual)) {
+            if (pathAllowed(link)) arrived.add(link)
+          }
+          await this.namespace.purgeUnder(p.virtual, arrived)
+        }
       }
       if (renameDst !== null) {
         await this.invalidateAfterRenameByPath(p.virtual, renameDst.virtual)
