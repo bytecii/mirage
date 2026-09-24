@@ -337,6 +337,11 @@ export function isEnoent(err: unknown): boolean {
   return err instanceof Error && (err as Error & { code?: string }).code === 'ENOENT'
 }
 
+// Python's twin is `except FileTooLargeError`.
+export function isEfbig(err: unknown): boolean {
+  return err instanceof Error && (err as Error & { code?: string }).code === 'EFBIG'
+}
+
 // Python's twin is `except IsADirectoryError`. GNU sometimes spells a
 // directory read as something other than the EISDIR strerror (checksum
 // --check says the literal "read error"), so callers need the code, not

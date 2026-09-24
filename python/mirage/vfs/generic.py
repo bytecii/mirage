@@ -22,6 +22,7 @@ from mirage.commands.builtin.generic_bind import (CommandIO,
 from mirage.ops.generic import make_generic_ops
 from mirage.ops.registry import RegisteredOp
 from mirage.types import PathSpec
+from mirage.vfs.adapter import VFSAdapter
 from mirage.vfs.base import BaseVFS
 
 # The direct-attribute surface a builtin backend publishes as its
@@ -118,14 +119,13 @@ def direct_ops(
 
 
 class GenericVFS(BaseVFS):
-    """A full backend generated from one :class:`CommandIO` table.
+    """A backend generated from capabilities or a CommandIO table.
 
     The one-file path for custom backends: supply an accessor and the
-    core functions on a ``CommandIO`` (readdir/read_bytes/stat at
-    minimum), and the whole generic command set — plus glob resolution —
-    is wired automatically. Optional fields on the table unlock more
-    surface (``write`` enables the byte-mutation family, ``find`` and
-    ``du_size`` become native fast paths), and the escape hatches
+    three core functions on a ``VFSAdapter`` (readdir/read_bytes/stat),
+    and the generic commands plus glob resolution are wired automatically.
+    Optional fields unlock more surface (``write`` enables byte mutations,
+    ``find`` and ``du`` become native fast paths), and the escape hatches
     mirror what builtin backends use: ``overrides`` suppresses generic
     commands the backend replaces, ``commands`` appends bespoke
     ``@command`` verbs, and ``ops`` registers ``@op`` handlers for FUSE
@@ -147,7 +147,7 @@ class GenericVFS(BaseVFS):
             registry key when the class is exposed via
             ``register_vfs`` or a ``mirage.vfs`` entry point.
         accessor (Accessor): backend handle passed to every core fn.
-        io (CommandIO): the backend's IO table.
+        io (CommandIO | VFSAdapter): resource capabilities or a prebuilt table.
         prompt (str): LLM-facing description of the mounted layout.
         write_prompt (str): appended when mounted writable.
         overrides (set[str] | None): generic command names the backend
@@ -189,7 +189,7 @@ class GenericVFS(BaseVFS):
         *,
         name: str,
         accessor: Accessor,
-        io: CommandIO,
+        io: CommandIO | VFSAdapter,
         prompt: str = "",
         write_prompt: str = "",
         overrides: set[str] | None = None,
@@ -206,6 +206,8 @@ class GenericVFS(BaseVFS):
         super().__init__(index=index)
         if not name:
             raise ValueError("GenericVFS requires a non-empty name")
+        if isinstance(io, VFSAdapter):
+            io = io.to_command_io()
         self.name = name
         self.accessor = accessor
         self.io = io

@@ -59,6 +59,3 @@ class ChromaVFS(BaseVFS):
             "redacted_fields": [],
             "config": self.config.model_dump(),
         }
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        pass

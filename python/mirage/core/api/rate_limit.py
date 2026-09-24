@@ -25,9 +25,11 @@ class RateLimiter:
     base, then refuses everything for 30 seconds), spacing the calls up
     front is cheaper than any retry. Each call reserves the next free slot
     for its key before it awaits anything, so concurrent callers queue in
-    arrival order and the event loop needs no lock. Slots hold monotonic
-    seconds, not loop handles, so one limiter serves every loop in the
-    process.
+    arrival order and the event loop needs no lock. A caller the loop
+    wakes late moves every slot behind it back by as much, so a stall
+    cannot release the callers queued behind it in one burst. Slots hold
+    monotonic seconds, not loop handles, so one limiter serves every loop
+    in the process.
 
     Args:
         rate (float): calls per second allowed per key.
@@ -50,6 +52,7 @@ class RateLimiter:
         self._clock = clock
         self._sleep = sleep
         self._next: dict[str, float] = {}
+        self._shift: dict[str, float] = {}
 
     async def acquire(self, key: str) -> None:
         """Wait for this key's next slot.
@@ -60,5 +63,17 @@ class RateLimiter:
         now = self._clock()
         slot = max(now, self._next.get(key, now))
         self._next[key] = slot + self._interval
-        if slot > now:
-            await self._sleep(slot - now)
+        if slot <= now:
+            return
+        seen = self._shift.get(key, 0.0)
+        await self._sleep(slot - now)
+        while (moved := self._shift.get(key, 0.0)) != seen:
+            slot += moved - seen
+            seen = moved
+            now = self._clock()
+            if slot > now:
+                await self._sleep(slot - now)
+        late = self._clock() - slot
+        if late > 0:
+            self._shift[key] = seen + late
+            self._next[key] += late

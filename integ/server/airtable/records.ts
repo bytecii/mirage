@@ -30,6 +30,7 @@ import {
   bodyBool,
   bodyOf,
   boolParam,
+  failedStateCheck,
   guard,
   intParam,
   invalidRequest,
@@ -302,7 +303,11 @@ async function listPage(ctx: Ctx<C>, world: World, table: TableRow, p: ListParam
       ? undefined
       : (table.views.find((v) => v.id === p.view) ??
         table.views.find((v) => v.name === p.view) ??
-        refuse(viewNotFound(p.view)))
+        refuse(
+          world.tables.some((t) => t.views.some((v) => v.id === p.view))
+            ? failedStateCheck()
+            : viewNotFound(p.view),
+        ))
   const only =
     p.fields === undefined
       ? null

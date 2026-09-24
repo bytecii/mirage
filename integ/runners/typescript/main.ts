@@ -345,6 +345,7 @@ async function main(): Promise<void> {
   // broken job, which is the whole point of --strict.
   const allowed = parseAllowSkip(services, allowSkip)
   const envSkipped: string[] = []
+  const unadapted: string[] = []
   const eligible: Target[] = []
   for (const id of ids) {
     const target = manifest.get(id)
@@ -355,6 +356,7 @@ async function main(): Promise<void> {
     }
     if (!(target.mounts[0].vfs in ADAPTERS)) {
       process.stderr.write(`skip [${id}]: no typescript adapter\n`)
+      unadapted.push(id)
       continue
     }
     const missing = missingEnv(services, target, 'typescript')
@@ -396,6 +398,17 @@ async function main(): Promise<void> {
     process.stderr.write(
       `strict: ${String(envSkipped.length)} target(s) skipped for missing env: ` +
         `${envSkipped.join('; ')}\n`,
+    )
+    process.exit(2)
+  }
+
+  // A target that lists a typescript host but has no adapter here skips the
+  // same quiet way, and --allow-skip does not excuse it: the manifest says it
+  // runs. Mirrors python's run_verdict.
+  if (strict && unadapted.length) {
+    process.stderr.write(
+      `strict: ${String(unadapted.length)} target(s) list typescript but have no ` +
+        `typescript adapter: ${unadapted.join(', ')}\n`,
     )
     process.exit(2)
   }

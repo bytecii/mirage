@@ -19,6 +19,7 @@ import type { FileStat } from '../../../../types.ts'
 import { FileType, PathSpec } from '../../../../types.ts'
 import { CycleError, resolvePath, resolveSymlinks } from '../../../../utils/path.ts'
 import { isoTimestamp } from '../../../../utils/dates.ts'
+import { isEfbig } from '../../../../utils/errors.ts'
 import { resolvePathStat } from '../links/index.ts'
 import { toScope, scopePath } from '../scope.ts'
 import { elementIsSet } from '../../../session/elements.ts'
@@ -99,7 +100,15 @@ export async function applyUnary(
       // API backends (dropbox, gdrive, box) stat freshly written empty
       // files as size-unknown; only a read can answer, and the
       // prefetch TTL cache keeps repeat tests cheap.
-      const [data] = await ctx.dispatch('read', operandScope(ctx, val))
+      let data: unknown
+      try {
+        data = (await ctx.dispatch('read', operandScope(ctx, val)))[0]
+      } catch (err) {
+        // a file its mount refuses to render whole (an airtable table past
+        // maxReadRecords) is certainly not empty
+        if (isEfbig(err)) return true
+        throw err
+      }
       return (await materialize(data as ByteSource | null)).length > 0
     }
     if (op === '-r' || op === '-w') {

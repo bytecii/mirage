@@ -15,6 +15,7 @@
 import logging
 from dataclasses import dataclass
 
+from mirage.core.api.client import SessionArg
 from mirage.core.github.client import github_get
 from mirage.core.github.config import GitHubConfig
 from mirage.core.github.pushdown import scope_relative_key
@@ -36,6 +37,7 @@ async def search_code(
     repo: str,
     query: str,
     path_filter: str | None = None,
+    session: SessionArg = None,
 ) -> list[SearchResult]:
     q = f"{query} repo:{owner}/{repo}"
     if path_filter:
@@ -43,7 +45,8 @@ async def search_code(
     data = await github_get(config.token,
                             "/search/code",
                             params={"q": q},
-                            base_url=config.base_url)
+                            base_url=config.base_url,
+                            session=session)
     return [
         SearchResult(path=item["path"], sha=item["sha"])
         for item in data.get("items", [])
@@ -56,6 +59,7 @@ async def narrow_paths(
     repo: str,
     pattern: str,
     paths: list[PathSpec],
+    session: SessionArg = None,
 ) -> list[PathSpec]:
     """Use GitHub code search to narrow paths for grep/rg.
 
@@ -65,6 +69,8 @@ async def narrow_paths(
         repo (str): Repository name.
         pattern (str): Literal search pattern.
         paths (list[PathSpec]): Scope paths, possibly mount-prefixed.
+        session (SessionArg): the mount's session pool, so each search
+            reuses its connections instead of opening a session.
 
     Returns:
         list[PathSpec]: One PathSpec per matching file, repo-relative with a
@@ -83,6 +89,7 @@ async def narrow_paths(
                 repo,
                 query=pattern,
                 path_filter=path_filter or None,
+                session=session,
             )
         except Exception as exc:
             logger.warning(

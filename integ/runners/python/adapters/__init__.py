@@ -1423,9 +1423,12 @@ class TrelloService:
 
     def vfs(self, mount: dict) -> TrelloVFS:
         return TrelloVFS(
-            TrelloConfig(api_key="integ-key",
-                         api_token="integ-token",
-                         base_url=self.base))
+            TrelloConfig.model_validate({
+                "api_key": "integ-key",
+                "api_token": "integ-token",
+                "base_url": self.base,
+                **mount.get("config", {}),
+            }))
 
     async def teardown(self) -> None:
         return None
@@ -2106,7 +2109,11 @@ class MongoDBService:
 
     def vfs(self, mount: dict) -> MongoDBVFS:
         return MongoDBVFS(
-            config=MongoDBConfig(uri=self.uri, databases=[MONGODB_DB]))
+            config=MongoDBConfig.model_validate({
+                "uri": self.uri,
+                "databases": [MONGODB_DB],
+                **mount.get("config", {}),
+            }))
 
     async def teardown(self) -> None:
         return None
@@ -2124,6 +2131,14 @@ POSTGRES_AUTHORS = [
     (1, "ada", 2),
     (2, "ben", 2),
     (3, "cara", 1),
+]
+
+POSTGRES_PROBES = [
+    (1, "Ada\ttab", True),
+    (2, "left\u2028right", False),
+    (3, "left\u2029right", True),
+    (4, "left\u0085right", False),
+    (5, None, True),
 ]
 
 
@@ -2161,12 +2176,40 @@ class PostgresService:
             await conn.execute('CREATE SCHEMA ".hidden"')
             await conn.execute(
                 'CREATE TABLE ".hidden".ghost (id int PRIMARY KEY)')
+            await conn.execute('DROP SCHEMA IF EXISTS contract CASCADE')
+            await conn.execute('CREATE SCHEMA contract')
+            await conn.execute(
+                'CREATE TABLE contract.probes '
+                '(id int PRIMARY KEY, body text, active boolean)')
+            await conn.executemany(
+                'INSERT INTO contract.probes VALUES ($1, $2, $3)',
+                POSTGRES_PROBES)
+            await conn.execute('ANALYZE contract.probes')
+            await conn.execute('DROP SCHEMA IF EXISTS byte_budget CASCADE')
+            await conn.execute('CREATE SCHEMA byte_budget')
+            await conn.execute('CREATE TABLE byte_budget.wide (body text) '
+                               'WITH (autovacuum_enabled = false)')
+            await conn.execute("INSERT INTO byte_budget.wide VALUES ('x')")
+            await conn.execute('ANALYZE byte_budget.wide')
+            await conn.execute(
+                "UPDATE byte_budget.wide SET body = repeat('é', 1000000)")
+            await conn.execute('CREATE TABLE byte_budget.empty (body text)')
+            await conn.execute(
+                'CREATE TABLE byte_budget.exact (__mirage_bytes text)')
+            await conn.execute("INSERT INTO byte_budget.exact VALUES (NULL)")
+            await conn.execute('ANALYZE byte_budget.empty')
+            await conn.execute('ANALYZE byte_budget.exact')
         finally:
             await conn.close()
         return cls(dsn)
 
     def vfs(self, mount: dict) -> PostgresVFS:
-        return PostgresVFS(PostgresConfig(dsn=self.dsn, max_read_rows=200))
+        return PostgresVFS(
+            PostgresConfig.model_validate({
+                "dsn": self.dsn,
+                "max_read_rows": 200,
+                **mount.get("config", {}),
+            }))
 
     async def teardown(self) -> None:
         return None

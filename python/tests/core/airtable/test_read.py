@@ -122,3 +122,36 @@ async def test_a_base_outside_base_ids_is_enoent_on_read(airtable_api):
         with pytest.raises(FileNotFoundError):
             await read(accessor, _spec(path), RAMIndexCacheStore())
     assert airtable_api.record_calls() == []
+
+
+@pytest.mark.asyncio
+async def test_a_name_the_listing_does_not_hold_is_enoent(airtable_api):
+    accessor = make_accessor()
+    ops = f"{ROOT}/bases/Ops_Finance__appOpsFinance0001"
+    for path in (f"{ROOT}/bases/Wrong__appRoadmapBase001/base.json",
+                 f"{BASE}/Wrong__tblFeatures000001/table.json",
+                 f"{BASE}/Wrong__tblFeatures000001/records.jsonl",
+                 f"{TABLE}/views/Wrong__viwDone0000000001.jsonl",
+                 f"{ops}/Q3_Budget__tblBudget00000001/views/"
+                 "Grid_view__viwGrid0000000001.jsonl"):
+        with pytest.raises(FileNotFoundError):
+            await read(accessor, _spec(path), RAMIndexCacheStore())
+    # the ids resolve at the API; only the listing knows the names
+    assert airtable_api.record_calls() == []
+
+
+@pytest.mark.asyncio
+async def test_a_read_without_an_index_still_proves_the_path(airtable_api):
+    body = await read(make_accessor(), _spec(DONE))
+    assert len(_ids(body)) == 4
+    with pytest.raises(FileNotFoundError):
+        await read(make_accessor(),
+                   _spec(f"{BASE}/Wrong__tblFeatures000001/records.jsonl"))
+
+
+@pytest.mark.asyncio
+async def test_a_view_gone_since_its_listing_is_enoent(airtable_api):
+    # the schema still lists the view; Airtable answers its id missing
+    airtable_api.views.pop("viwDone0000000001")
+    with pytest.raises(FileNotFoundError):
+        await read(make_accessor(), _spec(DONE), RAMIndexCacheStore())

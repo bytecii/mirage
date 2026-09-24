@@ -13,26 +13,35 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { AirtableAccessor } from '../../accessor/airtable.ts'
+import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { PathSpec } from '../../types.ts'
 import { efbig, enoent, isEnoent } from '../../utils/errors.ts'
+import { resolveEntry } from '../hierarchy/probe.ts'
 import { makeRead, type ReadWindow } from '../hierarchy/read.ts'
 import type { ScopeMatch } from '../hierarchy/scope.ts'
 import { listBases, listRecords, listTables } from './client.ts'
 import { AirtableApiError } from './errors.ts'
 import { normalizeBase, normalizeTable, recordsJsonl, toJsonBytes } from './normalize.ts'
-import { schemaTable } from './readdir.ts'
+import { readdir, schemaTable } from './readdir.ts'
 import { detectScope } from './scope.ts'
+import { stat } from './stat.ts'
 
 /**
- * Refuse a path whose base the mount's `baseIds` excludes. A reader
- * reaches the API by the id in the path without resolving it through the
- * listing, so the scope has to be enforced here too, or a typed path would
- * read a base that `ls` and `stat` call absent.
+ * Refuse a file its parent listing does not hold. `makeRead` proves every
+ * file's parent through stat. A view file is named by its view id, so under
+ * a real `views` directory a wrong name, or another table's view id, is
+ * still the reader's to prove: without this `jq` would read it while `stat`
+ * and `cat` call it absent, and a foreign id would reach the API as a raw
+ * 422.
  */
-export function ensureInScope(accessor: AirtableAccessor, match: ScopeMatch, path: PathSpec): void {
-  const wanted = accessor.baseIds
-  if (wanted !== null && !wanted.includes(match.slots.base_id ?? '')) throw enoent(path)
+async function ensureListed(
+  accessor: AirtableAccessor,
+  path: PathSpec,
+  index: IndexCacheStore | undefined,
+): Promise<void> {
+  const store = index ?? new RAMIndexCacheStore()
+  if ((await resolveEntry(readdir, accessor, path, store)) === null) throw enoent(path)
 }
 
 async function readBaseJson(
@@ -41,7 +50,6 @@ async function readBaseJson(
   path: PathSpec,
   _index?: IndexCacheStore,
 ): Promise<Uint8Array> {
-  ensureInScope(accessor, match, path)
   const baseId = match.slots.base_id ?? ''
   for (const base of await listBases(accessor)) {
     if (base.id === baseId) {
@@ -57,7 +65,6 @@ async function readTableJson(
   path: PathSpec,
   _index?: IndexCacheStore,
 ): Promise<Uint8Array> {
-  ensureInScope(accessor, match, path)
   let table: Record<string, unknown>
   try {
     table = await schemaTable(accessor, match)
@@ -75,7 +82,6 @@ async function renderRecords(
   view: string | undefined,
   window: ReadWindow,
 ): Promise<Uint8Array> {
-  ensureInScope(accessor, match, path)
   const cap = accessor.maxReadRecords
   const skip = window.offset ?? 0
   const limit = window.limit ?? null
@@ -109,13 +115,14 @@ function readRecords(
   return renderRecords(accessor, match, path, undefined, window)
 }
 
-function readView(
+async function readView(
   accessor: AirtableAccessor,
   match: ScopeMatch,
   path: PathSpec,
-  _index: IndexCacheStore | undefined,
+  index: IndexCacheStore | undefined,
   window: ReadWindow,
 ): Promise<Uint8Array> {
+  await ensureListed(accessor, path, index)
   return renderRecords(accessor, match, path, match.slots.view_id ?? '', window)
 }
 
@@ -126,7 +133,10 @@ export const read = makeRead<AirtableAccessor>(
     table_json: readTableJson,
   },
   {
-    records: readRecords,
-    view: readView,
+    windowed: {
+      records: readRecords,
+      view: readView,
+    },
+    stat,
   },
 )

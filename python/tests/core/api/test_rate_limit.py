@@ -32,6 +32,19 @@ class _Clock:
         self.waits.append(seconds)
 
 
+class _Stalled(_Clock):
+
+    def __init__(self, until: float) -> None:
+        super().__init__()
+        self.until = until
+
+    async def sleep(self, seconds: float) -> None:
+        start = self.now
+        self.waits.append(seconds)
+        await asyncio.sleep(0)
+        self.now = max(self.now, start + seconds, self.until)
+
+
 def _limiter(rate: float, clock: _Clock) -> RateLimiter:
     return RateLimiter(rate, clock=clock.time, sleep=clock.sleep)
 
@@ -71,6 +84,23 @@ async def test_concurrent_callers_reserve_slots_in_arrival_order():
     limiter = _limiter(10, clock)
     await asyncio.gather(*(limiter.acquire("appA") for _ in range(3)))
     assert sorted(clock.waits) == pytest.approx([0.1, 0.2])
+
+
+@pytest.mark.asyncio
+async def test_a_late_wake_moves_the_slots_behind_it():
+    clock = _Stalled(until=100.5)
+    limiter = _limiter(5, clock)
+    starts: list[float] = []
+
+    async def call() -> None:
+        await limiter.acquire("appA")
+        starts.append(clock.now)
+
+    await asyncio.gather(call(), call(), call())
+    await call()
+    # the loop was blocked until 100.5, so the second and third callers
+    # wake together; the third still goes a full interval after the second
+    assert starts == pytest.approx([100.0, 100.5, 100.7, 100.9])
 
 
 def test_a_rate_must_be_positive():

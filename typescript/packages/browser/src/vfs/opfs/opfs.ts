@@ -117,7 +117,7 @@ export class OPFSVFS extends BaseVFS implements VFS {
     this.accessor = new OPFSAccessor(this)
   }
 
-  open(): Promise<void> {
+  override open(): Promise<void> {
     return this.ensureOpen().then(() => undefined)
   }
 

@@ -98,6 +98,9 @@ import {
   type ConsoleFactory,
 } from '@struktoai/mirage-node'
 import { parseSessionProfile, type SessionProfile } from '@struktoai/mirage-core/policy/profile'
+import { normalizePostgresConfig } from '@struktoai/mirage-core/vfs/postgres/config'
+import { normalizeMongoDBConfig } from '@struktoai/mirage-core/vfs/mongodb/config'
+import { normalizeTrelloConfig } from '@struktoai/mirage-core/vfs/trello/config'
 import { ScriptSource } from '@struktoai/mirage-core/runtime/routing/types'
 import * as lancedb from '@lancedb/lancedb'
 import { QdrantClient } from '@qdrant/js-client-rest'
@@ -1308,7 +1311,9 @@ async function openMongodb(target: Target): Promise<Open> {
   const created: MongoDBVFS[] = []
   const mounts: Record<string, MongoDBVFS | [MongoDBVFS, MountMode]> = {}
   for (const mount of target.mounts) {
-    const vfs = new MongoDBVFS({ uri, databases: [MONGODB_DB] })
+    const vfs = new MongoDBVFS(
+      normalizeMongoDBConfig({ uri, databases: [MONGODB_DB], ...mount.config }),
+    )
     created.push(vfs)
     mounts[mount.path] = mount.mode === 'read' ? [vfs, MountMode.READ] : vfs
   }
@@ -1332,6 +1337,14 @@ const POSTGRES_AUTHORS: ReadonlyArray<readonly [number, string, number]> = [
   [1, 'ada', 2],
   [2, 'ben', 2],
   [3, 'cara', 1],
+]
+
+const POSTGRES_PROBES: ReadonlyArray<readonly [number, string | null, boolean]> = [
+  [1, 'Ada\ttab', true],
+  [2, 'left\u2028right', false],
+  [3, 'left\u2029right', true],
+  [4, 'left\u0085right', false],
+  [5, null, true],
 ]
 
 async function seedPostgres(dsn: string): Promise<void> {
@@ -1366,6 +1379,28 @@ async function seedPostgres(dsn: string): Promise<void> {
     await client.query('DROP SCHEMA IF EXISTS ".hidden" CASCADE')
     await client.query('CREATE SCHEMA ".hidden"')
     await client.query('CREATE TABLE ".hidden".ghost (id int PRIMARY KEY)')
+    await client.query('DROP SCHEMA IF EXISTS contract CASCADE')
+    await client.query('CREATE SCHEMA contract')
+    await client.query(
+      'CREATE TABLE contract.probes (id int PRIMARY KEY, body text, active boolean)',
+    )
+    for (const row of POSTGRES_PROBES) {
+      await client.query('INSERT INTO contract.probes VALUES ($1, $2, $3)', [...row])
+    }
+    await client.query('ANALYZE contract.probes')
+    await client.query('DROP SCHEMA IF EXISTS byte_budget CASCADE')
+    await client.query('CREATE SCHEMA byte_budget')
+    await client.query(
+      'CREATE TABLE byte_budget.wide (body text) WITH (autovacuum_enabled = false)',
+    )
+    await client.query("INSERT INTO byte_budget.wide VALUES ('x')")
+    await client.query('ANALYZE byte_budget.wide')
+    await client.query("UPDATE byte_budget.wide SET body = repeat('é', 1000000)")
+    await client.query('CREATE TABLE byte_budget.empty (body text)')
+    await client.query('CREATE TABLE byte_budget.exact (__mirage_bytes text)')
+    await client.query('INSERT INTO byte_budget.exact VALUES (NULL)')
+    await client.query('ANALYZE byte_budget.empty')
+    await client.query('ANALYZE byte_budget.exact')
   } finally {
     await client.end()
   }
@@ -1378,7 +1413,9 @@ async function openPostgres(target: Target): Promise<Open> {
   const created: PostgresVFS[] = []
   const mounts: Record<string, PostgresVFS | [PostgresVFS, MountMode]> = {}
   for (const mount of target.mounts) {
-    const vfs = new PostgresVFS({ dsn, maxReadRows: 200 })
+    const vfs = new PostgresVFS(
+      normalizePostgresConfig({ dsn, max_read_rows: 200, ...mount.config }),
+    )
     created.push(vfs)
     mounts[mount.path] = mount.mode === 'read' ? [vfs, MountMode.READ] : vfs
   }
@@ -1844,11 +1881,14 @@ async function openTrello(target: Target): Promise<Open> {
       mounts[m.path] = new RAMVFS()
       continue
     }
-    mounts[m.path] = new TrelloVFS({
-      apiKey: 'integ-key',
-      apiToken: 'integ-token',
-      baseUrl: endpoint,
-    })
+    mounts[m.path] = new TrelloVFS(
+      normalizeTrelloConfig({
+        apiKey: 'integ-key',
+        apiToken: 'integ-token',
+        baseUrl: endpoint,
+        ...m.config,
+      }),
+    )
   }
   const ws = new Workspace(mounts, { mode: MountMode.WRITE })
   return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }

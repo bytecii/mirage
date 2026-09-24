@@ -129,4 +129,40 @@ describe('airtable read', () => {
     }
     expect(fake.recordCalls()).toEqual([])
   })
+
+  it('answers ENOENT for a name the listing does not hold', async () => {
+    const fake = new FakeAirtable()
+    const accessor = makeAccessor(fake)
+    const ops = `${ROOT}/bases/Ops_Finance__appOpsFinance0001`
+    for (const path of [
+      `${ROOT}/bases/Wrong__appRoadmapBase001/base.json`,
+      `${BASE}/Wrong__tblFeatures000001/table.json`,
+      `${BASE}/Wrong__tblFeatures000001/records.jsonl`,
+      `${TABLE}/views/Wrong__viwDone0000000001.jsonl`,
+      `${ops}/Q3_Budget__tblBudget00000001/views/Grid_view__viwGrid0000000001.jsonl`,
+    ]) {
+      await expect(read(accessor, spec(path), new RAMIndexCacheStore())).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+    }
+    // the ids resolve at the API; only the listing knows the names
+    expect(fake.recordCalls()).toEqual([])
+  })
+
+  it('still proves the path when read without an index', async () => {
+    const accessor = makeAccessor(new FakeAirtable())
+    expect(ids(await read(accessor, spec(DONE)))).toHaveLength(4)
+    await expect(
+      read(accessor, spec(`${BASE}/Wrong__tblFeatures000001/records.jsonl`)),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('answers ENOENT for a view gone since its listing', async () => {
+    const fake = new FakeAirtable()
+    // the schema still lists the view; Airtable answers its id missing
+    Reflect.deleteProperty(fake.views, 'viwDone0000000001')
+    await expect(
+      read(makeAccessor(fake), spec(DONE), new RAMIndexCacheStore()),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
 })

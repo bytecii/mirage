@@ -79,10 +79,6 @@ export abstract class HfHubVFS extends BaseVFS implements VFS {
     exists: existsCore,
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return HF_HUB_COMMANDS
   }
@@ -130,9 +126,5 @@ export abstract class HfHubVFS extends BaseVFS implements VFS {
         )
       : paths
     return globCore(this.accessor, effective, this.index)
-  }
-
-  override loadState(_state: unknown): Promise<void> {
-    return Promise.resolve()
   }
 }

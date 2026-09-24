@@ -71,10 +71,6 @@ export abstract class HfVFS extends BaseVFS implements VFS {
     mkdir: mkdirCore,
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return HF_COMMANDS
   }
@@ -142,9 +138,5 @@ export abstract class HfVFS extends BaseVFS implements VFS {
         )
       : paths
     return globCore(this.accessor, effective, this.index)
-  }
-
-  override loadState(_state: unknown): Promise<void> {
-    return Promise.resolve()
   }
 }

@@ -13,40 +13,45 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.airtable import AirtableAccessor
-from mirage.cache.index import IndexCacheStore
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.airtable.client import list_bases, list_records, list_tables
 from mirage.core.airtable.errors import AirtableAPIError
 from mirage.core.airtable.normalize import (normalize_base, normalize_table,
                                             records_jsonl, to_json_bytes)
-from mirage.core.airtable.readdir import schema_table
+from mirage.core.airtable.readdir import readdir, schema_table
 from mirage.core.airtable.scope import detect_scope
+from mirage.core.airtable.stat import stat
+from mirage.core.hierarchy.probe import resolve_entry
 from mirage.core.hierarchy.read import make_read
 from mirage.core.hierarchy.scope import ScopeMatch
 from mirage.types import PathSpec
 from mirage.utils.errors import efbig, enoent
 
 
-def ensure_in_scope(accessor: AirtableAccessor, match: ScopeMatch,
-                    path: PathSpec) -> None:
-    """Refuse a path whose base the mount's ``base_ids`` excludes.
+async def ensure_listed(accessor: AirtableAccessor, path: PathSpec,
+                        index: IndexCacheStore) -> None:
+    """Refuse a file its parent listing does not hold.
 
-    A reader reaches the API by the id in the path without resolving it
-    through the listing, so the scope has to be enforced here too, or a
-    typed path would read a base that ``ls`` and ``stat`` call absent.
+    ``make_read`` proves every file's parent through stat. A view file is
+    named by its view id, so under a real ``views`` directory a wrong
+    name, or another table's view id, is still the reader's to prove:
+    without this ``jq`` would read it while ``stat`` and ``cat`` call it
+    absent, and a foreign id would reach the API as a raw 422.
 
     Args:
         accessor (AirtableAccessor): the account and its scope.
-        match (ScopeMatch): the classified path.
         path (PathSpec): the path, for the error.
+        index (IndexCacheStore): where the parent listing lands.
     """
-    wanted = accessor.config.base_ids
-    if wanted is not None and match.slots["base_id"] not in wanted:
+    if index is NULL_INDEX or index is None:
+        index = RAMIndexCacheStore()
+    if await resolve_entry(readdir, accessor, path, index) is None:
         raise enoent(path.virtual)
 
 
 async def _read_base_json(accessor: AirtableAccessor, match: ScopeMatch,
                           path: PathSpec, index: IndexCacheStore) -> bytes:
-    ensure_in_scope(accessor, match, path)
     base_id = match.slots["base_id"]
     for base in await list_bases(accessor):
         if base.get("id") == base_id:
@@ -57,7 +62,6 @@ async def _read_base_json(accessor: AirtableAccessor, match: ScopeMatch,
 
 async def _read_table_json(accessor: AirtableAccessor, match: ScopeMatch,
                            path: PathSpec, index: IndexCacheStore) -> bytes:
-    ensure_in_scope(accessor, match, path)
     try:
         table = await schema_table(accessor, match)
     except FileNotFoundError:
@@ -68,7 +72,6 @@ async def _read_table_json(accessor: AirtableAccessor, match: ScopeMatch,
 async def _render_records(accessor: AirtableAccessor, match: ScopeMatch,
                           path: PathSpec, view: str | None, limit: int | None,
                           offset: int | None) -> bytes:
-    ensure_in_scope(accessor, match, path)
     cap = accessor.config.max_read_records
     skip = offset or 0
     # A window is a record count pushed into maxRecords. One record past
@@ -101,6 +104,7 @@ async def _read_records(accessor: AirtableAccessor, match: ScopeMatch,
 async def _read_view(accessor: AirtableAccessor, match: ScopeMatch,
                      path: PathSpec, index: IndexCacheStore, limit: int | None,
                      offset: int | None) -> bytes:
+    await ensure_listed(accessor, path, index)
     return await _render_records(accessor, match, path, match.slots["view_id"],
                                  limit, offset)
 
@@ -115,4 +119,5 @@ read = make_read(
         "records": _read_records,
         "view": _read_view,
     },
+    stat=stat,
 )

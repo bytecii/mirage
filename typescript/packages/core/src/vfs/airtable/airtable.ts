@@ -62,10 +62,6 @@ export class AirtableVFS extends BaseVFS implements VFS {
     this.accessor = new AirtableAccessor(config, options)
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return AIRTABLE_COMMANDS
   }

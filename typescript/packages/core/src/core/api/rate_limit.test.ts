@@ -25,6 +25,19 @@ class Clock {
   }
 }
 
+class StalledClock extends Clock {
+  constructor(readonly until: number) {
+    super()
+  }
+
+  override sleep = async (seconds: number): Promise<void> => {
+    const start = this.now
+    this.waits.push(seconds)
+    await Promise.resolve()
+    this.now = Math.max(this.now, start + seconds, this.until)
+  }
+}
+
 function limiter(rate: number, clock: Clock): RateLimiter {
   return new RateLimiter(rate, { clock: clock.time, sleep: clock.sleep })
 }
@@ -60,6 +73,21 @@ describe('RateLimiter', () => {
     const limit = limiter(10, clock)
     await Promise.all([limit.acquire('appA'), limit.acquire('appA'), limit.acquire('appA')])
     expect(clock.waits.map((w) => Number(w.toFixed(6))).sort()).toEqual([0.1, 0.2])
+  })
+
+  it('moves the slots behind a late wake', async () => {
+    const clock = new StalledClock(100.5)
+    const limit = limiter(5, clock)
+    const starts: number[] = []
+    const call = async (): Promise<void> => {
+      await limit.acquire('appA')
+      starts.push(clock.now)
+    }
+    await Promise.all([call(), call(), call()])
+    await call()
+    // the loop was blocked until 100.5, so the second and third callers
+    // wake together; the third still goes a full interval after the second
+    expect(starts.map((s) => Number(s.toFixed(6)))).toEqual([100, 100.5, 100.7, 100.9])
   })
 
   it('refuses a rate that is not positive', () => {

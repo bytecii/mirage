@@ -65,6 +65,15 @@ export { DevVFS } from './vfs/dev/dev.ts'
 export { DifyVFS } from './vfs/dify/dify.ts'
 export { GenericVFS } from './vfs/generic.ts'
 export { AirtableVFS } from './vfs/airtable/airtable.ts'
+export { VFSAdapter } from './vfs/adapter.ts'
+export type {
+  NativeReadOps,
+  ReadOps,
+  WriteOps,
+  SearchOps,
+  SearchQuery,
+  DuOps,
+} from './vfs/types.ts'
 export { Mem0VFS } from './vfs/mem0/mem0.ts'
 export { OneDriveVFS } from './vfs/onedrive/onedrive.ts'
 export { QdrantVFS } from './vfs/qdrant/qdrant.ts'

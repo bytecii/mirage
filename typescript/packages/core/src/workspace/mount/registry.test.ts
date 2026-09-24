@@ -28,9 +28,6 @@ import { MountCommandUnsupported, MountRegistry } from './registry.ts'
 
 class StubVFS extends BaseVFS implements VFS {
   readonly kind = 'stub'
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
   override close(): Promise<void> {
     return Promise.resolve()
   }
@@ -38,9 +35,6 @@ class StubVFS extends BaseVFS implements VFS {
 
 class RAMStubVFS extends BaseVFS implements VFS {
   readonly kind = 'ram'
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
   override close(): Promise<void> {
     return Promise.resolve()
   }
@@ -304,9 +298,6 @@ describe('MountRegistry.resolveMount: cross-mount fallback', () => {
 
 class LimitedVFS extends BaseVFS implements VFS {
   readonly kind = 'limited'
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
   override close(): Promise<void> {
     return Promise.resolve()
   }

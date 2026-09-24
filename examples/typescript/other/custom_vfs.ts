@@ -19,7 +19,6 @@ import { join } from 'node:path'
 import {
   Accessor,
   command,
-  type CommandIO,
   CommandSpec,
   ContentType,
   eisdir,
@@ -32,12 +31,12 @@ import {
   MountMode,
   type PathSpec,
   registerVfsFactory,
-  streamFromBytes,
+  VFSAdapter,
   Workspace,
 } from '@struktoai/mirage-node'
 
 // A whole custom backend in one script: four core functions over your
-// data source, one CommandIO table, one GenericVFS. Every generic
+// data source, a read adapter with optional writes, one GenericVFS. Every generic
 // command (ls, cat, grep, find, head, wc, ...) works for free, and so
 // does versioning, in the shape the content calls for: the wiki's pages
 // are the VFS's own, so they ride its state and a snapshot rebuilds
@@ -59,7 +58,10 @@ const PAGES: Tree = {
 }
 
 class WikiAccessor extends Accessor {
-  constructor(public pages: Tree) {
+  constructor(
+    public pages: Tree,
+    readonly knownSizes = true,
+  ) {
     super()
   }
 }
@@ -105,7 +107,15 @@ function stat(accessor: WikiAccessor, path: PathSpec): Promise<FileStat> {
   // The fingerprint is the content's own hash: the stable identity a
   // snapshot records for every read and a load checks for drift.
   const fingerprint = createHash('sha256').update(data).digest('hex').slice(0, 16)
-  return Promise.resolve(new FileStat({ name, size: data.length, type: FileType.FILE, content: ContentType.TEXT, fingerprint }))
+  return Promise.resolve(
+    new FileStat({
+      name,
+      size: accessor.knownSizes ? data.length : null,
+      type: FileType.FILE,
+      content: ContentType.TEXT,
+      fingerprint,
+    }),
+  )
 }
 
 function write(accessor: WikiAccessor, path: PathSpec, data: Uint8Array): Promise<void> {
@@ -138,16 +148,11 @@ const wikiTitles = command({
   },
 })
 
-function makeIO(): CommandIO<WikiAccessor> {
-  return {
-    readdir,
-    readBytes,
-    readStream: (a, p, i) => streamFromBytes(readBytes, a, p, i),
-    stat,
-    write,
-    isMounted: () => true,
-    local: false,
-  }
+function makeIO(writable = true): VFSAdapter<WikiAccessor> {
+  return new VFSAdapter({
+    read: { readdir, readBytes, stat },
+    ...(writable ? { writes: { write } } : {}),
+  })
 }
 
 class WikiVFS extends GenericVFS<WikiAccessor> {
@@ -197,8 +202,8 @@ class FeedVFS extends GenericVFS<WikiAccessor> {
   constructor() {
     super({
       name: 'feed',
-      accessor: new WikiAccessor(FEED),
-      io: makeIO(),
+      accessor: new WikiAccessor(FEED, false),
+      io: makeIO(false),
       prompt: 'A status feed rendered as markdown.',
       supportsSnapshot: true,
     })
@@ -216,7 +221,11 @@ async function main(): Promise<void> {
   // through, the same way workspace config names it.
   registerVfsFactory('wiki', () => Promise.resolve(new WikiVFS()))
   const ws = new Workspace(
-    { '/wiki/': new WikiVFS(), '/feed/': new FeedVFS() },
+    {
+      '/wiki/': new WikiVFS(),
+      '/nested/wiki/': [new WikiVFS(), MountMode.READ],
+      '/feed/': new FeedVFS(),
+    },
     { mode: MountMode.WRITE },
   )
 
@@ -229,6 +238,12 @@ async function main(): Promise<void> {
     'wiki_titles',
     'cat /wiki/missing.md',
     'cat /feed/status.md',
+    'cat /wiki/guides/*.md',
+    'cat /nested/wiki/notes.md',
+    'echo changed > /nested/wiki/notes.md',
+    'cat /nested/wiki/notes.md',
+    'wc -c /feed/status.md',
+    'rm /feed/status.md',
   ]) {
     await show(ws, line)
   }

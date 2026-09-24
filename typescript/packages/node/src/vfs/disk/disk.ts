@@ -121,7 +121,7 @@ export class DiskVFS extends BaseVFS implements VFS {
     return `${this.kind}:${this.root}`
   }
 
-  async open(): Promise<void> {
+  override async open(): Promise<void> {
     await mkdir(this.root, { recursive: true })
   }
 

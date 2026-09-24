@@ -151,6 +151,12 @@ export function badOffset(value: string): Reply {
   return apiError(422, 'INVALID_OFFSET_VALUE', `The value of offset ${value} is invalid`)
 }
 
+// A view id that names a view of another table in the same base: live
+// Airtable answers the type alone, with no message.
+export function failedStateCheck(): Reply {
+  return json(422, { error: { type: 'FAILED_STATE_CHECK' } })
+}
+
 // A view named by id is looked up as an id, anything else as a name.
 export function viewNotFound(value: string): Reply {
   const type = isId('viw', value) ? 'VIEW_ID_NOT_FOUND' : 'VIEW_NAME_NOT_FOUND'

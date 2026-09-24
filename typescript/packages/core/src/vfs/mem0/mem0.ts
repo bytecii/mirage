@@ -37,10 +37,6 @@ export class Mem0VFS extends BaseVFS implements VFS {
     this.accessor = new Mem0Accessor(config)
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return MEM0_COMMANDS
   }
@@ -68,9 +64,5 @@ export class Mem0VFS extends BaseVFS implements VFS {
   override getState(): Mem0VFSState {
     const config: Mem0ConfigRedacted = redactMem0Config(this.config)
     return { type: this.kind, config }
-  }
-
-  override loadState(_state: Mem0VFSState): Promise<void> {
-    return Promise.resolve()
   }
 }
