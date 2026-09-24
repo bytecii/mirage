@@ -24,9 +24,11 @@ from mirage.commands.builtin.types import (ExecAction, FindAction,
 from mirage.commands.builtin.utils.formatting import format_find_ls
 from mirage.commands.builtin.utils.identity import Identity
 from mirage.commands.config import ExecContext
+from mirage.commands.errors import is_entry_error
 from mirage.context import (get_current_session, reset_op_policies,
                             reset_program_invocation, set_program_invocation,
                             suspend_op_policies)
+from mirage.errors.classify import failure_text
 from mirage.io.stream import materialize
 from mirage.io.types import ByteSource
 from mirage.ops.types import NamespaceView, StatPath
@@ -354,11 +356,13 @@ async def _row_stat(ps: PathSpec, ns: NamespaceView | None,
             if ns is not None and ns.links is not None else None)
     try:
         st = link if link is not None else await stat_path(ps.virtual)
-    except (NotADirectoryError, PermissionError, ValueError) as exc:
+    except Exception as exc:
+        if not is_entry_error(exc):
+            raise
         # GNU words it with the errno text; a policy refusal carries its
         # reason there.
-        why = (exc.strerror or str(exc)) if isinstance(exc,
-                                                       OSError) else str(exc)
+        why = ((exc.strerror if isinstance(exc, OSError) else None)
+               or failure_text(exc))
         errors.append(f"find: '{path}': {why}\n".encode())
         return None
     if st is None:
