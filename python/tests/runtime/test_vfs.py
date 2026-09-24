@@ -27,7 +27,8 @@ from mirage.runtime.types import VFSEntry, VFSStat
 from mirage.runtime.vfs import RuntimeVFS
 from mirage.types import DEVICE_NUMBERS_KEY, ContentType, FileStat, FileType
 from mirage.utils.errors import OperationNotSupportedError
-from mirage.utils.stat_view import CHAR_MODE, DIR_MODE, FILE_MODE, LINK_MODE
+from mirage.utils.stat_view import (CHAR_MODE, DIR_MODE, DIR_SIZE, FILE_MODE,
+                                    LINK_MODE)
 from mirage.workspace.session import SessionState
 
 
@@ -220,7 +221,7 @@ def test_readdir_stats_unmarked_directories():
     )
     assert vfs.readdir("/data/") == [
         VFSEntry(path="/data/sub",
-                 size=0,
+                 size=DIR_SIZE,
                  is_dir=True,
                  mode=DIR_MODE,
                  mtime_ns=0),

@@ -257,7 +257,7 @@ describe('walkFind', () => {
     const calls: string[] = []
     const unstatted = new Map<string, unknown>()
     const deps = { ...flaky(new Error('socket hang up'), calls), unstatted }
-    expect(await walkFind(ROOT, deps, { minSize: 1 })).toEqual(['/a.json', '/c.json'])
+    expect(await walkFind(ROOT, deps, { minSize: 1 })).toEqual(['/', '/a.json', '/c.json'])
     expect(calls.filter((p) => p === '/b.json')).toHaveLength(1)
   })
 

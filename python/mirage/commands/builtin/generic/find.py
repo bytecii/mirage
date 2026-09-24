@@ -22,6 +22,7 @@ from mirage.types import FileStat, FileType, FindType, PathSpec
 from mirage.utils.dates import iso_timestamp, matches_mtime
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
 from mirage.utils.path import respell_one, respell_raw
+from mirage.utils.stat_view import DIR_SIZE
 
 
 def parse_find_args(
@@ -901,9 +902,9 @@ async def walk_find(
             if st is None:
                 continue
         if need_size:
-            # Directories count as size 0 for -size: GNU compares the inode
-            # size (e.g. 4096 on ext4); see CLAUDE.md Rules.
-            size = 0 if is_dir else ((st.size if st is not None else 0) or 0)
+            size = DIR_SIZE
+            if not is_dir:
+                size = (st.size if st is not None else 0) or 0
             if args.min_size is not None and size < args.min_size:
                 continue
             if args.max_size is not None and size > args.max_size:

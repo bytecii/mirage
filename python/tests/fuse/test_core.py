@@ -26,7 +26,7 @@ from mirage.fuse.core import MountCore
 from mirage.observe import OpRecord
 from mirage.ops.registry import op
 from mirage.types import ContentType, FileStat, FileType, MountMode, PathSpec
-from mirage.utils.stat_view import mtime_ns
+from mirage.utils.stat_view import DIR_SIZE, mtime_ns
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 
@@ -58,7 +58,9 @@ async def test_getattr_file(seeded):
 
 @pytest.mark.asyncio
 async def test_getattr_dir(seeded):
-    assert seeded.getattr("/sub")["st_mode"] & stat.S_IFDIR
+    attrs = seeded.getattr("/sub")
+    assert attrs["st_mode"] & stat.S_IFDIR
+    assert attrs["st_size"] == DIR_SIZE
 
 
 @pytest.mark.asyncio

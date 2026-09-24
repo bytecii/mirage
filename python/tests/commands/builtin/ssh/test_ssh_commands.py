@@ -395,14 +395,15 @@ def test_find_empty_matches_zero_length_file(env):
     assert "deeper.txt" not in result
 
 
-def test_find_size_skips_dirs(env):
+def test_find_size_counts_a_directory_as_dir_size(env):
     env.create_file("one.txt", b"x")
     env.create_file("big.txt", b"x" * 100)
     env.create_file("sub/f.txt", b"x" * 100)
     result = env.run("find /ssh/ -size -5c")
     assert "one.txt" in result
     assert "big.txt" not in result
-    assert "/ssh/sub" in result
+    assert "/ssh/sub" not in result
+    assert "/ssh/sub" in env.run("find /ssh/ -size +5c")
 
 
 # ── du ─────────────────────────────────────────

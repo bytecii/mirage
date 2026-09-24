@@ -24,6 +24,7 @@ from mirage.commands.builtin.utils.identity import (UNKNOWN_NAME, Identity,
 from mirage.commands.builtin.utils.strftime import gnu_strftime
 from mirage.types import (DEVICE_NUMBERS_KEY, LINK_TARGET_KEY, FileStat,
                           FileType, LsTimeKind)
+from mirage.utils.stat_view import content_size, is_dir
 
 # GNU's --block-size units: the letter, its 1024-based factor and the two
 # suffixes it prints (K for KiB, kB for KB). xstrtoumax's table, which
@@ -377,8 +378,10 @@ def _ls_size_and_time(s: FileStat,
 
     A device row carries its major and minor numbers where GNU puts
     them. An entry with neither a size nor a time (a synthetic
-    API-backend directory) shows ``-`` in both rather than inventing
-    size 0 and the epoch, and so does a time kind no backend reports.
+    API-backend directory) shows ``-`` for the time rather than
+    inventing the epoch, and so does a time kind no backend reports;
+    its size is ``-`` too unless it is a directory, whose size is
+    always ``DIR_SIZE``.
 
     Args:
         s (FileStat): the row's stat.
@@ -397,9 +400,9 @@ def _ls_size_and_time(s: FileStat,
                 _ls_time_string(when_iso, find_rule=find_rule)
                 if find_rule else styled_time(when_iso, columns.time_style))
         return f"{dev[0]}, {dev[1]}", when
+    size = scaled_size(content_size(s), columns.block_size, human)
     if s.size is None and s.modified is None:
-        return UNKNOWN_NAME, UNKNOWN_NAME
-    size = scaled_size(s.size or 0, columns.block_size, human)
+        return size if is_dir(s) else UNKNOWN_NAME, UNKNOWN_NAME
     if not known_time:
         return size, UNKNOWN_NAME
     if find_rule:
