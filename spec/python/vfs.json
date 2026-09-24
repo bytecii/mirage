@@ -2112,12 +2112,6 @@
         "databases": {
           "required": false
         },
-        "default_doc_limit": {
-          "required": false
-        },
-        "default_search_limit": {
-          "required": false
-        },
         "elide_fields": {
           "required": false
         },
@@ -2238,9 +2232,6 @@
     "postgres": {
       "fields": {
         "default_row_limit": {
-          "required": false
-        },
-        "default_search_limit": {
           "required": false
         },
         "dsn": {

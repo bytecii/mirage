@@ -141,6 +141,7 @@ export function makeSearch<A extends Accessor>(
           ignoreCase: fl.asBool('i'),
           fixedString: fl.asBool('F'),
           wholeWord: fl.asBool('w'),
+          basic: name === 'grep' && !fl.asBool('E'),
         }
         const lines = await searcher(accessor, match, query)
         if (lines.length === 0) return [new Uint8Array(0), new IOResult({ exitCode: 1 })]

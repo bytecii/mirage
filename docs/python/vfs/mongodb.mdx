@@ -18,8 +18,6 @@ from mirage.vfs.mongodb import MongoDBConfig, MongoDBVFS
 
 config = MongoDBConfig(
     uri=os.environ["MONGODB_URI"],
-    default_doc_limit=1000,
-    default_search_limit=100,
     max_doc_limit=5000,
     elide_fields={"sample_mflix.movies": ["plot_embedding"]},
 )
@@ -31,8 +29,6 @@ ws = Workspace({"/mongodb": vfs}, mode=MountMode.READ)
 | ---------------------- | -------- | ------- | -------------------------------------------------------------------------- |
 | `uri`                  | yes      |         | MongoDB connection URI                                                     |
 | `databases`            | no       |         | List of database names to mount (omit for all)                             |
-| `default_doc_limit`    | no       | 1000    | Default doc cap for one-shot reads (not used by streaming `cat`)           |
-| `default_search_limit` | no       | 100     | Default result cap for collection/db-level `grep`                          |
 | `max_doc_limit`        | no       | 5000    | Most documents one `tail -n K` returns; past it, a notice and exit 1      |
 | `elide_fields`         | no       | `{}`    | `{"<db>.<coll>": ["field", "nested.path"]}`; listed fields are dropped from `documents.jsonl` |
 
@@ -143,7 +139,7 @@ memory ahead of the consumer.
 | `tail -n K`                  | Server-side sort + limit; a K past `max_doc_limit` stops there, notes it on stderr, exits 1 |
 | `tail -f`                    | Opens a change stream; yields each new insert as a JSONL line     |
 | `grep` (file level)          | Streams from `documents.jsonl`; supports `-m` for short-circuit   |
-| `grep` (collection/db level) | Server-side query, capped at `default_search_limit`               |
+| `grep` (collection/db level) | Every file under the directory, each read as `cat` renders it; no result cap |
 | `jq`                         | Inherits the streaming `cat` source                               |
 | `wc`                         | Uses `countDocuments()` server-side; zero download                |
 | `stat`                       | Metadata only (doc count, indexes; views skip the index lookup)   |
@@ -347,7 +343,7 @@ Standard commands available on the mounted MongoDB tree:
 | `cat`           | Stream `documents.jsonl` (or read `schema.json` / `database.json`)      |
 | `head` / `tail` | `head` streams and stops early; `tail` sorts and limits server-side, stopping loudly at `max_doc_limit` |
 | `tail -f`       | Live-follow new inserts via Mongo change stream                         |
-| `grep` / `rg`   | Smart: MongoDB query engine at collection/db scope, regex at file scope |
+| `grep` / `rg`   | A directory operand searches every file under it (documents, schema.json, database.json, views); a file streams |
 | `jq`            | Query JSON; use `.[]` prefix when iterating JSONL files                 |
 | `wc`            | Smart: uses `countDocuments()` server-side                              |
 | `stat`          | Metadata (doc count, indexes; views skip the index lookup)              |

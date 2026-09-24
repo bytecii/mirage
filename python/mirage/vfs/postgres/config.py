@@ -23,4 +23,3 @@ class PostgresConfig(BaseModel):
     default_row_limit: int = 1000
     max_read_rows: int = 10_000
     max_read_bytes: int = 10 * 1024 * 1024
-    default_search_limit: int = 100

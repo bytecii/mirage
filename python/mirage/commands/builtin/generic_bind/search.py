@@ -135,7 +135,9 @@ def make_search(
                 query = SearchQuery(pattern=pattern,
                                     ignore_case=fl.as_bool("i"),
                                     fixed_string=fl.as_bool("F"),
-                                    whole_word=fl.as_bool("w"))
+                                    whole_word=fl.as_bool("w"),
+                                    basic=name == "grep"
+                                    and not fl.as_bool("E"))
                 lines = await searcher(accessor, match, query)
                 if not lines:
                     return b"", IOResult(exit_code=1)

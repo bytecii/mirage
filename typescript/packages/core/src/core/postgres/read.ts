@@ -96,12 +96,18 @@ export async function read(
   return kitRead(accessor, spec, index, options)
 }
 
-async function readRows(
+/**
+ * Render a relation's rows.jsonl, or the window `options` picks. The whole file
+ * when neither limit nor offset is given, under the size guard: refused past
+ * `maxReadRows` rows or `maxReadBytes` bytes. Mirrors `read_rows` in
+ * `mirage/core/postgres/read.py`.
+ */
+export async function readRows(
   accessor: PostgresAccessor,
   schema: string,
   kind: string,
   entity: string,
-  options: ReadWindow,
+  options: ReadWindow = {},
 ): Promise<Uint8Array> {
   const cfg = accessor.config
   const limit = options.limit ?? null
@@ -164,7 +170,7 @@ function tooLarge(
 }
 
 /** One row as rows.jsonl spells it. Mirrors `row_line` in `core/postgres/read.py`. */
-function rowLine(row: Record<string, unknown>): string {
+export function rowLine(row: Record<string, unknown>): string {
   return JSON.stringify(row, jsonReplacer)
 }
 

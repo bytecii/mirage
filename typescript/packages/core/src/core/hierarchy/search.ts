@@ -13,17 +13,38 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { Accessor } from '../../accessor/base.ts'
+import { compilePattern } from '../../commands/builtin/grep_pattern.ts'
 import type { ScopeMatch } from './scope.ts'
 
 /**
  * One qualified grep/rg push-down request: the resolved pattern list as the
- * line typed it, plus the flags a searcher may honor itself (-i, -F, -w).
+ * line typed it, plus the flags a searcher may honor itself (-i, -F, -w) and
+ * the dialect: `basic` is grep's reading unless -E says otherwise; rg's
+ * expressions are extended.
  */
 export interface SearchQuery {
   readonly pattern: string
   readonly ignoreCase: boolean
   readonly fixedString: boolean
   readonly wholeWord: boolean
+  readonly basic: boolean
+}
+
+/**
+ * The matcher the generic scan would compile for this request. A searcher
+ * that has to decide a line itself (a candidate the service returned, or a
+ * line it rendered) decides it with this, so what it prints is what grep over
+ * the same file would print. Mirrors `query_matcher` in
+ * `mirage/core/hierarchy/search.py`.
+ */
+export function queryMatcher(query: SearchQuery): RegExp {
+  return compilePattern(
+    query.pattern,
+    query.ignoreCase,
+    query.fixedString,
+    query.wholeWord,
+    query.basic,
+  )
 }
 
 export type Searcher<A extends Accessor> = (

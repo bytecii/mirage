@@ -60,12 +60,12 @@ async def _read_entity_semantic(accessor: PostgresAccessor, match: ScopeMatch,
 async def _read_entity_rows(accessor: PostgresAccessor, match: ScopeMatch,
                             path: PathSpec, index: IndexCacheStore,
                             limit: int | None, offset: int | None) -> bytes:
-    return await _read_rows(accessor,
-                            match.slots["schema"],
-                            match.slots["entity"],
-                            kind=match.slots["kind"],
-                            limit=limit,
-                            offset=offset)
+    return await read_rows(accessor,
+                           match.slots["schema"],
+                           match.slots["entity"],
+                           kind=match.slots["kind"],
+                           limit=limit,
+                           offset=offset)
 
 
 def _too_large(cfg: PostgresConfig, schema: str, kind: str, entity: str,
@@ -86,9 +86,26 @@ def row_line(row: dict[str, Any]) -> str:
     return orjson.dumps(row, default=str).decode()
 
 
-async def _read_rows(accessor: PostgresAccessor, schema: str, entity: str, *,
-                     kind: str, limit: int | None,
-                     offset: int | None) -> bytes:
+async def read_rows(accessor: PostgresAccessor,
+                    schema: str,
+                    entity: str,
+                    *,
+                    kind: str,
+                    limit: int | None = None,
+                    offset: int | None = None) -> bytes:
+    """Render a relation's rows.jsonl, or the window ``limit``/``offset`` pick.
+
+    The whole file when neither is given, under the size guard: refused
+    past ``max_read_rows`` rows or ``max_read_bytes`` bytes.
+
+    Args:
+        accessor (PostgresAccessor): backend handle.
+        schema (str): the owning schema.
+        entity (str): the table or view.
+        kind (str): "tables" or "views", for the refusal's path.
+        limit (int | None): the window's row count.
+        offset (int | None): the window's first row.
+    """
     cfg = accessor.config
     whole = limit is None and offset is None
     if whole:

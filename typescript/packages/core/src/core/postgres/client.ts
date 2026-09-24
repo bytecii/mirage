@@ -51,7 +51,7 @@ export function quoteIdent(ident: string): string {
   return `"${ident.replace(/"/g, '""')}"`
 }
 
-function qualified(schema: string, name: string): string {
+export function qualified(schema: string, name: string): string {
   return `${quoteIdent(schema)}.${quoteIdent(name)}`
 }
 
