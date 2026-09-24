@@ -776,6 +776,12 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.17
+      '@types/ssh2':
+        specifier: ^1.15.0
+        version: 1.15.5
+      ssh2:
+        specifier: ^1.16.0
+        version: 1.17.0
       tsup:
         specifier: ^8.5.0
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.23)(tsx@4.21.0)(typescript@6.0.3)(yaml@2.9.0)

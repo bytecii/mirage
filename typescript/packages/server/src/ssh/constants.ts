@@ -12,30 +12,19 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { defineConfig } from 'tsup'
+export const ENV_SSH_PORT = 'MIRAGE_SSH_PORT'
+export const ENV_SSH_HOST = 'MIRAGE_SSH_HOST'
+export const ENV_SSH_HOST_KEY_FILE = 'MIRAGE_SSH_HOST_KEY_FILE'
+export const ENV_SSH_AUTHORIZED_KEYS = 'MIRAGE_SSH_AUTHORIZED_KEYS'
 
-export default defineConfig({
-  entry: [
-    'src/index.ts',
-    'src/bin/daemon.ts',
-    'src/paths.ts',
-    'src/env.ts',
-    'src/daemon_config.ts',
-    'src/host_validation_constants.ts',
-    'src/workspace_config.ts',
-    'src/auth/config.ts',
-    'src/auth/storage.ts',
-    'src/ssh/config.ts',
-    'src/ssh/constants.ts',
-  ],
-  format: ['esm'],
-  dts: {
-    compilerOptions: {
-      ignoreDeprecations: '6.0',
-    },
-  },
-  sourcemap: true,
-  clean: true,
-  target: 'es2022',
-  platform: 'node',
-})
+export const DEFAULT_SSH_HOST = '127.0.0.1'
+export const SSH_DIR = 'ssh'
+export const HOST_KEY_NAME = 'host_ed25519_key'
+export const AUTHORIZED_KEYS_NAME = 'authorized_keys'
+
+export const SSH_ENV_KEYS = {
+  ssh_port: ENV_SSH_PORT,
+  ssh_host: ENV_SSH_HOST,
+  ssh_host_key_file: ENV_SSH_HOST_KEY_FILE,
+  ssh_authorized_keys: ENV_SSH_AUTHORIZED_KEYS,
+} as const

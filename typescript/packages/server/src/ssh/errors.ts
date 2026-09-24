@@ -12,30 +12,26 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { defineConfig } from 'tsup'
+/** Raised when the daemon's SSH settings are unusable. */
+export class SSHConfigError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SSHConfigError'
+  }
+}
 
-export default defineConfig({
-  entry: [
-    'src/index.ts',
-    'src/bin/daemon.ts',
-    'src/paths.ts',
-    'src/env.ts',
-    'src/daemon_config.ts',
-    'src/host_validation_constants.ts',
-    'src/workspace_config.ts',
-    'src/auth/config.ts',
-    'src/auth/storage.ts',
-    'src/ssh/config.ts',
-    'src/ssh/constants.ts',
-  ],
-  format: ['esm'],
-  dts: {
-    compilerOptions: {
-      ignoreDeprecations: '6.0',
-    },
-  },
-  sourcemap: true,
-  clean: true,
-  target: 'es2022',
-  platform: 'node',
-})
+/**
+ * An SFTP request answered with a status the core cannot express as an
+ * errno: an operation mirage does not offer, or a workspace that is not
+ * there. asyncssh raises its own SFTPError classes for these on the
+ * Python side.
+ */
+export class SFTPStatusError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'SFTPStatusError'
+    this.status = status
+  }
+}
