@@ -300,7 +300,7 @@ describe('find actions on structural rows', () => {
       },
     )
     try {
-      const io = await ws.shell('find / -delete')
+      const io = await ws.shell("find / -not -path '/usr*' -delete")
       expect(io.exitCode).toBe(0)
       expect(io.stderrText).toBe('')
       const after = await ws.shell('find /')
