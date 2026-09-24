@@ -16,6 +16,7 @@ import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { modifiedTs } from '../../../core/generic/find.ts'
 import { isEnoent } from '../../../utils/errors.ts'
+import { failureText } from '../../../errors/classify.ts'
 import { IOResult, type ByteSource } from '../../../io/types.ts'
 import type { FindOptions } from '../../../vfs/base.ts'
 import { FindParseError } from '../../errors.ts'
@@ -23,7 +24,7 @@ import { parseDepth, parseFindExpression, parseMtime, parseSize } from '../find_
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { rstripSlash, stripSlash } from '../../../utils/slash.ts'
-import { respellRaw } from '../../../utils/path.ts'
+import { respellOne, respellRaw } from '../../../utils/path.ts'
 import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import {
   bindTree,
@@ -332,6 +333,7 @@ export async function findGeneric(
   stat?: (spec: PathSpec) => Promise<FileStat>,
   dirEmpty?: (spec: PathSpec) => Promise<boolean>,
   unreadable?: () => string[],
+  unstatted?: () => [string, unknown][],
 ): Promise<CommandFnResult> {
   const fl = new FlagView(opts.flags, specOf('find'))
   const nameFlag = fl.asStr('name') ?? null
@@ -494,6 +496,12 @@ export async function findGeneric(
     // the operand that walked them.
     for (const shown of respellRaw(unreadable?.() ?? [], root.virtual, root.rawPath)) {
       missing.push(`find: '${shown}': Permission denied`)
+    }
+    // An entry the walk could not stat is named the same way, and stays
+    // listed where no test needed its stat.
+    for (const [path, err] of unstatted?.() ?? []) {
+      const shown = respellOne(path, root.virtual, root.rawPath)
+      missing.push(`find: '${shown}': ${failureText(err)}`)
     }
     const rootKey = rstripSlash(root.mountPath) || '/'
     const rootMatches: string[] = []

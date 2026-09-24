@@ -110,6 +110,45 @@ class AmbiguousArgumentError(GitError):
             f"'git <command> [<revision>...] -- [<file>...]'")
 
 
+class BadRevisionError(GitError):
+    """A negated revision (``^<rev>``) that resolves to nothing.
+
+    git words this one differently from a plain unknown revision, and
+    refuses a negated range (``^A..B``) the same way (pinned against
+    git 2.50).
+
+    Args:
+        revision (str): the revision as the user spelled it, caret
+            included.
+    """
+
+    def __init__(self, revision: str) -> None:
+        super().__init__(f"bad revision '{revision}'")
+
+
+class NoMergeBaseError(GitError):
+    """``diff A...B`` between two histories that share no commit.
+
+    Args:
+        revision (str): the range as the user spelled it.
+    """
+
+    def __init__(self, revision: str) -> None:
+        super().__init__(f"{revision}: no merge base")
+
+
+class BadConfigValueError(GitError):
+    """A boolean config variable whose value git cannot read as one.
+
+    Args:
+        value (str): the value as the config file spells it.
+        key (str): the variable, section and name lowercased.
+    """
+
+    def __init__(self, value: str, key: str) -> None:
+        super().__init__(f"bad boolean config value '{value}' for '{key}'")
+
+
 class BadDateError(GitError):
     """A date flag whose value could not be read.
 
@@ -192,6 +231,37 @@ class RevisionResetError(GitError):
     def __init__(self, revision: str) -> None:
         super().__init__(f"cannot reset to '{revision}': this build resets "
                          f"the index from HEAD only")
+
+
+class AllWithPathsError(GitError):
+    """``commit -a`` given paths as well.
+
+    git refuses the pair before reading anything, naming the first path
+    (pinned against git 2.50).
+
+    Args:
+        path (str): the first path operand as the user spelled it.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__(f"paths '{path} ...' with -a does not make sense")
+
+
+class PartialCommitError(GitError):
+    """``commit`` given paths, which this build does not take.
+
+    Real git commits only those paths, from the working tree, and leaves
+    the rest of the index staged. mirage commits the whole index, and
+    doing that while the caller named a subset would record changes
+    they never asked to commit, so the operand is refused instead.
+
+    Args:
+        path (str): the first path operand as the user spelled it.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__(f"cannot commit '{path}' alone: this build commits "
+                         f"the whole index; stage it and commit without paths")
 
 
 class BadPrettyError(GitError):

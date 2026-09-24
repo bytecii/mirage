@@ -11,7 +11,7 @@ from mirage.commands.builtin.generic.find import (apply_mount_prefix,
                                                   find_walk_generic,
                                                   parse_find_args, walk_find)
 from mirage.commands.config import CommandOpts
-from mirage.commands.errors import FindParseError
+from mirage.commands.errors import CommandTimeoutError, FindParseError
 from mirage.ops.types import LinkView
 from mirage.types import (ContentType, FileStat, FileType, FindType, MountMode,
                           PathSpec)
@@ -334,6 +334,89 @@ async def test_walk_find_stat_fallback_treats_not_found_as_file():
                               index=None,
                               args=FindArgs(type=FindType.FILE))
     assert results == ["/mystery"]
+
+
+def _flaky(exc: Exception, calls: list[str] | None = None):
+    """A readdir/stat pair whose one entry fails its stat like a dropped
+    request, every other entry answering.
+
+    Args:
+        exc (Exception): what the failing entry's stat raises.
+        calls (list[str] | None): records every path statted.
+    """
+    stats = {
+        "/": FileStat(name="/", type=FileType.DIRECTORY),
+        **{
+            f"/{n}.json": FileStat(name=f"{n}.json",
+                                   size=1,
+                                   type=FileType.FILE)
+            for n in "abc"
+        },
+    }
+
+    async def readdir(spec: PathSpec, _index):
+        return ["/a.json", "/b.json", "/c.json"]
+
+    async def stat(spec: PathSpec, _index):
+        if calls is not None:
+            calls.append(spec.virtual)
+        if spec.virtual == "/b.json":
+            raise exc
+        return stats[spec.virtual]
+
+    return readdir, stat
+
+
+@pytest.mark.asyncio
+async def test_walk_find_records_an_entry_whose_stat_fails_and_walks_on():
+    exc = RuntimeError("upstream 502 Bad Gateway")
+    readdir, stat = _flaky(exc)
+    unstatted: dict[str, Exception] = {}
+    results = await walk_find(_root_spec(),
+                              readdir=readdir,
+                              stat=stat,
+                              index=None,
+                              args=FindArgs(type=FindType.FILE),
+                              unstatted=unstatted)
+    assert results == ["/a.json", "/b.json", "/c.json"]
+    assert unstatted == {"/b.json": exc}
+
+
+@pytest.mark.asyncio
+async def test_walk_find_fails_a_stat_test_without_asking_again():
+    calls: list[str] = []
+    readdir, stat = _flaky(RuntimeError("upstream 502 Bad Gateway"), calls)
+    results = await walk_find(_root_spec(),
+                              readdir=readdir,
+                              stat=stat,
+                              index=None,
+                              args=FindArgs(min_size=1),
+                              unstatted={})
+    assert results == ["/a.json", "/c.json"]
+    assert calls.count("/b.json") == 1
+
+
+@pytest.mark.asyncio
+async def test_walk_find_propagates_an_entry_failure_it_does_not_collect():
+    readdir, stat = _flaky(RuntimeError("upstream 502 Bad Gateway"))
+    with pytest.raises(RuntimeError, match="502"):
+        await walk_find(_root_spec(),
+                        readdir=readdir,
+                        stat=stat,
+                        index=None,
+                        args=FindArgs())
+
+
+@pytest.mark.asyncio
+async def test_walk_find_propagates_a_timeout_even_when_collecting():
+    readdir, stat = _flaky(CommandTimeoutError("stat", 5))
+    with pytest.raises(CommandTimeoutError):
+        await walk_find(_root_spec(),
+                        readdir=readdir,
+                        stat=stat,
+                        index=None,
+                        args=FindArgs(),
+                        unstatted={})
 
 
 @pytest.mark.asyncio

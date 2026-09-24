@@ -79,7 +79,8 @@
               "home/permissions",
               "home/policy-engine",
               "home/route-policy",
-              "home/auth"
+              "home/auth",
+              "home/ssh"
             ]
           },
           {

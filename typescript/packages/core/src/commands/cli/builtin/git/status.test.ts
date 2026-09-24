@@ -268,6 +268,15 @@ const STATES: [string, Setup][] = [
     },
   ],
   [
+    'non-ASCII paths with core.quotePath off',
+    (r) => {
+      put(r, 'ünïcødé.txt', 'x\n')
+      git(r, ['mv', 'letters.txt', 'lëtters.txt'])
+      put(r, 'tab\there.txt', 'x\n')
+      git(r, ['config', 'core.quotePath', 'false'])
+    },
+  ],
+  [
     'a detached HEAD',
     (r) => {
       git(r, ['checkout', '-q', 'HEAD~1'])

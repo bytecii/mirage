@@ -52,7 +52,13 @@
       "channelId": "C1",
       "ts": "1762186004.000001",
       "userId": "U1",
-      "text": "searchable message"
+      "text": "searchable _message_ from <@U1>; snake_case and _unclosed"
+    },
+    {
+      "channelId": "C1",
+      "ts": "1762186005.000001",
+      "userId": "U1",
+      "text": ""
     }
   ],
   "files": [
@@ -65,6 +71,16 @@
       "mimetype": "text/plain",
       "filetype": "text",
       "content": "searchable data"
+    },
+    {
+      "id": "F2",
+      "channelId": "C1",
+      "messageTs": "1762186005.000001",
+      "name": "canvas",
+      "title": "Canvas",
+      "mimetype": "application/vnd.slack-docs",
+      "filetype": "quip",
+      "content": ""
     }
   ]
 }

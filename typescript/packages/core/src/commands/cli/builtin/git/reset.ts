@@ -127,7 +127,7 @@ export async function reset(inv: CLIInvocation): Promise<CommandFnResult> {
     if (err instanceof GitError) return fatal(err)
     throw err
   }
-  if (unstaged.size === 0) return [null, new IOResult()]
+  if (unstaged.size === 0 || fl.asBool('quiet')) return [null, new IOResult()]
   const lines = [UNSTAGED_HEADER]
   // Python is `sorted(unstaged.items())`, a tuple sort: path then letter.
   // A bare .sort() here compared `${path},${letter}` instead, which orders

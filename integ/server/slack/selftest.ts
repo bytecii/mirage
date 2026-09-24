@@ -86,6 +86,24 @@ async function main(): Promise<void> {
     eq('client.userBoot lists DMs, none shared', (boot.ims as Json[]).length, 10)
 
     const types = 'public_channel,private_channel'
+    const listed = async (selected: string): Promise<string[]> =>
+      ((await call('conversations.list', { types: selected })).channels as Json[]).map((c) =>
+        String(c.id),
+      )
+    eq('public-only conversation list excludes private channels', await listed('public_channel'), [
+      'C1',
+      'C10',
+      'C2',
+      'C3',
+      'C4',
+      'C6',
+      'C7',
+      'C8',
+      'C9',
+    ])
+    eq('private-only conversation list excludes public channels', await listed('private_channel'), [
+      'C5',
+    ])
     const first = await call('conversations.list', { types, limit: '1' })
     const channels = first.channels as Json[]
     eq('conversations.list honours limit', channels.length, 1)
@@ -195,6 +213,22 @@ async function main(): Promise<void> {
       1,
     )
 
+    for (const [query, total] of [
+      ['deploying from:@marcus', 2],
+      ['deploying from:<@U8>', 2],
+      ['deploying in:#engineering', 4],
+      ['deploying in:##engineering', 4],
+      ['deploying in:##engineering from:<@U8>', 2],
+    ] as const) {
+      const response = await fetch(`${fake.endpoint}/api/search.messages`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer xoxp-${TENANT}` },
+        body: new URLSearchParams({ query }),
+      })
+      const reply = (await response.json()) as Json
+      eq(query, (reply.messages as Json).total, total)
+    }
+
     await fetch(`${fake.endpoint}/reset`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -270,7 +304,48 @@ async function main(): Promise<void> {
         .total,
       0,
     )
+    for (const method of ['search.messages', 'search.all']) {
+      for (const query of [
+        'from:@ana',
+        'from:ana',
+        'from:<@U1>',
+        'in:#general',
+        'in:##general',
+        'in:##general from:<@U1>',
+      ]) {
+        const result = await search(method, 'xoxp', 'form', { query })
+        eq(`${method} scopes ${query}`, (result.messages as Json).total, 3)
+      }
+      for (const query of ['from:<@U404>', 'in:##absent', '"from:<@U1>"', '"in:##general"']) {
+        const result = await search(method, 'xoxp', 'form', { query })
+        eq(`${method} does not broaden ${query}`, (result.messages as Json).total, 0)
+      }
+    }
+    eq(
+      'file search cannot ignore an ID author filter',
+      ((await search('search.files', 'xoxp', 'form', { query: 'from:<@U1>' })).files as Json).total,
+      0,
+    )
+    eq(
+      'file search accepts doubled channel markers',
+      (
+        (await search('search.files', 'xoxp', 'form', { query: 'in:##general searchable' }))
+          .files as Json
+      ).total,
+      1,
+    )
+    const rendered = (await search('search.messages', 'xoxp', 'form')).messages as Json
+    eq(
+      'search renders emphasis and named mentions while preserving underscores in words',
+      (rendered.matches as Json[])[2]!.text,
+      'searchable message from <@U1|Ana>; snake_case and _unclosed',
+    )
     const history = (await call('conversations.history', { channel: 'C1' })).messages as Json[]
+    eq(
+      'history keeps stored emphasis and bare mentions',
+      history[1]!.text,
+      'searchable _message_ from <@U1>; snake_case and _unclosed',
+    )
     eq(
       'history preserves joins and leaves as activity',
       history.filter((m) => m.subtype).map((m) => m.subtype!),

@@ -69,12 +69,18 @@ class MountCore:
         session (SessionState | None): bind every op to this session's mount
             grants, exactly as a shell command in that session would run.
             None means unrestricted.
+        loop (asyncio.AbstractEventLoop | None): a running loop to run ops
+            on, such as the daemon's per-workspace runner loop, so an
+            adapter serving a hosted workspace touches it only from the
+            loop that owns it. None starts a private loop thread, which is
+            what a kernel mount wants.
     """
 
     def __init__(self,
                  ops: Ops,
                  root_prefix: str = "",
-                 session: SessionState | None = None) -> None:
+                 session: SessionState | None = None,
+                 loop: asyncio.AbstractEventLoop | None = None) -> None:
         self._ops = ops
         self._session = session
         self._now = time.time_ns()
@@ -87,10 +93,10 @@ class MountCore:
         # as owned by the mounting user (see mount.py). Mirrors fs.ts.
         self._uid = os.getuid() if hasattr(os, "getuid") else 0
         self._gid = os.getgid() if hasattr(os, "getgid") else 0
-        self._loop = asyncio.new_event_loop()
-        self._loop_thread = threading.Thread(target=self._loop.run_forever,
-                                             daemon=True)
-        self._loop_thread.start()
+        if loop is None:
+            loop = asyncio.new_event_loop()
+            threading.Thread(target=loop.run_forever, daemon=True).start()
+        self._loop = loop
 
     @property
     def ops(self) -> Ops:
@@ -351,8 +357,10 @@ class MountCore:
         # keeps wc -c, BSD cp, and tail -c correct for size-unknown files.
         if fh is not None:
             ctx = self._handles.get(fh)
-            if ctx is not None and ctx.path == path and ctx.data is not None:
-                return self.file_stat(len(ctx.data))
+            if ctx is not None:
+                path = ctx.path
+                if ctx.data is not None:
+                    return self.file_stat(len(ctx.data))
         if path == "/":
             return self.dir_stat()
         # macOS Finder/Spotlight probes .DS_Store, ._*, .Spotlight-V100, etc.
@@ -421,6 +429,8 @@ class MountCore:
         ctx = self._ctx(fh)
         if ctx is not None and ctx.data is not None:
             return ctx.data[offset:offset + size]
+        if ctx is not None:
+            path = ctx.path
         data = self.cached_data(path)
         if data is None:
             data = self._run(self._ops.read(self.resolve(path)))
@@ -540,7 +550,12 @@ class MountCore:
         self._forget(path)
 
     def rename(self, old: str, new: str) -> None:
-        self._run(self._ops.rename(self.resolve(old), self.resolve(new)))
+        source, target = self.resolve(old), self.resolve(new)
+        self._run(self._ops.rename(source, target))
+        for ctx in self._handles.values():
+            if ctx.key == source or ctx.key.startswith(source + "/"):
+                ctx.key = target + ctx.key[len(source):]
+                ctx.path = ctx.key[len(self._root):]
         self._changed(old, rehydrate=False)
         self._changed(new, rehydrate=False)
 
@@ -620,7 +635,7 @@ class MountCore:
         ctx = self._ctx(fh)
         if ctx is None or not ctx.write_buf:
             return
-        self._apply_writes(path, ctx.write_buf)
+        self._apply_writes(ctx.path, ctx.write_buf)
         ctx.write_buf = []
 
     def open(self, path: str, flags: int = 0) -> int:

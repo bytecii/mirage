@@ -181,6 +181,9 @@ class MockSFTPClient:
         if path in self.files:
             self.files[path] = self.files[path][:length]
 
+    async def utime(self, path, times=None, ns=None):
+        return None
+
 
 class SSHTestEnv:
 

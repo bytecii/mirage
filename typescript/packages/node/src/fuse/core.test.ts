@@ -493,3 +493,22 @@ describe('applyStatAttrs', () => {
     expect(got.ctime.getTime()).toBe(0)
   })
 })
+
+describe('open handles across rename', () => {
+  it.each([false, true])(
+    'keeps writes attached to the moved file (directory=%s)',
+    async (directory) => {
+      const ws = new Workspace({ '/': new RAMVFS() }, { mode: MountMode.WRITE })
+      await ws.shell('mkdir /sub; echo nested > /sub/file')
+      const core = new MountCore(ws.vfs)
+      const fd = await core.open('/sub/file')
+      await core.write('/sub/file', fd, new TextEncoder().encode('BEFORE'), 0)
+      await core.rename(directory ? '/sub' : '/sub/file', '/moved')
+      await core.write('/sub/file', fd, new TextEncoder().encode('AFTER'), 6)
+      await core.release(fd)
+      const target = directory ? '/moved/file' : '/moved'
+      expect(new TextDecoder().decode(await core.read(target, -1, 0, 100))).toBe('BEFOREAFTER')
+      await expect(core.getattr('/sub/file')).rejects.toThrow()
+    },
+  )
+})

@@ -253,6 +253,23 @@ describe('S3 cache consistency (mocked)', () => {
     }
   })
 
+  it('a key named like its mount is served from cache on the second read', async () => {
+    // The cache matches the read record's path, so `/m/a.txt` would refetch.
+    mock.store.set(BUCKET, 'm/a.txt', ENC.encode('v1'))
+    const ws = new Workspace(
+      { '/m': new S3VFS(makeConfig()) },
+      { mode: MountMode.WRITE, read: FRESH },
+    )
+    try {
+      mock.resetCalls()
+      expect(DEC.decode((await ws.shell('cat /m/m/a.txt')).stdout)).toBe('v1')
+      expect(DEC.decode((await ws.shell('cat /m/m/a.txt')).stdout)).toBe('v1')
+      expect(mock.commandCalls(GetObjectCommand)).toBe(1)
+    } finally {
+      await ws.close()
+    }
+  })
+
   it('a warm read costs a gate probe', async () => {
     // A warm `cat` is three stats: the routing reconcile, cat's own operand
     // stat, and the gate's probe. Two means the gate stopped probing a named
@@ -341,7 +358,7 @@ describe('S3 cache consistency (mocked)', () => {
       { '/s3/': new S3VFS(makeConfig()) },
       { mode: MountMode.WRITE, read: FRESH },
     )
-    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     try {
       await ws.shell('cat /s3/c.txt')
       const real = ws.opsRegistry.call.bind(ws.opsRegistry)
@@ -354,7 +371,7 @@ describe('S3 cache consistency (mocked)', () => {
       const cat = await ws.shell('cat /s3/c.txt; echo survived')
       expect(cat.exitCode).toBe(0)
       expect(DEC.decode(cat.stdout)).toBe('v1survived\n')
-      expect(debug.mock.calls.length > 0).toBe(true)
+      expect(warn.mock.calls.length > 0).toBe(true)
     } finally {
       vi.restoreAllMocks()
       await ws.close()

@@ -354,7 +354,7 @@ export class MountCore {
     // 0 that path-based getattr reported before open.
     const ctx = this.handles.get(fd)
     if (ctx?.data !== undefined) return this.fileStat(ctx.data.byteLength)
-    return this.getattr(path)
+    return this.getattr(ctx?.path ?? path)
   }
 
   async readdir(path: string): Promise<string[]> {
@@ -377,6 +377,7 @@ export class MountCore {
     // registered renderer surfaces as rendered text. Mirage registers
     // none by default, so this reads raw bytes until a mount adds one.
     // Matches Python's `self._ops.read(path)`, which also dispatches.
+    path = ctx?.path ?? path
     if (ctx !== undefined && ctx.data === undefined) {
       const cached = this.cachedData(path)
       ctx.data = cached ?? (await this.ops.readFile(this.resolve(path)))
@@ -505,7 +506,15 @@ export class MountCore {
     // copy+unlink instead of addressing the destination against the
     // source's backend.
     await this.mutate(this.identity(src), async () => {
-      await this.ops.rename(this.resolve(src), this.resolve(dst))
+      const source = this.resolve(src)
+      const target = this.resolve(dst)
+      await this.ops.rename(source, target)
+      for (const ctx of this.handles.values()) {
+        if (ctx.key === source || ctx.key.startsWith(`${source}/`)) {
+          ctx.key = target + ctx.key.slice(source.length)
+          ctx.path = ctx.key.slice(this.root.length)
+        }
+      }
       await this.changed(src, false)
       await this.changed(dst, false)
     })
