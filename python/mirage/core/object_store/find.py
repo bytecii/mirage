@@ -125,7 +125,6 @@ def make_find(driver: ObjectStoreDriver[A, C]) -> FindFn[A]:
             empty=empty)
         hints = FindHints(name=name,
                           iname=iname,
-                          type=type,
                           min_size=min_size,
                           max_size=max_size,
                           pushdown=pushdown)

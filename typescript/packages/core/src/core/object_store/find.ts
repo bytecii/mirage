@@ -68,7 +68,6 @@ export function makeFind<A extends Accessor, C>(driver: ObjectStoreDriver<A, C>)
     const hints: FindHints = {
       name: options.name ?? null,
       iname: options.iname ?? null,
-      type: options.type ?? null,
       minSize: options.minSize ?? null,
       maxSize: options.maxSize ?? null,
       pushdown,

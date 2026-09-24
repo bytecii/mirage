@@ -120,12 +120,11 @@ export interface ObjectMeta {
 export interface FindHints {
   name: string | null
   iname: string | null
-  type: string | null
   minSize: number | null
   maxSize: number | null
   /**
-   * False when a complex predicate tree is present; only the prefix
-   * condition may be used then.
+   * A `-type f` find with no complex predicate tree; only the prefix
+   * condition may be used otherwise.
    */
   pushdown: boolean
 }
