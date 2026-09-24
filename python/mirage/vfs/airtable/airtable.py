@@ -16,26 +16,15 @@ from typing import Any
 
 from mirage.accessor.airtable import AirtableAccessor
 from mirage.commands.builtin.airtable import COMMANDS
+from mirage.commands.builtin.airtable.io import IO
 from mirage.core.airtable.config import AirtableConfig
-from mirage.core.airtable.read import read
-from mirage.core.airtable.readdir import readdir
-from mirage.core.airtable.stat import stat
 from mirage.ops.airtable import OPS
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
+from mirage.types import VFSName
 from mirage.vfs.airtable.prompt import PROMPT, WRITE_PROMPT
-from mirage.vfs.base import BaseVFS
-
-_resolve_glob = make_resolve_glob(readdir)
-
-_AIRTABLE_OPS = {
-    "read_bytes": read,
-    "readdir": readdir,
-    "stat": stat,
-}
+from mirage.vfs.bound import BoundVFS
 
 
-class AirtableVFS(BaseVFS):
+class AirtableVFS(BoundVFS):
     """Airtable bases as directories, tables as records.jsonl files.
 
     Records are live data another client may edit at any moment, so reads
@@ -49,25 +38,17 @@ class AirtableVFS(BaseVFS):
     accessor: AirtableAccessor
     name: str = VFSName.AIRTABLE
     caches_reads: bool = False
-    _ops: dict[str, Any] = _AIRTABLE_OPS
     PROMPT: str = PROMPT
     WRITE_PROMPT: str = WRITE_PROMPT
 
     def __init__(self, config: AirtableConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self.accessor = AirtableAccessor(self.config)
         for fn in COMMANDS:
             self.register(fn)
         for op in OPS:
             self.register_op(op)
-
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        return await _resolve_glob(self.accessor, paths, index=self._index)
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)

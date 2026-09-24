@@ -14,13 +14,14 @@
 
 from mirage.accessor.history import HistoryAccessor
 from mirage.commands.builtin.history import COMMANDS
+from mirage.commands.builtin.history.io import IO
 from mirage.ops.history import OPS
-from mirage.vfs.base import BaseVFS
+from mirage.vfs.bound import BoundVFS
 
 HISTORY_PREFIX = "/.bash_history"
 
 
-class HistoryViewVFS(BaseVFS):
+class HistoryViewVFS(BoundVFS):
     """Read-only view VFS backing the /.bash_history mount.
 
     Renders GNU views from the workspace's hidden recorder on every
@@ -37,7 +38,7 @@ class HistoryViewVFS(BaseVFS):
     SIZES_ALWAYS_KNOWN: bool = True
 
     def __init__(self, observer) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.observer = observer
         self.accessor = HistoryAccessor(observer)
         for fn in COMMANDS:

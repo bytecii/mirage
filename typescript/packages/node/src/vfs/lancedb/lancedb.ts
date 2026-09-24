@@ -12,15 +12,15 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { BoundVFS } from '@struktoai/mirage-core/vfs/bound'
+import { LANCEDB_IO } from '@struktoai/mirage-core/commands/builtin/lancedb/io'
 import { LanceDBAccessor } from '@struktoai/mirage-core/accessor/lancedb'
 import { LANCEDB_COMMANDS } from '@struktoai/mirage-core/commands/builtin/lancedb/index'
 import type { RegisteredCommand } from '@struktoai/mirage-core/commands/config'
-import { read as lanceRead } from '@struktoai/mirage-core/core/lancedb/read'
-import { readdir as lanceReaddir } from '@struktoai/mirage-core/core/lancedb/readdir'
-import { stat as lanceStat } from '@struktoai/mirage-core/core/lancedb/stat'
+
 import { LANCEDB_OPS } from '@struktoai/mirage-core/ops/lancedb/index'
 import type { RegisteredOp } from '@struktoai/mirage-core/ops/registry'
-import { BaseVFS } from '@struktoai/mirage-core/vfs/base'
+
 import type { VFS } from '@struktoai/mirage-core/vfs/base'
 import {
   redactLanceDBConfig,
@@ -33,7 +33,7 @@ import type {
 } from '@struktoai/mirage-core/vfs/lancedb/config'
 import { LANCEDB_PROMPT } from '@struktoai/mirage-core/vfs/lancedb/prompt'
 import { VFSName } from '@struktoai/mirage-core/types'
-import type { FileStat, PathSpec } from '@struktoai/mirage-core/types'
+
 import { LanceDBStore } from './store.ts'
 
 const REMOTE_SCHEMES = ['s3://', 'gs://', 'az://', 'hf://', 'db://']
@@ -48,7 +48,7 @@ export interface LanceDBVFSState {
   needs_override: true
 }
 
-export class LanceDBVFS extends BaseVFS implements VFS {
+export class LanceDBVFS extends BoundVFS<LanceDBAccessor> implements VFS {
   readonly kind: string = VFSName.LANCEDB
   readonly cachesReads: boolean
   // readdir seeds exact card sizes from the widened select and stat falls
@@ -61,7 +61,7 @@ export class LanceDBVFS extends BaseVFS implements VFS {
   readonly accessor: LanceDBAccessor
 
   constructor(options: LanceDBVFSOptions | LanceDBConfig) {
-    super()
+    super(LANCEDB_IO)
     const config = 'config' in options ? options.config : options
     this.config = resolveLanceDBConfig(config)
     this.cachesReads = REMOTE_SCHEMES.some((scheme) => this.config.uri.startsWith(scheme))
@@ -93,17 +93,5 @@ export class LanceDBVFS extends BaseVFS implements VFS {
 
   commands(): readonly RegisteredCommand[] {
     return LANCEDB_COMMANDS
-  }
-
-  readFile(p: PathSpec): Promise<Uint8Array> {
-    return lanceRead(this.accessor, p, this.index)
-  }
-
-  readdir(p: PathSpec): Promise<string[]> {
-    return lanceReaddir(this.accessor, p, this.index)
-  }
-
-  stat(p: PathSpec): Promise<FileStat> {
-    return lanceStat(this.accessor, p, this.index)
   }
 }

@@ -14,23 +14,19 @@
 
 import { AirtableAccessor } from '../../accessor/airtable.ts'
 import { AIRTABLE_COMMANDS } from '../../commands/builtin/airtable/index.ts'
-import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+import { AIRTABLE_IO } from '../../commands/builtin/airtable/io.ts'
 import type { RegisteredCommand } from '../../commands/config.ts'
 import {
   redactAirtableConfig,
   type AirtableConfig,
   type AirtableConfigRedacted,
 } from '../../core/airtable/config.ts'
-import { read } from '../../core/airtable/read.ts'
-import { readdir } from '../../core/airtable/readdir.ts'
-import { stat } from '../../core/airtable/stat.ts'
 import { AIRTABLE_OPS } from '../../ops/airtable/index.ts'
 import type { RegisteredOp } from '../../ops/registry.ts'
-import { VFSName, type FileStat, type PathSpec } from '../../types.ts'
-import { BaseVFS, type VFS } from '../base.ts'
+import { VFSName } from '../../types.ts'
+import type { VFS } from '../base.ts'
+import { BoundVFS } from '../bound.ts'
 import { AIRTABLE_PROMPT, AIRTABLE_WRITE_PROMPT } from './prompt.ts'
-
-const resolveGlob = makeResolveGlob(readdir)
 
 export interface AirtableVFSState {
   type: string
@@ -43,7 +39,7 @@ export interface AirtableVFSState {
  * from the file cache; the schema listings still ride the index for its TTL.
  * The transport is plain fetch, so one class serves node and the browser.
  */
-export class AirtableVFS extends BaseVFS implements VFS {
+export class AirtableVFS extends BoundVFS<AirtableAccessor> implements VFS {
   readonly kind: string = VFSName.AIRTABLE
   readonly cachesReads: boolean = false
   // records.jsonl and the view files render a paged read, so their size is
@@ -57,7 +53,7 @@ export class AirtableVFS extends BaseVFS implements VFS {
   private readonly config: AirtableConfig
 
   constructor(config: AirtableConfig, options: { fetchFn?: typeof fetch } = {}) {
-    super()
+    super(AIRTABLE_IO)
     this.config = config
     this.accessor = new AirtableAccessor(config, options)
   }
@@ -68,22 +64,6 @@ export class AirtableVFS extends BaseVFS implements VFS {
 
   ops(): readonly RegisteredOp[] {
     return AIRTABLE_OPS
-  }
-
-  glob(paths: readonly PathSpec[], _prefix = ''): Promise<PathSpec[]> {
-    return resolveGlob(this.accessor, paths, this.index)
-  }
-
-  readFile(path: PathSpec): Promise<Uint8Array> {
-    return read(this.accessor, path, this.index)
-  }
-
-  readdir(path: PathSpec): Promise<string[]> {
-    return readdir(this.accessor, path, this.index)
-  }
-
-  stat(path: PathSpec): Promise<FileStat> {
-    return stat(this.accessor, path, this.index)
   }
 
   override getState(): AirtableVFSState {

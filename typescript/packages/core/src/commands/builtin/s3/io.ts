@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { VFSAdapter } from '../../../vfs/adapter.ts'
+import { VFSAdapter, appendFromRead } from '../../../vfs/adapter.ts'
 
 import type { S3Accessor } from '../../../accessor/s3.ts'
 import { SCOPE_ERROR } from '../../../core/s3/constants.ts'
@@ -44,6 +44,7 @@ export const S3_IO: CommandIO<S3Accessor> = new VFSAdapter<S3Accessor>({
     du: { size: s3Du, entries: s3DuAll },
   },
   writes: {
+    append: appendFromRead(s3Read, s3Write),
     write: s3Write,
     mkdir: s3Mkdir,
     unlink: s3Unlink,

@@ -16,18 +16,15 @@ from typing import Any
 
 from mirage.accessor.qdrant import QdrantAccessor
 from mirage.commands.builtin.qdrant import COMMANDS
-from mirage.core.qdrant.readdir import readdir
+from mirage.commands.builtin.qdrant.io import IO
 from mirage.ops.qdrant import OPS as QDRANT_OPS
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.vfs.base import BaseVFS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.qdrant.config import QdrantConfig
 from mirage.vfs.qdrant.prompt import PROMPT
 
-_resolve_glob = make_resolve_glob(readdir)
 
-
-class QdrantVFS(BaseVFS):
+class QdrantVFS(BoundVFS):
 
     accessor: QdrantAccessor
     name: str = VFSName.QDRANT
@@ -38,20 +35,13 @@ class QdrantVFS(BaseVFS):
     SUPPORTS_SNAPSHOT: bool = False
 
     def __init__(self, config: QdrantConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self.accessor = QdrantAccessor(self.config)
         for fn in COMMANDS:
             self.register(fn)
         for fn in QDRANT_OPS:
             self.register_op(fn)
-
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        return await _resolve_glob(self.accessor, paths, index=self._index)
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)

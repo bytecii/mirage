@@ -25,7 +25,7 @@ from mirage.core.databricks_volume.stat import stat as _stat
 from mirage.core.databricks_volume.stream import read_stream as _read_stream
 from mirage.core.databricks_volume.unlink import unlink as _unlink
 from mirage.core.databricks_volume.write import write_bytes as _write
-from mirage.vfs.adapter import VFSAdapter
+from mirage.vfs.adapter import VFSAdapter, append_from_read
 from mirage.vfs.types import NativeReadOps, ReadOps, WriteOps
 
 # Databricks Volume files are read and written through the generic factory;
@@ -36,6 +36,7 @@ IO = VFSAdapter(read=ReadOps(readdir=_readdir, read_bytes=_read, stat=_stat),
                                      read_stream=_read_stream,
                                      exists=_exists),
                 writes=WriteOps(write=_write,
+                                append=append_from_read(_read, _write),
                                 mkdir=_mkdir,
                                 unlink=_unlink,
                                 rmdir=_rmdir,

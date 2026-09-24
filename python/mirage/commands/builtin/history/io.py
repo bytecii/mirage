@@ -12,17 +12,19 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from mirage.core.history.find import find
 from mirage.core.history.read import read as _read
 from mirage.core.history.readdir import readdir as _readdir
 from mirage.core.history.stat import stat as _stat
 from mirage.vfs.adapter import VFSAdapter
-from mirage.vfs.types import ReadOps
+from mirage.vfs.types import NativeReadOps, ReadOps
 
 # The history view is read-only (the recorder owns mutation), so only the
 # read trio is wired; the history commands themselves stay bespoke. There is
 # no native streaming read, so the stream op is synthesized from the whole
 # rendered histfile.
 IO = VFSAdapter(read=ReadOps(readdir=_readdir, read_bytes=_read, stat=_stat),
+                native=NativeReadOps(find=find),
                 is_mounted=lambda a: True,
                 local=False).to_command_io()
 

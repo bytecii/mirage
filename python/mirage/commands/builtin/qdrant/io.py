@@ -14,9 +14,10 @@
 
 from mirage.core.qdrant.read import read as _read
 from mirage.core.qdrant.readdir import readdir as _readdir
+from mirage.core.qdrant.search import search_many, search_resource
 from mirage.core.qdrant.stat import stat as _stat
 from mirage.vfs.adapter import VFSAdapter
-from mirage.vfs.types import ReadOps
+from mirage.vfs.types import ReadOps, SearchOps
 
 # Qdrant points are read through the generic factory (find walks readdir,
 # classifying via stat); search pushes down to the Qdrant query API.
@@ -24,7 +25,9 @@ from mirage.vfs.types import ReadOps
 # byte-mutation commands are intentionally absent (no write op wired). There is
 # no native streaming read, so the stream op is synthesized from the whole-row
 # read.
-IO = VFSAdapter(read=ReadOps(readdir=_readdir, read_bytes=_read, stat=_stat),
+IO = VFSAdapter(search=SearchOps(search=search_resource,
+                                 search_many=search_many),
+                read=ReadOps(readdir=_readdir, read_bytes=_read, stat=_stat),
                 is_mounted=lambda a: True,
                 local=False).to_command_io()
 
