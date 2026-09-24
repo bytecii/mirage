@@ -20,6 +20,7 @@ import type { CallStack } from '../../shell/call_stack.ts'
 import { ExitSignal, ReturnSignal } from '../../shell/errors.ts'
 import { isBackgrounded } from '../../shell/helpers.ts'
 import { type Job, JobStatus, type JobTable } from '../../shell/job_table/index.ts'
+import { PipeConsole } from '../../shell/console/pipe.ts'
 import { Channel, type JobConsole } from '../../shell/console/index.ts'
 import { runWithSession } from '../../context/session_context.ts'
 import { asyncContextIsolatesTasks } from '../../utils/async_context.ts'
@@ -71,6 +72,7 @@ export async function pump(
   }
   for await (const chunk of stream) {
     if (chunk.byteLength > 0) await console_.emit(channel, chunk)
+    if (console_ instanceof PipeConsole && console_.closedReader) return
   }
 }
 

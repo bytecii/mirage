@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { materialize } from '../../../io/types.ts'
+
 import { mountKey } from '../../../utils/key_prefix.ts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RAMIndexCacheStore } from '../../../cache/index/ram.ts'
@@ -131,13 +133,14 @@ async function runCmd(
   index: IndexCacheStore,
 ): Promise<void> {
   const cmd = cmdOf(name)
-  await cmd.fn(makeAccessor(), paths, texts, {
+  const result = await cmd.fn(makeAccessor(), paths, texts, {
     stdin: null,
     flags,
     filetypeFns: null,
     cwd: '/',
     index,
   })
+  if (result !== null) await materialize(result[0])
 }
 
 const listDirCalls = (calls: FetchCall[]): FetchCall[] =>

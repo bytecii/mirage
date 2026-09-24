@@ -22,7 +22,7 @@ import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { respellOne } from '../../../utils/path.ts'
 import { cacheAwareStream } from '../../../cache/read_through.ts'
 import { mountParentReaddir, mountParentStat } from '../utils/operands.ts'
-import { IOResult, materialize } from '../../../io/types.ts'
+import { IOResult } from '../../../io/types.ts'
 import { FileType, PathSpec, type FileStat } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { compilePattern, resolvePattern } from '../grep_pattern.ts'
@@ -347,5 +347,5 @@ export async function grepGeneric(
     }
     io.exitCode = f.quiet && matched ? 0 : warnings.length ? 2 : matched ? 0 : 1
   }
-  return [await materialize(run()), io]
+  return [run(), io]
 }

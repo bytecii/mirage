@@ -42,6 +42,7 @@ from mirage.ops.registry import RegisteredOp
 from mirage.policy import resolve_limit
 from mirage.types import (FileType, Limit, MountMode, PathSpec, Producer,
                           ReadSpec)
+from mirage.utils.context_scope import ContextScope
 from mirage.utils.errors import ReadOnlyError, ebusy, enotsup
 from mirage.utils.ids import uuid7
 from mirage.utils.key_prefix import mount_key
@@ -81,6 +82,7 @@ def _wrap_cmd_streams(
     """
     stream, io = result
     seen: dict[int, ByteSource] = {}
+    scope = ContextScope()
 
     def _wrap(obj: ByteSource) -> ByteSource:
         if isinstance(obj, (bytes, bytearray)):
@@ -92,7 +94,7 @@ def _wrap_cmd_streams(
         wrapped = with_mount_context(source, mount_id)
         if revisions:
             wrapped = with_revisions(revisions, wrapped)
-        wrapped = with_host_io(wrapped)
+        wrapped = scope.stream(with_host_io(wrapped))
         if isinstance(obj, CachableAsyncIterator):
             obj.replace_source(wrapped)
             wrapped = obj

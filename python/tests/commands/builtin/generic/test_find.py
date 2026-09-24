@@ -7,16 +7,29 @@ import pytest
 
 from mirage.commands.builtin.find_eval import FindArgs, Name, Not, Or
 from mirage.commands.builtin.generic.find import (apply_mount_prefix,
-                                                  apply_mtime_filter, find,
-                                                  find_walk_generic,
-                                                  parse_find_args, walk_find)
+                                                  apply_mtime_filter)
+from mirage.commands.builtin.generic.find import find as stream_find
+from mirage.commands.builtin.generic.find import \
+    find_walk_generic as stream_walk_find
+from mirage.commands.builtin.generic.find import parse_find_args, walk_find
 from mirage.commands.config import CommandOpts
 from mirage.commands.errors import CommandTimeoutError, FindParseError
+from mirage.io.types import materialize
 from mirage.ops.types import LinkView
 from mirage.types import (ContentType, FileStat, FileType, FindType, MountMode,
                           PathSpec)
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
+
+
+async def find(*args, **kwargs):
+    out, io = await stream_find(*args, **kwargs)
+    return await materialize(out), io
+
+
+async def find_walk_generic(*args, **kwargs):
+    out, io = await stream_walk_find(*args, **kwargs)
+    return await materialize(out), io
 
 
 def _defaults() -> dict:
@@ -1185,3 +1198,15 @@ async def test_walk_selection_preserves_newlines_before_rendering():
         stat=AsyncMock(side_effect=lambda path, *_: stats[path.virtual]))
     assert io.matched_runs is not None
     assert [p.virtual for run in io.matched_runs for p in run] == ["/mnt/a\nb"]
+
+
+@pytest.mark.asyncio
+async def test_start_point_streams_before_native_walk():
+    root = PathSpec.from_str_path("/remote")
+    core = AsyncMock(side_effect=AssertionError("must not fetch descendants"))
+    probe = AsyncMock(
+        return_value=FileStat(name="remote", type=FileType.DIRECTORY))
+    out, _ = await stream_find([root], (), find_core=core, stat_path=probe)
+    assert await anext(out) == b"/remote\n"
+    await out.aclose()
+    core.assert_not_awaited()

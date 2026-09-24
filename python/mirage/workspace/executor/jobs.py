@@ -19,12 +19,14 @@ from typing import Any
 
 from mirage.commands.errors import CommandTimeoutError
 from mirage.io import IOResult
+from mirage.io.stream import close_quietly
 from mirage.io.types import ByteSource
 from mirage.ops.types import SessionView
 from mirage.policy.decisions import Decisions
 from mirage.policy.types import HandOff
 from mirage.shell.call_stack import CallStack
 from mirage.shell.console import Channel, JobConsole
+from mirage.shell.console.pipe import PipeConsole
 from mirage.shell.errors import ExitSignal, ReturnSignal
 from mirage.shell.helpers import get_text, is_backgrounded
 from mirage.shell.job_table import Job, JobStatus, JobTable
@@ -59,6 +61,9 @@ async def pump(console: JobConsole, channel: Channel,
     async for chunk in stream:
         if chunk:
             await console.emit(channel, chunk)
+        if isinstance(console, PipeConsole) and console.closed_reader:
+            await close_quietly(stream)
+            return
 
 
 async def handle_background(

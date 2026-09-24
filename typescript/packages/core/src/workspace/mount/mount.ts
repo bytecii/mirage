@@ -12,6 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { ContextScope } from '../../utils/context_scope.ts'
+import { captureSessionContext } from '../../context/session_context.ts'
+
 import { mountKey } from '../../utils/key_prefix.ts'
 import { coerceReadPolicy } from './read_policy.ts'
 import { KeyLock } from '../../cache/lock.ts'
@@ -772,16 +775,17 @@ function wrapMountStreams(
 ): [ByteSource | null, IOResult] {
   const [stream, io] = result
   const seen = new Map<ByteSource, ByteSource>()
+  const scope = new ContextScope(captureSessionContext())
   const wrap = (obj: ByteSource): ByteSource => {
     if (obj instanceof Uint8Array) return obj
     const hit = seen.get(obj)
     if (hit !== undefined) return hit
     let wrapped: ByteSource
     if (obj instanceof CachableAsyncIterator) {
-      obj.wrapSource((src) => withMountContext(src, mountId))
+      obj.wrapSource((src) => scope.stream(withMountContext(src, mountId)))
       wrapped = obj
     } else {
-      wrapped = withMountContext(obj, mountId)
+      wrapped = scope.stream(withMountContext(obj, mountId))
     }
     wrapped = activity.hold(wrapped)
     seen.set(obj, wrapped)

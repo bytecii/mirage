@@ -16,8 +16,17 @@ import type { Reply } from '../kit/typescript/index.ts'
 import type { C } from './config.ts'
 import { DATA_SOURCE_VERSION, DEFAULT_API_VERSION } from './config.ts'
 import { plainTextOf } from './text.ts'
-import type { DatabaseRow, Json, PageRow } from './types.ts'
-import { apiError, asObject, dataSourceJson, databaseJson, pageJson } from './wire.ts'
+import type { Json, PageRow } from './types.ts'
+import {
+  apiError,
+  asObject,
+  dataSourceJson,
+  databaseJson,
+  pageJson,
+  cursorOf,
+  intOr,
+  dataSourceIdOf,
+} from './wire.ts'
 
 // With no object filter a search answers pages AND databases (a 2025-09-03
 // caller gets data sources, which replaced databases in search). The MCP-Atlas
@@ -31,39 +40,99 @@ export async function searchResults(
   args: Json,
   version: string = DEFAULT_API_VERSION,
 ): Promise<Json[]> {
-  const filter = asObject(args.filter)
-  const kind = filter.value
-  const query = typeof args.query === 'string' ? args.query.toLowerCase() : ''
-  const matches = (title: string): boolean => query === '' || title.toLowerCase().includes(query)
-  const found: { edited: string; item: Json }[] = []
-  // 2022-06-28 spells this "database"; 2026-03-11 replaced it with
-  // "data_source" and rejects the old word. The fake answers both so the
-  // battery's client and the official CLI can share one server.
+  const kind = asObject(args.filter).value
+  const query = typeof args.query === 'string' ? args.query : ''
+  const where = {
+    tenant,
+    inTrash: false,
+    ...(query === '' ? {} : { titleText: { contains: query } }),
+  }
+  const ascending = asObject(args.sort).direction === 'ascending'
+  const direction = ascending ? ('asc' as const) : ('desc' as const)
+  const orderBy = [
+    { lastEditedTime: direction },
+    { position: 'asc' as const },
+    { id: 'asc' as const },
+  ]
+  const take = Math.min(Math.max(intOr(args.page_size, 100), 1), 100) + 1
   const onlyDatabases = kind === 'database' || kind === 'data_source'
-  if (kind === undefined || onlyDatabases) {
-    const rows = (await db.notionDatabase.findMany({
-      where: { tenant, inTrash: false },
-      orderBy: [{ position: 'asc' }, { id: 'asc' }],
-    })) as DatabaseRow[]
-    const asDataSource =
-      kind === 'data_source' || (kind === undefined && version >= DATA_SOURCE_VERSION)
-    for (const row of rows.filter((r) => matches(r.titleText))) {
-      const item = asDataSource ? dataSourceJson(row) : databaseJson(row, version)
-      found.push({ edited: row.lastEditedTime, item })
+  const includeDatabases = kind === undefined || onlyDatabases
+  const asDataSource =
+    kind === 'data_source' || (kind === undefined && version >= DATA_SOURCE_VERSION)
+  const cursor = cursorOf(args.start_cursor)
+  let anchor: {
+    row: { id: string; lastEditedTime: string; position: number }
+    database: boolean
+  } | null = null
+  if (cursor !== null) {
+    if (!onlyDatabases) {
+      const row = await db.notionPage.findFirst({ where: { ...where, id: cursor } })
+      if (row !== null) anchor = { row, database: false }
     }
+    if (anchor === null && includeDatabases) {
+      const rows = await db.notionDatabase.findMany({
+        where: { ...where, id: asDataSource ? { endsWith: cursor.slice(8) } : cursor },
+      })
+      const row = rows.find((r) => (asDataSource ? dataSourceIdOf(r.id) : r.id) === cursor)
+      if (row !== undefined) anchor = { row, database: true }
+    }
+    if (anchor === null) return []
+  }
+  const bounds = (database: boolean) => {
+    if (anchor === null) return {}
+    const row = anchor.row
+    const laterTime = {
+      lastEditedTime: ascending ? { gt: row.lastEditedTime } : { lt: row.lastEditedTime },
+    }
+    if (database !== anchor.database) {
+      return database ? laterTime : { OR: [laterTime, { lastEditedTime: row.lastEditedTime }] }
+    }
+    return {
+      OR: [
+        laterTime,
+        {
+          lastEditedTime: row.lastEditedTime,
+          OR: [{ position: { gt: row.position } }, { position: row.position, id: { gte: row.id } }],
+        },
+      ],
+    }
+  }
+  const found: {
+    row: { id: string; lastEditedTime: string; position: number }
+    item: Json
+    database: boolean
+  }[] = []
+  if (includeDatabases) {
+    const rows = await db.notionDatabase.findMany({
+      where: { ...where, ...bounds(true) },
+      orderBy,
+      take,
+    })
+    for (const row of rows)
+      found.push({
+        row,
+        database: true,
+        item: asDataSource ? dataSourceJson(row) : databaseJson(row, version),
+      })
   }
   if (!onlyDatabases) {
-    const rows = (await db.notionPage.findMany({
-      where: { tenant, inTrash: false },
-      orderBy: [{ position: 'asc' }, { id: 'asc' }],
-    })) as PageRow[]
-    for (const row of rows.filter((r) => matches(r.titleText))) {
-      found.push({ edited: row.lastEditedTime, item: pageJson(row, version) })
-    }
+    const rows = await db.notionPage.findMany({
+      where: { ...where, ...bounds(false) },
+      orderBy,
+      take,
+    })
+    for (const row of rows) found.push({ row, database: false, item: pageJson(row, version) })
   }
-  const sign = asObject(args.sort).direction === 'ascending' ? 1 : -1
-  found.sort((a, b) => (a.edited === b.edited ? 0 : a.edited < b.edited ? -sign : sign))
-  return found.map((one) => one.item)
+  const sign = ascending ? 1 : -1
+  found.sort((a, b) => {
+    if (a.row.lastEditedTime !== b.row.lastEditedTime)
+      return a.row.lastEditedTime < b.row.lastEditedTime ? -sign : sign
+    if (a.database !== b.database) return a.database ? -1 : 1
+    return (
+      a.row.position - b.row.position || (a.row.id < b.row.id ? -1 : a.row.id > b.row.id ? 1 : 0)
+    )
+  })
+  return found.slice(0, take).map((one) => one.item)
 }
 
 // A filter, a sort and `filter_properties` all name a property by its name or

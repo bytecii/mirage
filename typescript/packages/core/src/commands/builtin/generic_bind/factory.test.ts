@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { materialize } from '../../../io/types.ts'
+
 import { describe, expect, it } from 'vitest'
 import { ContentType, FileStat, FileType, PathSpec } from '../../../types.ts'
 import type { CommandIO } from './adapter.ts'
@@ -70,11 +72,13 @@ describe('makeGenericCommands', () => {
       }
       const paths = name === 'cp' ? [spec('/data'), spec('/copy')] : [spec('/data')]
       const cold = await command.fn(accessor, paths, [], opts)
+      const coldOut = await materialize(cold?.[0] ?? null)
       expect((await index.get('/mnt/data/a.txt')).entry?.size).toBe(3)
       if (name === 'cp') expect(copied).toEqual(['/mnt/copy/a.txt'])
       else {
         store.connects = 0
-        expect(await command.fn(accessor, paths, [], opts)).toEqual(cold)
+        const warm = await command.fn(accessor, paths, [], opts)
+        expect(await materialize(warm?.[0] ?? null)).toEqual(coldOut)
         expect(store.connects).toBe(0)
       }
     },

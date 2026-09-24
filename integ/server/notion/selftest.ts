@@ -464,6 +464,26 @@ async function main(): Promise<void> {
         .sort(),
       ['child_page', 'paragraph'],
     )
+    // Resume mixed page/data-source results at every boundary in both
+    // directions. Small pages exercise the database keyset instead of a
+    // full materialized search on each cursor request (#1202).
+    for (const direction of ['ascending', 'descending']) {
+      const base = { sort: { direction, timestamp: 'last_edited_time' } }
+      const all = results(await request(at, 'POST', '/v1/search', base)).map((row) => row.id!)
+      const paged: JsonValue[] = []
+      let cursor: JsonValue = null
+      do {
+        const page = await request(at, 'POST', '/v1/search', {
+          ...base,
+          page_size: 1,
+          ...(cursor === null ? {} : { start_cursor: cursor }),
+        })
+        paged.push(...results(page).map((row) => row.id!))
+        cursor = page.next_cursor ?? null
+        check('cursor makes progress', paged.length <= all.length)
+      } while (cursor !== null)
+      eq(`keyset pagination preserves ${direction} order`, paged, all)
+    }
     await liveReads(at)
     process.stdout.write(`notion selftest: ${String(checks)} checks passed\n`)
   } finally {

@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { NotionTransport } from './client.ts'
+import { NotionAPIError, type NotionTransport } from './client.ts'
 import { MAX_PAGE_SIZE } from './constants.ts'
 import { cursorItems } from '../api/paginate.ts'
 
@@ -28,14 +28,19 @@ async function paginateTool(
   baseArgs: Record<string, unknown>,
   maxResults?: number,
 ): Promise<Json[]> {
-  const items = await cursorItems(
-    (cursor) =>
-      transport.callTool(
-        toolName,
-        cursor === null ? { ...baseArgs } : { ...baseArgs, start_cursor: cursor },
-      ),
-    maxResults,
-  )
+  const items = await cursorItems(async (cursor) => {
+    const page = await transport.callTool(
+      toolName,
+      cursor === null ? { ...baseArgs } : { ...baseArgs, start_cursor: cursor },
+    )
+    const status = asObject(page.request_status)
+    if (status.type === 'incomplete') {
+      const reason =
+        typeof status.incomplete_reason === 'string' ? status.incomplete_reason : 'unknown'
+      throw new NotionAPIError(`Notion query incomplete: ${reason}`, null, reason)
+    }
+    return page
+  }, maxResults)
   return items.map(asObject)
 }
 

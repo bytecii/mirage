@@ -17,7 +17,7 @@ import { FlagView } from '../../spec/flag_view.ts'
 import { modifiedTs } from '../../../core/generic/find.ts'
 import { isEnoent } from '../../../utils/errors.ts'
 import { failureText } from '../../../errors/classify.ts'
-import { IOResult, type ByteSource } from '../../../io/types.ts'
+import { IOResult } from '../../../io/types.ts'
 import type { FindOptions } from '../../../vfs/base.ts'
 import { FindParseError } from '../../errors.ts'
 import { parseDepth, parseFindExpression, parseMtime, parseSize } from '../find_parse.ts'
@@ -325,7 +325,7 @@ function withRootRow(rows: string[], display: string, root: string[]): string[] 
     .concat(root.length > 0 ? [display] : [])
 }
 
-export async function findGeneric(
+export function findGeneric(
   paths: PathSpec[],
   texts: string[],
   opts: CommandOpts,
@@ -371,7 +371,7 @@ export async function findGeneric(
     ;[minSize, maxSize] = sizeFlag !== null ? parseSize(sizeFlag) : [null, null]
     ;[mtimeMin, mtimeMax] = mtimeFlag !== null ? parseMtime(mtimeFlag) : [null, null]
   } catch (err) {
-    if (err instanceof FindParseError) return invalidFindArg(err.message)
+    if (err instanceof FindParseError) return Promise.resolve(invalidFindArg(err.message))
     throw err
   }
   const nameExclude = extractNotName(texts)
@@ -412,178 +412,195 @@ export async function findGeneric(
           ...(orNames.length > 1 ? { orNames } : {}),
           ...(emptyFlag ? { empty: true } : {}),
         }
-  const matches: string[] = []
-  const missing: string[] = []
-  // One run per start point, in operand order, empty for one that matched
-  // nothing or is missing: the action layer acts on each traversal on its
-  // own and reads a row's start point off its run (-printf's %P and %d).
   const matchedRuns: PathSpec[][] = []
-  for (const root of targets) {
-    const run: PathSpec[] = []
-    matchedRuns.push(run)
-    // `-path` matches the row as printed; stamp the mount prefix and the
-    // operand's spelling onto path nodes before the backend walks
-    // mount-relative keys (#396). Bound per start point: options is
-    // shared by every one of them and must stay unbound.
-    const prefix = mountPrefixOf(root.virtual, root.vfsPath)
-    const tree = bindTree(optionsTree(options), prefix, root.virtual, root.rawPath)
-    const rootOptions: FindOptions = { ...options, tree }
-    const rootIsLink = (opts.ns?.links ?? null)?.statAt(root.virtual) != null
-    // What the start point is decides which walk is even possible, so it
-    // is resolved once, ahead of all of them: a symlink has no backend
-    // inode (linkResults reports it), a non-directory has no subtree, and
-    // nothing at all is GNU's diagnostic. Statted through the dispatcher,
-    // so a start point the router already resolved into another mount
-    // answers there rather than on this command's mount.
-    // The probe asks both channels a backend can answer on, so a directory
-    // that exists only as its children still reports as one and null means
-    // nothing is there (see resolvePathStat). That is what makes the
-    // missing case answerable above every backend rather than only where
-    // one wires a stat.
-    const startStat = opts.statPath
-    let startIsDir = false
-    if (startStat !== undefined && !rootIsLink) {
-      const start = await startStat(root.virtual)
-      if (start === null) {
-        // GNU names each start point it cannot stat, keeps going with the
-        // rest, and exits 1. Reported as the operand was typed, falling
-        // back to the resolved path for a synthesized root.
-        const label = root.rawPath !== '' ? root.rawPath : root.virtual
-        missing.push(`find: '${label}': No such file or directory`)
-        continue
+  const io = new IOResult({ matchedRuns })
+  async function* stream(): AsyncGenerator<Uint8Array> {
+    const missing: string[] = []
+    // One run per start point, in operand order, empty for one that matched
+    // nothing or is missing: the action layer acts on each traversal on its
+    // own and reads a row's start point off its run (-printf's %P and %d).
+    for (const root of targets) {
+      const run: PathSpec[] = []
+      matchedRuns.push(run)
+      // `-path` matches the row as printed; stamp the mount prefix and the
+      // operand's spelling onto path nodes before the backend walks
+      // mount-relative keys (#396). Bound per start point: options is
+      // shared by every one of them and must stay unbound.
+      const prefix = mountPrefixOf(root.virtual, root.vfsPath)
+      const tree = bindTree(optionsTree(options), prefix, root.virtual, root.rawPath)
+      const rootOptions: FindOptions = { ...options, tree }
+      const rootIsLink = (opts.ns?.links ?? null)?.statAt(root.virtual) != null
+      // What the start point is decides which walk is even possible, so it
+      // is resolved once, ahead of all of them: a symlink has no backend
+      // inode (linkResults reports it), a non-directory has no subtree, and
+      // nothing at all is GNU's diagnostic. Statted through the dispatcher,
+      // so a start point the router already resolved into another mount
+      // answers there rather than on this command's mount.
+      // The probe asks both channels a backend can answer on, so a directory
+      // that exists only as its children still reports as one and null means
+      // nothing is there (see resolvePathStat). That is what makes the
+      // missing case answerable above every backend rather than only where
+      // one wires a stat.
+      const startStat = opts.statPath
+      let startIsDir = false
+      if (startStat !== undefined && !rootIsLink) {
+        const start = await startStat(root.virtual)
+        if (start === null) {
+          // GNU names each start point it cannot stat, keeps going with the
+          // rest, and exits 1. Reported as the operand was typed, falling
+          // back to the resolved path for a synthesized root.
+          const label = root.rawPath !== '' ? root.rawPath : root.virtual
+          missing.push(`find: '${label}': No such file or directory`)
+          continue
+        }
+        if (start.type !== FileType.DIRECTORY && root.rawPath.endsWith('/')) {
+          // POSIX reads `x/` as `x/.`, so an operand typed with a trailing
+          // slash has to name a directory; GNU refuses the rest with
+          // ENOTDIR rather than reporting the entry itself.
+          missing.push(`find: '${root.rawPath}': Not a directory`)
+          continue
+        }
+        if (start.type !== FileType.DIRECTORY) {
+          const rows = startPointResults(
+            root,
+            start,
+            rootOptions,
+            optionsTree(rootOptions),
+            expr !== null ? expr.usesEmpty : emptyFlag,
+            effMtimeMin,
+            effMtimeMax,
+          )
+          // The only row possible is the start point itself, so its display
+          // path is the operand, not a key that needs rebasing.
+          if (rows.length > 0) {
+            const display = root.virtual === '/' ? '/' : rstripSlash(root.virtual)
+            const added = respellRaw([display], root.virtual, root.rawPath)
+            yield ENC.encode(added.join('\n') + '\n')
+            for (const r of added) run.push(matchedPath(r, root))
+          }
+          continue
+        }
+        startIsDir = true
       }
-      if (start.type !== FileType.DIRECTORY && root.rawPath.endsWith('/')) {
-        // POSIX reads `x/` as `x/.`, so an operand typed with a trailing
-        // slash has to name a directory; GNU refuses the rest with
-        // ENOTDIR rather than reporting the entry itself.
-        missing.push(`find: '${root.rawPath}': Not a directory`)
-        continue
+      // The directory row is known before any native op fetches descendants.
+      // Yielding it first lets a closed pipe prevent that remote traversal.
+      const usesEmptyEarly = expr !== null ? expr.usesEmpty : emptyFlag
+      let first: string[] = []
+      if (
+        startIsDir &&
+        !usesEmptyEarly &&
+        !(pushMtime && (effMtimeMin !== null || effMtimeMax !== null))
+      ) {
+        const rootRows =
+          rootDirResults(root, rootOptions, optionsTree(rootOptions), null).length > 0
+            ? [rstripSlash(root.virtual) || '/']
+            : []
+        const checked =
+          stat !== undefined
+            ? await applyMtimeFilter(rootRows, effMtimeMin, effMtimeMax, stat, prefix)
+            : rootRows
+        first = respellRaw(checked.filter(pathAllowed), root.virtual, root.rawPath)
+        for (const row of first) yield ENC.encode(row + '\n')
       }
-      if (start.type !== FileType.DIRECTORY) {
-        const rows = startPointResults(
-          root,
-          start,
-          rootOptions,
+      let keys: string[]
+      try {
+        keys = rootIsLink ? [] : await find(root, rootOptions)
+      } catch (err) {
+        // GNU find reports missing roots and moves on; anything else
+        // (rate limits, auth failures) must surface.
+        if (isEnoent(err)) continue
+        throw err
+      }
+      // GNU names a directory it may not open in the walk's own order,
+      // lists the directory itself, and exits 1 like a start point it
+      // could not read. Drained per start point, so the lines stay under
+      // the operand that walked them.
+      for (const shown of respellRaw(unreadable?.() ?? [], root.virtual, root.rawPath)) {
+        missing.push(`find: '${shown}': Permission denied`)
+      }
+      // An entry the walk could not stat is named the same way, and stays
+      // listed where no test needed its stat.
+      for (const [path, err] of unstatted?.() ?? []) {
+        const shown = respellOne(path, root.virtual, root.rawPath)
+        missing.push(`find: '${shown}': ${failureText(err)}`)
+      }
+      const rootKey = rstripSlash(root.mountPath) || '/'
+      const rootMatches: string[] = []
+      for (const key of keys) {
+        const displayPath =
+          root.virtual === '/'
+            ? key
+            : rootKey === '/' && key === '/'
+              ? rstripSlash(root.virtual)
+              : rstripSlash(root.virtual) + key.slice(rootKey === '/' ? 0 : rootKey.length)
+        rootMatches.push(displayPath)
+      }
+      // GNU lists a directory start point itself before descending into it, so
+      // it is named even when it holds nothing. Decided here rather than by
+      // each backend, which read existence off its own listing. A pushed-down
+      // mtime window is the one case left to the backend: this row never
+      // passed through it.
+      const mtimePushed = pushMtime && (effMtimeMin !== null || effMtimeMax !== null)
+      // Emptiness is the one fact this row needs that a caller can decline to
+      // offer (a bespoke wrapper wires no readdir), and that caller's op may
+      // know it. Left alone in that case, so a backend's answer is never
+      // traded for "unknown".
+      const usesEmpty = expr !== null ? expr.usesEmpty : emptyFlag
+      const canProbe = !usesEmpty || dirEmpty !== undefined
+      let rows = rootMatches
+      if (startIsDir && !mtimePushed && canProbe) {
+        let rootEmpty = usesEmpty && dirEmpty !== undefined ? await dirEmpty(root) : null
+        // A symlink is namespace state no backend readdir can see, so a
+        // directory holding only one would read as empty. GNU counts the
+        // link as an entry.
+        if (rootEmpty === true) rootEmpty = !hasLinkChildren(opts.ns?.links, root.virtual)
+        rows = withRootRow(
+          rootMatches,
+          root.virtual === '/' ? '/' : rstripSlash(root.virtual),
+          rootDirResults(root, rootOptions, optionsTree(rootOptions), rootEmpty),
+        )
+      }
+      const filtered =
+        stat !== undefined
+          ? await applyMtimeFilter(rows, effMtimeMin, effMtimeMax, stat, prefix)
+          : rows
+      const rootPath = root.virtual === '/' ? '/' : rstripSlash(root.virtual)
+      const withLinks = filtered.concat(
+        await linkResults(
+          opts.ns?.links ?? null,
+          rootPath,
+          prefix,
+          stripSlash(rootKey),
           optionsTree(rootOptions),
-          expr !== null ? expr.usesEmpty : emptyFlag,
+          expr !== null ? expr.minDepth : minDepth,
+          expr !== null ? expr.maxDepth : maxDepth,
+          expr !== null ? expr.minSize : minSize,
+          expr !== null ? expr.maxSize : maxSize,
           effMtimeMin,
           effMtimeMax,
-        )
-        // The only row possible is the start point itself, so its display
-        // path is the operand, not a key that needs rebasing.
-        if (rows.length > 0) {
-          const display = root.virtual === '/' ? '/' : rstripSlash(root.virtual)
-          const added = respellRaw([display], root.virtual, root.rawPath)
-          matches.push(...added)
-          for (const r of added) run.push(matchedPath(r, root))
-        }
-        continue
-      }
-      startIsDir = true
-    }
-    let keys: string[]
-    try {
-      keys = rootIsLink ? [] : await find(root, rootOptions)
-    } catch (err) {
-      // GNU find reports missing roots and moves on; anything else
-      // (rate limits, auth failures) must surface.
-      if (isEnoent(err)) continue
-      throw err
-    }
-    // GNU names a directory it may not open in the walk's own order,
-    // lists the directory itself, and exits 1 like a start point it
-    // could not read. Drained per start point, so the lines stay under
-    // the operand that walked them.
-    for (const shown of respellRaw(unreadable?.() ?? [], root.virtual, root.rawPath)) {
-      missing.push(`find: '${shown}': Permission denied`)
-    }
-    // An entry the walk could not stat is named the same way, and stays
-    // listed where no test needed its stat.
-    for (const [path, err] of unstatted?.() ?? []) {
-      const shown = respellOne(path, root.virtual, root.rawPath)
-      missing.push(`find: '${shown}': ${failureText(err)}`)
-    }
-    const rootKey = rstripSlash(root.mountPath) || '/'
-    const rootMatches: string[] = []
-    for (const key of keys) {
-      const displayPath =
-        root.virtual === '/'
-          ? key
-          : rootKey === '/' && key === '/'
-            ? rstripSlash(root.virtual)
-            : rstripSlash(root.virtual) + key.slice(rootKey === '/' ? 0 : rootKey.length)
-      rootMatches.push(displayPath)
-    }
-    // GNU lists a directory start point itself before descending into it, so
-    // it is named even when it holds nothing. Decided here rather than by
-    // each backend, which read existence off its own listing. A pushed-down
-    // mtime window is the one case left to the backend: this row never
-    // passed through it.
-    const mtimePushed = pushMtime && (effMtimeMin !== null || effMtimeMax !== null)
-    // Emptiness is the one fact this row needs that a caller can decline to
-    // offer (a bespoke wrapper wires no readdir), and that caller's op may
-    // know it. Left alone in that case, so a backend's answer is never
-    // traded for "unknown".
-    const usesEmpty = expr !== null ? expr.usesEmpty : emptyFlag
-    const canProbe = !usesEmpty || dirEmpty !== undefined
-    let rows = rootMatches
-    if (startIsDir && !mtimePushed && canProbe) {
-      let rootEmpty = usesEmpty && dirEmpty !== undefined ? await dirEmpty(root) : null
-      // A symlink is namespace state no backend readdir can see, so a
-      // directory holding only one would read as empty. GNU counts the
-      // link as an entry.
-      if (rootEmpty === true) rootEmpty = !hasLinkChildren(opts.ns?.links, root.virtual)
-      rows = withRootRow(
-        rootMatches,
-        root.virtual === '/' ? '/' : rstripSlash(root.virtual),
-        rootDirResults(root, rootOptions, optionsTree(rootOptions), rootEmpty),
+          fl.asBool('L'),
+        ),
       )
+      withLinks.sort(compareCodePoints)
+      // What -prune reached is known only once every row has been judged: a
+      // flat listing meets a child before its parent, so the ledger the tree
+      // kept is applied here, after the backend and the link merge.
+      if (stat !== undefined) {
+        await settlePendingPrunes(tree, (key) => rowMtime(stat, prefix, key))
+      }
+      const unpruned = dropPruned(withLinks, tree, prefix)
+      // Hidden rows drop here, above the native-op/walk fork and after
+      // the link merge, so a mount's visibility behavior cannot depend
+      // on whether its backend ships a native find op.
+      const visibleRows = unpruned.filter((row) => pathAllowed(row))
+      const added = respellRaw(visibleRows, root.virtual, root.rawPath)
+      for (const row of added) if (!first.includes(row)) yield ENC.encode(row + '\n')
+      for (const r of added) run.push(matchedPath(r, root))
     }
-    const filtered =
-      stat !== undefined
-        ? await applyMtimeFilter(rows, effMtimeMin, effMtimeMax, stat, prefix)
-        : rows
-    const rootPath = root.virtual === '/' ? '/' : rstripSlash(root.virtual)
-    const withLinks = filtered.concat(
-      await linkResults(
-        opts.ns?.links ?? null,
-        rootPath,
-        prefix,
-        stripSlash(rootKey),
-        optionsTree(rootOptions),
-        expr !== null ? expr.minDepth : minDepth,
-        expr !== null ? expr.maxDepth : maxDepth,
-        expr !== null ? expr.minSize : minSize,
-        expr !== null ? expr.maxSize : maxSize,
-        effMtimeMin,
-        effMtimeMax,
-        fl.asBool('L'),
-      ),
-    )
-    withLinks.sort(compareCodePoints)
-    // What -prune reached is known only once every row has been judged: a
-    // flat listing meets a child before its parent, so the ledger the tree
-    // kept is applied here, after the backend and the link merge.
-    if (stat !== undefined) {
-      await settlePendingPrunes(tree, (key) => rowMtime(stat, prefix, key))
+    if (missing.length > 0) {
+      io.stderr = ENC.encode(missing.join('\n') + '\n')
+      io.exitCode = 1
     }
-    const unpruned = dropPruned(withLinks, tree, prefix)
-    // Hidden rows drop here, above the native-op/walk fork and after
-    // the link merge, so a mount's visibility behavior cannot depend
-    // on whether its backend ships a native find op.
-    const visibleRows = unpruned.filter((row) => pathAllowed(row))
-    const added = respellRaw(visibleRows, root.virtual, root.rawPath)
-    matches.push(...added)
-    for (const r of added) run.push(matchedPath(r, root))
   }
-  // Start points print in operand order (GNU); each root's rows were
-  // sorted above, and a global sort here would interleave them.
-  const out: ByteSource = ENC.encode(matches.length ? matches.join('\n') + '\n' : '')
-  if (missing.length > 0) {
-    return [
-      out,
-      new IOResult({ matchedRuns, stderr: ENC.encode(missing.join('\n') + '\n'), exitCode: 1 }),
-    ]
-  }
-  return [out, new IOResult({ matchedRuns })]
+  return Promise.resolve([stream(), io])
 }

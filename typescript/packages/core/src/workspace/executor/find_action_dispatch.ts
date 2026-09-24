@@ -557,6 +557,7 @@ export async function applyFindActions(
   const signal = doors.signal
   const once =
     doors.stdin === undefined || doors.stdin === null ? null : new SharedStdin(doors.stdin)
+  await materialize(stdout)
   if (matchedRuns === null)
     return [null, enc.encode('find: actions require structured matches\n'), 1]
   // The runs arrive one per start point, in operand order, so each row

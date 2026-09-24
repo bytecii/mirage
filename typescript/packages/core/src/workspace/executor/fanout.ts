@@ -39,6 +39,9 @@ import { inMtimeWindow } from '../../utils/dates.ts'
 import { modifiedTs } from '../../core/generic/find.ts'
 import { mergeDuBlocks } from '../../commands/builtin/generic/crossmount/fanout/du.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
+import { filenameMode } from '../../commands/builtin/generic/grep.ts'
+import { FlagView } from '../../commands/spec/flag_view.ts'
+import { specOf } from '../../commands/spec/builtins.ts'
 
 type Result = [ByteSource | null, IOResult, ExecutionNode]
 
@@ -483,9 +486,12 @@ export async function fanOutTraversal(
       const adjusted = adjustDepthFlags(flags, targetPath, mount.prefix)
       if (adjusted === null || prunedAway(mountRoot, tree)) continue
       subFlags = adjusted
-      if (cmdName === 'rg') {
+      if (
+        cmdName === 'rg' ||
+        (cmdName === 'grep' && filenameMode(new FlagView(subFlags, specOf('grep'))) === null)
+      ) {
         // A tree search labels every hit; a descendant mount whose root
-        // is a single file would otherwise drop the filename (rg labels
+        // is a single file would otherwise drop the filename (grep/rg label
         // only multi-file or -H runs).
         subFlags = { ...subFlags, H: true }
       }
@@ -531,6 +537,7 @@ export async function fanOutTraversal(
       continue
     }
     if (cmdName === 'find' && io.matchedRuns !== null) {
+      await materialize(stdout)
       if (mount === primaryMount) {
         // One run per operand, minus the rows a descendant mount
         // answers for.
