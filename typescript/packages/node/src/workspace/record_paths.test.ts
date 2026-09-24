@@ -209,10 +209,10 @@ describe('record paths name the virtual path (node backends)', () => {
   })
 })
 
-// SCRIPT plus reads and writes of a mount-root key, and a stdin split, which
-// has no operand to name its outputs from. A record made with the
-// mount-relative key `/k2.txt` resolves to `/`, not `/m`, so every record
-// must resolve to the mount whose id it carries.
+// SCRIPT plus reads and writes of a mount-root key, and a stdin split and
+// csplit, which have no operand to name their outputs from. A record made
+// with the mount-relative key `/k2.txt` resolves to `/`, not `/m`, so every
+// record must resolve to the mount whose id it carries.
 const SWEEP = [
   ...SCRIPT,
   'head -c 1 /m/k2.txt',
@@ -227,6 +227,7 @@ const SWEEP = [
   'touch /m/k3.txt',
   'gzip -k /m/k2.txt',
   "cd /m && printf 'a\\nb\\n' | split -l 1",
+  "cd /m && printf 'a\\nb\\n' | csplit",
 ]
 
 interface Swept {
