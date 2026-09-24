@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { isDeepStrictEqual } from 'node:util'
 import type { ChildProcessByStdio } from 'node:child_process'
@@ -1260,6 +1261,16 @@ async function main(): Promise<void> {
         'a failed bulk write restores the entire previous workbook',
         isDeepStrictEqual(rolledBack.sheets, restored.sheets),
       )
+      await bulk.runtime.reset({ tenants: ['t2'], fixture: 'v1' })
+      await bulk.runtime.reset({ tenants: ['t1'], fixture: 'v1' })
+      check(
+        'reset clears a large workbook through the shared kit',
+        (await db.sheetCell.count({ where: { tenant: 't1' } })) === 0,
+      )
+      check(
+        'reset retains another tenant',
+        (await db.meta.count({ where: { tenant: 't2' } })) === 1,
+      )
     } finally {
       await bulk.close()
     }
@@ -1295,4 +1306,48 @@ async function main(): Promise<void> {
   }
 }
 
+async function testCredentialRuns(): Promise<void> {
+  const home = await start({
+    ...gwsFake,
+    config: { ...gwsFake.config, runTokenPattern: '^draw:(?<run>[^:]+):(?<tenant>[^:]+)$' },
+  })
+  try {
+    for (const run of ['a', 'b']) await home.runtime.reset({ run, tenants: ['ws'] })
+    const exchange = await fetch(`${home.endpoint}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: 'id',
+        client_secret: 'secret',
+        refresh_token: 'draw:a:ws',
+      }),
+    })
+    assert.equal(exchange.status, 200)
+    const { access_token: token } = (await exchange.json()) as { access_token: string }
+    assert.equal(token, 'draw:a:ws')
+    const made = await fetch(`${home.endpoint}/drive/v3/files`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'only-in-a', mimeType: 'text/plain' }),
+    })
+    assert.equal(made.status, 200)
+    for (const run of ['a', 'b']) {
+      const files = (await (
+        await fetch(`${home.endpoint}/drive/v3/files`, {
+          headers: { Authorization: `Bearer draw:${run}:ws` },
+        })
+      ).json()) as { files: { name: string }[] }
+      assert.equal(
+        files.files.some((file) => file.name === 'only-in-a'),
+        run === 'a',
+      )
+    }
+    process.stdout.write('gws credential run regressions passed\n')
+  } finally {
+    await home.close()
+  }
+}
+
 await main()
+await testCredentialRuns()

@@ -71,6 +71,7 @@ export {
   TENANT_QUERY,
   checkName,
   idWhere,
+  resolveIdentity,
   resolveRun,
   resolveTenant,
   runId,
