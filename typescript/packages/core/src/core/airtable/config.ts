@@ -21,10 +21,6 @@ import {
   secretStr,
 } from '../../vfs/secrets.ts'
 
-export const DEFAULT_BASE_URL = 'https://api.airtable.com/v0'
-export const DEFAULT_MAX_READ_RECORDS = 10_000
-export const DEFAULT_REQUESTS_PER_SECOND = 5
-
 /**
  * Credentials and bounds for one Airtable account. `token` is a personal
  * access token (or an OAuth access token) sent as `Authorization: Bearer`;

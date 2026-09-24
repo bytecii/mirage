@@ -13,8 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { makeIdName } from '../../utils/naming.ts'
-
-export const VIEW_SUFFIX = '.jsonl'
+import { VIEW_SUFFIX } from './constants.ts'
 
 function idOf(entity: Record<string, unknown>): string {
   return String(entity.id)

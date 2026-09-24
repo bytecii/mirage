@@ -13,7 +13,17 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { normalizeBase, normalizeRecord, normalizeTable, recordsJsonl } from './normalize.ts'
+import {
+  asRow,
+  asRows,
+  deletionsJsonl,
+  normalizeBase,
+  normalizeBaseSummary,
+  normalizeComment,
+  normalizeRecord,
+  normalizeTable,
+  recordsJsonl,
+} from './normalize.ts'
 
 const DEC = new TextDecoder()
 
@@ -84,5 +94,53 @@ describe('airtable normalize', () => {
       'rec1',
     ])
     expect(recordsJsonl([]).byteLength).toBe(0)
+  })
+
+  it('summarizes a base as base.json without its tables', () => {
+    const base = { id: 'appA', name: 'A', permissionLevel: 'edit' }
+    expect(normalizeBaseSummary(base)).toEqual({
+      base_id: 'appA',
+      base_name: 'A',
+      permission_level: 'edit',
+    })
+    expect(normalizeBase(base, [])).toEqual({ ...normalizeBaseSummary(base), tables: [] })
+  })
+
+  it('flattens a comment author', () => {
+    expect(
+      normalizeComment({
+        id: 'comA',
+        author: { id: 'usrA', email: 'a@example.com', name: 'A' },
+        text: 'hi',
+        createdTime: '2026-01-01T00:00:00.000Z',
+        lastUpdatedTime: null,
+        mentioned: {},
+      }),
+    ).toEqual({
+      comment_id: 'comA',
+      author_id: 'usrA',
+      author_email: 'a@example.com',
+      author_name: 'A',
+      text: 'hi',
+      created_time: '2026-01-01T00:00:00.000Z',
+      last_updated_time: null,
+    })
+    expect(normalizeComment({ id: 'comB' }).author_id).toBeNull()
+  })
+
+  it('renders deletions one line each', () => {
+    expect(DEC.decode(deletionsJsonl([{ id: 'rec1', deleted: true }]))).toBe(
+      '{"record_id":"rec1","deleted":true}\n',
+    )
+    expect(deletionsJsonl([]).byteLength).toBe(0)
+  })
+
+  it('counts only json objects as rows', () => {
+    expect(asRow({ a: 1 })).toEqual({ a: 1 })
+    expect(asRow([{ a: 1 }])).toEqual({})
+    expect(asRow(null)).toEqual({})
+    expect(asRows([{ a: 1 }, 'x', null, [2], { b: 2 }])).toEqual([{ a: 1 }, { b: 2 }])
+    expect(asRows({ a: 1 })).toEqual([])
+    expect(asRows(undefined)).toEqual([])
   })
 })

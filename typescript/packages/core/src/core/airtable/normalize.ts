@@ -14,24 +14,40 @@
 
 import { jsonBytes, jsonlBytes } from '../render/json.ts'
 
-type Row = Record<string, unknown>
+export type Row = Record<string, unknown>
 
-function asRows(value: unknown): Row[] {
-  return Array.isArray(value)
-    ? value.filter((v): v is Row => typeof v === 'object' && v !== null && !Array.isArray(v))
-    : []
+/** Whether a decoded JSON value is an object. */
+export function isRow(value: unknown): value is Row {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** A decoded JSON object, or an empty one for anything else. */
+export function asRow(value: unknown): Row {
+  return isRow(value) ? value : {}
+}
+
+/** The objects of a decoded JSON array; anything else holds none. */
+export function asRows(value: unknown): Row[] {
+  return Array.isArray(value) ? value.filter(isRow) : []
 }
 
 function field(row: Row, key: string): unknown {
   return row[key] ?? null
 }
 
-/** base.json: the base and the tables it holds. */
-export function normalizeBase(base: Row, tables: readonly Row[]): Row {
+/** One base as the listing names it: id, name and permission level. */
+export function normalizeBaseSummary(base: Row): Row {
   return {
     base_id: field(base, 'id'),
     base_name: field(base, 'name'),
     permission_level: field(base, 'permissionLevel'),
+  }
+}
+
+/** base.json: the base and the tables it holds. */
+export function normalizeBase(base: Row, tables: readonly Row[]): Row {
+  return {
+    ...normalizeBaseSummary(base),
     tables: tables.map((table) => ({
       table_id: field(table, 'id'),
       table_name: field(table, 'name'),
@@ -80,12 +96,30 @@ export function normalizeTable(table: Row, baseId: string): Row {
  * API's own, which expires two hours after it was fetched.
  */
 export function normalizeRecord(record: Row): Row {
-  const cells = record.fields
   return {
     record_id: field(record, 'id'),
     created_time: field(record, 'createdTime'),
-    fields: typeof cells === 'object' && cells !== null && !Array.isArray(cells) ? cells : {},
+    fields: asRow(record.fields),
   }
+}
+
+/** One comment on a record, with its author flattened. */
+export function normalizeComment(comment: Row): Row {
+  const who = asRow(comment.author)
+  return {
+    comment_id: field(comment, 'id'),
+    author_id: field(who, 'id'),
+    author_email: field(who, 'email'),
+    author_name: field(who, 'name'),
+    text: field(comment, 'text'),
+    created_time: field(comment, 'createdTime'),
+    last_updated_time: field(comment, 'lastUpdatedTime'),
+  }
+}
+
+/** One deleted record, as the delete answer names it. */
+export function normalizeDeletion(row: Row): Row {
+  return { record_id: field(row, 'id'), deleted: field(row, 'deleted') }
 }
 
 /** Render a .json leaf. */
@@ -96,4 +130,9 @@ export function toJsonBytes(value: unknown): Uint8Array {
 /** Render records one per line, in the order they were listed. */
 export function recordsJsonl(listed: readonly Row[]): Uint8Array {
   return jsonlBytes(listed.map(normalizeRecord))
+}
+
+/** Render deleted records one per line, in the order they were deleted. */
+export function deletionsJsonl(rows: readonly Row[]): Uint8Array {
+  return jsonlBytes(rows.map(normalizeDeletion))
 }

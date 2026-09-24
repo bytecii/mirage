@@ -27,6 +27,7 @@ import {
 import { OPFSVFS, Workspace as BrowserWorkspace } from '@struktoai/mirage-browser'
 import type { ReadSpec } from '@struktoai/mirage-node'
 import {
+  AIRTABLE,
   AirtableVFS,
   AliyunVFS,
   BackblazeVFS,
@@ -967,6 +968,9 @@ async function openSharePoint(target: Target, options?: OpenOptions): Promise<Op
 // tokens are data in that world rather than tenants, so it is the same value on
 // both hosts; the run in the base URL is what keeps them apart.
 const AIRTABLE_TOKEN = 'patIntegFullAccess.fake'
+// The bases the airtable CLI install is scoped to: the fixture's Roadmap and
+// Ops bases, leaving its read-only Archive outside.
+const AIRTABLE_CLI_BASES = ['appRoadmapBase001', 'appOpsFinance0002']
 
 async function openAirtable(target: Target): Promise<Open> {
   let base = process.env.AIRTABLE_URL ?? ''
@@ -1000,6 +1004,17 @@ async function openAirtable(target: Target): Promise<Open> {
     mounts[mount.path] = mount.mode === 'read' ? [vfs, MountMode.READ] : vfs
   }
   const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  // The same bounds as the mount, scoped to two of the fixture's three bases
+  // so the battery can show a refused one (the Archive).
+  if (target.clis?.includes('airtable') === true) {
+    ws.registerCli('airtable', AIRTABLE, {
+      token: AIRTABLE_TOKEN,
+      base_url: `${scoped}/v0`,
+      base_ids: AIRTABLE_CLI_BASES,
+      max_read_records: 20,
+      requests_per_second: 50,
+    })
+  }
   return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
 }
 

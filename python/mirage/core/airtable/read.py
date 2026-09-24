@@ -15,8 +15,8 @@
 from mirage.accessor.airtable import AirtableAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.cache.index.ram import RAMIndexCacheStore
-from mirage.core.airtable.client import (AirtableAPIError, list_bases,
-                                         list_records, list_tables)
+from mirage.core.airtable.client import list_bases, list_records, list_tables
+from mirage.core.airtable.errors import AirtableAPIError
 from mirage.core.airtable.normalize import (normalize_base, normalize_table,
                                             records_jsonl, to_json_bytes)
 from mirage.core.airtable.readdir import readdir, schema_table

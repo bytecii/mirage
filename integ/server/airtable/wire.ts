@@ -95,8 +95,24 @@ export function badBody(): Reply {
   return apiError(422, 'INVALID_REQUEST_BODY', 'Could not parse request body')
 }
 
-export function recordNotFound(): Reply {
-  return apiError(404, 'MODEL_ID_NOT_FOUND', 'Record not found')
+// A batch update or replace naming a record the table does not hold. A
+// single-record route answers modelNotFound instead, as live Airtable does.
+export function rowDoesNotExist(id: string): Reply {
+  return apiError(422, 'ROW_DOES_NOT_EXIST', `Record ID ${id} does not exist in this table`)
+}
+
+// A batch delete naming a record the table does not hold: the one NOT_FOUND
+// that carries a message.
+export function deleteNotFound(id: string): Reply {
+  return apiError(404, 'NOT_FOUND', `Could not find a record with ID "${id}".`)
+}
+
+// An edit or delete of a comment the record does not hold. The edit names the
+// comment; the delete answers the type alone, with no message.
+export function rowCommentDoesNotExist(id: string | null): Reply {
+  const error: JsonObject = { type: 'ROW_COMMENT_DOES_NOT_EXIST' }
+  if (id !== null) error.message = `Row comment with id ${id} does not exist`
+  return json(422, { error })
 }
 
 export function commentNotFound(): Reply {
@@ -127,7 +143,7 @@ export function badChoice(value: string): Reply {
   return apiError(
     422,
     'INVALID_MULTIPLE_CHOICE_OPTIONS',
-    `Insufficient permissions to create new select option "${value}"`,
+    `Insufficient permissions to create new select option "${JSON.stringify(value)}"`,
   )
 }
 

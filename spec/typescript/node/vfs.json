@@ -3,7 +3,7 @@
     "airtable": {
       "caches_reads": false,
       "has_prompt": true,
-      "has_write_prompt": false,
+      "has_write_prompt": true,
       "index_ttl": 600,
       "read_revalidatable": false,
       "sizes_always_known": false,

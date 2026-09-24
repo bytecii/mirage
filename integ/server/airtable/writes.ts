@@ -26,16 +26,18 @@ import {
   badRecords,
   bodyBool,
   bodyOf,
+  deleteNotFound,
   guard,
   invalidRequest,
   isId,
   isListKey,
   isObject,
   listParam,
+  modelNotFound,
   ok,
   onlyKeys,
-  recordNotFound,
   refuse,
+  rowDoesNotExist,
   unknownField,
 } from './wire.ts'
 import type { JsonObject } from './wire.ts'
@@ -317,7 +319,7 @@ async function updateMany(ctx: Ctx<C>, destructive: boolean): Promise<Reply> {
   const steps: Array<{ rec: RecordRow | null; next: JsonObject }> = specs.map((spec) => {
     let rec: RecordRow | null
     if (spec.id !== undefined) {
-      rec = recordIn(b.table, spec.id) ?? refuse(recordNotFound())
+      rec = recordIn(b.table, spec.id) ?? refuse(rowDoesNotExist(spec.id))
     } else {
       const found = matchesOf(b, merge, spec.fields)
       if (found.length > 1) {
@@ -371,7 +373,7 @@ async function updateOne(ctx: Ctx<C>, destructive: boolean): Promise<Reply> {
   const byId = bodyBool(body.returnFieldsByFieldId)
   const fields = isObject(body.fields) ? body.fields : refuse(invalidRequest())
   const b = await openBatch(ctx, who, typecast)
-  const rec = recordIn(b.table, ctx.params.record ?? '') ?? refuse(recordNotFound())
+  const rec = recordIn(b.table, ctx.params.record ?? '') ?? refuse(modelNotFound())
   const next = prepare(b, rec.cells, fields, destructive)
   commit(b, rec, next, ctx.clock.nowIso())
   await saveWorld(ctx.db, b.world)
@@ -412,7 +414,7 @@ export const deleteRecords = guard(async (ctx: Ctx<C>): Promise<Reply> => {
     return refuse(badRecords('delete'))
   }
   const b = await openBatch(ctx, who, false)
-  const recs = ids.map((id) => recordIn(b.table, id) ?? refuse(recordNotFound()))
+  const recs = ids.map((id) => recordIn(b.table, id) ?? refuse(deleteNotFound(id)))
   remove(b, recs, ctx.clock.nowIso())
   await saveWorld(ctx.db, b.world)
   return ok({ records: ids.map((id) => ({ id, deleted: true })) })
@@ -426,7 +428,7 @@ export const deleteRecord = guard(async (ctx: Ctx<C>): Promise<Reply> => {
   const who = await authenticate(ctx)
   onlyQuery(ctx, () => false)
   const b = await openBatch(ctx, who, false)
-  const rec = recordIn(b.table, ctx.params.record ?? '') ?? refuse(recordNotFound())
+  const rec = recordIn(b.table, ctx.params.record ?? '') ?? refuse(modelNotFound())
   remove(b, [rec], ctx.clock.nowIso())
   await saveWorld(ctx.db, b.world)
   return ok({ id: rec.id, deleted: true })

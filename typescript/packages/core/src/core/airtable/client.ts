@@ -16,70 +16,13 @@ import type { AirtableAccessor } from '../../accessor/airtable.ts'
 import type { ErrorOf } from '../../types.ts'
 import { apiRequest, type RetryPolicy } from '../api/client.ts'
 import { cursorItems, offsetCursor, type PageShape } from '../api/paginate.ts'
-
-export const PAGE_SIZE = 100
-
-// Metadata calls (the base listing) are metered per account rather than per
-// base; they pace under their own key.
-export const META_KEY = 'meta'
-
-// A view is looked up by id when the value is shaped like one, and by name
-// otherwise; each miss has its own type.
-const NOT_FOUND_TYPES: ReadonlySet<string> = new Set([
-  'NOT_FOUND',
-  'MODEL_ID_NOT_FOUND',
-  'INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND',
-  'VIEW_ID_NOT_FOUND',
-  'VIEW_NAME_NOT_FOUND',
-])
+import { MAX_BATCH, META_KEY, PAGE_SIZE } from './constants.ts'
+import { AirtableApiError, errorParts } from './errors.ts'
+import { asRow, asRows, type Row } from './normalize.ts'
 
 export const BASES: PageShape = { itemsKey: 'bases', nextCursor: offsetCursor }
 export const RECORDS: PageShape = { itemsKey: 'records', nextCursor: offsetCursor }
-
-/** A >= 400 answer from the Airtable API, with its status and error type. */
-export class AirtableApiError extends Error {
-  readonly status: number | null
-  readonly errorType: string | null
-
-  constructor(message: string, status: number | null = null, errorType: string | null = null) {
-    super(message)
-    this.name = 'AirtableApiError'
-    this.status = status
-    this.errorType = errorType
-  }
-
-  /**
-   * Whether the call named something the token cannot see. Airtable
-   * answers a well-formed id it cannot resolve with a 403, not a 404: the
-   * permission and the existence checks share one answer so a token cannot
-   * probe for bases it was not granted.
-   */
-  get notFound(): boolean {
-    return this.status === 404 || (this.errorType !== null && NOT_FOUND_TYPES.has(this.errorType))
-  }
-}
-
-/**
- * Airtable's error type and message, from any of its body shapes:
- * `{"error": {"type", "message"}}`, the same object without a message, or a
- * bare `{"error": "NOT_FOUND"}` for an unmatched route or a malformed id.
- */
-export function errorParts(text: string): [string | null, string | null] {
-  let data: unknown
-  try {
-    data = JSON.parse(text) as unknown
-  } catch {
-    return [null, null]
-  }
-  if (typeof data !== 'object' || data === null || Array.isArray(data)) return [null, null]
-  const error = (data as { error?: unknown }).error
-  if (typeof error === 'string') return [error, null]
-  if (typeof error === 'object' && error !== null) {
-    const { type, message } = error as { type?: unknown; message?: unknown }
-    return [typeof type === 'string' ? type : null, typeof message === 'string' ? message : null]
-  }
-  return [null, null]
-}
+export const COMMENTS: PageShape = { itemsKey: 'comments', nextCursor: offsetCursor }
 
 function errorOf(call: string): ErrorOf {
   return (response: Response, text: string): Error => {
@@ -112,90 +55,231 @@ export const RETRY: RetryPolicy = {
   minDelays: { 429: 30 },
 }
 
-async function get(
+// A write retries only the 429, which Airtable answers before it applies
+// anything. A 502 or 503 may come back after the records landed, and a
+// retried create would make them twice.
+export const WRITE_RETRY: RetryPolicy = { ...RETRY, statuses: new Set([429]) }
+
+interface RequestOptions {
+  params?: Record<string, string | number> | undefined
+  query?: string
+  json?: unknown
+  retry?: RetryPolicy
+}
+
+async function request(
+  accessor: AirtableAccessor,
+  method: string,
+  path: string,
+  paceKey: string,
+  options: RequestOptions = {},
+): Promise<unknown> {
+  await accessor.limiter.acquire(paceKey)
+  const url = `${accessor.baseUrl}${path}`
+  const query = options.query ?? ''
+  const headers: Record<string, string> = { Authorization: `Bearer ${accessor.config.token}` }
+  if (options.json !== undefined) headers['Content-Type'] = 'application/json'
+  return apiRequest(method, query === '' ? url : `${url}?${query}`, {
+    errorOf: errorOf(`${method} ${path}`),
+    headers,
+    params: options.params,
+    json: options.json,
+    retry: options.retry ?? RETRY,
+    fetchFn: accessor.fetchFn,
+  })
+}
+
+function get(
   accessor: AirtableAccessor,
   path: string,
   params: Record<string, string | number> | undefined,
   paceKey: string,
 ): Promise<unknown> {
-  await accessor.limiter.acquire(paceKey)
-  return apiRequest('GET', `${accessor.baseUrl}${path}`, {
-    errorOf: errorOf(`GET ${path}`),
-    headers: { Authorization: `Bearer ${accessor.config.token}` },
-    params,
-    retry: RETRY,
-    fetchFn: accessor.fetchFn,
-  })
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {}
-}
-
-function records(values: readonly unknown[]): Record<string, unknown>[] {
-  return values.filter(
-    (v): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v),
-  )
+  return request(accessor, 'GET', path, paceKey, { params })
 }
 
 const segment = encodeURIComponent
 
+function tablePath(baseId: string, table: string): string {
+  return `/${segment(baseId)}/${segment(table)}`
+}
+
+function recordPath(baseId: string, table: string, recordId: string): string {
+  return `${tablePath(baseId, table)}/${segment(recordId)}`
+}
+
+function batches<T>(items: readonly T[]): T[][] {
+  const out: T[][] = []
+  for (let start = 0; start < items.length; start += MAX_BATCH) {
+    out.push(items.slice(start, start + MAX_BATCH))
+  }
+  return out
+}
+
+async function page(
+  accessor: AirtableAccessor,
+  paceKey: string,
+  path: string,
+  params: Record<string, string | number>,
+  cursor: string | null,
+): Promise<Row> {
+  return asRow(
+    await get(accessor, path, cursor !== null ? { ...params, offset: cursor } : params, paceKey),
+  )
+}
+
 /** Every base the token reaches, narrowed to the configured `baseIds`. */
-export async function listBases(accessor: AirtableAccessor): Promise<Record<string, unknown>[]> {
+export async function listBases(accessor: AirtableAccessor): Promise<Row[]> {
   const bases = await cursorItems(
-    async (cursor) =>
-      asRecord(
-        await get(
-          accessor,
-          '/meta/bases',
-          cursor !== null ? { offset: cursor } : undefined,
-          META_KEY,
-        ),
-      ),
+    (cursor) => page(accessor, META_KEY, '/meta/bases', {}, cursor),
     undefined,
     BASES,
   )
   const wanted = accessor.baseIds
-  return records(bases).filter((base) => wanted === null || wanted.includes(String(base.id)))
+  return asRows(bases).filter((base) => wanted === null || wanted.includes(String(base.id)))
 }
 
 /** A base's schema: its tables with their fields and views. */
-export async function listTables(
-  accessor: AirtableAccessor,
-  baseId: string,
-): Promise<Record<string, unknown>[]> {
-  const data = asRecord(
-    await get(accessor, `/meta/bases/${segment(baseId)}/tables`, undefined, baseId),
-  )
-  return Array.isArray(data.tables) ? records(data.tables as unknown[]) : []
+export async function listTables(accessor: AirtableAccessor, baseId: string): Promise<Row[]> {
+  const data = await get(accessor, `/meta/bases/${segment(baseId)}/tables`, undefined, baseId)
+  return asRows(asRow(data).tables)
 }
 
 /**
  * A table's records in the API's order, or a view's. Without a view
  * Airtable calls the order arbitrary; it is the order the table hands out,
  * stable between calls, and the only one a `maxRecords` prefix agrees with.
- * `maxRecords` stops after that many records, both on the wire and in the
- * collector.
+ * The table and the view are named by id or by name; `formula` is
+ * `filterByFormula`, listing only the records it is true for; `maxRecords`
+ * stops after that many records, both on the wire and in the collector.
  */
 export async function listRecords(
   accessor: AirtableAccessor,
   baseId: string,
   tableId: string,
-  options: { view?: string; maxRecords?: number } = {},
-): Promise<Record<string, unknown>[]> {
+  options: { view?: string; formula?: string; maxRecords?: number } = {},
+): Promise<Row[]> {
   const params: Record<string, string | number> = { pageSize: PAGE_SIZE }
   if (options.view !== undefined) params.view = options.view
+  if (options.formula !== undefined) params.filterByFormula = options.formula
   if (options.maxRecords !== undefined) params.maxRecords = options.maxRecords
-  const path = `/${segment(baseId)}/${segment(tableId)}`
+  const path = tablePath(baseId, tableId)
   const found = await cursorItems(
-    async (cursor) =>
-      asRecord(
-        await get(accessor, path, cursor !== null ? { ...params, offset: cursor } : params, baseId),
-      ),
+    (cursor) => page(accessor, baseId, path, params, cursor),
     options.maxRecords,
     RECORDS,
   )
-  return records(found)
+  return asRows(found)
+}
+
+/** One record by id; the table is named by id or by name. */
+export async function getRecord(
+  accessor: AirtableAccessor,
+  baseId: string,
+  tableId: string,
+  recordId: string,
+): Promise<Row> {
+  return asRow(await get(accessor, recordPath(baseId, tableId, recordId), undefined, baseId))
+}
+
+async function* write(
+  accessor: AirtableAccessor,
+  method: string,
+  baseId: string,
+  tableId: string,
+  rows: readonly Row[],
+  typecast: boolean | undefined,
+): AsyncGenerator<Row[]> {
+  const path = tablePath(baseId, tableId)
+  for (const batch of batches(rows)) {
+    const body: Row = { records: batch }
+    if (typecast === true) body.typecast = true
+    const data = await request(accessor, method, path, baseId, { json: body, retry: WRITE_RETRY })
+    yield asRows(asRow(data).records)
+  }
+}
+
+/**
+ * Create records ten to a request, yielding each request's records. Each
+ * entry is a new record's cell map, keyed by field name; `typecast` lets
+ * Airtable convert string values to the field types. A request that fails
+ * throws after every earlier one landed, so the caller holds exactly what
+ * was written.
+ */
+export function createRecords(
+  accessor: AirtableAccessor,
+  baseId: string,
+  tableId: string,
+  cells: readonly Row[],
+  options: { typecast?: boolean } = {},
+): AsyncGenerator<Row[]> {
+  const rows = cells.map((fields) => ({ fields }))
+  return write(accessor, 'POST', baseId, tableId, rows, options.typecast)
+}
+
+/**
+ * Patch records ten to a request, yielding each request's records. A
+ * PATCH, never a PUT: a cell the update leaves out keeps its value. Each
+ * entry is a record id and the cells to change, keyed by field name.
+ */
+export function updateRecords(
+  accessor: AirtableAccessor,
+  baseId: string,
+  tableId: string,
+  updates: readonly (readonly [string, Row])[],
+  options: { typecast?: boolean } = {},
+): AsyncGenerator<Row[]> {
+  const rows = updates.map(([id, fields]) => ({ id, fields }))
+  return write(accessor, 'PATCH', baseId, tableId, rows, options.typecast)
+}
+
+/**
+ * Delete records ten to a request, yielding each request's answer. The ids
+ * ride the query string as `records[]`, which is the only place the
+ * endpoint reads them from.
+ */
+export async function* deleteRecords(
+  accessor: AirtableAccessor,
+  baseId: string,
+  tableId: string,
+  recordIds: readonly string[],
+): AsyncGenerator<Row[]> {
+  const path = tablePath(baseId, tableId)
+  for (const batch of batches(recordIds)) {
+    const query = new URLSearchParams(batch.map((id) => ['records[]', id])).toString()
+    const data = await request(accessor, 'DELETE', path, baseId, { query, retry: WRITE_RETRY })
+    yield asRows(asRow(data).records)
+  }
+}
+
+/** A record's comments in the API's order, newest first. */
+export async function listComments(
+  accessor: AirtableAccessor,
+  baseId: string,
+  tableId: string,
+  recordId: string,
+): Promise<Row[]> {
+  const path = `${recordPath(baseId, tableId, recordId)}/comments`
+  const found = await cursorItems(
+    (cursor) => page(accessor, baseId, path, { pageSize: PAGE_SIZE }, cursor),
+    undefined,
+    COMMENTS,
+  )
+  return asRows(found)
+}
+
+/** Comment on a record as the token's user. */
+export async function createComment(
+  accessor: AirtableAccessor,
+  baseId: string,
+  tableId: string,
+  recordId: string,
+  text: string,
+): Promise<Row> {
+  return asRow(
+    await request(accessor, 'POST', `${recordPath(baseId, tableId, recordId)}/comments`, baseId, {
+      json: { text },
+      retry: WRITE_RETRY,
+    }),
+  )
 }

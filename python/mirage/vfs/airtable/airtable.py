@@ -20,7 +20,7 @@ from mirage.commands.builtin.airtable.io import IO
 from mirage.core.airtable.config import AirtableConfig
 from mirage.ops.airtable import OPS
 from mirage.types import VFSName
-from mirage.vfs.airtable.prompt import PROMPT
+from mirage.vfs.airtable.prompt import PROMPT, WRITE_PROMPT
 from mirage.vfs.bound import BoundVFS
 
 
@@ -39,6 +39,7 @@ class AirtableVFS(BoundVFS):
     name: str = VFSName.AIRTABLE
     caches_reads: bool = False
     PROMPT: str = PROMPT
+    WRITE_PROMPT: str = WRITE_PROMPT
 
     def __init__(self, config: AirtableConfig) -> None:
         super().__init__(io=IO)

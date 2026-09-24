@@ -142,6 +142,9 @@ NOTION_TOKEN = "integ-test"
 # tokens are data in that world rather than tenants, so it is the same value
 # on both hosts; the run in the base URL is what keeps them apart.
 AIRTABLE_TOKEN = "patIntegFullAccess.fake"
+# The bases the airtable CLI install is scoped to: the fixture's Roadmap and
+# Ops bases, leaving its read-only Archive outside.
+AIRTABLE_CLI_BASES = ("appRoadmapBase001", "appOpsFinance0002")
 MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
 S3_ENDPOINT = os.environ.get("S3_ENDPOINT")
 S3_REGION = os.environ.get("S3_REGION", "us-east-1")
@@ -1690,6 +1693,19 @@ class AirtableService:
             requests_per_second=50.0,
         ))
 
+    def cli_installs(self) -> dict[str, tuple[CLISpec, dict[str, object]]]:
+        # The same bounds as the mount, scoped to two of the fixture's three
+        # bases so the battery can show a refused one (the Archive).
+        return {
+            "airtable": (cli_spec_for("airtable"), {
+                "token": AIRTABLE_TOKEN,
+                "base_url": f"{self.base}/v0",
+                "base_ids": list(AIRTABLE_CLI_BASES),
+                "max_read_records": 20,
+                "requests_per_second": 50.0,
+            }),
+        }
+
     async def teardown(self) -> None:
         return None
 
@@ -2745,8 +2761,9 @@ def cli_install(service: "Service | None",
         return cli_spec_for(cli_name), None
     # Widen the assert when another service grows a CLI.
     assert isinstance(
-        service, (DiscordService, EmailService, GitHubService, GwsService,
-                  HfHubService, LinearService, NotionService, SlackService))
+        service,
+        (AirtableService, DiscordService, EmailService, GitHubService,
+         GwsService, HfHubService, LinearService, NotionService, SlackService))
     return service.cli_installs()[cli_name]
 
 
