@@ -28,7 +28,7 @@
       "discord": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": false
       },
       "dropbox": {
@@ -58,13 +58,13 @@
       "github": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": false
       },
       "gmail": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": false
       },
       "gsheets": {
@@ -100,7 +100,7 @@
       "langfuse": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": false
       },
       "linear": {
@@ -178,7 +178,7 @@
       "slack": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": false
       },
       "trello": {

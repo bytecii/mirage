@@ -15,7 +15,9 @@
 import type { GSlidesAccessor } from '../../../accessor/gslides.ts'
 import { VFSName } from '../../../types.ts'
 import type { ProvisionFn, RegisteredCommand } from '../../config.ts'
+import { resolveGlobOf } from '../generic_bind/adapter.ts'
 import { makeGenericCommands } from '../generic_bind/index.ts'
+import { withDefaultProvisions } from '../generic_bind/provision.ts'
 import { GSLIDES_IO } from './io.ts'
 import { fileReadProvision } from './_provision.ts'
 import { GSLIDES_RM } from './rm.ts'
@@ -30,5 +32,10 @@ export const GSLIDES_COMMANDS: readonly RegisteredCommand[] = [
       rg: fileReadProvision as ProvisionFn,
     },
   }),
-  ...GSLIDES_RM,
+  ...withDefaultProvisions(
+    [...GSLIDES_RM],
+    GSLIDES_IO.stat,
+    resolveGlobOf(GSLIDES_IO),
+    GSLIDES_IO.readdir,
+  ),
 ]

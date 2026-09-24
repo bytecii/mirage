@@ -15,7 +15,9 @@
 import type { ChromaAccessor } from '../../../accessor/chroma.ts'
 import { VFSName } from '../../../types.ts'
 import type { RegisteredCommand } from '../../config.ts'
+import { resolveGlobOf } from '../generic_bind/adapter.ts'
 import { makeGenericCommands } from '../generic_bind/index.ts'
+import { withDefaultProvisions } from '../generic_bind/provision.ts'
 import { CHROMA_FIND } from './find.ts'
 import { CHROMA_IO } from './io.ts'
 import { CHROMA_SEARCH } from './search.ts'
@@ -26,6 +28,10 @@ export const CHROMA_COMMANDS: readonly RegisteredCommand[] = [
   ...makeGenericCommands<ChromaAccessor>(VFSName.CHROMA, CHROMA_IO, {
     overrides: CHROMA_OVERRIDES,
   }),
-  ...CHROMA_FIND,
-  ...CHROMA_SEARCH,
+  ...withDefaultProvisions(
+    [...CHROMA_FIND, ...CHROMA_SEARCH],
+    CHROMA_IO.stat,
+    resolveGlobOf(CHROMA_IO),
+    CHROMA_IO.readdir,
+  ),
 ]
