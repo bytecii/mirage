@@ -135,8 +135,10 @@ export function badOffset(value: string): Reply {
   return apiError(422, 'INVALID_OFFSET_VALUE', `The value of offset ${value} is invalid`)
 }
 
+// A view named by id is looked up as an id, anything else as a name.
 export function viewNotFound(value: string): Reply {
-  return apiError(422, 'VIEW_NAME_NOT_FOUND', `View ${value} not found`)
+  const type = isId('viw', value) ? 'VIEW_ID_NOT_FOUND' : 'VIEW_NAME_NOT_FOUND'
+  return apiError(422, type, `View ${value} not found`)
 }
 
 export const INVALID_FORMULA = 'Invalid formula. Please check your formula text.'

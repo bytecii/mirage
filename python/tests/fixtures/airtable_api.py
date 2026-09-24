@@ -46,6 +46,7 @@ FEATURES = "tblFeatures000001"
 BUDGET = "tblBudget00000001"
 GRID = "viwGrid0000000001"
 DONE = "viwDone0000000001"
+VIEW_ID = re.compile(r"viw[A-Za-z0-9]{14}")
 
 
 def _record(n: int, **fields: Any) -> dict[str, Any]:
@@ -205,8 +206,9 @@ class FakeAirtable:
         if view is not None:
             keep = self.views.get(view)
             if keep is None:
-                return _error(422, "VIEW_NAME_NOT_FOUND",
-                              f"View {view} not found")
+                kind = ("VIEW_ID_NOT_FOUND"
+                        if VIEW_ID.fullmatch(view) else "VIEW_NAME_NOT_FOUND")
+                return _error(422, kind, f"View {view} not found")
             pool = [r for r in pool if keep(r)]
         if "maxRecords" in params:
             pool = pool[:int(params["maxRecords"])]

@@ -112,6 +112,9 @@ const badOffset = (v: string): Json => ({
 const noView = (v: string): Json => ({
   error: { type: 'VIEW_NAME_NOT_FOUND', message: `View ${v} not found` },
 })
+const VIEW_ID_MISSING = {
+  error: { type: 'VIEW_ID_NOT_FOUND', message: 'View viwZZZZZZZZZZZZZZ not found' },
+}
 const FORMULA_INVALID = {
   error: {
     type: 'INVALID_FILTER_BY_FORMULA',
@@ -488,6 +491,13 @@ async function reads(origin: string): Promise<void> {
   const kanban = await listAll(features, [['view', 'By owner / priority']])
   eq('a two-key view sort, empty owners first', kanban.ids, [5, 9, 1, 8, 4, 6, 2, 10, 7, 3].map(F))
   await expect('an unknown view is refused', `${features}?view=Nope`, {}, 422, noView('Nope'))
+  await expect(
+    'an unknown view id is refused as an id',
+    `${features}?view=viwZZZZZZZZZZZZZZ`,
+    {},
+    422,
+    VIEW_ID_MISSING,
+  )
   const resorted = await listAll(features, [
     ['view', 'Done'],
     ['sort[0][field]', 'Name'],

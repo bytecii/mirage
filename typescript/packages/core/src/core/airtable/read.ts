@@ -13,34 +13,53 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { AirtableAccessor } from '../../accessor/airtable.ts'
+import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { PathSpec } from '../../types.ts'
 import { efbig, enoent, isEnoent } from '../../utils/errors.ts'
+import { resolveEntry } from '../hierarchy/probe.ts'
 import { makeRead, type ReadWindow } from '../hierarchy/read.ts'
 import type { ScopeMatch } from '../hierarchy/scope.ts'
 import { AirtableApiError, listBases, listRecords, listTables } from './client.ts'
 import { normalizeBase, normalizeTable, recordsJsonl, toJsonBytes } from './normalize.ts'
-import { schemaTable } from './readdir.ts'
+import { readdir, schemaTable } from './readdir.ts'
 import { detectScope } from './scope.ts'
 
 /**
- * Refuse a path whose base the mount's `baseIds` excludes. A reader
- * reaches the API by the id in the path without resolving it through the
- * listing, so the scope has to be enforced here too, or a typed path would
- * read a base that `ls` and `stat` call absent.
+ * Refuse a path whose base the mount's `baseIds` excludes. The listing
+ * leaves such a base out too, but refusing here answers before any request
+ * is made.
  */
 export function ensureInScope(accessor: AirtableAccessor, match: ScopeMatch, path: PathSpec): void {
   const wanted = accessor.baseIds
   if (wanted !== null && !wanted.includes(match.slots.base_id ?? '')) throw enoent(path)
 }
 
+/**
+ * Refuse a path its parent listing does not hold. A reader fetches by the
+ * ids in the path, but only the listing proves the names around them.
+ * Without this a typed `Wrong__tbl…/table.json` would read under `jq` while
+ * `stat` and `cat` call it absent, and a view id from another table would
+ * reach the API as a raw 422.
+ */
+async function ensureListed(
+  accessor: AirtableAccessor,
+  match: ScopeMatch,
+  path: PathSpec,
+  index: IndexCacheStore | undefined,
+): Promise<void> {
+  ensureInScope(accessor, match, path)
+  const store = index ?? new RAMIndexCacheStore()
+  if ((await resolveEntry(readdir, accessor, path, store)) === null) throw enoent(path)
+}
+
 async function readBaseJson(
   accessor: AirtableAccessor,
   match: ScopeMatch,
   path: PathSpec,
-  _index?: IndexCacheStore,
+  index?: IndexCacheStore,
 ): Promise<Uint8Array> {
-  ensureInScope(accessor, match, path)
+  await ensureListed(accessor, match, path, index)
   const baseId = match.slots.base_id ?? ''
   for (const base of await listBases(accessor)) {
     if (base.id === baseId) {
@@ -54,9 +73,9 @@ async function readTableJson(
   accessor: AirtableAccessor,
   match: ScopeMatch,
   path: PathSpec,
-  _index?: IndexCacheStore,
+  index?: IndexCacheStore,
 ): Promise<Uint8Array> {
-  ensureInScope(accessor, match, path)
+  await ensureListed(accessor, match, path, index)
   let table: Record<string, unknown>
   try {
     table = await schemaTable(accessor, match)
@@ -71,10 +90,11 @@ async function renderRecords(
   accessor: AirtableAccessor,
   match: ScopeMatch,
   path: PathSpec,
+  index: IndexCacheStore | undefined,
   view: string | undefined,
   window: ReadWindow,
 ): Promise<Uint8Array> {
-  ensureInScope(accessor, match, path)
+  await ensureListed(accessor, match, path, index)
   const cap = accessor.maxReadRecords
   const skip = window.offset ?? 0
   const limit = window.limit ?? null
@@ -89,12 +109,7 @@ async function renderRecords(
       maxRecords: wanted,
     })
   } catch (err) {
-    if (
-      err instanceof AirtableApiError &&
-      (err.notFound || err.errorType === 'VIEW_NAME_NOT_FOUND')
-    ) {
-      throw enoent(path)
-    }
+    if (err instanceof AirtableApiError && err.notFound) throw enoent(path)
     throw err
   }
   // EFBIG, reported per operand as `<cmd>: <path>: File too large`: the
@@ -107,20 +122,20 @@ function readRecords(
   accessor: AirtableAccessor,
   match: ScopeMatch,
   path: PathSpec,
-  _index: IndexCacheStore | undefined,
+  index: IndexCacheStore | undefined,
   window: ReadWindow,
 ): Promise<Uint8Array> {
-  return renderRecords(accessor, match, path, undefined, window)
+  return renderRecords(accessor, match, path, index, undefined, window)
 }
 
 function readView(
   accessor: AirtableAccessor,
   match: ScopeMatch,
   path: PathSpec,
-  _index: IndexCacheStore | undefined,
+  index: IndexCacheStore | undefined,
   window: ReadWindow,
 ): Promise<Uint8Array> {
-  return renderRecords(accessor, match, path, match.slots.view_id ?? '', window)
+  return renderRecords(accessor, match, path, index, match.slots.view_id ?? '', window)
 }
 
 export const read = makeRead<AirtableAccessor>(

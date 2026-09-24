@@ -24,6 +24,8 @@ export const BUDGET = 'tblBudget00000001'
 export const GRID = 'viwGrid0000000001'
 export const DONE = 'viwDone0000000001'
 
+const VIEW_ID = /^viw[A-Za-z0-9]{14}$/
+
 type Row = Record<string, unknown>
 
 function record(n: number, fields: Row): Row {
@@ -154,9 +156,8 @@ export class FakeAirtable {
     if (params.view !== undefined) {
       const keep = this.views[params.view]
       if (keep === undefined) {
-        return Promise.resolve(
-          airtableError(422, 'VIEW_NAME_NOT_FOUND', `View ${params.view} not found`),
-        )
+        const type = VIEW_ID.test(params.view) ? 'VIEW_ID_NOT_FOUND' : 'VIEW_NAME_NOT_FOUND'
+        return Promise.resolve(airtableError(422, type, `View ${params.view} not found`))
       }
       pool = pool.filter(keep)
     }
