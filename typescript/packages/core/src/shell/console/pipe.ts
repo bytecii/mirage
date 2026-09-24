@@ -16,8 +16,11 @@ import { JobConsole } from './job_console.ts'
 import { Channel } from './types.ts'
 import { PipeClosed } from '../errors.ts'
 
-/** A single-reader pipe. A chunk is acknowledged when the reader advances,
- * so closing after one chunk does not fetch another backend page first. */
+/** A single-reader pipe with a kernel-sized buffer. A write succeeds while
+ * the reader is open and the buffer has room, as in bash, where a producer
+ * that finishes before `head` closes keeps its status. A lazy source is
+ * pulled only after `drain`, so closing after one chunk does not fetch
+ * another backend page first. */
 export class PipeConsole extends JobConsole {
   private chunks: Uint8Array[] = []
   private bytes = 0
@@ -50,9 +53,13 @@ export class PipeConsole extends JobConsole {
     if (this.readerClosed) throw new PipeClosed()
     this.chunks.push(data)
     this.bytes += data.byteLength
-    const ticket = ++this.delivered
+    this.delivered += 1
     this.notify()
-    while (this.accepted < ticket && !this.closedReader) await this.changed()
+  }
+
+  /** Wait until the reader has taken every chunk or closed. */
+  async drain(): Promise<void> {
+    while (this.accepted < this.delivered && !this.readerClosed) await this.changed()
   }
 
   get closedReader(): boolean {
@@ -74,6 +81,16 @@ export class PipeConsole extends JobConsole {
     this.notify()
   }
 
+  /** The reader is done. The close lands on the next task-queue turn, the
+   * way a kernel pipe closes when its reader exits: a writer that is not
+   * blocked finishes its burst into the buffer first, as it does on the
+   * python host, whose reader runs only once the writer suspends. */
+  release(): void {
+    setTimeout(() => {
+      this.closeReader()
+    }, 0)
+  }
+
   async *stream(): AsyncGenerator<Uint8Array> {
     try {
       for (;;) {
@@ -92,7 +109,7 @@ export class PipeConsole extends JobConsole {
         }
       }
     } finally {
-      this.closeReader()
+      this.release()
     }
   }
 }

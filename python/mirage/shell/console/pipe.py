@@ -22,11 +22,12 @@ from mirage.shell.errors import PipeClosed
 
 
 class PipeConsole(JobConsole):
-    """A single-reader pipe whose writes follow consumer demand.
+    """A single-reader pipe with a kernel-sized buffer.
 
-    A delivered chunk is acknowledged only when the reader advances. Closing
-    after one chunk therefore wakes the writer without fetching another
-    backend page merely to discover that the consumer has already stopped.
+    A write succeeds while the reader is open and the buffer has room, as
+    in bash, where a producer that finishes before ``head`` closes keeps
+    its status. A lazy source is pulled only after ``drain``, so closing
+    after one chunk does not fetch another backend page first.
     """
 
     def __init__(self, pipe_stderr: bool = False) -> None:
@@ -55,9 +56,11 @@ class PipeConsole(JobConsole):
         self._chunks.append(data)
         self._bytes += len(data)
         self._delivered += 1
-        ticket = self._delivered
         self._changed.set()
-        while self._accepted < ticket and not self._reader_closed:
+
+    async def drain(self) -> None:
+        """Wait until the reader has taken every chunk or closed."""
+        while self._accepted < self._delivered and not self._reader_closed:
             self._changed.clear()
             await self._changed.wait()
 

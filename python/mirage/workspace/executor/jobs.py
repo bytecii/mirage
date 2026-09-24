@@ -45,7 +45,9 @@ async def pump(console: JobConsole, channel: Channel,
     Consuming the stream piece by piece rather than materializing it
     whole is what lets a reader watch a running job. A command that
     computes its output eagerly still lands in one chunk, because there
-    was nothing to observe before it finished.
+    was nothing to observe before it finished. A pipe is drained before
+    the next chunk is pulled, so a reader that closed stops the source
+    before it fetches more.
 
     Args:
         console (JobConsole): where the output goes.
@@ -61,7 +63,10 @@ async def pump(console: JobConsole, channel: Channel,
     async for chunk in stream:
         if chunk:
             await console.emit(channel, chunk)
-        if isinstance(console, PipeConsole) and console.closed_reader:
+        if not isinstance(console, PipeConsole):
+            continue
+        await console.drain()
+        if console.closed_reader:
             await close_quietly(stream)
             return
 

@@ -97,7 +97,7 @@ export async function handlePipe(
           throw error
         }
       } finally {
-        upstream?.closeReader()
+        upstream?.release()
         if (input !== null && !(input instanceof Uint8Array)) await closeQuietly(input)
         output.end()
         io.stderr = await output.snapshot(Channel.STDERR)

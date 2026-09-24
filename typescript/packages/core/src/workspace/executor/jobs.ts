@@ -58,7 +58,8 @@ export type JobHandlerResult = [ByteSource | null, IOResult, ExecutionNode]
  * Consuming the stream piece by piece rather than materializing it whole
  * is what lets a reader watch a running job. A command that computes its
  * output eagerly still lands in one chunk, because there was nothing to
- * observe before it finished.
+ * observe before it finished. A pipe is drained before the next chunk is
+ * pulled, so a reader that closed stops the source before it fetches more.
  */
 export async function pump(
   console_: JobConsole,
@@ -72,7 +73,9 @@ export async function pump(
   }
   for await (const chunk of stream) {
     if (chunk.byteLength > 0) await console_.emit(channel, chunk)
-    if (console_ instanceof PipeConsole && console_.closedReader) return
+    if (!(console_ instanceof PipeConsole)) continue
+    await console_.drain()
+    if (console_.closedReader) return
   }
 }
 

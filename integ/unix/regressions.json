@@ -15,6 +15,34 @@
       }
     },
     {
+      "id": "pipefail_keeps_a_producer_that_finished_before_head_closed",
+      "seq": 9901205,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "set -o pipefail; for i in 1 2 3; do echo \"$i\"; done | head -n 1; echo \"status=$? pipestatus=${PIPESTATUS[*]}\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\nstatus=0 pipestatus=0 0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "pipefail_reports_a_write_after_head_closed",
+      "seq": 9901206,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "set -o pipefail; for i in 1 2 3; do echo \"$i\"; sleep 0.05; done | head -n 1; echo \"status=$? pipestatus=${PIPESTATUS[*]}\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\nstatus=141 pipestatus=141 0\n",
+        "stderr": ""
+      }
+    },
+    {
       "id": "concat_cmdsub_runs_once",
       "seq": 9901211,
       "targets": [

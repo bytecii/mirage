@@ -22,17 +22,46 @@ from mirage.shell.errors import PipeClosed
 
 
 @pytest.mark.asyncio
-async def test_reader_close_releases_a_blocked_writer_and_refuses_more_output(
+async def test_writes_are_buffered_before_the_reader_takes_them():
+    pipe = PipeConsole()
+    for chunk in (b"1\n", b"2\n", b"3\n"):
+        await asyncio.wait_for(pipe.emit(Channel.STDOUT, chunk), 1)
+    pipe.end()
+    stream = pipe.stream()
+    assert await anext(stream) == b"1\n"
+    await stream.aclose()
+    await pipe.drain()
+    with pytest.raises(PipeClosed):
+        await pipe.emit(Channel.STDOUT, b"4\n")
+
+
+@pytest.mark.asyncio
+async def test_reader_close_releases_a_draining_writer_and_refuses_more_output(
 ):
     pipe = PipeConsole()
-    writer = asyncio.create_task(pipe.emit(Channel.STDOUT, b"first"))
+    await asyncio.wait_for(pipe.emit(Channel.STDOUT, b"first"), 1)
+    drain = asyncio.create_task(pipe.drain())
     stream = pipe.stream()
     assert await asyncio.wait_for(anext(stream), 1) == b"first"
-    assert not writer.done()
+    await asyncio.sleep(0)
+    assert not drain.done()
     await stream.aclose()
-    await asyncio.wait_for(writer, 1)
+    await asyncio.wait_for(drain, 1)
     with pytest.raises(PipeClosed):
         await pipe.emit(Channel.STDOUT, b"second")
+
+
+@pytest.mark.asyncio
+async def test_a_full_buffer_blocks_the_writer_until_the_reader_advances():
+    pipe = PipeConsole()
+    await pipe.emit(Channel.STDOUT, b"x" * 65536)
+    writer = asyncio.create_task(pipe.emit(Channel.STDOUT, b"y"))
+    await asyncio.sleep(0)
+    assert not writer.done()
+    stream = pipe.stream()
+    assert len(await anext(stream)) == 65536
+    await asyncio.wait_for(writer, 1)
+    assert await anext(stream) == b"y"
 
 
 @pytest.mark.asyncio
