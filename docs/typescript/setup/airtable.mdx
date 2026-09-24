@@ -52,7 +52,9 @@ it directly; a token in a page is visible to that page's user.
 
 ## Mount mode
 
-`read`.
+`read`. Writes go through the [airtable CLI](/typescript/cli/airtable), which
+takes the same config and names a base, a table and a record by the id after
+the last `__` of the mount's directory names.
 
 For the mounted layout (`bases/`, `table.json`, `records.jsonl`, `views/`)
 and the reading rules see the [Python Airtable docs](/python/vfs/airtable).

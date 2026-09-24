@@ -4,7 +4,8 @@ description: Mount Airtable bases, tables, records, and saved views as a Mirage 
 icon: table
 ---
 The Airtable VFS exposes the bases a personal access token can reach as a
-read-only filesystem mounted at a prefix such as `/airtable/`.
+read-only filesystem mounted at a prefix such as `/airtable/`. Writes go
+through the [airtable CLI](/python/cli/airtable), which takes the same config.
 
 For token setup, see [Airtable Setup](/home/setup/airtable).
 
@@ -108,3 +109,22 @@ Requests are spaced to `requests_per_second` per base. A `429` that says
 `RATE_LIMIT_REACHED` is retried after Airtable's 30 second penalty; a `429`
 for an exhausted monthly quota is reported at once, because waiting cannot fix
 it.
+
+## Writing Records
+
+A record write is not a file write, so the mount refuses one and the
+[airtable CLI](/python/cli/airtable) makes it. The CLI names a base, a table
+and a record by id: take them from the mount's directory names, after the last
+`__` (`Product_Roadmap__appRoadmapBase001` is `appRoadmapBase001`), and a
+record's from its `record_id`. A `records.jsonl` line is the CLI's stdin
+shape, so an edit pipes straight back:
+
+```bash
+jq -c 'select(.fields.Status == "Todo") | .fields.Status = "Done"' \
+  /airtable/bases/Product_Roadmap__appRoadmapBase001/Features__tblFeatures000001/records.jsonl \
+  | airtable record update --base appRoadmapBase001 --table tblFeatures000001
+```
+
+The CLI also reaches what a file cannot: server-side filters (`airtable record
+list --formula` or `--view`), one record by id (`airtable record get`), and
+comments (`airtable comment list`, `airtable comment add`).
