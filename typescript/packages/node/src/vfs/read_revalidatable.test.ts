@@ -21,6 +21,41 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type * as ContextModule from '@struktoai/mirage-core/observe/context'
 import type { OpRecord } from '@struktoai/mirage-core/observe/record'
 import type * as ClientModule from '../core/gridfs/client.ts'
+import type { Accessor } from '@struktoai/mirage-core/accessor/base'
+import type { S3Accessor } from '@struktoai/mirage-core/accessor/s3'
+import { RAMIndexCacheStore } from '@struktoai/mirage-core/cache/index/ram'
+import { S3_IO } from '@struktoai/mirage-core/commands/builtin/s3/io'
+import { DRIVER as S3_DRIVER } from '@struktoai/mirage-core/core/s3/driver'
+import { recordingActive } from '@struktoai/mirage-core/observe/context'
+import { type FileStat, MountMode, PathSpec } from '@struktoai/mirage-core/types'
+import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
+import { Mount } from '@struktoai/mirage-core/workspace/mount/spec'
+import type { GridFSAccessor } from '../accessor/gridfs.ts'
+import { GRIDFS_IO } from '../commands/builtin/gridfs/io.ts'
+import { Workspace } from '../workspace.ts'
+import { buildVfs, knownVfsNames } from './registry.ts'
+import { installS3Mock, type S3Mock } from './s3/mock.ts'
+import { AliyunVFS } from './aliyun/aliyun.ts'
+import { BackblazeVFS } from './backblaze/backblaze.ts'
+import { CephVFS } from './ceph/ceph.ts'
+import { DigitalOceanVFS } from './digitalocean/digitalocean.ts'
+import { GCSVFS } from './gcs/gcs.ts'
+import { MinIOVFS } from './minio/minio.ts'
+import { OCIVFS } from './oci/oci.ts'
+import { QingStorVFS } from './qingstor/qingstor.ts'
+import { R2VFS } from './r2/r2.ts'
+import { S3VFS } from './s3/s3.ts'
+import { ScalewayVFS } from './scaleway/scaleway.ts'
+import { SeaweedFSVFS } from './seaweedfs/seaweedfs.ts'
+import { SupabaseVFS } from './supabase/supabase.ts'
+import { TencentVFS } from './tencent/tencent.ts'
+import { WasabiVFS } from './wasabi/wasabi.ts'
+import { GDriveVFS } from '@struktoai/mirage-core/vfs/gdrive/gdrive'
+import { GridFSVFS } from './gridfs/gridfs.ts'
+import { SSHVFS } from './ssh/ssh.ts'
+import { readRevalidatable, type VFS } from '@struktoai/mirage-core/vfs/base'
+import { checkReadCapability } from '@struktoai/mirage-core/workspace/mount/read_policy'
+import { DEFAULT_READ_TTL, ReadPolicy } from '@struktoai/mirage-core/types'
 
 interface GridFSDoc {
   _id: { toString(): string }
@@ -30,8 +65,8 @@ interface GridFSDoc {
   data: Uint8Array
 }
 
-// Shared with the two module mocks below, which vitest hoists above the
-// imports.
+// Shared with the two module mocks below; vitest hoists all three above
+// the imports.
 const H = vi.hoisted(() => ({
   unrecorded: false,
   slots: [] as [string, string][],
@@ -122,42 +157,6 @@ vi.mock('../core/gridfs/client.ts', async () => {
     filesColl: refuse('filesColl'),
   }
 })
-
-import type { Accessor } from '@struktoai/mirage-core/accessor/base'
-import type { S3Accessor } from '@struktoai/mirage-core/accessor/s3'
-import { RAMIndexCacheStore } from '@struktoai/mirage-core/cache/index/ram'
-import { S3_IO } from '@struktoai/mirage-core/commands/builtin/s3/io'
-import { DRIVER as S3_DRIVER } from '@struktoai/mirage-core/core/s3/driver'
-import { recordingActive } from '@struktoai/mirage-core/observe/context'
-import { type FileStat, MountMode, PathSpec } from '@struktoai/mirage-core/types'
-import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
-import { Mount } from '@struktoai/mirage-core/workspace/mount/spec'
-import type { GridFSAccessor } from '../accessor/gridfs.ts'
-import { GRIDFS_IO } from '../commands/builtin/gridfs/io.ts'
-import { Workspace } from '../workspace.ts'
-import { buildVfs, knownVfsNames } from './registry.ts'
-import { installS3Mock, type S3Mock } from './s3/mock.ts'
-import { AliyunVFS } from './aliyun/aliyun.ts'
-import { BackblazeVFS } from './backblaze/backblaze.ts'
-import { CephVFS } from './ceph/ceph.ts'
-import { DigitalOceanVFS } from './digitalocean/digitalocean.ts'
-import { GCSVFS } from './gcs/gcs.ts'
-import { MinIOVFS } from './minio/minio.ts'
-import { OCIVFS } from './oci/oci.ts'
-import { QingStorVFS } from './qingstor/qingstor.ts'
-import { R2VFS } from './r2/r2.ts'
-import { S3VFS } from './s3/s3.ts'
-import { ScalewayVFS } from './scaleway/scaleway.ts'
-import { SeaweedFSVFS } from './seaweedfs/seaweedfs.ts'
-import { SupabaseVFS } from './supabase/supabase.ts'
-import { TencentVFS } from './tencent/tencent.ts'
-import { WasabiVFS } from './wasabi/wasabi.ts'
-import { GDriveVFS } from '@struktoai/mirage-core/vfs/gdrive/gdrive'
-import { GridFSVFS } from './gridfs/gridfs.ts'
-import { SSHVFS } from './ssh/ssh.ts'
-import { readRevalidatable, type VFS } from '@struktoai/mirage-core/vfs/base'
-import { checkReadCapability } from '@struktoai/mirage-core/workspace/mount/read_policy'
-import { DEFAULT_READ_TTL, ReadPolicy } from '@struktoai/mirage-core/types'
 
 // Python declares READ_REVALIDATABLE as a class attribute, so its twin asserts
 // it straight off each alias class. A TypeScript class field is per-instance,
