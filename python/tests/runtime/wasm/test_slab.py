@@ -14,6 +14,7 @@
 
 import sys
 import threading
+import time
 
 import pytest
 
@@ -86,25 +87,44 @@ class _CollectingSlab(Slab):
         return super().allocate(val)
 
 
-def test_a_free_inside_an_allocation_is_deferred_not_deadlocked():
+def test_a_free_inside_an_allocation_lands_before_it_returns():
     inner = _CollectingSlab()
     table = LockedSlab(inner)
     first = table.allocate(("first", ))
     inner.on_allocate = lambda: table.deallocate(first)
     seen: dict = {}
 
-    def allocate_twice() -> None:
+    def allocate_then_probe() -> None:
         seen["second"] = table.allocate(("second", ))
-        seen["first_still_parked"] = table.get(first)
-        seen["third"] = table.allocate(("third", ))
+        seen["probe"] = inner.allocate(("probe", ))
 
-    worker = threading.Thread(target=allocate_twice, daemon=True)
+    worker = threading.Thread(target=allocate_then_probe, daemon=True)
     worker.start()
     worker.join(5)
     assert not worker.is_alive()
     assert seen["second"] != first
-    assert seen["first_still_parked"] == ("first", )
-    assert seen["third"] == first
+    assert seen["probe"] == first
+
+
+def test_another_threads_free_waits_for_the_lock_and_lands():
+    inner = _CollectingSlab()
+    table = LockedSlab(inner)
+    first = table.allocate(("first", ))
+    started = threading.Event()
+    freer = threading.Thread(target=lambda:
+                             (started.set(), table.deallocate(first)),
+                             daemon=True)
+
+    def free_from_another_thread() -> None:
+        freer.start()
+        started.wait(5)
+        time.sleep(0.05)
+
+    inner.on_allocate = free_from_another_thread
+    table.allocate(("second", ))
+    freer.join(5)
+    assert not freer.is_alive()
+    assert inner.allocate(("probe", )) == first
 
 
 def test_install_wraps_the_func_table_once_and_keeps_its_slots(monkeypatch):

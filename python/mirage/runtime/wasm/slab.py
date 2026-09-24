@@ -43,9 +43,11 @@ class LockedSlab:
 
     A slot is freed by the destructor wasmtime hands Rust, which fires
     wherever the run's store drops, including inside a garbage
-    collection on a thread that is already allocating. So a free takes
-    the lock without waiting and, when the lock is held, is deferred to
-    the next allocation instead of deadlocking on it.
+    collection on a thread that is already in the middle of a slab
+    change. The lock is reentrant, so that free gets in; it is queued
+    and applied before the thread lets go of the lock. A free on
+    another thread waits for the lock, so no slot is left queued once
+    the lock is free.
 
     Args:
         inner (Any): the ``wasmtime._slab.Slab`` whose slots stay in use.
@@ -53,7 +55,8 @@ class LockedSlab:
 
     def __init__(self, inner: Any) -> None:
         self._inner = inner
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._busy = False
         self._deferred: list[int] = []
 
     def allocate(self, val: tuple[Any, ...]) -> int:
@@ -64,8 +67,11 @@ class LockedSlab:
                 whether it takes the caller.
         """
         with self._lock:
-            self._drain()
-            idx: int = self._inner.allocate(val)
+            self._busy = True
+            try:
+                idx: int = self._inner.allocate(val)
+            finally:
+                self._settle()
             return idx
 
     def get(self, idx: int) -> tuple[Any, ...]:
@@ -78,23 +84,29 @@ class LockedSlab:
         return val
 
     def deallocate(self, idx: int) -> None:
-        """Free one slot, or defer the free while the lock is held.
+        """Free one slot, or queue it when this thread is mid-change.
 
         Args:
             idx (int): the slot.
         """
-        if not self._lock.acquire(blocking=False):
-            self._deferred.append(idx)
-            return
-        try:
-            self._drain()
-            self._inner.deallocate(idx)
-        finally:
-            self._lock.release()
+        with self._lock:
+            if self._busy:
+                self._deferred.append(idx)
+                return
+            self._busy = True
+            try:
+                self._inner.deallocate(idx)
+            finally:
+                self._settle()
 
-    def _drain(self) -> None:
-        while self._deferred:
-            self._inner.deallocate(self._deferred.pop())
+    def _settle(self) -> None:
+        while True:
+            while self._deferred:
+                self._inner.deallocate(self._deferred.pop())
+            self._busy = False
+            if not self._deferred:
+                return
+            self._busy = True
 
 
 def install_slab_lock() -> None:
