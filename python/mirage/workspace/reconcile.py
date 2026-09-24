@@ -137,7 +137,7 @@ class Reconciler:
         except Exception as exc:
             await self._cache.remove(path)
             await mount.index.clear()
-            logger.debug("probe failed for %s: %s", path, exc)
+            logger.warning("probe failed for %s: %s", path, exc)
             return Verdict.UNKNOWN
 
     async def may_serve_cached(self, mount: MountEntry, path: str) -> bool:
@@ -218,7 +218,7 @@ class Reconciler:
         except Exception as exc:
             await self._cache.remove(path)
             await mount.index.clear()
-            logger.debug("reconcile probe failed for %s: %s", path, exc)
+            logger.warning("reconcile probe failed for %s: %s", path, exc)
 
     async def on_op_missing(self, mount: MountEntry, op: str,
                             path: str) -> None:

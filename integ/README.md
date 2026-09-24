@@ -33,6 +33,35 @@ collide.
 - Kit storage is one SQLite file per run under a per-process temp root;
   `POST /reset` seeds or recreates one run.
 
+For unmodified vendor clients that only accept a base URL and credential, opt
+into credential routing on the fake process:
+
+```sh
+MIRAGE_RUN_TOKEN_PATTERN='^draw:(?<run>[^:]+):(?<tenant>[^:]+)$' \
+  pnpm run notion:server
+```
+
+Seed with `POST /reset {"run":"a","tenants":["ws"],"fixture":"v1"}`,
+then use `Authorization: Bearer draw:a:ws` with the ordinary vendor base URL.
+The pattern's named `run` capture is required; `tenant` is optional and keeps
+an account/namespace independent of its run. `Authorization: token ...` is
+also accepted for run selection. Embedders can set `KitConfig.runTokenPattern`
+instead of the environment variable. Without a matching pattern, existing
+routing is unchanged. Precedence is path, run header, run query, credential;
+explicit tenant headers/queries take precedence over the credential tenant.
+Captured names use the same validation as explicit selectors.
+
+GWS accepts the credential in the OAuth `refresh_token` form field and returns
+it as the access token, so the subsequent bearer selects the same run. HF Hub
+REST and MCP share run routing and request scheduling.
+
+`DELETE /_kit/runs/<run>` waits for that run's requests, disconnects its client,
+deletes its SQLite files and forgets its clocks, counters and remembered
+fixture. It is idempotent; a later reset can reuse the name. Other runs are
+unaffected. A bare reset remembers the last successful fixture **for that
+run**; a new or deleted run starts from the process's `--fixture` choice.
+`GET /_kit/health` reports `runs` as a count, never run identifiers.
+
 Stores the fakes do not own are namespaced per run by the runner's adapters
 and torn down after: S3 buckets `mirage-integ-<run>-...` (moto in-process by
 default), a Mongo database `mirage_integ_<run>`, redis key prefixes, and temp

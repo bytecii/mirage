@@ -193,6 +193,12 @@ def scaled_size(n: int, block: BlockSize | None, human: bool) -> str:
 # the inode and block columns of `find -ls`.
 UNKNOWN_STAT_FIELD = "?"
 
+# FileStat.extra key marking an `ls` row whose stat failed: the listing
+# named the entry, so GNU keeps its row, and every fact only a stat
+# supplies prints as UNKNOWN_STAT_FIELD. Its type is a directory's when
+# the listing slash-marked it, and unknown otherwise.
+STAT_FAILED_KEY = "stat_failed"
+
 
 def human_scaled(n: int, base: int, units: tuple[str, ...]) -> str:
     """GNU's ``human_readable`` rounding, shared by ``-h`` and ``-H``.
@@ -432,7 +438,9 @@ def format_ls_long(
     session's profile; ``-`` when nothing names one. ``-g`` and ``-o``
     drop a column, ``-i`` leads with the inode column and ``-Z`` puts the
     context column before the size, both ``?`` as GNU prints them when
-    the filesystem has neither.
+    the filesystem has neither. A row whose stat failed is GNU's: the
+    type letter the listing gave, then ``?`` for every stat field, the
+    time right-aligned in its column.
 
     Args:
         stats (list[FileStat]): the rows to render.
@@ -446,20 +454,31 @@ def format_ls_long(
         names (list[str] | None): the name column per row when the
             caller decorated it (``--hyperlink``), else the row's own.
     """
-    cells = [_ls_size_and_time(s, human, columns=columns) for s in stats]
+    cells = [(UNKNOWN_STAT_FIELD,
+              UNKNOWN_STAT_FIELD) if s.extra.get(STAT_FAILED_KEY) else
+             _ls_size_and_time(s, human, columns=columns) for s in stats]
     width = size_width if size_width is not None else max(
         (len(size) for size, _ in cells), default=1)
+    time_width = max((len(when) for _, when in cells), default=1)
     out: list[str] = []
     for i, (s, (raw_size, when)) in enumerate(zip(stats, cells)):
-        fields = [ls_mode_string(s), "1"]
+        failed = bool(s.extra.get(STAT_FAILED_KEY))
+        if failed:
+            type_char = ("d" if s.type == FileType.DIRECTORY else
+                         UNKNOWN_STAT_FIELD)
+            fields = [type_char + UNKNOWN_STAT_FIELD * 9, UNKNOWN_STAT_FIELD]
+        else:
+            fields = [ls_mode_string(s), "1"]
         if columns.owner:
-            fields.append(owner_name(s.uid, identity))
+            fields.append(
+                UNKNOWN_STAT_FIELD if failed else owner_name(s.uid, identity))
         if columns.group:
-            fields.append(group_name(s.gid, identity))
+            fields.append(
+                UNKNOWN_STAT_FIELD if failed else group_name(s.gid, identity))
         if columns.context:
             fields.append(UNKNOWN_STAT_FIELD)
         fields.append(raw_size.rjust(width))
-        fields.append(when)
+        fields.append(when.rjust(time_width) if failed else when)
         fields.append(names[i] if names is not None else ls_name(s))
         lead = f"{UNKNOWN_STAT_FIELD} " if columns.inode else ""
         out.append(lead + " ".join(fields))
