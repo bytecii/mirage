@@ -108,6 +108,47 @@ async def fetch_rows(conn: asyncpg.Connection, schema: str, name: str, *,
     return [canonicalize_row(dict(r)) for r in rows]
 
 
+async def fetch_bounded_rows(conn: asyncpg.Connection, schema: str, name: str,
+                             *, limit: int,
+                             max_bytes: int) -> list[dict[str, Any]] | None:
+    """Fetch native rows only when their database JSON fits the byte budget.
+
+    Args:
+        conn (asyncpg.Connection): the connection.
+        schema (str): the owning schema.
+        name (str): the table or view.
+        limit (int): maximum rows to inspect.
+        max_bytes (int): maximum JSONL bytes to transfer.
+    """
+    columns = {
+        column["name"]
+        for column in await fetch_columns(conn, schema, name)
+    }
+    marker = "__mirage_bytes"
+    while marker in columns:
+        marker += "_"
+    # Keep the gate and fetch in one statement/snapshot. The LEFT JOIN emits
+    # only a null row plus the size on overflow, never the oversized values.
+    rows = await conn.fetch(
+        "WITH data AS MATERIALIZED (SELECT * FROM "
+        f"{qualified(schema, name)} LIMIT $1), "
+        "budget AS (SELECT COALESCE(SUM("
+        "octet_length(row_to_json(data)::text) + 1), 0) AS bytes FROM data) "
+        f"SELECT data.*, budget.bytes AS {quote_ident(marker)} "
+        "FROM budget LEFT JOIN data ON budget.bytes <= $2", limit, max_bytes)
+    size = int(rows[0][marker])
+    if size > max_bytes:
+        return None
+    if size == 0:
+        return []
+    return [
+        canonicalize_row({
+            k: v
+            for k, v in dict(row).items() if k != marker
+        }) for row in rows
+    ]
+
+
 async def fetch_columns(conn: asyncpg.Connection, schema: str,
                         name: str) -> list[dict[str, Any]]:
     rows = await conn.fetch(

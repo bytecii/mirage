@@ -19,7 +19,7 @@ import { jsonBytes } from '../render/json.ts'
 import type { PostgresAccessor } from '../../accessor/postgres.ts'
 import { makeRead, type Reader, type ReadWindow, type WindowedReader } from '../hierarchy/read.ts'
 import type { ScopeMatch } from '../hierarchy/scope.ts'
-import { estimateSize, fetchRows } from './client.ts'
+import { estimateSize, fetchBoundedRows, fetchRows } from './client.ts'
 import { buildDatabaseJson, buildEntitySchemaJson } from './_schema_json.ts'
 import { buildEntitySemanticJson } from './semantic.ts'
 import { detectScope } from './scope.ts'
@@ -140,17 +140,38 @@ export async function readRows(
     effectiveOffset = offset ?? 0
   }
 
-  const data = await fetchRows(accessor, schema, entity, {
-    limit: effectiveLimit,
-    offset: effectiveOffset,
-  })
+  const data = whole
+    ? await fetchBoundedRows(accessor, schema, entity, {
+        limit: effectiveLimit,
+        maxBytes: cfg.maxReadBytes,
+      })
+    : await fetchRows(accessor, schema, entity, {
+        limit: effectiveLimit,
+        offset: effectiveOffset,
+      })
+  if (data === null) {
+    throw tooLarge(cfg, schema, kind, entity, `more than ${String(cfg.maxReadBytes)} bytes`)
+  }
   if (whole && data.length > cfg.maxReadRows) {
     throw tooLarge(cfg, schema, kind, entity, `more than ${String(cfg.maxReadRows)} rows`)
   }
   if (data.length === 0) return new Uint8Array()
-  const body = new TextEncoder().encode(data.map(rowLine).join('\n') + '\n')
-  if (whole && body.byteLength > cfg.maxReadBytes) {
-    throw tooLarge(cfg, schema, kind, entity, `${String(body.byteLength)} bytes`)
+  const encoder = new TextEncoder()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  for (const row of data) {
+    const line = encoder.encode(rowLine(row) + '\n')
+    size += line.byteLength
+    if (whole && size > cfg.maxReadBytes) {
+      throw tooLarge(cfg, schema, kind, entity, `more than ${String(cfg.maxReadBytes)} bytes`)
+    }
+    chunks.push(line)
+  }
+  const body = new Uint8Array(size)
+  let position = 0
+  for (const chunk of chunks) {
+    body.set(chunk, position)
+    position += chunk.byteLength
   }
   return body
 }

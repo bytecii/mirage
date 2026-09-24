@@ -18,6 +18,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('./client.ts', () => ({
   estimateSize: vi.fn(),
   fetchRows: vi.fn(),
+  fetchBoundedRows: vi.fn(),
   // A read proves the entity directory first, through the guards stat runs,
   // so the catalog those guards consult is faked too.
   listSchemas: vi.fn(),
@@ -58,6 +59,7 @@ function decode(bytes: Uint8Array): string {
 describe('read', () => {
   beforeEach(() => {
     vi.mocked(client.estimateSize).mockReset()
+    vi.mocked(client.fetchBoundedRows).mockReset()
     vi.mocked(client.fetchRows).mockReset()
     vi.mocked(_schema.buildDatabaseJson).mockReset()
     vi.mocked(_schema.buildEntitySchemaJson).mockReset()
@@ -135,7 +137,7 @@ describe('read', () => {
 
   it('returns JSONL bytes when row count under threshold', async () => {
     vi.mocked(client.estimateSize).mockResolvedValue([2, 64])
-    vi.mocked(client.fetchRows).mockResolvedValue([
+    vi.mocked(client.fetchBoundedRows).mockResolvedValue([
       { id: 1, name: 'a' },
       { id: 2, name: 'b' },
     ])
@@ -171,7 +173,9 @@ describe('read', () => {
 
   it('serializes Date values as ISO strings', async () => {
     vi.mocked(client.estimateSize).mockResolvedValue([1, 64])
-    vi.mocked(client.fetchRows).mockResolvedValue([{ ts: new Date('2026-04-30T00:00:00.000Z') }])
+    vi.mocked(client.fetchBoundedRows).mockResolvedValue([
+      { ts: new Date('2026-04-30T00:00:00.000Z') },
+    ])
     const out = await read(
       makeAccessor(),
       new PathSpec({
@@ -188,7 +192,7 @@ describe('read', () => {
   // never asked whether the mount could see them.
   it('refuses a table under a schema outside schemas', async () => {
     vi.mocked(client.estimateSize).mockResolvedValue([1, 10])
-    vi.mocked(client.fetchRows).mockResolvedValue([{ id: 1 }])
+    vi.mocked(client.fetchBoundedRows).mockResolvedValue([{ id: 1 }])
     const accessor = makeAccessor({ dsn: 'postgres://h/db', schemas: ['public'] })
     for (const name of ['rows.jsonl', 'schema.json']) {
       await expect(
@@ -202,7 +206,7 @@ describe('read', () => {
         ),
       ).rejects.toMatchObject({ code: 'ENOENT' })
     }
-    expect(client.fetchRows).not.toHaveBeenCalled()
+    expect(client.fetchBoundedRows).not.toHaveBeenCalled()
     expect(_schema.buildEntitySchemaJson).not.toHaveBeenCalled()
     const out = await read(
       accessor,
@@ -221,8 +225,8 @@ describe('read', () => {
   it('does not truncate a whole read to a stale estimate', async () => {
     const table = Array.from({ length: 40 }, (_, id) => ({ id }))
     vi.mocked(client.estimateSize).mockResolvedValue([2, 10])
-    vi.mocked(client.fetchRows).mockImplementation((_a, _s, _e, window) =>
-      Promise.resolve(table.slice(window.offset, window.offset + window.limit)),
+    vi.mocked(client.fetchBoundedRows).mockImplementation((_a, _s, _e, window) =>
+      Promise.resolve(table.slice(0, window.limit)),
     )
     const out = await read(
       makeAccessor({ dsn: 'postgres://h/db', maxReadRows: 100 }),
@@ -238,8 +242,8 @@ describe('read', () => {
   it('refuses a table the estimate undercounted on the rows it has', async () => {
     const table = Array.from({ length: 40 }, (_, id) => ({ id }))
     vi.mocked(client.estimateSize).mockResolvedValue([2, 10])
-    vi.mocked(client.fetchRows).mockImplementation((_a, _s, _e, window) =>
-      Promise.resolve(table.slice(window.offset, window.offset + window.limit)),
+    vi.mocked(client.fetchBoundedRows).mockImplementation((_a, _s, _e, window) =>
+      Promise.resolve(table.slice(0, window.limit)),
     )
     await expect(
       read(
@@ -251,6 +255,35 @@ describe('read', () => {
         }),
       ),
     ).rejects.toThrow(/more than 10 rows/)
-    expect(vi.mocked(client.fetchRows).mock.calls[0]?.[3]).toEqual({ limit: 11, offset: 0 })
+    expect(vi.mocked(client.fetchBoundedRows).mock.calls[0]?.[3]).toEqual({
+      limit: 11,
+      maxBytes: 10 * 1024 * 1024,
+    })
+  })
+})
+
+describe('whole-read byte budget', () => {
+  it('refuses a server-side overflow without using the unbounded fetch', async () => {
+    vi.mocked(client.estimateSize).mockResolvedValue([1, 10])
+    vi.mocked(client.fetchBoundedRows).mockResolvedValue(null)
+    vi.mocked(client.fetchRows).mockClear()
+    await expect(
+      read(
+        makeAccessor({ dsn: 'postgres://h/db', maxReadBytes: 100 }),
+        PathSpec.fromStrPath('/public/tables/users/rows.jsonl'),
+      ),
+    ).rejects.toThrow('more than 100 bytes')
+    expect(client.fetchRows).not.toHaveBeenCalled()
+  })
+
+  it.each([10, 11])('checks rendered UTF-8 bytes at a budget of %i', async (maxReadBytes) => {
+    vi.mocked(client.estimateSize).mockResolvedValue([1, 1])
+    vi.mocked(client.fetchBoundedRows).mockResolvedValue([{ x: 'é' }])
+    const result = read(
+      makeAccessor({ dsn: 'postgres://h/db', maxReadBytes }),
+      PathSpec.fromStrPath('/public/tables/users/rows.jsonl'),
+    )
+    if (maxReadBytes === 10) await expect(result).rejects.toThrow('more than 10 bytes')
+    else expect(decode(await result)).toBe('{"x":"é"}\n')
   })
 })

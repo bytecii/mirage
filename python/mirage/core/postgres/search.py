@@ -144,7 +144,7 @@ async def search_entity(accessor: PostgresAccessor, schema: str, kind: str,
             return [line for line in lines if matcher.search(line)]
     data = await read_rows(accessor, schema, entity, kind=kind)
     return [
-        line for line in data.decode().splitlines() if matcher.search(line)
+        line for line in data.decode().split("\n")[:-1] if matcher.search(line)
     ]
 
 

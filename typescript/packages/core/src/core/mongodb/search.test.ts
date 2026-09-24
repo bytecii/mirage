@@ -106,4 +106,16 @@ describe('mongodb directory search', () => {
     const many = { books: Array.from({ length: 150 }, (_, i) => ({ _id: i, n: 'x' })) }
     expect(await search('/app/collections/books', '"x"', {}, accessor(many))).toHaveLength(150)
   })
+
+  it.each(['/app', '/'])(
+    'aggregates large results at %s',
+    async (path) => {
+      const many = { books: Array.from({ length: 200_000 }, (_, i) => ({ _id: i, n: 'x' })) }
+      const lines = await search(path, '"x"', {}, accessor(many))
+      expect(lines).toHaveLength(200_000)
+      expect(lines[0]).toContain('"_id": 0,')
+      expect(lines.at(-1)).toContain('"_id": 199999,')
+    },
+    20_000,
+  )
 })

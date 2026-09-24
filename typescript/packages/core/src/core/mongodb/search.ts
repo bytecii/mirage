@@ -73,7 +73,9 @@ async function kindLines(
 ): Promise<string[]> {
   const lines: string[] = []
   for (const name of await listCollections(accessor, database, kind)) {
-    lines.push(...(await entityLines(accessor, database, kind, name, matcher)))
+    for (const line of await entityLines(accessor, database, kind, name, matcher)) {
+      lines.push(line)
+    }
   }
   return lines
 }
@@ -109,7 +111,9 @@ const rootSearcher: Searcher<MongoDBAccessor> = async (accessor, _match, query) 
   const matcher = queryMatcher(query)
   const lines: string[] = []
   for (const database of await listDatabases(accessor)) {
-    lines.push(...(await databaseLines(accessor, database, matcher)))
+    for (const line of await databaseLines(accessor, database, matcher)) {
+      lines.push(line)
+    }
   }
   return lines
 }

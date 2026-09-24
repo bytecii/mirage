@@ -133,7 +133,7 @@ async def test_read_rows_returns_jsonl():
     rows = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
     with patch("mirage.core.postgres.read.client") as mc:
         mc.estimate_size = AsyncMock(return_value=(2, 80))
-        mc.fetch_rows = AsyncMock(return_value=rows)
+        mc.fetch_bounded_rows = AsyncMock(return_value=rows)
         out = await read(
             accessor,
             PathSpec(vfs_path="public/tables/users/rows.jsonl",
@@ -206,7 +206,7 @@ async def test_read_rows_empty_returns_empty_bytes():
     accessor = _accessor()
     with patch("mirage.core.postgres.read.client") as mc:
         mc.estimate_size = AsyncMock(return_value=(0, 50))
-        mc.fetch_rows = AsyncMock(return_value=[])
+        mc.fetch_bounded_rows = AsyncMock(return_value=[])
         out = await read(
             accessor,
             PathSpec(vfs_path="public/tables/users/rows.jsonl",
@@ -250,7 +250,7 @@ async def test_a_table_under_a_schema_outside_schemas_is_enoent_to_read():
     accessor = _accessor(schemas=["public"])
     with patch("mirage.core.postgres.read.client") as mc:
         mc.estimate_size = AsyncMock(return_value=(1, 10))
-        mc.fetch_rows = AsyncMock(return_value=[{"id": 1}])
+        mc.fetch_bounded_rows = AsyncMock(return_value=[{"id": 1}])
         for name in ("rows.jsonl", "schema.json"):
             with pytest.raises(FileNotFoundError):
                 await read(
@@ -258,7 +258,7 @@ async def test_a_table_under_a_schema_outside_schemas_is_enoent_to_read():
                     PathSpec(vfs_path=f"secret/tables/users/{name}",
                              virtual=f"/secret/tables/users/{name}",
                              directory="/secret/tables/users"))
-        mc.fetch_rows.assert_not_awaited()
+        mc.fetch_bounded_rows.assert_not_awaited()
         out = await read(
             accessor,
             PathSpec(vfs_path="public/tables/users/rows.jsonl",
@@ -270,7 +270,8 @@ async def test_a_table_under_a_schema_outside_schemas_is_enoent_to_read():
 def _table(n: int):
     rows = [{"id": i} for i in range(n)]
 
-    async def fetch_rows(conn, schema, entity, *, limit, offset):
+    async def fetch_rows(conn, schema, entity, *, limit, max_bytes):
+        offset = 0
         return rows[offset:offset + limit]
 
     return fetch_rows
@@ -284,7 +285,7 @@ async def test_a_whole_read_is_not_truncated_by_a_stale_estimate():
     accessor = _accessor(max_read_rows=100)
     with patch("mirage.core.postgres.read.client") as mc:
         mc.estimate_size = AsyncMock(return_value=(2, 10))
-        mc.fetch_rows = AsyncMock(side_effect=_table(40))
+        mc.fetch_bounded_rows = AsyncMock(side_effect=_table(40))
         out = await read(
             accessor,
             PathSpec(vfs_path="public/tables/users/rows.jsonl",
@@ -298,11 +299,41 @@ async def test_a_table_the_estimate_undercounted_is_refused_on_its_rows():
     accessor = _accessor(max_read_rows=10)
     with patch("mirage.core.postgres.read.client") as mc:
         mc.estimate_size = AsyncMock(return_value=(2, 10))
-        mc.fetch_rows = AsyncMock(side_effect=_table(40))
+        mc.fetch_bounded_rows = AsyncMock(side_effect=_table(40))
         with pytest.raises(ValueError, match="more than 10 rows"):
             await read(
                 accessor,
                 PathSpec(vfs_path="public/tables/users/rows.jsonl",
                          virtual="/public/tables/users/rows.jsonl",
                          directory="/public/tables/users"))
-    assert mc.fetch_rows.await_args.kwargs["limit"] == 11
+    assert mc.fetch_bounded_rows.await_args.kwargs["limit"] == 11
+
+
+@pytest.mark.asyncio
+async def test_whole_read_refuses_bytes_before_serializing():
+    accessor = _accessor(max_read_bytes=100)
+    with patch("mirage.core.postgres.read.client") as mc, \
+            patch("mirage.core.postgres.read.row_line") as render:
+        mc.estimate_size = AsyncMock(return_value=(1, 10))
+        mc.fetch_bounded_rows = AsyncMock(return_value=None)
+        with pytest.raises(ValueError, match="more than 100 bytes"):
+            await read(
+                accessor,
+                PathSpec.from_str_path("/public/tables/users/rows.jsonl"))
+        render.assert_not_called()
+        mc.fetch_rows.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("budget, refuses", [(10, True), (11, False)])
+async def test_whole_read_checks_rendered_utf8_bytes(budget, refuses):
+    accessor = _accessor(max_read_bytes=budget)
+    with patch("mirage.core.postgres.read.client") as mc:
+        mc.estimate_size = AsyncMock(return_value=(1, 1))
+        mc.fetch_bounded_rows = AsyncMock(return_value=[{"x": "é"}])
+        path = PathSpec.from_str_path("/public/tables/users/rows.jsonl")
+        if refuses:
+            with pytest.raises(ValueError, match="more than 10 bytes"):
+                await read(accessor, path)
+        else:
+            assert await read(accessor, path) == '{"x":"é"}\n'.encode()

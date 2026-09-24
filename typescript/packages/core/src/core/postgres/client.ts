@@ -174,6 +174,35 @@ export async function fetchRows(
   return result.rows
 }
 
+/** Fetch native rows only when their database JSON fits the byte budget. */
+export async function fetchBoundedRows(
+  accessor: PostgresAccessor,
+  schema: string,
+  name: string,
+  options: { limit: number; maxBytes: number },
+): Promise<Record<string, unknown>[] | null> {
+  const columns = new Set((await fetchColumns(accessor, schema, name)).map((column) => column.name))
+  let marker = '__mirage_bytes'
+  while (columns.has(marker)) marker += '_'
+  // Keep the gate and fetch in one statement/snapshot. The LEFT JOIN emits
+  // only a null row plus the size on overflow, never the oversized values.
+  const result = await accessor.store.query(
+    'WITH data AS MATERIALIZED (SELECT * FROM ' +
+      `${qualified(schema, name)} LIMIT $1), ` +
+      'budget AS (SELECT COALESCE(SUM(' +
+      'octet_length(row_to_json(data)::text) + 1), 0) AS bytes FROM data) ' +
+      `SELECT data.*, budget.bytes AS ${quoteIdent(marker)} ` +
+      'FROM budget LEFT JOIN data ON budget.bytes <= $2',
+    [options.limit, options.maxBytes],
+  )
+  const size = Number(result.rows[0]?.[marker])
+  if (size > options.maxBytes) return null
+  if (size === 0) return []
+  return result.rows.map((row) =>
+    Object.fromEntries(Object.entries(row).filter(([key]) => key !== marker)),
+  )
+}
+
 export async function fetchColumns(
   accessor: PostgresAccessor,
   schema: string,

@@ -24,6 +24,10 @@ import {
   streamFromBytes,
   Workspace,
 } from '@struktoai/mirage-node'
+import { parseConfigWithSchema, secretStr, z } from '@struktoai/mirage-core/vfs/secrets'
+
+const JiraConfigSchema = z.object({ site: z.string(), token: secretStr() })
+type JiraConfig = z.infer<typeof JiraConfigSchema>
 
 class JiraAccessor extends Accessor {
   constructor(readonly client: JiraClient) {
@@ -36,7 +40,8 @@ declare function readBytes(accessor: JiraAccessor, path: PathSpec): Promise<Uint
 declare function stat(accessor: JiraAccessor, path: PathSpec): Promise<FileStat>
 
 class JiraVFS extends GenericVFS<JiraAccessor> {
-  constructor(config: JiraConfig) {
+  constructor(input: Record<string, unknown>) {
+    const config = parseConfigWithSchema(JiraConfigSchema, input)
     super({
       name: 'jira',
       accessor: new JiraAccessor(makeClient(config)),
@@ -50,6 +55,15 @@ class JiraVFS extends GenericVFS<JiraAccessor> {
       },
       prompt: 'Issues rendered as .json files.',
     })
+  }
+
+  override async close(): Promise<void> {
+    if (this.isClosed) return
+    try {
+      await this.accessor.client.close()
+    } finally {
+      await super.close()
+    }
   }
 }
 
@@ -69,10 +83,12 @@ To make the backend constructible by name (workspace config, snapshots, the daem
 ```ts
 import { registerVfsFactory } from '@struktoai/mirage-node'
 
-registerVfsFactory('jira', (config) => Promise.resolve(new JiraVFS(config as JiraConfig)))
+registerVfsFactory('jira', (config) => Promise.resolve(new JiraVFS(config)))
 ```
 
 The registry takes a factory rather than a class because a browser backend is often reached through a dynamic import; `buildVfs('jira', config)` then works exactly as it does for a builtin.
+
+Validate at the constructor or `static create` boundary so direct construction, factories, and file references enforce the same config. A type assertion does not validate user input. `BaseVFS.open()` now supplies a lazy no-op default; use `override open()` only when setup is necessary. Close clients owned by this VFS in `override close()` and call `super.close()` to release its index. Shared clients belong to the embedding program's lifecycle.
 
 Registering is not needed to mount from config. A `vfs` value carrying a colon names the class directly, the same way a `clis` entry's `cli` value names a spec tree, so a deployment can point at a file next to the config or at a class inside an installed package:
 
@@ -208,7 +224,7 @@ export class MyVFS extends BaseVFS implements VFS {
 
 Set `cachesReads` true only for stable, read-mostly content. `BaseVFS` supplies a no-op `open()`, a no-op `loadState()` and a 600 s `indexTtl`, so declare one only to change it (`override open()` for a backend that must connect before its first read). Override `getState()` to carry the (redacted) config, and `close()` to release any client handles, calling `super.close()`, which closes the index store.
 
-A config-backed backend also sets `needs_override: true` in that state. TypeScript's loader consults no registry, so a mount it was not handed comes back as an empty `RAMVFS`; the flag makes it refuse instead. Python does not need it, which is why the flag is written on only a handful of mounts there and read on none.
+A backend whose content lives in a remote service keeps `needs_override: true` in that state. Both loaders refuse a missing live override; neither substitutes an empty RAM mount. A backend that owns portable content can implement `getState` and `loadState` and register a factory so snapshots rebuild it, as shown above.
 
 ## 6. Snapshot Support
 
@@ -222,6 +238,16 @@ Setting the flag without recording fingerprints does not provide drift detection
 
 ## 7. Verification
 
+Exercise a custom backend at a nested prefix, with globs, unknown file sizes, a read-only mount, and a deliberately omitted mutation. Assert stdout, stderr, and exit status together. Use a small bounded page (three entries with five available) and request counters to check both cold and warm traversal costs. A partial `DirListing` caches positive membership until expiry; it never proves an omitted entry absent, and a subsequent directory read fetches a new page. Custom index stores may override `setPartialDir`; the default conservatively refreshes on lookup.
+
 - Tests for config parsing (an unknown key refused), path layout, every VFS op, command behavior, read-only enforcement, scope enforcement, state redaction, and cleanup.
 - Rebuild the dists (core, then node, then browser), regenerate `spec/` with `typescript/scripts/gen-specs.ts` and `scripts/gen_specs.py`, then run `scripts/check_spec_parity.py`, `scripts/check_layout_parity.py --strict` and `pnpm typecheck`.
 - An integration target in `integ/targets.json` with cases under `integ/vfs/<name>/`, run by both hosts' runners against the same goldens; a SaaS backend gets a fake under `integ/server/`. Any change in observable shell behavior adds a case.
+
+## Updating Existing Backends
+
+Mount configs now reject unknown fields. Remove PostgreSQL's `default_search_limit` and MongoDB's `default_doc_limit` and `default_search_limit` from YAML (or `defaultSearchLimit` and `defaultDocLimit` from TypeScript). The remaining read ceilings are `max_read_rows` / `maxReadRows` and `max_doc_limit` / `maxDocLimit`. PostgreSQL `head`/`tail` and MongoDB `tail` report a clipped window through stderr and a nonzero status; consumers must check status before treating captured output as complete. PostgreSQL refuses whole reads over its thresholds. MongoDB streams and search no longer apply a silent result cap.
+
+`BaseVFS` now provides `open`, `loadState`, and `indexTtl` defaults. Subclasses that replace them need `override` when `noImplicitOverride` is enabled. The hierarchy name helpers sanitize empty and dot-leading labels to reachable names; regenerate stored paths from the listing and keep the provider id as the stable identifier. Enforce read and mutation scope on every entry point, including direct ids, rather than relying on a previous listing.
+
+PostgreSQL whole-file reads check a bounded result’s database JSON byte size before transferring rows, then check the rendered JSONL size. Database formatting can make the first check conservative; use an explicit row window when that guard refuses a read.

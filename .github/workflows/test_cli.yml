@@ -17,6 +17,7 @@ permissions:
       - integ/cross_cache.yaml
       - integ/state_store.*
       - integ/index_store.*
+      - integ/snapshot_smoke.*
       - integ/parity.sh
       - integ/execute_stdin.py
       - integ/fuse/cli_fuse.sh
@@ -68,6 +69,7 @@ jobs:
               - 'integ/cross_cache.yaml'
               - 'integ/state_store.*'
               - 'integ/index_store.*'
+              - 'integ/snapshot_smoke.*'
               - 'integ/parity.sh'
               - 'integ/execute_stdin.py'
               - 'integ/fuse/cli_fuse.sh'
@@ -749,6 +751,9 @@ jobs:
         uses: ./.github/actions/cli-battery-setup
         with:
           libfuse: "true"
+
+      - name: Fast RAM snapshot interop (no services or daemon)
+        run: ./python/.venv/bin/python integ/snapshot_smoke.py
 
       - name: Run CLI feature parity (subshell, sessions, session modes, versioning, fuse)
         run: |

@@ -795,7 +795,9 @@ def _builtin_entry_for_class(cls_path: str) -> VFSEntry | None:
     Args:
         cls_path (str): the saved ``module.ClassName``.
     """
-    mod_name, cls_name = cls_path.rsplit(".", 1)
+    mod_name, separator, cls_name = cls_path.rpartition(".")
+    if not separator:
+        return None
     if mod_name == SCRIPT_MODULE_NAME:
         return None
     for entry in REGISTRY.values():
@@ -825,8 +827,8 @@ def _saved_class(
     if entry is not None:
         return resolve_class(entry.vfs_path), entry
     cls_path = mount_state[MountKey.VFS_CLASS]
-    mod_name, cls_name = cls_path.rsplit(".", 1)
-    if mod_name == SCRIPT_MODULE_NAME:
+    mod_name, separator, cls_name = cls_path.rpartition(".")
+    if not separator or mod_name == SCRIPT_MODULE_NAME:
         return None, None
     try:
         module = importlib.import_module(mod_name)

@@ -111,6 +111,23 @@ describe('mongodb tail pushdown', () => {
     expect(readModule.streamAny).not.toHaveBeenCalled()
   })
 
+  it('refuses the optimized suffix outside databases before querying documents', async () => {
+    const cmd = MONGODB_TAIL[0]
+    if (cmd === undefined) throw new Error('tail not registered')
+    const result = await cmd.fn(makeAccessor(['secret']), [docs('users')], [], {
+      stdin: null,
+      flags: { n: '1' },
+      filetypeFns: null,
+      cwd: '/',
+    })
+    if (result === null) throw new Error('tail returned nothing')
+    const [out, io] = result
+    expect(DEC.decode(await materialize(out))).toBe('')
+    expect(io.exitCode).toBe(1)
+    expect(DEC.decode(await materialize(io.stderr))).toContain('No such file or directory')
+    expect(clientModule.findDocuments).not.toHaveBeenCalled()
+  })
+
   it.each([{ follow: true }, { F: true }])(
     'follows one collection as a change stream (%o)',
     async (mode) => {

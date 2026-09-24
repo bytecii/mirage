@@ -15,10 +15,15 @@
 import { describe, expect, it } from 'vitest'
 import { LangfuseAccessor, type LangfuseAccessorConfig } from '../../accessor/langfuse.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
+import { LANGFUSE_IO } from '../../commands/builtin/langfuse/io.ts'
+import { GenericVFS } from '../../vfs/generic.ts'
+import { Workspace } from '../../workspace/workspace/workspace.ts'
+import { getTestParser } from '../../workspace/fixtures/workspace_fixture.ts'
 import { PathSpec } from '../../types.ts'
 import { stripSlash } from '../../utils/slash.ts'
 import type { LangfuseTransport } from './client.ts'
 import { readdir } from './readdir.ts'
+import { stat } from './stat.ts'
 import { jsonlBytes } from '../render/json.ts'
 
 interface Call {
@@ -148,11 +153,40 @@ describe('langfuse readdir dataset sizes', () => {
 // and test_a_trace_listing_short_of_the_limit_is_the_directory.
 describe('langfuse bounded trace listing', () => {
   const TRACES = { '/api/public/traces': { data: [{ id: 't1' }, { id: 't2' }] } }
+  it('fetches a full page once through the workspace index view', async () => {
+    const transport = new RecordingTransport(TRACES)
+    const vfs = new GenericVFS({
+      name: 'langfuse',
+      accessor: accessor(transport, { defaultTraceLimit: 2 }),
+      io: LANGFUSE_IO,
+    })
+    const ws = new Workspace({ '/nested/lf/': vfs }, { shellParser: await getTestParser() })
+    try {
+      const result = await ws.shell('ls -l /nested/lf/traces')
+      expect(result.exitCode).toBe(0)
+      expect(result.stdoutText).toContain('t1.json')
+      expect(result.stdoutText).toContain('t2.json')
+      expect(transport.calls).toHaveLength(1)
+    } finally {
+      await ws.close()
+    }
+  })
   const cases: [string, LangfuseAccessorConfig][] = [
     ['full page', { defaultTraceLimit: 2 }],
     ['time window', { defaultFromTimestamp: '2026-01-01T00:00:00Z' }],
   ]
   for (const [label, config] of cases) {
+    it(`serves child stats without refetching a partial page (${label})`, async () => {
+      const index = new RAMIndexCacheStore()
+      const transport = new RecordingTransport(TRACES)
+      const acc = accessor(transport, config)
+      const paths = await readdir(acc, spec('/traces'), index)
+      for (const path of paths) await stat(acc, spec(path), index)
+      expect(transport.calls).toHaveLength(1)
+      await readdir(acc, spec('/traces'), index)
+      expect(transport.calls).toHaveLength(2)
+    })
+
     it(`is not cached as the directory (${label})`, async () => {
       const index = new RAMIndexCacheStore()
       const out = await readdir(

@@ -79,6 +79,8 @@ def _scanning_conn(columns, rows) -> MagicMock:
                     }
                 }]
             }]
+        if sql.startswith("WITH data AS MATERIALIZED"):
+            return [{**row, "__mirage_bytes": 100} for row in rows]
         return rows
 
     conn.fetch = AsyncMock(side_effect=fetch)
@@ -96,6 +98,16 @@ def _query(pattern: str, ignore_case: bool = False) -> SearchQuery:
 
 
 USERS = _columns(("id", "integer"), ("name", "text"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+async def test_search_preserves_unicode_separators_inside_jsonl_rows(
+        separator):
+    conn = _scanning_conn(USERS, [{"id": 1, "name": f"left{separator}right"}])
+    lines = await search_entity(_accessor_with_conn(conn), "public", "tables",
+                                "users", _query("name"))
+    assert lines == [f'{{"id":1,"name":"left{separator}right"}}']
 
 
 @pytest.mark.asyncio

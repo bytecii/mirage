@@ -18,7 +18,7 @@ import { countDocuments, findDocuments } from '../../../core/mongodb/client.ts'
 import { resolveGlobOf } from '../generic_bind/index.ts'
 import { MONGODB_IO } from './io.ts'
 import { streamAny } from '../../../core/mongodb/read.ts'
-import { documentsExist } from '../../../core/mongodb/readdir.ts'
+import { documentsExist, entityGuard } from '../../../core/mongodb/readdir.ts'
 import { detectScope } from '../../../core/mongodb/scope.ts'
 import {
   applyElision,
@@ -56,6 +56,7 @@ async function* tailSource(
 ): AsyncIterable<Uint8Array> {
   const scope = detectScope(p)
   if (pushdown && scope.kind === 'documents') {
+    await entityGuard(accessor, scope, p.virtual)
     const cap = accessor.config.maxDocLimit
     const limit = Math.min(lines, cap)
     if (

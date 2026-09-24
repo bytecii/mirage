@@ -62,6 +62,12 @@ function makeAccessor(
           rowCount: 1,
         })
       }
+      if (sql.startsWith('WITH data AS MATERIALIZED')) {
+        return Promise.resolve({
+          rows: rows.map((row) => ({ ...row, __mirage_bytes: 100 })),
+          rowCount: rows.length,
+        })
+      }
       const limit = typeof params[params.length - 2] === 'number' ? Number(params[0]) : rows.length
       return Promise.resolve({ rows: rows.slice(0, limit + 1), rowCount: rows.length })
     }) as PgDriver['query'],
@@ -76,6 +82,16 @@ function query(pattern: string, ignoreCase = false): SearchQuery {
 }
 
 describe('searchEntity', () => {
+  it.each(['\u0085', '\u2028', '\u2029'])(
+    'preserves Unicode separator %j inside a JSONL row',
+    async (separator) => {
+      const { accessor } = makeAccessor(USERS, [{ id: 1, name: `left${separator}right` }])
+      expect(await searchEntity(accessor, 'public', 'tables', 'users', query('name'))).toEqual([
+        `{"id":1,"name":"left${separator}right"}`,
+      ])
+    },
+  )
+
   it('answers the lines grep would print', async () => {
     const { accessor } = makeAccessor(USERS, [
       { id: 1, name: 'alice' },
@@ -132,7 +148,7 @@ describe('searchEntity', () => {
     const { accessor, calls } = makeAccessor(cols, [{ id: 1, rating: 4.5, name: null, at: '2026' }])
     const lines = await searchEntity(accessor, 'public', 'tables', 't', query(pattern))
     expect(lines).toHaveLength(1)
-    expect(calls.some(([sql]) => sql.includes('LIMIT $1 OFFSET $2'))).toBe(true)
+    expect(calls.some(([sql]) => sql.includes('WITH data AS MATERIALIZED'))).toBe(true)
   })
 
   // It used to print the first `defaultSearchLimit` matches and drop the rest

@@ -130,20 +130,35 @@ async def read_rows(accessor: PostgresAccessor,
 
     pool = await accessor.pool()
     async with pool.acquire() as conn:
-        data = await client.fetch_rows(conn,
-                                       schema,
-                                       entity,
-                                       limit=effective_limit,
-                                       offset=effective_offset)
+        if whole:
+            data = await client.fetch_bounded_rows(
+                conn,
+                schema,
+                entity,
+                limit=effective_limit,
+                max_bytes=cfg.max_read_bytes)
+        else:
+            data = await client.fetch_rows(conn,
+                                           schema,
+                                           entity,
+                                           limit=effective_limit,
+                                           offset=effective_offset)
+    if data is None:
+        raise _too_large(cfg, schema, kind, entity,
+                         f"more than {cfg.max_read_bytes} bytes")
     if whole and len(data) > cfg.max_read_rows:
         raise _too_large(cfg, schema, kind, entity,
                          f"more than {cfg.max_read_rows} rows")
     if not data:
         return b""
-    body = ("\n".join(row_line(r) for r in data) + "\n").encode()
-    if whole and len(body) > cfg.max_read_bytes:
-        raise _too_large(cfg, schema, kind, entity, f"{len(body)} bytes")
-    return body
+    body = bytearray()
+    for row in data:
+        line = (row_line(row) + "\n").encode()
+        if whole and len(body) + len(line) > cfg.max_read_bytes:
+            raise _too_large(cfg, schema, kind, entity,
+                             f"more than {cfg.max_read_bytes} bytes")
+        body.extend(line)
+    return bytes(body)
 
 
 read = make_read(detect_scope, {

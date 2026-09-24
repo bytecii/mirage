@@ -44,8 +44,9 @@ PAGES = {
 
 class WikiAccessor(Accessor):
 
-    def __init__(self, pages: dict) -> None:
+    def __init__(self, pages: dict, known_sizes: bool = True) -> None:
         self.pages = pages
+        self.known_sizes = known_sizes
 
 
 def _node(pages: dict, key: str):
@@ -96,7 +97,7 @@ async def stat(
     # The fingerprint is the content's own hash: the stable identity a
     # snapshot records for every read and a load checks for drift.
     return FileStat(name=name,
-                    size=len(data),
+                    size=len(data) if accessor.known_sizes else None,
                     type=FileType.FILE,
                     content=ContentType.TEXT,
                     fingerprint=hashlib.sha256(data).hexdigest()[:16])
@@ -114,7 +115,7 @@ async def write(accessor: WikiAccessor, path: PathSpec, data: bytes) -> None:
 
 # Optional: a bespoke domain verb, registered alongside the generics.
 @command("wiki_titles", vfs="wiki", spec=CommandSpec())
-async def wiki_titles(accessor, *texts: str, **flags: object):
+async def wiki_titles(accessor, paths, texts, opts):
     titles = [
         line[2:] for page in ("guides/quickstart.md", "guides/deploy.md")
         for line in _node(accessor.pages, page).splitlines()
@@ -123,13 +124,13 @@ async def wiki_titles(accessor, *texts: str, **flags: object):
     return ("\n".join(titles) + "\n").encode(), IOResult()
 
 
-def make_io() -> CommandIO:
+def make_io(*, writable: bool = True) -> CommandIO:
     return CommandIO(
         readdir=readdir,
         read_bytes=read_bytes,
         read_stream=partial(stream_from_bytes, read_bytes),
         stat=stat,
-        write=write,
+        write=write if writable else None,
         is_mounted=lambda a: True,
         local=False,
     )
@@ -177,8 +178,8 @@ class FeedVFS(GenericVFS):
 
     def __init__(self) -> None:
         super().__init__(name="feed",
-                         accessor=WikiAccessor(FEED),
-                         io=make_io(),
+                         accessor=WikiAccessor(FEED, known_sizes=False),
+                         io=make_io(writable=False),
                          prompt="A status feed rendered as markdown.",
                          supports_snapshot=True)
 
@@ -195,11 +196,13 @@ async def main():
     # Registered up front: the name is what a snapshot rebuilds the
     # mount through, the same way workspace YAML names it.
     register_vfs("wiki", WikiVFS)
-    ws = Workspace({
-        "/wiki/": WikiVFS(),
-        "/feed/": FeedVFS()
-    },
-                   mode=MountMode.WRITE)
+    ws = Workspace(
+        {
+            "/wiki/": WikiVFS(),
+            "/nested/wiki/": (WikiVFS(), MountMode.READ),
+            "/feed/": FeedVFS()
+        },
+        mode=MountMode.WRITE)
 
     for line in (
             "ls /wiki/guides",
@@ -210,6 +213,12 @@ async def main():
             "wiki_titles",
             "cat /wiki/missing.md",
             "cat /feed/status.md",
+            "cat /wiki/guides/*.md",
+            "cat /nested/wiki/notes.md",
+            "echo changed > /nested/wiki/notes.md",
+            "cat /nested/wiki/notes.md",
+            "wc -c /feed/status.md",
+            "rm /feed/status.md",
     ):
         await show(ws, line)
 

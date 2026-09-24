@@ -31,6 +31,7 @@ export interface Mount {
   vfs: string
   backend: string
   mode?: string
+  config?: Record<string, unknown>
   fixture?: string
   // Mount this prefix over an already-built mount's storage instead of
   // allocating fresh storage, so cp/mv can be exercised against two

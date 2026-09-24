@@ -187,6 +187,41 @@ async def test_registered_content_vfs_rebuilds_without_override():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("registered", [False, True])
+async def test_typescript_kind_locator_restores_without_a_python_class(
+        registered):
+    vfs = build_vfs("ram", {}) if registered else RAMVFS()
+    ws = Workspace({"/ram/": vfs}, mode=MountMode.WRITE)
+    try:
+        await ws.shell("echo portable > /ram/note.txt")
+        state = await to_state_dict(ws)
+    finally:
+        await ws.close()
+    for mount in state[StateKey.MOUNTS]:
+        mount[MountKey.VFS_CLASS] = mount[MountKey.VFS_STATE][VFSStateKey.TYPE]
+    restored = await Workspace.from_state(state)
+    try:
+        result = await restored.shell("cat /ram/note.txt")
+        assert await result.stdout_str() == "portable\n"
+    finally:
+        await restored.close()
+
+
+@pytest.mark.asyncio
+async def test_unknown_typescript_kind_requests_a_mount_override():
+    ws = Workspace({"/ram/": RAMVFS()})
+    try:
+        state = await to_state_dict(ws)
+    finally:
+        await ws.close()
+    mount = state[StateKey.MOUNTS][0]
+    mount[MountKey.VFS_CLASS] = "unknown-vfs"
+    mount[MountKey.VFS_STATE][VFSStateKey.TYPE] = "unknown-vfs"
+    with pytest.raises(ValueError, match="mounts= must include"):
+        build_mount_args(state)
+
+
+@pytest.mark.asyncio
 async def test_a_generic_vfs_keeping_the_default_state_needs_an_override():
     ws = Workspace({"/b/": Bare()}, mode=MountMode.READ)
     try:

@@ -16,13 +16,15 @@ Everything an out-of-tree backend needs is exported from the `mirage` package ro
 ```python
 from functools import partial
 
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 from mirage import (Accessor, CommandIO, FileStat, GenericVFS,
                     stream_from_bytes)
 
 
 class JiraConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     site: str
     token: SecretStr
 
@@ -30,6 +32,9 @@ class JiraConfig(BaseModel):
 class JiraAccessor(Accessor):
     def __init__(self, config: JiraConfig) -> None:
         self.client = make_client(config)
+
+    async def close(self) -> None:
+        await self.client.close()
 
 
 async def readdir(accessor, path, index=None) -> list[str]: ...
@@ -54,6 +59,7 @@ class JiraVFS(GenericVFS):
             ),
             prompt="Issues rendered as .json files.",
         )
+
 ```
 
 Mount it like any builtin: `Workspace({"/jira/": JiraVFS(cfg)})`. A class rather than a
@@ -147,7 +153,9 @@ class MyConfig(BaseModel):
     board_ids: list[str] | None = None
 ```
 
-Create an `Accessor` subclass that owns the client; the base class gives it `pool`, the `SessionPool` every request of the mount rides. Add the VFS name to `VFSName`, export the config and VFS from `vfs/<name>/__init__.py`, and add a lazy `VFSEntry` to `mirage/vfs/registry.py`. The registry entry is required for YAML, snapshots, and the daemon to construct the VFS.
+Create an `Accessor` subclass for an SDK client. For the built-in HTTP kit, subclass `SessionAccessor` from `mirage.accessor.base` and call `super().__init__()`; it owns the `SessionPool` available as `pool`. Plain `Accessor` has only a no-op `close`, so it does not allocate a pool. `BaseVFS.close()` closes the accessor and index; override the accessor's `close()` for an owned client, as above. If the VFS owns additional handles, release those in its `close()` and call `super().close()`. Shared clients need an explicit ownership decision: close them in the embedding program if several mounts use them.
+
+Add the VFS name to `VFSName`, export the config and VFS from `vfs/<name>/__init__.py`, and add a lazy `VFSEntry` to `mirage/vfs/registry.py`. The registry entry lets YAML, snapshots, and the daemon construct a builtin by name.
 
 Keep every import at module scope. If that creates a cycle, change the dependency direction instead of adding a function-local import.
 
@@ -211,7 +219,7 @@ Build the standard set with `make_generic_commands("<name>", IO, overrides={...}
 - A bespoke command (a search push-down, a find over the index) goes through `with_default_provisions(commands, IO.stat, IO.resolve_glob, IO.readdir)`, which keeps the cost estimate the replaced builder would have carried. A command the catalog prices but that has no provision plans as `precision=unknown`, and the gate in `tests/commands/builtin/generic_bind/test_provision.py` fails it.
 - A search push-down built with `make_search` answers only what it can answer exactly as grep over the files would; anything else falls back to the generic scan.
 - A verb (`trello card create`) declares its own `CommandSpec` with every id as a flag, reads flags through `FlagView(opts.flags, spec=SPEC)` (never `flags.get(...)`), registers `write=True` for a mutation, and calls `require_mount_writable()` before the client. Specs declared inline are dumped to `spec/python/vfs_commands/` and compared with TypeScript's, and a prompt that teaches the verbs is pinned against their specs (`tests/vfs/trello/test_prompt.py`).
-- Declare injected parameters such as `stdin`, `index`, and `prefix` explicitly.
+- Handlers take `(accessor, paths, texts, opts)`. Read `stdin`, `index`, `prefix`, and namespace facts from `opts`; do not add injected parameters or a second handler convention.
 
 Export the final list as `COMMANDS` from `commands/builtin/<name>/__init__.py`.
 
@@ -256,6 +264,16 @@ Setting the flag without recording fingerprints does not provide drift detection
 
 ## 7. Verification
 
+Exercise a custom backend at a nested prefix, with globs, unknown file sizes, a read-only mount, and a deliberately omitted mutation. Assert stdout, stderr, and exit status together. Use a small bounded page (three entries with five available) and request counters to check both cold and warm traversal costs. A partial `DirListing` caches positive membership until expiry; it never proves an omitted entry absent, and a subsequent directory read fetches a new page. Custom index stores may override `set_partial_dir`; the default conservatively refreshes on lookup.
+
 - Unit tests for config validation (an unknown key refused), path layout, every VFS op, command behavior, read-only enforcement, scope enforcement, state redaction, and cleanup.
 - Regenerate `spec/` with `scripts/gen_specs.py` and `typescript/scripts/gen-specs.ts`, then run `scripts/check_spec_parity.py` and `scripts/check_layout_parity.py --strict`.
 - An integration target in `integ/targets.json` with cases under `integ/vfs/<name>/`, run by both hosts' runners against the same goldens; a SaaS backend gets a fake under `integ/server/`. Any change in observable shell behavior adds a case.
+
+## Updating Existing Backends
+
+Mount configs now reject unknown fields. Remove PostgreSQL's `default_search_limit` and MongoDB's `default_doc_limit` and `default_search_limit`; the remaining read ceilings are `max_read_rows` and `max_doc_limit`. PostgreSQL `head`/`tail` and MongoDB `tail` report a clipped window through stderr and a nonzero status; consumers must check status before treating captured output as complete. PostgreSQL refuses whole reads over its thresholds. MongoDB streams and search no longer apply a silent result cap.
+
+The hierarchy name helpers sanitize empty and dot-leading labels to reachable names. Regenerate stored paths from the listing instead of retaining an old sanitized label; the provider id remains the stable identifier. Keep read and mutation scope checks on every entry point, including direct ids, rather than relying on what a previous listing exposed.
+
+PostgreSQL whole-file reads check a bounded result’s database JSON byte size before transferring rows, then check the rendered JSONL size. Database formatting can make the first check conservative; use an explicit row window when that guard refuses a read.
