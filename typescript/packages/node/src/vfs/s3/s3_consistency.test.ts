@@ -341,7 +341,7 @@ describe('S3 cache consistency (mocked)', () => {
       { '/s3/': new S3VFS(makeConfig()) },
       { mode: MountMode.WRITE, read: FRESH },
     )
-    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     try {
       await ws.shell('cat /s3/c.txt')
       const real = ws.opsRegistry.call.bind(ws.opsRegistry)
@@ -354,7 +354,7 @@ describe('S3 cache consistency (mocked)', () => {
       const cat = await ws.shell('cat /s3/c.txt; echo survived')
       expect(cat.exitCode).toBe(0)
       expect(DEC.decode(cat.stdout)).toBe('v1survived\n')
-      expect(debug.mock.calls.length > 0).toBe(true)
+      expect(warn.mock.calls.length > 0).toBe(true)
     } finally {
       vi.restoreAllMocks()
       await ws.close()
