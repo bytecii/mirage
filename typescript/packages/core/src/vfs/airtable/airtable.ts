@@ -28,7 +28,7 @@ import { AIRTABLE_OPS } from '../../ops/airtable/index.ts'
 import type { RegisteredOp } from '../../ops/registry.ts'
 import { VFSName, type FileStat, type PathSpec } from '../../types.ts'
 import { BaseVFS, type VFS } from '../base.ts'
-import { AIRTABLE_PROMPT } from './prompt.ts'
+import { AIRTABLE_PROMPT, AIRTABLE_WRITE_PROMPT } from './prompt.ts'
 
 const resolveGlob = makeResolveGlob(readdir)
 
@@ -51,6 +51,7 @@ export class AirtableVFS extends BaseVFS implements VFS {
   readonly sizesAlwaysKnown: boolean = false
   readonly supportsSnapshot: boolean = false
   readonly prompt: string = AIRTABLE_PROMPT
+  readonly writePrompt: string = AIRTABLE_WRITE_PROMPT
   readonly accessor: AirtableAccessor
 
   private readonly config: AirtableConfig

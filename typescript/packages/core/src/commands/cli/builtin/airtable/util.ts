@@ -1,0 +1,104 @@
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+import { AirtableAccessor } from '../../../../accessor/airtable.ts'
+import type { AirtableConfig } from '../../../../core/airtable/config.ts'
+import { IOResult, materialize, type ByteSource } from '../../../../io/types.ts'
+import { eacces, formatFsError, isEacces } from '../../../../utils/errors.ts'
+import type { CommandFnResult } from '../../../config.ts'
+import { UsageError } from '../../../errors.ts'
+import { FlagView } from '../../../spec/flag_view.ts'
+import { usageHint } from '../../../spec/usage.ts'
+import type { CLIInvocation, CLIVerbFn } from '../../types.ts'
+
+export const PROG = 'airtable'
+
+const DEC = new TextDecoder()
+
+export type Verb = (
+  accessor: AirtableAccessor,
+  inv: CLIInvocation,
+  fl: FlagView,
+) => Promise<CommandFnResult>
+
+/** A refusal in the voice the parser refuses a bad flag in, exit 2. */
+export function usageError(prog: string, message: string): UsageError {
+  return new UsageError(`${prog}: ${message}\n${usageHint(prog)}`)
+}
+
+/** Refuse an operand on a verb that takes none. */
+export function noOperands(prog: string, texts: readonly string[]): void {
+  if (texts.length > 0) throw usageError(prog, `unrecognized arguments: ${texts.join(' ')}`)
+}
+
+/** The one operand a verb requires, named as its usage line names it. */
+export function oneOperand(prog: string, texts: readonly string[], name: string): string {
+  const first = texts[0]
+  if (first === undefined) throw usageError(prog, `the following arguments are required: ${name}`)
+  noOperands(prog, texts.slice(1))
+  return first
+}
+
+/** The operand a verb may take once, null when the line has none. */
+export function optionalOperand(prog: string, texts: readonly string[]): string | null {
+  noOperands(prog, texts.slice(1))
+  return texts[0] ?? null
+}
+
+/**
+ * The base a line addresses, refused (EACCES) when `baseIds` excludes it.
+ * Refused here, before any request, so a base the install was not given is
+ * never reached: the scope the mount enforces on reads.
+ */
+export function scopedBase(config: AirtableConfig, baseId: string): string {
+  const wanted = config.baseIds
+  if (wanted !== undefined && !wanted.includes(baseId)) throw eacces(baseId)
+  return baseId
+}
+
+/** A flag's value decoded as a JSON object. */
+export function jsonObject(prog: string, flag: string, text: string): Record<string, unknown> {
+  let value: unknown
+  try {
+    value = JSON.parse(text) as unknown
+  } catch {
+    throw usageError(prog, `${flag} must be valid JSON`)
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw usageError(prog, `${flag} must be a JSON object`)
+  }
+  return value as Record<string, unknown>
+}
+
+/** Piped input as text, a leading byte order mark dropped. */
+export async function stdinText(stdin: ByteSource): Promise<string> {
+  return DEC.decode(await materialize(stdin))
+}
+
+/**
+ * Run one verb on its own accessor, rendering a scope refusal as
+ * `airtable: <base-id>: Permission denied`, exit 1.
+ */
+export function run(verb: Verb): CLIVerbFn {
+  return async (inv: CLIInvocation): Promise<CommandFnResult> => {
+    const fl = new FlagView(inv.flags, inv.spec)
+    const accessor = new AirtableAccessor(inv.config as AirtableConfig)
+    try {
+      return await verb(accessor, inv, fl)
+    } catch (err) {
+      if (!isEacces(err)) throw err
+      return [null, new IOResult({ exitCode: 1, stderr: formatFsError(PROG, err) })]
+    }
+  }
+}

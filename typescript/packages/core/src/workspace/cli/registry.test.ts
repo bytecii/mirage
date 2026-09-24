@@ -22,6 +22,7 @@ import { DISCORD } from '../../commands/cli/builtin/discord/index.ts'
 import { GIT } from '../../commands/cli/builtin/git/index.ts'
 import { GWS } from '../../commands/cli/builtin/gws/index.ts'
 import { LINEAR } from '../../commands/cli/builtin/linear/index.ts'
+import { AIRTABLE } from '../../commands/cli/builtin/airtable/index.ts'
 import { NTN } from '../../commands/cli/builtin/ntn/index.ts'
 import { SLACK } from '../../commands/cli/builtin/slack/index.ts'
 import { CLIRegistry } from './registry.ts'
@@ -223,6 +224,7 @@ const BUILTIN_CLIS: readonly (readonly [string, CLISpec])[] = [
   ['discord', DISCORD],
   ['ntn', NTN],
   ['linear', LINEAR],
+  ['airtable', AIRTABLE],
   ['git', GIT],
 ]
 
