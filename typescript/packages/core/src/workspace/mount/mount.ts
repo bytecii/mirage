@@ -14,7 +14,6 @@
 
 import { ContextScope } from '../../utils/context_scope.ts'
 import { captureSessionContext } from '../../context/session_context.ts'
-
 import { mountKey } from '../../utils/key_prefix.ts'
 import { coerceReadPolicy } from './read_policy.ts'
 import { KeyLock } from '../../cache/lock.ts'
@@ -40,10 +39,15 @@ import type { CommandSpec, FlagValue } from '../../commands/spec/types.ts'
 import { CachableAsyncIterator } from '../../io/cachable_iterator.ts'
 import type { ByteSource } from '../../io/types.ts'
 import { IOResult } from '../../io/types.ts'
-import { runWithCacheManager } from '../../cache/context.ts'
+import { captureCacheContext, runWithCacheManager } from '../../cache/context.ts'
 import type { CacheManager } from '../../cache/manager.ts'
 import { mergeSignals } from '../abort.ts'
-import { runWithMountContext, runWithRevisions, withMountContext } from '../../observe/context.ts'
+import {
+  captureRecordingContext,
+  runWithMountContext,
+  runWithRevisions,
+  withMountContext,
+} from '../../observe/context.ts'
 import { uuid7 } from '../../utils/ids.ts'
 import { VFSActivity } from './activity.ts'
 import type { RegisteredOp } from '../../ops/registry.ts'
@@ -775,7 +779,11 @@ function wrapMountStreams(
 ): [ByteSource | null, IOResult] {
   const [stream, io] = result
   const seen = new Map<ByteSource, ByteSource>()
-  const scope = new ContextScope(captureSessionContext())
+  const scope = new ContextScope([
+    ...captureSessionContext(),
+    ...captureRecordingContext(),
+    captureCacheContext(),
+  ])
   const wrap = (obj: ByteSource): ByteSource => {
     if (obj instanceof Uint8Array) return obj
     const hit = seen.get(obj)
