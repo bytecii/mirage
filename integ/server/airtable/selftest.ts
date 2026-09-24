@@ -115,6 +115,7 @@ const noView = (v: string): Json => ({
 const VIEW_ID_MISSING = {
   error: { type: 'VIEW_ID_NOT_FOUND', message: 'View viwZZZZZZZZZZZZZZ not found' },
 }
+const FOREIGN_VIEW = { error: { type: 'FAILED_STATE_CHECK' } }
 const FORMULA_INVALID = {
   error: {
     type: 'INVALID_FILTER_BY_FORMULA',
@@ -497,6 +498,13 @@ async function reads(origin: string): Promise<void> {
     {},
     422,
     VIEW_ID_MISSING,
+  )
+  await expect(
+    "another table's view id fails the state check",
+    `${features}?view=viwRelGrid0000001`,
+    {},
+    422,
+    FOREIGN_VIEW,
   )
   const resorted = await listAll(features, [
     ['view', 'Done'],
