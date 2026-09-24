@@ -57,15 +57,14 @@ class OpenFile:
     append_at: int | None = None
 
 
-def opened(file_obj: object) -> OpenFile:
-    """The handle behind a file request, narrowed from asyncssh's ``object``.
+def opened(file_obj: Any) -> OpenFile:
+    """Validate the opaque handle asyncssh passes to a file callback.
 
-    asyncssh hands every file request back whatever ``open`` returned, and
-    types that parameter as ``object``, so an override keeps it (narrowing
-    breaks Liskov) and this is the one place it becomes an ``OpenFile``.
+    ``Any`` at the library boundary keeps the overrides compatible with
+    asyncssh. Only a validated ``OpenFile`` reaches the mount operations.
 
     Args:
-        file_obj (object): what asyncssh passed back.
+        file_obj (Any): what asyncssh passed back.
 
     Returns:
         OpenFile: the handle.
@@ -321,7 +320,7 @@ class MirageSFTPServer(asyncssh.SFTPServer):
         p = self._path(path)
         return to_attrs(await self._call(lambda core: core.getattr(p)))
 
-    async def fstat(self, file_obj: object) -> asyncssh.SFTPAttrs:
+    async def fstat(self, file_obj: Any) -> asyncssh.SFTPAttrs:
         f = opened(file_obj)
         return to_attrs(await
                         self._call(lambda core: core.getattr(f.path, f.fh)))
@@ -333,8 +332,7 @@ class MirageSFTPServer(asyncssh.SFTPServer):
     async def lsetstat(self, path: bytes, attrs: asyncssh.SFTPAttrs) -> None:
         await self.setstat(path, attrs)
 
-    async def fsetstat(self, file_obj: object,
-                       attrs: asyncssh.SFTPAttrs) -> None:
+    async def fsetstat(self, file_obj: Any, attrs: asyncssh.SFTPAttrs) -> None:
         f = opened(file_obj)
 
         def resize(core: MountCore) -> None:
@@ -359,12 +357,12 @@ class MirageSFTPServer(asyncssh.SFTPServer):
                      attrs: asyncssh.SFTPAttrs) -> OpenFile:
         raise asyncssh.SFTPOpUnsupported("SFTP v5+ open is not supported")
 
-    async def read(self, file_obj: object, offset: int, size: int) -> bytes:
+    async def read(self, file_obj: Any, offset: int, size: int) -> bytes:
         f = opened(file_obj)
         return await self._call(
             lambda core: core.read(f.path, size, offset, f.fh))
 
-    async def write(self, file_obj: object, offset: int, data: bytes) -> int:
+    async def write(self, file_obj: Any, offset: int, data: bytes) -> int:
         f = opened(file_obj)
         if f.append_at is not None:
             offset = f.append_at
@@ -372,11 +370,11 @@ class MirageSFTPServer(asyncssh.SFTPServer):
         return await self._call(
             lambda core: core.write(f.path, data, offset, f.fh))
 
-    async def fsync(self, file_obj: object) -> None:
+    async def fsync(self, file_obj: Any) -> None:
         f = opened(file_obj)
         await self._call(lambda core: core.flush(f.path, f.fh))
 
-    async def close(self, file_obj: object) -> None:
+    async def close(self, file_obj: Any) -> None:
         f = opened(file_obj)
         await self._call(lambda core: core.release(f.fh))
 
@@ -412,17 +410,17 @@ class MirageSFTPServer(asyncssh.SFTPServer):
     async def link(self, oldpath: bytes, newpath: bytes) -> None:
         raise asyncssh.SFTPOpUnsupported("hard links are not supported")
 
-    async def lock(self, file_obj: object, offset: int, length: int,
+    async def lock(self, file_obj: Any, offset: int, length: int,
                    flags: int) -> None:
         raise asyncssh.SFTPOpUnsupported("byte-range locks are not supported")
 
-    async def unlock(self, file_obj: object, offset: int, length: int) -> None:
+    async def unlock(self, file_obj: Any, offset: int, length: int) -> None:
         raise asyncssh.SFTPOpUnsupported("byte-range locks are not supported")
 
     async def statvfs(self, path: bytes) -> asyncssh.SFTPVFSAttrs:
         return await self._call(vfs_attrs)
 
-    async def fstatvfs(self, file_obj: object) -> asyncssh.SFTPVFSAttrs:
+    async def fstatvfs(self, file_obj: Any) -> asyncssh.SFTPVFSAttrs:
         return await self._call(vfs_attrs)
 
     async def exit(self) -> None:
