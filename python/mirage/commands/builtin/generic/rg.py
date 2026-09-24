@@ -59,16 +59,6 @@ async def fifo_stat(path: str) -> FileStat:
     return FileStat(name=path, type=FileType.FIFO)
 
 
-async def read_all(source: AsyncIterator[bytes], path: str) -> bytes:
-    """A stdin operand's bytes, behind the one-file reader rg_full calls.
-
-    Args:
-        source (AsyncIterator[bytes]): the operand's turn on stdin.
-        path (str): the operand's name, which the source already is.
-    """
-    return await materialize(source)
-
-
 async def selects_any(source: AsyncIterator[bytes], pat: re.Pattern[str],
                       invert: bool) -> bool:
     """Whether ``source`` selects a line, read no further than the first.
@@ -159,6 +149,80 @@ def parse_flags(fl: FlagView, never_match: bool) -> RgFlags:
         context_after=context_after,
         context_before=context_before,
     )
+
+
+async def stream_hits(source: AsyncIterator[bytes],
+                      pat: re.Pattern[str],
+                      f: RgFlags,
+                      io: IOResult,
+                      context: bool = False) -> list[str]:
+    """One input's records, scanned as it streams.
+
+    ``grep_stream`` stops reading at -m's last selected line and that
+    line's trailing context, so a pipe that goes on past the answer is
+    never waited on, and only what it prints is held.
+
+    Args:
+        source (AsyncIterator[bytes]): the input's bytes.
+        pat (re.Pattern[str]): the compiled pattern list.
+        f (RgFlags): the parsed flags.
+        io (IOResult): receives exit status 0 once a line is selected.
+        context (bool): render -A/-B/-C, which a labelled search drops.
+    """
+    printed = await materialize(
+        grep_stream(source,
+                    pat,
+                    invert=f.invert,
+                    line_numbers=f.line_numbers,
+                    only_matching=f.only_matching,
+                    max_count=f.max_count,
+                    count_only=f.count_only,
+                    after_context=f.context_after if context else 0,
+                    before_context=f.context_before if context else 0,
+                    io=io,
+                    byte_offsets=f.byte_offsets))
+    return split_lines(decode_line(printed))
+
+
+async def operand_records(source: AsyncIterator[bytes], name: str,
+                          pat: re.Pattern[str], f: RgFlags, label: bool,
+                          io: IOResult) -> list[str]:
+    """A stdin operand's records in the full-scan branch, never read whole.
+
+    -l and --files-without-match are settled at the first selected line
+    and -m at its last one. ripgrep searches stdin whatever --type or
+    --glob say, since it never filters an explicit operand, and a
+    labelled search drops context here as ``rg_full`` drops it for a
+    labelled file.
+
+    Args:
+        source (AsyncIterator[bytes]): the operand's turn on stdin.
+        name (str): the name the operand's records carry.
+        pat (re.Pattern[str]): the compiled pattern list.
+        f (RgFlags): the parsed flags.
+        label (bool): prefix each record with ``name``.
+        io (IOResult): receives exit status 0 once a line is selected.
+    """
+    if f.files_only or f.files_without_match:
+        # -m0 reads nothing at all.
+        if f.max_count == 0:
+            return []
+        hit = await selects_any(source, pat, f.invert)
+        if hit:
+            io.exit_code = 0
+        # -l lists a stdin that selected a line, --files-without-match one
+        # that selected none.
+        return [name] if hit == f.files_only else []
+    scanned = IOResult(exit_code=1)
+    hits = await stream_hits(source, pat, f, scanned, context=not label)
+    if scanned.exit_code == 0:
+        io.exit_code = 0
+    if f.count_only:
+        # grep_stream prints a zero count; ripgrep lists nothing for it.
+        if not grep_count_has_matches(hits):
+            return []
+        return [f"{name}:{hits[0]}" if label else hits[0]]
+    return [f"{name}:{hit}" for hit in hits] if label else hits
 
 
 async def rg(
@@ -256,29 +320,17 @@ async def rg(
             # `grep -r` reads its status the same way.
             full_io = IOResult(exit_code=1)
             for p in paths:
-                fed = is_stdin(p)
-                if fed and (f.files_only or f.files_without_match):
-                    # Decided at the first selected line, like the listing
-                    # of a line with no operand; -m0 reads nothing at all.
-                    if f.max_count != 0:
-                        hit = await selects_any(operand_stream(p), pat,
-                                                f.invert)
-                        if hit:
-                            full_io.exit_code = 0
-                        # -l lists a stdin that selected a line,
-                        # --files-without-match one that selected none.
-                        if hit == f.files_only:
-                            results.append(operand_name(p))
+                if is_stdin(p):
+                    records = await operand_records(operand_stream(p),
+                                                    operand_name(p), pat, f,
+                                                    label, full_io)
+                    results.extend(records)
                     continue
-                # stdin is an explicit operand, which ripgrep never
-                # filters by --type or --glob. An explicit file still is
-                # filtered here: the search push-downs hand the candidates
-                # they narrowed a walk to in as explicit files.
                 hits_full = await rg_full(
                     rd,
-                    fifo_stat if fed else st,
-                    partial(read_all, operand_stream(p)) if fed else rb,
-                    operand_name(p) if fed else p.virtual,
+                    st,
+                    rb,
+                    p.virtual,
                     pattern,
                     ignore_case=f.ignore_case,
                     invert=f.invert,
@@ -292,17 +344,16 @@ async def rg(
                     whole_word=f.whole_word,
                     context_before=f.context_before,
                     context_after=f.context_after,
-                    file_type=None if fed else f.file_type,
-                    glob_pattern=None if fed else f.glob_pattern,
+                    file_type=f.file_type,
+                    glob_pattern=f.glob_pattern,
                     hidden=f.hidden,
                     warnings=warnings_f,
-                    file_prefix=operand_name(p) if label else None,
+                    file_prefix=p.raw_path if label else None,
                     no_filename=f.no_filename,
                     byte_offsets=f.byte_offsets,
                     io=full_io,
                 )
-                results.extend(hits_full if fed else respell_raw(
-                    hits_full, p.virtual, p.raw_path))
+                results.extend(respell_raw(hits_full, p.virtual, p.raw_path))
             stderr = format_optional_records(warnings_f)
             # ripgrep's status under --files-without-match follows the
             # listing, not the matching: 0 when a file was listed, 1 when
@@ -325,26 +376,32 @@ async def rg(
             # `grep_generic` reads selection off.
             matched = False
             for p in paths:
-                try:
-                    raw = (await materialize(operand_stream(p))
-                           if is_stdin(p) else await rb(p.virtual))
-                except FS_ERRORS as exc:
-                    # ripgrep reports the failed operand and keeps
-                    # searching the rest.
-                    warnings.append(f"rg: {p.raw_path}: {fs_strerror(exc)}")
-                    continue
-                # `decode_line`, not a replacing decode: `grep_lines`
-                # counts its -b offsets back out of this text, and one
-                # invalid byte read as U+FFFD is three bytes wide there,
-                # so `rg -b a f1 f2` over `\xff\na\n` answered 4 where
-                # GNU and the single-operand path (which counts raw
-                # bytes in `grep_stream`) both say 2.
-                data = split_lines(decode_line(raw))
                 file_io = IOResult(exit_code=1)
                 name = operand_name(p)
-                hits = grep_lines(name, data, pat, f.invert, f.line_numbers,
-                                  f.count_only, f.files_only, f.only_matching,
-                                  f.max_count, file_io, f.byte_offsets)
+                if is_stdin(p):
+                    # Streamed, so -m stops reading a pipe at its answer.
+                    hits = await stream_hits(operand_stream(p), pat, f,
+                                             file_io)
+                else:
+                    try:
+                        raw = await rb(p.virtual)
+                    except FS_ERRORS as exc:
+                        # ripgrep reports the failed operand and keeps
+                        # searching the rest.
+                        warnings.append(
+                            f"rg: {p.raw_path}: {fs_strerror(exc)}")
+                        continue
+                    # `decode_line`, not a replacing decode: `grep_lines`
+                    # counts its -b offsets back out of this text, and one
+                    # invalid byte read as U+FFFD is three bytes wide
+                    # there, so `rg -b a f1 f2` over `\xff\na\n` answered 4
+                    # where GNU and the single-operand path (which counts
+                    # raw bytes in `grep_stream`) both say 2.
+                    data = split_lines(decode_line(raw))
+                    hits = grep_lines(name, data, pat, f.invert,
+                                      f.line_numbers, f.count_only,
+                                      f.files_only, f.only_matching,
+                                      f.max_count, file_io, f.byte_offsets)
                 matched = matched or file_io.exit_code == 0
                 if f.count_only:
                     if grep_count_has_matches(hits):

@@ -16,7 +16,7 @@ import re
 from collections.abc import AsyncIterator, Callable
 
 from mirage.commands.builtin.constants import BINARY_EXTENSIONS
-from mirage.commands.builtin.grep_context import grep_context_lines
+from mirage.commands.builtin.grep_context import grep_context_stream
 from mirage.commands.builtin.grep_offsets import (MatchOffsets, decode_line,
                                                   encode_line, line_offsets,
                                                   prefix_of)
@@ -275,19 +275,12 @@ async def grep_stream(
         return
     has_context = after_context > 0 or before_context > 0
     if has_context and not count_only and not only_matching:
-        all_lines: list[str] = []
-        async for raw_line in AsyncLineIterator(source):
-            all_lines.append(decode_line(raw_line))
-        for chunk in grep_context_lines(
-                all_lines,
-                pat,
-                invert,
-                line_numbers,
-                max_count,
-                after_context,
-                before_context,
-                byte_offsets,
-        ):
+        # Context only ever accompanies a selected line, so the first chunk
+        # is the selection.
+        async for chunk in grep_context_stream(source, pat, invert,
+                                               line_numbers, max_count,
+                                               after_context, before_context,
+                                               byte_offsets):
             if io is not None:
                 io.exit_code = 0
             yield chunk

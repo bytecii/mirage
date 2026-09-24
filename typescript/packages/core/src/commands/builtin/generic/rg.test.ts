@@ -76,6 +76,12 @@ async function* endlessAfterFirstMatch(): AsyncIterable<Uint8Array> {
   throw new Error('the probe read past the first selected line')
 }
 
+// eslint-disable-next-line @typescript-eslint/require-await
+async function* pipeThatGoesOn(first: string): AsyncIterable<Uint8Array> {
+  yield ENC.encode(first)
+  throw new Error('read past the answer')
+}
+
 describe('rgGeneric - operand', () => {
   it('reads stdin', async () => {
     // ripgrep 14.1.1: `printf 'b\n' | rg b -` prints `b`, exit 0. The
@@ -139,6 +145,18 @@ describe('rgGeneric - operand', () => {
       'a\nb\nc\n',
       0,
     ])
+  })
+
+  it.each([
+    [{ m: '1', C: '1' }, false, 'a\nb\nc\n'],
+    [{ m: '1', type: 'py' }, false, 'b\n'],
+    [{ m: '1' }, true, '<stdin>:b\n'],
+  ])('stops reading at max count: %j', async (flags, besideFile, want) => {
+    // -m is answered once its last selected line (and that line's trailing
+    // context) is out, so a pipe that goes on is never waited on: in the
+    // full-scan branch (context, --type) and beside a file.
+    const paths = besideFile ? [stdinOperand(), spec('/a.txt')] : [stdinOperand()]
+    expect(await run(paths, 'b', flags, pipeThatGoesOn('a\nb\nc\n'))).toEqual([want, 0])
   })
 
   it('reads /dev/stdin under its own name', async () => {

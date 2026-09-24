@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { grepContextLines } from './grep_context.ts'
+import { grepContextLines, grepContextStream } from './grep_context.ts'
 import { decodeLine } from './grep_offsets.ts'
 
 // one\ntwo abc\nthree\nfour\nfive abc\nsix\n, the fixture every row below was
@@ -170,4 +170,53 @@ describe('offsets over a smuggled byte', () => {
 
 it('renders nothing when nothing matched', () => {
   expect(render(LINES, { pat: /zzz/, afterContext: 1 })).toEqual([])
+})
+
+// eslint-disable-next-line @typescript-eslint/require-await
+async function* chunks(data: Uint8Array, size: number): AsyncIterable<Uint8Array> {
+  for (let start = 0; start < data.length; start += size) yield data.subarray(start, start + size)
+}
+
+// eslint-disable-next-line @typescript-eslint/require-await
+async function* thenFail(data: Uint8Array): AsyncIterable<Uint8Array> {
+  yield data
+  throw new Error('read past the answer')
+}
+
+async function stream(source: AsyncIterable<Uint8Array>, o: Opts = {}): Promise<number[][]> {
+  const out: number[][] = []
+  for await (const chunk of grepContextStream(
+    source,
+    o.pat ?? /abc/,
+    o.invert ?? false,
+    o.lineNumbers ?? false,
+    o.maxCount ?? null,
+    o.afterContext ?? 0,
+    o.beforeContext ?? 0,
+    o.byteOffsets ?? false,
+  )) {
+    out.push([...chunk])
+  }
+  return out
+}
+
+describe('grepContextStream', () => {
+  it.each([
+    [{ afterContext: 1, beforeContext: 1, lineNumbers: true }],
+    [{ beforeContext: 1, byteOffsets: true }],
+    [{ afterContext: 2, maxCount: 1 }],
+    [{ afterContext: 1, invert: true }],
+  ])('renders what the lines render: %j', async (o: Opts) => {
+    const data = ENC.encode(LINES.join('\n') + '\n')
+    expect((await stream(chunks(data, 3), o)).flat()).toEqual(render(LINES, o).flat())
+  })
+
+  it('stops once max count and its context are out', async () => {
+    // The answer to -m1 -A1 is settled by the line after the match, so a pipe
+    // that goes on after it is never read.
+    const source = thenFail(ENC.encode('one\ntwo abc\nthree\n'))
+    expect(await stream(source, { maxCount: 1, afterContext: 1 })).toEqual(
+      bytes('two abc\n', 'three\n'),
+    )
+  })
 })

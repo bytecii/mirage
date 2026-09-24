@@ -31,6 +31,8 @@ import {
   type GrepStreamOptions,
 } from '../grep_scan.ts'
 import { rgFull } from '../rg_scan.ts'
+import { decodeLine } from '../grep_offsets.ts'
+import { splitLines } from '../utils/lines.ts'
 import { isStdin, resolveSource, stdinStream } from '../utils/stream.ts'
 import { formatRecords } from '../utils/output.ts'
 
@@ -158,6 +160,46 @@ async function selectsAny(
   return probe.exitCode === 0
 }
 
+// A stdin operand's records in the full-scan branch, never read whole: -l and
+// --files-without-match are settled at the first selected line and -m at its
+// last one and that line's trailing context, so a pipe that goes on past the
+// answer is never waited on. ripgrep searches stdin whatever --type or --glob
+// say, since it never filters an explicit operand, and a labelled search drops
+// context here as rgFull drops it for a labelled file.
+async function operandRecords(
+  source: AsyncIterable<Uint8Array>,
+  name: string,
+  pat: RegExp,
+  flags: RgFlags,
+  label: boolean,
+  io: IOResult,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  if (flags.filesOnly || flags.filesWithoutMatch) {
+    // -m0 reads nothing at all.
+    if (flags.maxCount === 0) return []
+    const hit = await selectsAny(source, pat, flags, signal)
+    if (hit) io.exitCode = 0
+    // -l lists a stdin that selected a line, --files-without-match one that
+    // selected none.
+    return hit === flags.filesOnly ? [name] : []
+  }
+  const scanned = new IOResult({ exitCode: 1 })
+  const scan = grepStream(source, pat, {
+    ...streamOptionsOf(flags, scanned, signal),
+    ...(label ? { afterContext: 0, beforeContext: 0 } : {}),
+  })
+  const hits = splitLines(decodeLine(await materialize(scan)))
+  if (scanned.exitCode === 0) io.exitCode = 0
+  if (flags.countOnly) {
+    // grepStream prints a zero count; ripgrep lists nothing for it.
+    const [count] = hits
+    if (count === undefined || count === '0') return []
+    return [label ? `${name}:${count}` : count]
+  }
+  return label ? hits.map((hit) => `${name}:${hit}`) : hits
+}
+
 export async function rgGeneric(
   paths: PathSpec[],
   texts: string[],
@@ -274,35 +316,32 @@ export async function rgGeneric(
     // same way.
     const fullIO = new IOResult({ exitCode: 1 })
     for (const p of paths) {
-      const fed = isStdin(p)
-      if (fed && (flags.filesOnly || flags.filesWithoutMatch)) {
-        // Decided at the first selected line, like the listing of a line with
-        // no operand; -m0 reads nothing at all.
-        if (flags.maxCount !== 0) {
-          const hit = await selectsAny(stream(p), pat, flags, opts.signal)
-          if (hit) fullIO.exitCode = 0
-          // -l lists a stdin that selected a line, --files-without-match one
-          // that selected none.
-          if (hit === flags.filesOnly) results.push(operandName(p))
-        }
+      if (isStdin(p)) {
+        results.push(
+          ...(await operandRecords(
+            stream(p),
+            operandName(p),
+            pat,
+            flags,
+            label,
+            fullIO,
+            opts.signal,
+          )),
+        )
         continue
       }
-      // stdin is an explicit operand, which ripgrep never filters by --type
-      // or --glob. An explicit file still is filtered here: the search
-      // push-downs hand the candidates they narrowed a walk to in as explicit
-      // files.
       const hitsFull = await rgFull(
         readdirFn,
-        fed ? fifoStat : statFn,
-        fed ? () => materialize(stream(p)) : readBytesFn,
-        fed ? operandName(p) : p.virtual,
+        statFn,
+        readBytesFn,
+        p.virtual,
         exprText,
-        fed ? { ...fullOpts, fileType: null, globPattern: null } : fullOpts,
+        fullOpts,
         warnings,
-        label ? operandName(p) : null,
+        label ? p.rawPath : null,
         fullIO,
       )
-      results.push(...(fed ? hitsFull : respellRaw(hitsFull, p.virtual, p.rawPath)))
+      results.push(...respellRaw(hitsFull, p.virtual, p.rawPath))
     }
     const stderr = warnings.length > 0 ? ENC.encode(warnings.join('\n') + '\n') : undefined
     // `exitCodeFor` is the one contract both commands share: an operand the

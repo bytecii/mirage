@@ -945,3 +945,33 @@ async def test_rg_dev_stdin_reads_stdin_under_its_own_name():
     out, io = await _run([_stdin_operand("/dev/stdin"),
                           _spec("/a.txt")], ["world"], {}, b"world\n", files)
     assert (out, io.exit_code) == (b"/dev/stdin:world\n/a.txt:world\n", 0)
+
+
+async def _pipe_that_goes_on(first: bytes):
+    yield first
+    raise AssertionError("read past the answer")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags, paths, want", [
+    ({
+        "m": "1",
+        "C": "1"
+    }, [None], b"a\nb\nc\n"),
+    ({
+        "m": "1",
+        "type": "py"
+    }, [None], b"b\n"),
+    ({
+        "m": "1"
+    }, [None, "/a.txt"], b"<stdin>:b\n"),
+])
+async def test_rg_dash_stops_reading_at_max_count(flags, paths, want):
+    # -m is answered once its last selected line (and that line's
+    # trailing context) is out, so a pipe that goes on is never waited
+    # on: in the full-scan branch (context, --type) and beside a file.
+    operands = [_stdin_operand() if p is None else _spec(p) for p in paths]
+    out, io = await _run(operands, ["b"], flags,
+                         _pipe_that_goes_on(b"a\nb\nc\n"),
+                         {"/a.txt": b"hello\nworld\n"})
+    assert (out, io.exit_code) == (want, 0)
