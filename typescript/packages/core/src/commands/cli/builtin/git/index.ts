@@ -25,7 +25,7 @@ import { mv } from './mv.ts'
 import { reset } from './reset.ts'
 import { restore } from './restore.ts'
 import { rm } from './rm.ts'
-import { config, remote, revList, showRef } from './inspect.ts'
+import { config, remote, revList, version, showRef } from './inspect.ts'
 import { show, diffTree } from './show.ts'
 import { status } from './status.ts'
 import { switchBranch } from './switch.ts'
@@ -70,7 +70,63 @@ const DATE_OPTION = new Option({
   description: 'Date display format',
 })
 
+const DIFF_OPTIONS = [
+  new Option({ long: '--name-status', description: 'Show changed paths and status' }),
+  new Option({ long: '--name-only', description: 'Show changed paths instead of the patch' }),
+  new Option({ long: '--stat', description: 'Show the diffstat table instead of the patch' }),
+  new Option({ long: '--numstat', description: 'Show added and deleted line counts per path' }),
+  new Option({ long: '--shortstat', description: 'Show only the diffstat summary line' }),
+  new Option({ long: '--summary', description: 'Summarize creations, deletions and mode changes' }),
+  new Option({ short: '-p', long: '--patch', description: 'Show the patch' }),
+  new Option({ short: '-s', long: '--no-patch', description: 'Suppress all diff output' }),
+  new Option({
+    long: '--no-ext-diff',
+    description: 'Accepted for compatibility; there are no external diff drivers to disable',
+  }),
+  new Option({
+    short: '-M',
+    long: '--find-renames',
+    type: 'str',
+    valueOptional: true,
+    description: 'Detect renames with an optional similarity threshold',
+  }),
+  new Option({ long: '--no-renames', description: 'Turn off rename detection' }),
+  new Option({ long: '--raw', description: 'Show the raw diff format' }),
+]
+
+const MERGE_OPTIONS = [
+  new Option({ short: '-m', description: 'Show merge diffs separately against each parent' }),
+  new Option({ short: '-c', description: 'Show combined merge diffs' }),
+  new Option({ long: '--cc', description: 'Show dense combined merge diffs' }),
+  new Option({ long: '--first-parent', description: 'Follow and compare only the first parent' }),
+  new Option({ long: '--diff-merges', type: 'str', description: 'Select merge diff mode' }),
+]
+
 const LOG_OPTIONS = [
+  ...MERGE_OPTIONS,
+  new Option({
+    long: '--after',
+    type: 'str',
+    description: 'Commits more recent than a date, like --since',
+  }),
+  new Option({
+    long: '--before',
+    type: 'str',
+    description: 'Commits older than a date, like --until',
+  }),
+  new Option({
+    long: '--max-parents',
+    type: 'int',
+    description: 'Show only commits with at most this many parents',
+  }),
+  new Option({
+    long: '--min-parents',
+    type: 'int',
+    description: 'Show only commits with at least this many parents',
+  }),
+  new Option({ long: '--merges', description: 'Show only merge commits' }),
+  new Option({ long: '--no-merges', description: 'Leave out merge commits' }),
+
   DATE_OPTION,
   new Option({ long: '--decorate', description: 'Print ref names on commits' }),
   new Option({
@@ -104,20 +160,7 @@ const LOG_OPTIONS = [
   }),
 ]
 
-const SHOW_OPTIONS = [
-  DATE_OPTION,
-  new Option({ long: '--name-status', description: 'Show changed paths and status' }),
-  new Option({ long: '--summary', description: 'Summarize creations, deletions and mode changes' }),
-  new Option({ long: '--stat', description: 'Show the diffstat table instead of the patch' }),
-  new Option({ short: '-s', long: '--no-patch', description: 'Suppress all diff output' }),
-  new Option({ long: '--name-only', description: 'Show changed paths instead of the patch' }),
-  new Option({
-    long: '--no-ext-diff',
-    description: 'Accepted for compatibility; there are no external diff drivers to disable',
-  }),
-  PRETTY_OPTION,
-  FORMAT_OPTION,
-]
+const SHOW_OPTIONS = [...DIFF_OPTIONS, ...MERGE_OPTIONS, DATE_OPTION, PRETTY_OPTION, FORMAT_OPTION]
 
 const STATUS_OPTIONS = [
   new Option({
@@ -153,9 +196,19 @@ const ADD_OPTIONS = [
     description: 'Stage changes to tracked files only',
   }),
   new Option({ short: '-f', long: '--force', description: 'Stage paths an ignore rule covers' }),
+  new Option({
+    short: '-v',
+    long: '--verbose',
+    description: 'Name each path as it is added or removed',
+  }),
 ]
 
 const COMMIT_OPTIONS = [
+  new Option({
+    short: '-a',
+    long: '--all',
+    description: 'Stage modified and deleted tracked files first',
+  }),
   // Required, not defaulted: git would open an editor without it, and a mount
   // has none to open.
   new Option({ short: '-m', long: '--message', type: 'str', description: 'Commit message' }),
@@ -265,6 +318,12 @@ export const GIT = new CLISpec({
   options: [DIRECTORY_OPTION],
   subcommands: [
     new CLISpec({
+      name: 'version',
+      aliases: ['--version', '-v'],
+      fn: version,
+      description: 'Show the Mirage Git implementation version',
+    }),
+    new CLISpec({
       name: 'remote',
       description: 'List remotes',
       fn: remote,
@@ -274,8 +333,16 @@ export const GIT = new CLISpec({
       name: 'config',
       description: 'Read repository configuration',
       fn: config,
-      options: [new Option({ long: '--get', description: 'Get a configuration value' })],
-      positional: [new Operand({ type: 'str', name: 'name', required: true })],
+      options: [
+        new Option({ long: '--get', description: 'Get a configuration value' }),
+        new Option({ short: '-l', long: '--list', description: 'List every variable and value' }),
+        new Option({ long: '--show-origin', description: 'Show the file each value comes from' }),
+        new Option({
+          long: '--get-regexp',
+          description: 'Get the variables whose names match a regular expression',
+        }),
+      ],
+      positional: [new Operand({ type: 'str', name: 'name' })],
     }),
     new CLISpec({ name: 'show-ref', description: 'List references', fn: showRef, rest: REVISION }),
     new CLISpec({
@@ -306,7 +373,7 @@ export const GIT = new CLISpec({
       name: 'log',
       description: 'Show commit logs',
       fn: log,
-      options: LOG_OPTIONS,
+      options: [...LOG_OPTIONS, ...DIFF_OPTIONS],
       rest: REVISION,
     }),
     new CLISpec({
@@ -320,6 +387,7 @@ export const GIT = new CLISpec({
       name: 'diff',
       description: 'Show changes between commits',
       fn: diff,
+      options: DIFF_OPTIONS,
       rest: REVISION,
     }),
     new CLISpec({
@@ -342,6 +410,7 @@ export const GIT = new CLISpec({
       name: 'reset',
       description: 'Unstage, putting the index back to HEAD',
       fn: reset,
+      options: [new Option({ short: '-q', long: '--quiet', description: 'Only report errors' })],
       rest: PATHSPEC,
       write: true,
     }),

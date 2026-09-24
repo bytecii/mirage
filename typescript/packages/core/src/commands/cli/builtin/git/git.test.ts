@@ -294,9 +294,9 @@ describe('git show', () => {
   })
 
   it('refuses an option this build lacks', async () => {
-    const [code, , err] = await run('show --raw HEAD')
+    const [code, , err] = await run('show --word-diff HEAD')
     expect(code).toBe(128)
-    expect(err).toBe('fatal: unrecognized argument: --raw\n')
+    expect(err).toBe('fatal: unrecognized argument: --word-diff\n')
   })
 
   it('prints a format: header with no trailing newline like git', async () => {

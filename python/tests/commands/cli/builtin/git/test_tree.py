@@ -44,9 +44,9 @@ def leaf(name: str):
 def test_tree_shape():
     assert GIT.name == "git"
     assert [v.name for v in GIT.subcommands] == [
-        "remote", "config", "show-ref", "rev-list", "diff-tree", "status",
-        "log", "show", "diff", "branch", "add", "reset", "commit", "checkout",
-        "switch", "restore", "rm", "mv", "tag"
+        "version", "remote", "config", "show-ref", "rev-list", "diff-tree",
+        "status", "log", "show", "diff", "branch", "add", "reset", "commit",
+        "checkout", "switch", "restore", "rm", "mv", "tag"
     ]
 
 

@@ -192,6 +192,28 @@ async def test_sed_count_is_per_line():
 
 
 @pytest.mark.asyncio
+async def test_sed_empty_match_after_a_match_is_skipped():
+    rb, wb, _ = _make_backend({})
+    output, _ = await sed([],
+                          "s/b*/X/g;s/x*/-/g",
+                          read_bytes=rb,
+                          write_bytes=wb,
+                          stdin=b"abbb\nabxd\n")
+    assert output == b"-X-a-X-\n-X-a-X-X-d-X-\n"
+
+
+@pytest.mark.asyncio
+async def test_sed_skipped_empty_match_is_not_counted():
+    rb, wb, _ = _make_backend({})
+    output, _ = await sed([],
+                          "s/b*/X/3",
+                          read_bytes=rb,
+                          write_bytes=wb,
+                          stdin=b"abbb\n")
+    assert output == b"abbb\n"
+
+
+@pytest.mark.asyncio
 async def test_sed_p_flag_prints_substituted_line_twice():
     rb, wb, _ = _make_backend({})
     output, _ = await sed([],

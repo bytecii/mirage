@@ -22,12 +22,11 @@ import { GitError, NoWorkspaceError } from './errors.ts'
 import { short } from './format.ts'
 import { readHead } from './refs.ts'
 import { branchLine, longFormat, shortFormat } from './render.ts'
-import { opened, type Repo } from './repo.ts'
+import { configBool, opened, type Repo } from './repo.ts'
 import type { Dispatch, HeadRef } from './types.ts'
 import { fatal } from './util.ts'
 import { UNTRACKED_ALL, UNTRACKED_NO, UNTRACKED_NORMAL } from './worktree.ts'
-
-const ENC = new TextEncoder()
+import { encodeText } from '../../../../shell/bytes.ts'
 
 /** The parsed shape of a `git status` invocation. */
 interface StatusFlags {
@@ -73,8 +72,9 @@ export async function renderReport(
   links: LinkView | null = null,
 ): Promise<string> {
   const [rows, state, noCommits] = await collect(repo, dispatch, statPath, UNTRACKED_NORMAL, links)
+  const fully = await configBool(repo, 'core.quotepath', true)
   const commit = head.commit === null ? null : short(head.commit, repo.abbrev)
-  return longFormat(rows, head.branch, commit, noCommits, state.merging, false)
+  return longFormat(rows, head.branch, commit, noCommits, state.merging, false, fully)
 }
 
 /**
@@ -104,10 +104,11 @@ export async function status(inv: CLIInvocation): Promise<CommandFnResult> {
       parsed.untracked,
       doors.ns?.links ?? null,
     )
+    const fully = await configBool(repo, 'core.quotepath', true)
     const commit = head.commit === null ? null : short(head.commit, repo.abbrev)
     const body =
       parsed.porcelain || parsed.short
-        ? shortFormat(rows, parsed.branch ? branchLine(head.branch, noCommits) : null)
+        ? shortFormat(rows, parsed.branch ? branchLine(head.branch, noCommits) : null, fully)
         : longFormat(
             rows,
             head.branch,
@@ -115,8 +116,9 @@ export async function status(inv: CLIInvocation): Promise<CommandFnResult> {
             noCommits,
             state.merging,
             parsed.untracked === UNTRACKED_NO,
+            fully,
           )
-    return [ENC.encode(body), new IOResult()]
+    return [encodeText(body), new IOResult()]
   } catch (err) {
     if (err instanceof GitError) return fatal(err)
     throw err

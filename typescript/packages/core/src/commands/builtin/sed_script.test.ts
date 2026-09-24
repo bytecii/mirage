@@ -88,6 +88,16 @@ describe('sed s/// flags', () => {
     expect(sed('s/hi/HI/p', 'hi\nbye\n', true)).toBe('HI\n')
   })
 
+  it('skips an empty match touching the previous match', () => {
+    expect(sedE('s/b*/X/g', 'abbb\n')).toBe('XaX\n')
+    expect(sed('s/x*/-/g', 'abxd\n')).toBe('-a-b-d-\n')
+  })
+
+  it('does not count a skipped empty match', () => {
+    expect(sedE('s/b*/X/2', 'abbb\n')).toBe('aX\n')
+    expect(sedE('s/b*/X/3', 'abbb\n')).toBe('abbb\n')
+  })
+
   it('count combines with case-insensitive flag', () => {
     expect(sed('s/o/X/2i', 'oOoO\n')).toBe('oXoO\n')
   })
