@@ -118,9 +118,16 @@ jq -c 'select(.fields.Status == "Todo") | .fields.Status = "Done"' \
 
 | Exit | When |
 | --- | --- |
-| `1` | an API error (`airtable record get: Airtable API error (GET /app.../tbl.../rec...): HTTP 404: MODEL_ID_NOT_FOUND: Record not found`), a `record list` past the cap, a partial write |
+| `1` | an API error (`airtable record get: Airtable API error (GET /app.../tbl.../rec...): HTTP 403: INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND: ...`, Airtable's answer for a record that does not exist), a `record list` past the cap |
+| `1` | a partial write: the records that landed on stdout, and the error that stopped the rest on stderr without a prefix, `Airtable API error (POST ...): ...` |
 | `1` | a base outside `base_ids`: `airtable <verb>: <base-id>: Permission denied`, refused before any request |
-| `2` | a usage error: a missing flag or operand, malformed `--fields`, or a bad stdin line |
+| `2` | a usage error: a missing flag or operand, malformed `--fields`, or a bad stdin line (`stdin line 2: unknown key "id"`) |
+
+The `airtable <verb>:` prefix is the head word the CLI was installed under, so a
+second install under another name refuses in that name. A refusal the verb
+decides itself (bad `--fields`, a bad stdin line) prints its message alone, the
+way the `gh` and `ntn` CLIs do; one the argument parser decides (a missing
+required flag) keeps the parser's prefix and `--help` hint.
 
 Requests are paced per base at `requests_per_second`. A read retries a `429`,
 `502` or `503`; a write retries only a `429` for the rate limit, after
