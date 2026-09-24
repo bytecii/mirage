@@ -89,6 +89,7 @@ export class ClientPool<C extends MinimalClient> {
   private readonly ctor: ClientCtor<C>
   private readonly clients = new Map<string, C>()
   private readonly seeded = new Map<string, Promise<SeededTemplate>>()
+  private readonly seedKeys = new Map<string, string>()
   private builds = 0
   private template: string | null = null
 
@@ -158,7 +159,10 @@ export class ClientPool<C extends MinimalClient> {
   // cached, both callers saw the miss before either could store a result, and
   // each paid a full seed and left an orphaned template file behind. Storing
   // the promise means the second caller awaits the first caller's build.
-  seededTemplate(key: string, seed: (db: C) => Promise<SeedReport[]>): Promise<SeededTemplate> {
+  private seededTemplate(
+    key: string,
+    seed: (db: C) => Promise<SeedReport[]>,
+  ): Promise<SeededTemplate> {
     const live = this.seeded.get(key)
     if (live !== undefined) return live
     const made = this.buildTemplate(seed)
@@ -207,26 +211,53 @@ export class ClientPool<C extends MinimalClient> {
     }
   }
 
-  clientFromSeeded(run: string, template: SeededTemplate): C {
-    return this.clientFrom(run, template.file)
+  async clientFromSeeded(
+    run: string,
+    key: string,
+    seed: (db: C) => Promise<SeedReport[]>,
+  ): Promise<{ client: C; rows: SeedReport[] }> {
+    // Register before awaiting the build, so another run dropping its last
+    // reference cannot unlink a template this run is about to copy.
+    this.seedKeys.set(run, key)
+    try {
+      const template = await this.seededTemplate(key, seed)
+      return { client: this.clientFrom(run, template.file), rows: template.rows }
+    } catch (err: unknown) {
+      await this.releaseSeed(run)
+      throw err
+    }
+  }
+
+  private async releaseSeed(run: string): Promise<void> {
+    const key = this.seedKeys.get(run)
+    this.seedKeys.delete(run)
+    if (key === undefined || [...this.seedKeys.values()].includes(key)) return
+    const pending = this.seeded.get(key)
+    this.seeded.delete(key)
+    if (pending !== undefined) rmSync((await pending).file, { force: true })
   }
 
   // /reset recreates the run rather than deleting rows: a copy of the
   // template is one syscall and cannot leave a table the fake forgot to clear.
   async recreate(run: string): Promise<C> {
+    await this.drop(run)
+    return this.client(run)
+  }
+
+  async drop(run: string): Promise<void> {
     await this.close(run)
     const file = this.fileFor(run)
     for (const suffix of ['', '-journal', '-wal', '-shm']) {
       rmSync(`${file}${suffix}`, { force: true })
     }
-    return this.client(run)
+    await this.releaseSeed(run)
   }
 
   async close(run: string): Promise<void> {
     const live = this.clients.get(run)
     if (live === undefined) return
-    this.clients.delete(run)
     await live.$disconnect()
+    this.clients.delete(run)
   }
 
   runs(): string[] {
@@ -240,5 +271,6 @@ export class ClientPool<C extends MinimalClient> {
     rmSync(this.root, { recursive: true, force: true })
     this.template = null
     this.seeded.clear()
+    this.seedKeys.clear()
   }
 }

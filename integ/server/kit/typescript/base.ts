@@ -18,7 +18,7 @@ import { ClientPool } from './db.ts'
 import type { ClientCtor, MinimalClient } from './db.ts'
 import type { KitConfig } from './config.ts'
 import type { Dmmf } from './seed.ts'
-import type { KitRoute } from './route.ts'
+import type { KitRoute, Router } from './route.ts'
 import type { JsonValue, MintSharing, Reply, ResetResponse } from './types.ts'
 
 // What a service implements. Everything else in the kit is machinery around
@@ -142,9 +142,11 @@ export class RunState {
 export interface Runtime<C extends MinimalClient> {
   fake: Fake<C>
   pool: ClientPool<C>
+  router: Router<C>
   fixtureRoot: string
   state: (run: string) => RunState
   reset: (body: JsonValue) => Promise<ResetResponse>
+  drop: (run: string) => Promise<void>
   dispose: () => Promise<void>
 }
 

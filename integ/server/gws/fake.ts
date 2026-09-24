@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { Prisma } from '../../generated/gws/index.js'
-import { parseConfig, schemaFor, unroutedLine } from '../kit/typescript/index.ts'
+import { parseConfig, route as kitRoute, schemaFor, unroutedLine } from '../kit/typescript/index.ts'
 import type { Dmmf, Fake, KitConfig, KitRoute } from '../kit/typescript/index.ts'
 import { calendarRoutes } from './calendar/routes.ts'
 import { docsRoutes } from './docs/routes.ts'
@@ -39,11 +39,9 @@ export const GWS_DEFAULT_PORT = 19999
 // server stop deleting each other's world, and a fresh run served by COPYING an
 // already-seeded template rather than reseeding from scratch.
 //
-// gws does NOT read the tenant off a bearer token. Every google client here
-// sends `Authorization: Bearer gws-integ-token`, the same string for everybody,
-// so a bearer fallback would file every caller under one tenant named after
-// that constant. The tenant is the mirage header or the query parameter, which
-// is what the adapters already have a base URL to carry.
+// Legacy Google credentials select the default tenant. The kit's opt-in
+// runTokenPattern can carry a separate run and tenant in the refresh token;
+// /token preserves that credential for the subsequent bearer requests.
 //
 // `mintSharing` is inert now and kept off the config for that reason: gws mints
 // through its own persisted Counter rows, because the kit's Minter lives in
@@ -82,11 +80,24 @@ function catchAllRoutes(): KitRoute<C>[] {
   )
 }
 
+function refreshToken(
+  _headers: Record<string, string | string[] | undefined>,
+  url: URL,
+  body: Buffer,
+): string | undefined {
+  if (url.pathname !== '/token') return undefined
+  return new URLSearchParams(body.toString('utf8')).get('refresh_token') ?? undefined
+}
+
 // The fake OAuth exchange every google client makes before its first call.
 function tokenRoutes(): KitRoute<C>[] {
   return [
-    route('POST', '/token', () =>
-      ok({ access_token: 'gws-integ-token', expires_in: 3600, token_type: 'Bearer' }),
+    kitRoute('POST', '/token', (ctx) =>
+      ok({
+        access_token: refreshToken(ctx.headers, ctx.url, ctx.body) ?? 'gws-integ-token',
+        expires_in: 3600,
+        token_type: 'Bearer',
+      }),
     ),
   ]
 }
@@ -160,6 +171,7 @@ export const gwsFake: Fake<C> = {
   client: PrismaClient,
   dmmf: Prisma.dmmf as unknown as Dmmf,
   routes: gwsRoutes,
+  requestToken: refreshToken,
   afterSeed: async (db, tenant, _counts, extras, _fixtureRoot, epoch) => {
     const st = await loadState(db, tenant, epoch === undefined ? undefined : Date.parse(epoch))
     applyExtras(st, extras)
