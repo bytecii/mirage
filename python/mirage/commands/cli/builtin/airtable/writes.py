@@ -23,35 +23,17 @@ from mirage.core.airtable.client import (create_comment, create_records,
                                          delete_records, list_tables,
                                          update_records)
 from mirage.core.airtable.config import AirtableConfig
-from mirage.core.airtable.normalize import (deletions_jsonl, normalize_comment,
-                                            records_jsonl, to_json_bytes)
+from mirage.core.airtable.constants import COMPUTED_TYPES, LINE_KEYS
+from mirage.core.airtable.normalize import (as_row, as_rows, deletions_jsonl,
+                                            normalize_comment, records_jsonl,
+                                            to_json_bytes)
 from mirage.core.render.json import compact_json_text
 from mirage.io.stream import yield_bytes
 from mirage.io.types import IOResult
 
 from mirage.commands.cli.builtin.airtable.util import (  # isort: skip
-    Outcome, json_object, no_operands, one_operand, optional_operand,
-    parse_json, run, scoped_base, stdin_text, usage_error)
-
-LINE_KEYS = frozenset({"record_id", "created_time", "fields"})
-
-# The field types Airtable computes and refuses a write to. A mount line
-# carries every one of them, so a line piped back drops them first.
-COMPUTED_TYPES = frozenset({
-    "aiText",
-    "autoNumber",
-    "button",
-    "count",
-    "createdBy",
-    "createdTime",
-    "externalSyncSource",
-    "formula",
-    "lastModifiedBy",
-    "lastModifiedTime",
-    "lookup",
-    "multipleLookupValues",
-    "rollup",
-})
+    Outcome, find_table, json_object, no_operands, one_operand,
+    optional_operand, parse_json, run, scoped_base, stdin_text, usage_error)
 
 Rows = list[dict[str, Any]]
 
@@ -109,12 +91,10 @@ async def writable(accessor: AirtableAccessor, base_id: str, table: str,
         table (str): the table, by id or by name.
         cells (Rows): each record's cell map, keyed by field name.
     """
-    tables = await list_tables(accessor, base_id)
-    found = (next((t for t in tables if t.get("id") == table), None) or next(
-        (t for t in tables if t.get("name") == table), None))
+    found = find_table(await list_tables(accessor, base_id), table)
     computed = {
         f.get("name")
-        for f in (found or {}).get("fields") or []
+        for f in as_rows(as_row(found).get("fields"))
         if f.get("type") in COMPUTED_TYPES
     }
     return [{k: v for k, v in c.items() if k not in computed} for c in cells]

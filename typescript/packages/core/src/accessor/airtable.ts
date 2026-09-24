@@ -13,12 +13,12 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { Accessor } from './base.ts'
+import type { AirtableConfig } from '../core/airtable/config.ts'
 import {
   DEFAULT_BASE_URL,
   DEFAULT_MAX_READ_RECORDS,
   DEFAULT_REQUESTS_PER_SECOND,
-  type AirtableConfig,
-} from '../core/airtable/config.ts'
+} from '../core/airtable/constants.ts'
 import { RateLimiter } from '../core/api/rate_limit.ts'
 
 /**

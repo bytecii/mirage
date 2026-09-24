@@ -14,6 +14,8 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  asRow,
+  asRows,
   deletionsJsonl,
   normalizeBase,
   normalizeBaseSummary,
@@ -131,5 +133,14 @@ describe('airtable normalize', () => {
       '{"record_id":"rec1","deleted":true}\n',
     )
     expect(deletionsJsonl([]).byteLength).toBe(0)
+  })
+
+  it('counts only json objects as rows', () => {
+    expect(asRow({ a: 1 })).toEqual({ a: 1 })
+    expect(asRow([{ a: 1 }])).toEqual({})
+    expect(asRow(null)).toEqual({})
+    expect(asRows([{ a: 1 }, 'x', null, [2], { b: 2 }])).toEqual([{ a: 1 }, { b: 2 }])
+    expect(asRows({ a: 1 })).toEqual([])
+    expect(asRows(undefined)).toEqual([])
   })
 })

@@ -100,6 +100,21 @@ def scoped_base(config: AirtableConfig, base_id: str) -> str:
     return base_id
 
 
+def find_table(tables: list[dict[str, Any]],
+               ref: str) -> dict[str, Any] | None:
+    """The schema table a line names, by id first and then by name.
+
+    Airtable takes either spelling in a path, and an id can never be
+    another table's name, so the id match wins.
+
+    Args:
+        tables (list[dict[str, Any]]): the base's schema tables.
+        ref (str): the table, by id or by name.
+    """
+    return (next((t for t in tables if t.get("id") == ref), None) or next(
+        (t for t in tables if t.get("name") == ref), None))
+
+
 def _no_constant(name: str) -> Any:
     raise ValueError(f"{name} is not JSON")
 

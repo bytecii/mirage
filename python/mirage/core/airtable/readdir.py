@@ -17,8 +17,8 @@ from typing import Any
 from mirage.accessor.airtable import AirtableAccessor
 from mirage.cache.index import IndexEntry
 from mirage.core.airtable.client import list_bases, list_tables
-from mirage.core.airtable.normalize import (normalize_base, normalize_table,
-                                            to_json_bytes)
+from mirage.core.airtable.normalize import (as_rows, normalize_base,
+                                            normalize_table, to_json_bytes)
 from mirage.core.airtable.pathing import (base_dirname, table_dirname,
                                           view_filename)
 from mirage.core.airtable.scope import detect_scope
@@ -83,7 +83,7 @@ def view_children(table: dict[str, Any]) -> Listing:
         table (dict[str, Any]): a schema table.
     """
     entries: Listing = []
-    for view in table.get("views") or []:
+    for view in as_rows(table.get("views")):
         filename = view_filename(view)
         entries.append((filename,
                         IndexEntry(

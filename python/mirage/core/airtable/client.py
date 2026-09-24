@@ -12,8 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import json
 from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import replace
 from functools import partial
 from typing import Any, TypeVar
 from urllib.parse import quote, urlencode
@@ -21,87 +21,18 @@ from urllib.parse import quote, urlencode
 import aiohttp
 
 from mirage.accessor.airtable import AirtableAccessor
+from mirage.core.airtable.constants import MAX_BATCH, META_KEY, PAGE_SIZE
+from mirage.core.airtable.errors import AirtableAPIError, error_parts
+from mirage.core.airtable.normalize import as_row, as_rows
 from mirage.core.api.client import RetryPolicy, api_request
 from mirage.core.api.paginate import PageShape, cursor_items, offset_cursor
 from mirage.vfs.secrets import reveal_secret
-
-PAGE_SIZE = 100
-
-# Metadata calls (the base listing) are metered per account rather than
-# per base; they pace under their own key.
-META_KEY = "meta"
-
-NOT_FOUND_TYPES = frozenset({
-    "NOT_FOUND",
-    "MODEL_ID_NOT_FOUND",
-    "INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND",
-})
-
-# Airtable takes at most ten records in one create, update or delete.
-MAX_BATCH = 10
 
 BASES = PageShape(items_key="bases", next_cursor=offset_cursor)
 RECORDS = PageShape(items_key="records", next_cursor=offset_cursor)
 COMMENTS = PageShape(items_key="comments", next_cursor=offset_cursor)
 
 T = TypeVar("T")
-
-
-class AirtableAPIError(RuntimeError):
-    """A >= 400 answer from the Airtable API.
-
-    Args:
-        message (str): the rendered failure, naming the call.
-        status (int | None): the HTTP status.
-        error_type (str | None): Airtable's error type
-            (``AUTHENTICATION_REQUIRED``, ``NOT_FOUND``, ...).
-    """
-
-    def __init__(self,
-                 message: str,
-                 *,
-                 status: int | None = None,
-                 error_type: str | None = None) -> None:
-        super().__init__(message)
-        self.status = status
-        self.error_type = error_type
-
-    @property
-    def not_found(self) -> bool:
-        """Whether the call named something the token cannot see.
-
-        Airtable answers a well-formed id it cannot resolve with a 403,
-        not a 404: the permission and the existence checks share one
-        answer so a token cannot probe for bases it was not granted.
-        """
-        return (self.status == 404 or self.error_type in NOT_FOUND_TYPES)
-
-
-def error_parts(text: str) -> tuple[str | None, str | None]:
-    """Airtable's error type and message, from any of its body shapes.
-
-    The API answers ``{"error": {"type", "message"}}``, the same object
-    without a message, or a bare ``{"error": "NOT_FOUND"}`` for an
-    unmatched route or a malformed id.
-
-    Args:
-        text (str): the response body.
-    """
-    try:
-        data = json.loads(text)
-    except ValueError:
-        return None, None
-    if not isinstance(data, dict):
-        return None, None
-    error = data.get("error")
-    if isinstance(error, str):
-        return error, None
-    if isinstance(error, dict):
-        kind = error.get("type")
-        message = error.get("message")
-        return (kind if isinstance(kind, str) else None,
-                message if isinstance(message, str) else None)
-    return None, None
 
 
 def _error_of(resp: aiohttp.ClientResponse, text: str, *,
@@ -137,13 +68,7 @@ RETRY = RetryPolicy(
 # A write retries only the 429, which Airtable answers before it applies
 # anything. A 502 or 503 may come back after the records landed, and a
 # retried create would make them twice.
-WRITE_RETRY = RetryPolicy(
-    statuses=frozenset({429}),
-    max_retries=2,
-    max_backoff=30.0,
-    retryable=_retryable,
-    min_delays={429: 30.0},
-)
+WRITE_RETRY = replace(RETRY, statuses=frozenset({429}))
 
 
 def _headers(accessor: AirtableAccessor) -> dict[str, str]:
@@ -191,6 +116,10 @@ def _table_path(base_id: str, table: str) -> str:
     return f"/{_segment(base_id)}/{_segment(table)}"
 
 
+def _record_path(base_id: str, table: str, record_id: str) -> str:
+    return f"{_table_path(base_id, table)}/{_segment(record_id)}"
+
+
 def _batches(items: Sequence[T]) -> list[Sequence[T]]:
     return [
         items[start:start + MAX_BATCH]
@@ -198,22 +127,11 @@ def _batches(items: Sequence[T]) -> list[Sequence[T]]:
     ]
 
 
-def _records_of(data: Any) -> list[dict[str, Any]]:
-    rows = data.get("records") if isinstance(data, dict) else None
-    return [r for r in rows
-            if isinstance(r, dict)] if isinstance(rows, list) else []
-
-
-async def _bases_page(accessor: AirtableAccessor,
-                      cursor: str | None) -> dict[str, Any]:
-    params: dict[str, str | int] | None = ({
-        "offset": cursor
-    } if cursor else None)
-    data = await _get(accessor,
-                      "/meta/bases",
-                      params=params,
-                      pace_key=META_KEY)
-    return data if isinstance(data, dict) else {}
+async def _page(accessor: AirtableAccessor, pace_key: str, path: str,
+                params: dict[str,
+                             str | int], cursor: str | None) -> dict[str, Any]:
+    query = {**params, "offset": cursor} if cursor else params
+    return as_row(await _get(accessor, path, params=query, pace_key=pace_key))
 
 
 async def list_bases(accessor: AirtableAccessor) -> list[dict[str, Any]]:
@@ -222,11 +140,13 @@ async def list_bases(accessor: AirtableAccessor) -> list[dict[str, Any]]:
     Args:
         accessor (AirtableAccessor): the account.
     """
-    bases = await cursor_items(partial(_bases_page, accessor), shape=BASES)
+    bases = await cursor_items(partial(_page, accessor, META_KEY,
+                                       "/meta/bases", {}),
+                               shape=BASES)
     wanted = accessor.config.base_ids
     return [
-        base for base in bases if isinstance(base, dict) and (
-            wanted is None or base.get("id") in wanted)
+        base for base in as_rows(bases)
+        if wanted is None or base.get("id") in wanted
     ]
 
 
@@ -242,17 +162,7 @@ async def list_tables(accessor: AirtableAccessor,
                       f"/meta/bases/{_segment(base_id)}/tables",
                       params=None,
                       pace_key=base_id)
-    tables = data.get("tables") if isinstance(data, dict) else None
-    return [t for t in tables
-            if isinstance(t, dict)] if isinstance(tables, list) else []
-
-
-async def _page(accessor: AirtableAccessor, base_id: str, path: str,
-                params: dict[str,
-                             str | int], cursor: str | None) -> dict[str, Any]:
-    query = {**params, "offset": cursor} if cursor else params
-    data = await _get(accessor, path, params=query, pace_key=base_id)
-    return data if isinstance(data, dict) else {}
+    return as_rows(as_row(data).get("tables"))
 
 
 async def list_records(accessor: AirtableAccessor,
@@ -291,7 +201,7 @@ async def list_records(accessor: AirtableAccessor,
                                          params),
                                  max_results=max_records,
                                  shape=RECORDS)
-    return [r for r in records if isinstance(r, dict)]
+    return as_rows(records)
 
 
 async def get_record(accessor: AirtableAccessor, base_id: str, table_id: str,
@@ -304,15 +214,31 @@ async def get_record(accessor: AirtableAccessor, base_id: str, table_id: str,
         table_id (str): the table, by id or by name.
         record_id (str): the record.
     """
-    data = await _get(
-        accessor,
-        f"{_table_path(base_id, table_id)}/{_segment(record_id)}",
-        params=None,
-        pace_key=base_id)
-    return data if isinstance(data, dict) else {}
+    data = await _get(accessor,
+                      _record_path(base_id, table_id, record_id),
+                      params=None,
+                      pace_key=base_id)
+    return as_row(data)
 
 
-async def create_records(
+async def _write(accessor: AirtableAccessor, method: str, base_id: str,
+                 table_id: str, rows: Sequence[dict[str, Any]],
+                 typecast: bool) -> AsyncIterator[list[dict[str, Any]]]:
+    path = _table_path(base_id, table_id)
+    for batch in _batches(rows):
+        body: dict[str, Any] = {"records": list(batch)}
+        if typecast:
+            body["typecast"] = True
+        data = await _request(accessor,
+                              method,
+                              path,
+                              pace_key=base_id,
+                              json_body=body,
+                              retry=WRITE_RETRY)
+        yield as_rows(as_row(data).get("records"))
+
+
+def create_records(
         accessor: AirtableAccessor,
         base_id: str,
         table_id: str,
@@ -333,21 +259,12 @@ async def create_records(
         typecast (bool): let Airtable convert string values to the
             field types (``typecast``).
     """
-    path = _table_path(base_id, table_id)
-    for batch in _batches(records):
-        body: dict[str, Any] = {"records": [{"fields": f} for f in batch]}
-        if typecast:
-            body["typecast"] = True
-        data = await _request(accessor,
-                              "POST",
-                              path,
-                              pace_key=base_id,
-                              json_body=body,
-                              retry=WRITE_RETRY)
-        yield _records_of(data)
+    return _write(accessor, "POST", base_id, table_id, [{
+        "fields": fields
+    } for fields in records], typecast)
 
 
-async def update_records(
+def update_records(
         accessor: AirtableAccessor,
         base_id: str,
         table_id: str,
@@ -367,23 +284,10 @@ async def update_records(
         typecast (bool): let Airtable convert string values to the
             field types (``typecast``).
     """
-    path = _table_path(base_id, table_id)
-    for batch in _batches(updates):
-        body: dict[str, Any] = {
-            "records": [{
-                "id": record_id,
-                "fields": fields
-            } for record_id, fields in batch]
-        }
-        if typecast:
-            body["typecast"] = True
-        data = await _request(accessor,
-                              "PATCH",
-                              path,
-                              pace_key=base_id,
-                              json_body=body,
-                              retry=WRITE_RETRY)
-        yield _records_of(data)
+    return _write(accessor, "PATCH", base_id, table_id, [{
+        "id": record_id,
+        "fields": fields
+    } for record_id, fields in updates], typecast)
 
 
 async def delete_records(
@@ -409,7 +313,7 @@ async def delete_records(
                               query=urlencode([("records[]", record_id)
                                                for record_id in batch]),
                               retry=WRITE_RETRY)
-        yield _records_of(data)
+        yield as_rows(as_row(data).get("records"))
 
 
 async def list_comments(accessor: AirtableAccessor, base_id: str,
@@ -422,12 +326,11 @@ async def list_comments(accessor: AirtableAccessor, base_id: str,
         table_id (str): the table, by id or by name.
         record_id (str): the record.
     """
-    path = (f"{_table_path(base_id, table_id)}/{_segment(record_id)}"
-            "/comments")
+    path = f"{_record_path(base_id, table_id, record_id)}/comments"
     comments = await cursor_items(partial(_page, accessor, base_id, path,
                                           {"pageSize": PAGE_SIZE}),
                                   shape=COMMENTS)
-    return [c for c in comments if isinstance(c, dict)]
+    return as_rows(comments)
 
 
 async def create_comment(accessor: AirtableAccessor, base_id: str,
@@ -445,8 +348,8 @@ async def create_comment(accessor: AirtableAccessor, base_id: str,
     data = await _request(
         accessor,
         "POST",
-        f"{_table_path(base_id, table_id)}/{_segment(record_id)}/comments",
+        f"{_record_path(base_id, table_id, record_id)}/comments",
         pace_key=base_id,
         json_body={"text": text},
         retry=WRITE_RETRY)
-    return data if isinstance(data, dict) else {}
+    return as_row(data)

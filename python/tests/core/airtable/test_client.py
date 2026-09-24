@@ -19,12 +19,12 @@ from typing import Any
 import pytest
 from aioresponses import aioresponses
 
-from mirage.core.airtable.client import (RETRY, WRITE_RETRY, AirtableAPIError,
-                                         create_comment, create_records,
-                                         delete_records, error_parts,
+from mirage.core.airtable.client import (RETRY, WRITE_RETRY, create_comment,
+                                         create_records, delete_records,
                                          get_record, list_bases, list_comments,
                                          list_records, list_tables,
                                          update_records)
+from mirage.core.airtable.errors import AirtableAPIError
 from tests.fixtures.airtable_api import (DONE_FORMULA, FEATURES, OPS, ROADMAP,
                                          FakeAirtable, make_accessor)
 
@@ -39,32 +39,12 @@ def _names(n: int) -> list[dict[str, Any]]:
     return [{"Name": f"New {i}"} for i in range(1, n + 1)]
 
 
-def test_error_parts_reads_every_body_shape():
-    assert error_parts('{"error": {"type": "X", "message": "m"}}') == ("X",
-                                                                       "m")
-    assert error_parts(
-        '{"error": {"type": "LIST_RECORDS_ITERATOR_NOT_'
-        'AVAILABLE"}}') == ("LIST_RECORDS_ITERATOR_NOT_AVAILABLE", None)
-    assert error_parts('{"error": "NOT_FOUND"}') == ("NOT_FOUND", None)
-    assert error_parts("not json") == (None, None)
-    assert error_parts("[1]") == (None, None)
-
-
 def test_the_retry_policy_vetoes_only_the_billing_cap():
     assert RETRY.retryable is not None
     assert RETRY.retryable(429, '{"error": {"type": "RATE_LIMIT_REACHED"}}')
     assert not RETRY.retryable(
         429, '{"error": {"type": "PUBLIC_API_BILLING_LIMIT_EXCEEDED"}}')
     assert RETRY.min_delays[429] == 30.0
-
-
-def test_not_found_covers_airtables_403_answer():
-    assert AirtableAPIError("m", status=404).not_found
-    assert AirtableAPIError(
-        "m", status=403,
-        error_type="INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND").not_found
-    assert not AirtableAPIError("m", status=422,
-                                error_type="INVALID_REQUEST").not_found
 
 
 @pytest.mark.asyncio

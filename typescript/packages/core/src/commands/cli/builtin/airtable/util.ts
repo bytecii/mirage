@@ -14,6 +14,7 @@
 
 import { AirtableAccessor } from '../../../../accessor/airtable.ts'
 import type { AirtableConfig } from '../../../../core/airtable/config.ts'
+import type { Row } from '../../../../core/airtable/normalize.ts'
 import { IOResult, materialize, type ByteSource } from '../../../../io/types.ts'
 import { eacces, formatFsError, isEacces } from '../../../../utils/errors.ts'
 import type { CommandFnResult } from '../../../config.ts'
@@ -32,6 +33,11 @@ export type Verb = (
   fl: FlagView,
   prog: string,
 ) => Promise<CommandFnResult>
+
+/** The line's install, validated against the program's config model. */
+export function config(inv: CLIInvocation): AirtableConfig {
+  return inv.config as AirtableConfig
+}
 
 /** A refusal in the voice the parser refuses a bad flag in, exit 2. */
 export function usageError(prog: string, message: string): UsageError {
@@ -68,6 +74,15 @@ export function scopedBase(config: AirtableConfig, baseId: string): string {
   return baseId
 }
 
+/**
+ * The schema table a line names, by id first and then by name. Airtable
+ * takes either spelling in a path, and an id can never be another table's
+ * name, so the id match wins.
+ */
+export function findTable(tables: readonly Row[], ref: string): Row | undefined {
+  return tables.find((t) => t.id === ref) ?? tables.find((t) => t.name === ref)
+}
+
 /** A flag's value decoded as a JSON object. */
 export function jsonObject(prog: string, flag: string, text: string): Record<string, unknown> {
   let value: unknown
@@ -97,7 +112,7 @@ export function run(path: string, verb: Verb): CLIVerbFn {
   const prog = `${PROG} ${path}`
   return async (inv: CLIInvocation): Promise<CommandFnResult> => {
     const fl = new FlagView(inv.flags, inv.spec)
-    const accessor = new AirtableAccessor(inv.config as AirtableConfig)
+    const accessor = new AirtableAccessor(config(inv))
     try {
       return await verb(accessor, inv, fl, prog)
     } catch (err) {

@@ -15,7 +15,7 @@
 import { describe, expect, it } from 'vitest'
 import { formatFsError } from '../../../../utils/errors.ts'
 import { UsageError } from '../../../errors.ts'
-import { jsonObject, oneOperand, scopedBase, stdinText } from './util.ts'
+import { findTable, jsonObject, oneOperand, scopedBase, stdinText } from './util.ts'
 
 // Mirrors python/tests/commands/cli/builtin/airtable/test_util.py.
 
@@ -34,6 +34,17 @@ describe('airtable cli util', () => {
     expect(DEC.decode(formatFsError('airtable base get', refused))).toBe(
       'airtable base get: appB: Permission denied\n',
     )
+  })
+
+  it('finds a table by id before name', () => {
+    const tables = [
+      { id: 'tblA', name: 'tblB' },
+      { id: 'tblB', name: 'B' },
+    ]
+    expect(findTable(tables, 'tblB')).toEqual({ id: 'tblB', name: 'B' })
+    expect(findTable(tables, 'B')).toEqual({ id: 'tblB', name: 'B' })
+    expect(findTable(tables, 'tblA')).toEqual({ id: 'tblA', name: 'tblB' })
+    expect(findTable(tables, 'missing')).toBeUndefined()
   })
 
   it('refuses non-finite numbers as JSON', () => {

@@ -15,7 +15,8 @@
 import functools
 
 from mirage.accessor.airtable import AirtableAccessor
-from mirage.commands.cli.builtin.airtable.util import (Outcome, no_operands,
+from mirage.commands.cli.builtin.airtable.util import (Outcome, find_table,
+                                                       no_operands,
                                                        one_operand, run,
                                                        scoped_base,
                                                        usage_error)
@@ -58,9 +59,7 @@ async def _table_get(accessor: AirtableAccessor,
                      prog: str) -> Outcome:
     ref = one_operand(prog, inv.texts, "TABLE")
     base_id = scoped_base(inv.config, fl.as_str("base") or "")
-    tables = await list_tables(accessor, base_id)
-    table = (next((t for t in tables if t.get("id") == ref), None) or next(
-        (t for t in tables if t.get("name") == ref), None))
+    table = find_table(await list_tables(accessor, base_id), ref)
     if table is None:
         raise LookupError(f"{ref}: no such table in {base_id}")
     return yield_bytes(to_json_bytes(normalize_table(table,

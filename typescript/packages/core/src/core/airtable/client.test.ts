@@ -14,13 +14,11 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  AirtableApiError,
   RETRY,
   WRITE_RETRY,
   createComment,
   createRecords,
   deleteRecords,
-  errorParts,
   getRecord,
   listBases,
   listComments,
@@ -56,31 +54,12 @@ function bodyOf(call: { body?: unknown }): Record<string, unknown> {
 }
 
 describe('airtable client', () => {
-  it('reads every error body shape', () => {
-    expect(errorParts('{"error": {"type": "X", "message": "m"}}')).toEqual(['X', 'm'])
-    expect(errorParts('{"error": {"type": "LIST_RECORDS_ITERATOR_NOT_AVAILABLE"}}')).toEqual([
-      'LIST_RECORDS_ITERATOR_NOT_AVAILABLE',
-      null,
-    ])
-    expect(errorParts('{"error": "NOT_FOUND"}')).toEqual(['NOT_FOUND', null])
-    expect(errorParts('not json')).toEqual([null, null])
-    expect(errorParts('[1]')).toEqual([null, null])
-  })
-
   it('vetoes only the billing cap', () => {
     expect(RETRY.retryable?.(429, '{"error": {"type": "RATE_LIMIT_REACHED"}}')).toBe(true)
     expect(RETRY.retryable?.(429, '{"error": {"type": "PUBLIC_API_BILLING_LIMIT_EXCEEDED"}}')).toBe(
       false,
     )
     expect(RETRY.minDelays?.[429]).toBe(30)
-  })
-
-  it("counts airtable's 403 answer as not found", () => {
-    expect(new AirtableApiError('m', 404).notFound).toBe(true)
-    expect(new AirtableApiError('m', 403, 'INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND').notFound).toBe(
-      true,
-    )
-    expect(new AirtableApiError('m', 422, 'INVALID_REQUEST').notFound).toBe(false)
   })
 
   it('honors the configured base scope', async () => {

@@ -14,12 +14,21 @@
 
 import { jsonBytes, jsonlBytes } from '../render/json.ts'
 
-type Row = Record<string, unknown>
+export type Row = Record<string, unknown>
 
-function asRows(value: unknown): Row[] {
-  return Array.isArray(value)
-    ? value.filter((v): v is Row => typeof v === 'object' && v !== null && !Array.isArray(v))
-    : []
+/** Whether a decoded JSON value is an object. */
+export function isRow(value: unknown): value is Row {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** A decoded JSON object, or an empty one for anything else. */
+export function asRow(value: unknown): Row {
+  return isRow(value) ? value : {}
+}
+
+/** The objects of a decoded JSON array; anything else holds none. */
+export function asRows(value: unknown): Row[] {
+  return Array.isArray(value) ? value.filter(isRow) : []
 }
 
 function field(row: Row, key: string): unknown {
@@ -87,19 +96,16 @@ export function normalizeTable(table: Row, baseId: string): Row {
  * API's own, which expires two hours after it was fetched.
  */
 export function normalizeRecord(record: Row): Row {
-  const cells = record.fields
   return {
     record_id: field(record, 'id'),
     created_time: field(record, 'createdTime'),
-    fields: typeof cells === 'object' && cells !== null && !Array.isArray(cells) ? cells : {},
+    fields: asRow(record.fields),
   }
 }
 
 /** One comment on a record, with its author flattened. */
 export function normalizeComment(comment: Row): Row {
-  const author = comment.author
-  const who: Row =
-    typeof author === 'object' && author !== null && !Array.isArray(author) ? (author as Row) : {}
+  const who = asRow(comment.author)
   return {
     comment_id: field(comment, 'id'),
     author_id: field(who, 'id'),

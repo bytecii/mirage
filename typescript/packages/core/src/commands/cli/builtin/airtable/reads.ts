@@ -20,7 +20,6 @@ import {
   listRecords,
   listTables,
 } from '../../../../core/airtable/client.ts'
-import type { AirtableConfig } from '../../../../core/airtable/config.ts'
 import {
   normalizeBase,
   normalizeBaseSummary,
@@ -33,11 +32,7 @@ import { IOResult } from '../../../../io/types.ts'
 import type { CommandFnResult } from '../../../config.ts'
 import type { FlagView } from '../../../spec/flag_view.ts'
 import type { CLIInvocation } from '../../types.ts'
-import { noOperands, oneOperand, run, scopedBase, usageError } from './util.ts'
-
-function config(inv: CLIInvocation): AirtableConfig {
-  return inv.config as AirtableConfig
-}
+import { config, findTable, noOperands, oneOperand, run, scopedBase, usageError } from './util.ts'
 
 async function baseListBody(
   accessor: AirtableAccessor,
@@ -74,8 +69,7 @@ async function tableGetBody(
 ): Promise<CommandFnResult> {
   const ref = oneOperand(prog, inv.texts, 'TABLE')
   const baseId = scopedBase(config(inv), fl.asStr('base') ?? '')
-  const tables = await listTables(accessor, baseId)
-  const table = tables.find((t) => t.id === ref) ?? tables.find((t) => t.name === ref)
+  const table = findTable(await listTables(accessor, baseId), ref)
   if (table === undefined) throw new Error(`${ref}: no such table in ${baseId}`)
   return [toJsonBytes(normalizeTable(table, baseId)), new IOResult()]
 }

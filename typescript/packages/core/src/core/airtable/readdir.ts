@@ -18,7 +18,7 @@ import { enoent } from '../../utils/errors.ts'
 import { makeReaddir, type DirListing } from '../hierarchy/readdir.ts'
 import type { ScopeMatch } from '../hierarchy/scope.ts'
 import { listBases, listTables } from './client.ts'
-import { normalizeBase, normalizeTable, toJsonBytes } from './normalize.ts'
+import { asRows, normalizeBase, normalizeTable, toJsonBytes } from './normalize.ts'
 import { baseDirname, tableDirname, viewFilename } from './pathing.ts'
 import { detectScope } from './scope.ts'
 
@@ -80,8 +80,7 @@ export function tableChildren(table: Record<string, unknown>, baseId: string): L
 
 /** A table's saved views, one size-unknown .jsonl file each. */
 export function viewChildren(table: Record<string, unknown>): Listing {
-  const views = Array.isArray(table.views) ? (table.views as Record<string, unknown>[]) : []
-  return views.map((view) => {
+  return asRows(table.views).map((view) => {
     const filename = viewFilename(view)
     return [
       filename,

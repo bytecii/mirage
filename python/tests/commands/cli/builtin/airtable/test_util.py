@@ -14,7 +14,7 @@
 
 import pytest
 
-from mirage.commands.cli.builtin.airtable.util import (json_object,
+from mirage.commands.cli.builtin.airtable.util import (find_table, json_object,
                                                        one_operand, parse_json,
                                                        scoped_base, stdin_text)
 from mirage.commands.errors import UsageError
@@ -31,6 +31,14 @@ def test_the_scope_admits_its_bases_and_refuses_the_rest():
     assert format_fs_error(
         "airtable base get",
         exc.value) == (b"airtable base get: appB: Permission denied\n")
+
+
+def test_a_table_is_found_by_id_before_name():
+    tables = [{"id": "tblA", "name": "tblB"}, {"id": "tblB", "name": "B"}]
+    assert find_table(tables, "tblB") == {"id": "tblB", "name": "B"}
+    assert find_table(tables, "B") == {"id": "tblB", "name": "B"}
+    assert find_table(tables, "tblA") == {"id": "tblA", "name": "tblB"}
+    assert find_table(tables, "missing") is None
 
 
 def test_json_is_strict_about_non_finite_numbers():

@@ -14,6 +14,7 @@
 
 import json
 
+from mirage.core.airtable import normalize
 from mirage.core.airtable.normalize import (deletions_jsonl, normalize_base,
                                             normalize_base_summary,
                                             normalize_comment,
@@ -160,3 +161,20 @@ def test_deletions_render_one_line_each():
     rows = deletions_jsonl([{"id": "rec1", "deleted": True}])
     assert rows == b'{"record_id":"rec1","deleted":true}\n'
     assert deletions_jsonl([]) == b""
+
+
+def test_only_json_objects_count_as_rows():
+    assert normalize.as_row({"a": 1}) == {"a": 1}
+    assert normalize.as_row([{"a": 1}]) == {}
+    assert normalize.as_row(None) == {}
+    assert normalize.as_rows([{
+        "a": 1
+    }, "x", None, [2], {
+        "b": 2
+    }]) == [{
+        "a": 1
+    }, {
+        "b": 2
+    }]
+    assert normalize.as_rows({"a": 1}) == []
+    assert normalize.as_rows(None) == []

@@ -20,12 +20,16 @@ import {
   listTables,
   updateRecords,
 } from '../../../../core/airtable/client.ts'
-import type { AirtableConfig } from '../../../../core/airtable/config.ts'
+import { COMPUTED_TYPES, LINE_KEYS } from '../../../../core/airtable/constants.ts'
 import {
+  asRow,
+  asRows,
   deletionsJsonl,
+  isRow,
   normalizeComment,
   recordsJsonl,
   toJsonBytes,
+  type Row,
 } from '../../../../core/airtable/normalize.ts'
 import { IOResult } from '../../../../io/types.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
@@ -33,6 +37,8 @@ import type { CommandFnResult } from '../../../config.ts'
 import type { FlagView } from '../../../spec/flag_view.ts'
 import type { CLIInvocation } from '../../types.ts'
 import {
+  config,
+  findTable,
   jsonObject,
   noOperands,
   oneOperand,
@@ -43,37 +49,7 @@ import {
   usageError,
 } from './util.ts'
 
-type Row = Record<string, unknown>
-
 const ENC = new TextEncoder()
-
-const LINE_KEYS: ReadonlySet<string> = new Set(['record_id', 'created_time', 'fields'])
-
-// The field types Airtable computes and refuses a write to. A mount line
-// carries every one of them, so a line piped back drops them first.
-const COMPUTED_TYPES: ReadonlySet<string> = new Set([
-  'aiText',
-  'autoNumber',
-  'button',
-  'count',
-  'createdBy',
-  'createdTime',
-  'externalSyncSource',
-  'formula',
-  'lastModifiedBy',
-  'lastModifiedTime',
-  'lookup',
-  'multipleLookupValues',
-  'rollup',
-])
-
-function isRow(value: unknown): value is Row {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function config(inv: CLIInvocation): AirtableConfig {
-  return inv.config as AirtableConfig
-}
 
 /**
  * Stdin's JSONL, one normalized record per line, validated whole. A line is
@@ -124,9 +100,8 @@ async function writable(
   table: string,
   cells: Row[],
 ): Promise<Row[]> {
-  const tables = await listTables(accessor, baseId)
-  const found = tables.find((t) => t.id === table) ?? tables.find((t) => t.name === table)
-  const fields = Array.isArray(found?.fields) ? (found.fields as unknown[]).filter(isRow) : []
+  const found = findTable(await listTables(accessor, baseId), table)
+  const fields = asRows(asRow(found).fields)
   const computed = new Set(
     fields.filter((f) => COMPUTED_TYPES.has(String(f.type))).map((f) => f.name),
   )

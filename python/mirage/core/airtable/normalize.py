@@ -17,6 +17,26 @@ from typing import Any
 from mirage.core.render.json import json_bytes, jsonl_bytes
 
 
+def as_row(value: Any) -> dict[str, Any]:
+    """A decoded JSON object, or an empty one for anything else.
+
+    Args:
+        value (Any): a decoded JSON value.
+    """
+    return value if isinstance(value, dict) else {}
+
+
+def as_rows(value: Any) -> list[dict[str, Any]]:
+    """The objects of a decoded JSON array; anything else holds none.
+
+    Args:
+        value (Any): a decoded JSON value.
+    """
+    if not isinstance(value, list):
+        return []
+    return [row for row in value if isinstance(row, dict)]
+
+
 def normalize_base_summary(base: dict[str, Any]) -> dict[str, Any]:
     """One base as the listing names it: id, name and permission level.
 
@@ -89,8 +109,8 @@ def normalize_table(table: dict[str, Any], base_id: str) -> dict[str, Any]:
         "base_id": base_id,
         "description": table.get("description"),
         "primary_field_id": table.get("primaryFieldId"),
-        "fields": [normalize_field(f) for f in table.get("fields") or []],
-        "views": [normalize_view(v) for v in table.get("views") or []],
+        "fields": [normalize_field(f) for f in as_rows(table.get("fields"))],
+        "views": [normalize_view(v) for v in as_rows(table.get("views"))],
     }
 
 
@@ -108,7 +128,7 @@ def normalize_record(record: dict[str, Any]) -> dict[str, Any]:
     return {
         "record_id": record.get("id"),
         "created_time": record.get("createdTime"),
-        "fields": record.get("fields") or {},
+        "fields": as_row(record.get("fields")),
     }
 
 
@@ -118,8 +138,7 @@ def normalize_comment(comment: dict[str, Any]) -> dict[str, Any]:
     Args:
         comment (dict[str, Any]): a listed or created comment.
     """
-    author = comment.get("author")
-    who = author if isinstance(author, dict) else {}
+    who = as_row(comment.get("author"))
     return {
         "comment_id": comment.get("id"),
         "author_id": who.get("id"),

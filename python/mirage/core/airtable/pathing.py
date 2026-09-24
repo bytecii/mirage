@@ -14,9 +14,8 @@
 
 from typing import Any
 
+from mirage.core.airtable.constants import VIEW_SUFFIX
 from mirage.utils.naming import make_id_name
-
-VIEW_SUFFIX = ".jsonl"
 
 
 def _label(entity: dict[str, Any]) -> str:
