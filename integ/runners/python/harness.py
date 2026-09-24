@@ -86,9 +86,11 @@ def load_services(root: Path) -> dict:
     """The service -> per-host required env vars table.
 
     An empty list means the host needs nothing because its adapter starts
-    an in-process fake; the two hosts differ here (python self-hosts s3,
-    ssh, hf, box, databricks, discord, linear and dify, typescript does
-    not), so the asymmetry is spelled out per host rather than inferred.
+    an in-process fake (or the backend needs no service). The two hosts
+    differ per service (python starts s3 and ssh itself where typescript
+    reads an endpoint; typescript needs nothing for quickjs where python
+    reads MIRAGE_QUICKJS_HOME), so each host's list is spelled out in
+    targets.json rather than inferred.
 
     Args:
         root (Path): the integ directory.

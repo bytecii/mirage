@@ -18,6 +18,7 @@ import functools
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -196,14 +197,27 @@ def selftest_strict_exit() -> None:
     check("permissive: the same run still exits 0 for local convenience",
           code == 0, f"exit {code}")
 
-    # The partial-skip case the facet guard cannot see: python self-hosts
-    # linear, so the project facet still runs one target and ran != 0.
-    code = run_main(["--facet", "project", "--strict"], blanked)
-    check("strict: a facet that loses only some targets exits non-zero", code
-          != 0, f"exit {code}")
-    code = run_main(["--facet", "project"], blanked)
-    check("permissive: that same partial facet still exits 0", code == 0,
-          f"exit {code}")
+    # The partial-skip case the facet guard cannot see: one target of a
+    # facet ran and another skipped for env. No facet mixes an env-free
+    # target with a gated one (project's linear and trello both need a URL
+    # on both hosts), so a --facet run here would lose every target and the
+    # facet guard would be what fired. The verdict is asserted directly.
+    partial = ["trello (TRELLO_URL)"]
+    verdict = runner_main.run_verdict("project", 1, True, partial, [])
+    check("strict: a facet that loses only some targets fails",
+          verdict is not None and verdict.startswith("strict:"), str(verdict))
+    verdict = runner_main.run_verdict("project", 1, False, partial, [])
+    check("permissive: that same partial facet passes", verdict is None,
+          str(verdict))
+    verdict = runner_main.run_verdict("project", 0, True, partial, [])
+    check("facet guard: a facet that ran nothing fails first",
+          verdict == "facet 'project' ran no targets", str(verdict))
+    verdict = runner_main.run_verdict(None, 1, True, [], ["nosuchtarget"])
+    check("strict: a target with no adapter for this host fails",
+          verdict is not None and "no python adapter" in verdict, str(verdict))
+    verdict = runner_main.run_verdict(None, 1, False, [], ["nosuchtarget"])
+    check("permissive: a target with no adapter still passes locally", verdict
+          is None, str(verdict))
 
     # A facet split across CI jobs declares the services it does not
     # provision; a declared skip is tolerated, a typo'd one is rejected so
@@ -219,12 +233,56 @@ def selftest_strict_exit() -> None:
           f"exit {code}")
 
 
-SHARED_SERVICES = {"discord", "github", "http", "linear", "trello"}
+# Read from the manifest rather than restated: a service gaining or losing
+# `shared` must move the lanes the pool asserts below, not a copy here.
+SHARED_SERVICES = {
+    name
+    for name, service in json.loads((
+        ROOT / "targets.json").read_text())["services"].items()
+    if service.get("shared")
+}
 # opfs swaps globalThis.navigator; a secrets target publishes a fetch
 # function into the process-global source registry under a fixed name.
 PROCESS_GLOBAL_TARGETS = [
     "opfs", "secrets-dead", "secrets-env", "secrets-gated", "secrets-implicit"
 ]
+
+
+def selftest_fake_ports() -> None:
+    """No two fakes default to one port, and none to a port CI pins for
+    another fake: a fake started without --port next to one that holds
+    its default fails to bind, or answers as the wrong service."""
+    defaults: dict[str, int] = {}
+    for config in sorted((ROOT / "server").glob("*/config.ts")):
+        found = re.search(r"defaultPort:\s*(\d+)", config.read_text())
+        if found is not None:
+            defaults[config.parent.name] = int(found.group(1))
+    check("fake ports: the scan found the fakes",
+          len(defaults) > 10, f"{sorted(defaults)}")
+    by_port: dict[int, list[str]] = {}
+    for name, port in defaults.items():
+        by_port.setdefault(port, []).append(name)
+    shared = {port: names for port, names in by_port.items() if len(names) > 1}
+    check("fake ports: no two fakes share a default port", not shared,
+          f"{shared}")
+    pinned = json.loads((ROOT / "ci" / "fakes.json").read_text())
+    clashes = [
+        f"{name} defaults to {port}, which CI pins for {other}"
+        for name, port in defaults.items() for other, arm in pinned.items()
+        if isinstance(arm, dict) and arm.get("port") == port
+        and other.replace("-", "_") != name
+    ]
+    workflow = (ROOT.parent / ".github" / "workflows" /
+                "test_integ.yml").read_text()
+    clashes += [
+        f"{name} defaults to {port}, which CI starts {other} on"
+        for other, port_text in re.findall(
+            r"server/(\w+)/main\.ts --port (\d+)", workflow)
+        for name, port in defaults.items()
+        if port == int(port_text) and other != name
+    ]
+    check("fake ports: no default is a port CI gives another fake",
+          not clashes, "; ".join(sorted(set(clashes))))
 
 
 def selftest_target_pool() -> None:
@@ -705,6 +763,7 @@ def main() -> None:
     selftest_services_table()
     selftest_case_validation()
     selftest_strict_exit()
+    selftest_fake_ports()
     selftest_target_pool()
     selftest_pool_runtime()
     selftest_case_targets()
