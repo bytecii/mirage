@@ -20,12 +20,14 @@ import { fileURLToPath } from 'node:url'
 import { ANNOUNCE_RE } from '../kit/typescript/announce.ts'
 import type { JsonValue } from '../kit/typescript/types.ts'
 
-// The routes the corpus does not reach, because the gh battery exercises the
-// porcelain and these three have no porcelain behind them. A client that BUILDS
-// history calls `POST /git/trees` then `POST /git/commits`, which is the path a
-// fixture uses to pin a commit's own author and date; a grader reads an issue's
-// comments back; and `search_repositories` is an MCP tool with no `gh`
-// equivalent, so nothing else here would notice it answering the wrong scope.
+// The routes the corpus does not reach, or cannot exercise fully, because the
+// gh battery drives the porcelain against a one-repository fixture. A client
+// that BUILDS history calls `POST /git/trees` then `POST /git/commits`, which is
+// the path a fixture uses to pin a commit's own author and date; a grader reads
+// an issue's comments back; `search_repositories` is an MCP tool with no `gh`
+// equivalent, so nothing else here would notice it answering the wrong scope;
+// and code search's scope rules need files under several owners and a
+// mixed-case name, which the `cli` fixture does not hold.
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const INTEG = resolve(HERE, '..', '..')
@@ -918,6 +920,211 @@ async function main(): Promise<void> {
       'integ/repo-trunc',
       'integ/repo-v1',
     ])
+
+    // ---- code search answers a query that names no repository, over every
+    // repository the tenant holds, because an authenticated caller of the live
+    // API is answered over all of GitHub rather than refused. The scope rules
+    // below were measured against api.github.com on 2026-09-24. This block sits
+    // after `found('repo')`, which `Repo-Mixed` would otherwise join, and before
+    // the reset that reseeds.
+    const codeSearch = async (
+      q: string | null,
+      prefix = '',
+    ): Promise<{ status: number; body: JsonValue; items: string[] }> => {
+      const query = q === null ? '' : `?q=${encodeURIComponent(q)}`
+      const r = await fetch(`${at}${prefix}/search/code${query}`, { headers: HEADERS })
+      const body = (await r.json()) as JsonValue
+      const rows = field(body, 'items')
+      // Keyed by the item's own `repository`, so an item filed under the wrong
+      // repository reads as a different hit.
+      const items = Array.isArray(rows)
+        ? rows.map(
+            (i) =>
+              `${String(field(field(i, 'repository'), 'full_name'))}/${String(field(i, 'path'))}`,
+          )
+        : []
+      return { status: r.status, body, items }
+    }
+    const hits = async (q: string): Promise<JsonValue> => {
+      const r = await codeSearch(q)
+      return r.status === 200 ? r.items : `HTTP ${String(r.status)}`
+    }
+    const MARK = 'quokkaseed'
+
+    eq(
+      'an unscoped query is answered, not refused',
+      await codeSearch(MARK).then((r) => [r.status, r.body]),
+      [200, { total_count: 0, incomplete_results: false, items: [] }],
+    )
+
+    const mixed = await post(`${at}/orgs/${OTHER}/repos`, { name: 'Repo-Mixed' })
+    check('a mixed-case repo is created', mixed.status === 201, String(mixed.status))
+    const CASED_OWNER = 'Integ-Case'
+    const cased = await post(`${at}/orgs/${CASED_OWNER}/repos`, { name: 'zz-repo' })
+    check('a repo is created under a mixed-case owner', cased.status === 201, String(cased.status))
+    const write = async (repo: string, path: string, text: string): Promise<JsonValue> => {
+      const r = await fetch(`${at}/repos/${repo}/contents/${path}`, {
+        method: 'PUT',
+        headers: HEADERS,
+        body: JSON.stringify({
+          message: `add ${path}`,
+          content: Buffer.from(text).toString('base64'),
+        }),
+      })
+      check(`a file is written to ${repo}`, r.status === 201, String(r.status))
+      return field(field((await r.json()) as JsonValue, 'content'), 'sha')
+    }
+    // Three owners, one of them mixed-case, a mixed-case name, and `alpha` in
+    // only two files. The repositories created last sort first by full name,
+    // and `Integ-Case/zz-repo` sorts first by full name but last by name, so
+    // creation order, name order and full-name order all read differently.
+    await write(`${CASED_OWNER}/zz-repo`, 'docs/cased.md', `${MARK}\n`)
+    const mixedSha = await write(`${OTHER}/Repo-Mixed`, 'notes/mixed.md', `${MARK}\n`)
+    await write(`${OTHER}/repo-archived`, 'notes/shared.md', `${MARK} alpha\n`)
+    await write('integ/repo-cli', 'notes/shared.md', `${MARK} alpha\n`)
+    await write('integ/repo-v1', 'docs/shared.md', `${MARK}\n`)
+    const MIXED = `${OTHER}/Repo-Mixed/notes/mixed.md`
+    const ARCHIVED = `${OTHER}/repo-archived/notes/shared.md`
+    const CLI = 'integ/repo-cli/notes/shared.md'
+    const V1 = 'integ/repo-v1/docs/shared.md'
+    const CASED = `${CASED_OWNER}/zz-repo/docs/cased.md`
+    const ALL = [CASED, MIXED, ARCHIVED, CLI, V1]
+
+    const everything = await codeSearch(MARK)
+    eq('unscoped, every repository is searched, in full-name order', everything.items, ALL)
+    eq('and the count is every hit', field(everything.body, 'total_count'), 5)
+    const hitRows = field(everything.body, 'items')
+    const repoOf = (row: JsonValue | undefined): JsonValue => field(row ?? null, 'repository')
+    eq(
+      'each hit names its own repository (first)',
+      repoOf(Array.isArray(hitRows) ? hitRows[0] : undefined),
+      {
+        name: 'zz-repo',
+        full_name: `${CASED_OWNER}/zz-repo`,
+      },
+    )
+    eq(
+      'each hit names its own repository (last)',
+      repoOf(Array.isArray(hitRows) ? hitRows.at(-1) : undefined),
+      {
+        name: 'repo-v1',
+        full_name: 'integ/repo-v1',
+      },
+    )
+    for (const prefix of ['', '/api/v3']) {
+      const r = await codeSearch('"Mixture-of-Depths"', prefix)
+      eq(
+        `a query matching nothing is a 200 with nothing (${prefix || '/'})`,
+        [r.status, r.body],
+        [200, { total_count: 0, incomplete_results: false, items: [] }],
+      )
+    }
+
+    // `user:` and `org:` narrow and OR together; an owner compares
+    // case-insensitively on both sides, as `searchRepos` does.
+    eq('`user:` narrows code search to that owner', await hits(`user:integ ${MARK}`), [CLI, V1])
+    eq('`org:` narrows the same way', await hits(`org:${OTHER} ${MARK}`), [MIXED, ARCHIVED])
+    eq('an owner value compares case-insensitively', await hits(`user:INTEG-Archive ${MARK}`), [
+      MIXED,
+      ARCHIVED,
+    ])
+    eq('and so does the owner it is compared with', await hits(`org:integ-case ${MARK}`), [CASED])
+    eq('an owner holding nothing is empty, not everything', await hits(`user:nobody ${MARK}`), [])
+    eq('two owners OR together', await hits(`user:nobody org:${OTHER} ${MARK}`), [MIXED, ARCHIVED])
+
+    // Several `repo:` OR together; with an owner as well, the two groups AND.
+    eq(
+      'several `repo:` OR together',
+      await hits(`repo:integ/repo-cli repo:${OTHER}/repo-archived ${MARK}`),
+      [ARCHIVED, CLI],
+    )
+    const twice = await codeSearch(`repo:integ/repo-cli repo:integ/repo-cli ${MARK}`)
+    eq(
+      'a repo named twice is searched once',
+      [twice.items, field(twice.body, 'total_count')],
+      [[CLI], 1],
+    )
+    eq('`repo:` and `user:` intersect', await hits(`repo:integ/repo-cli user:integ ${MARK}`), [CLI])
+    eq(
+      '`repo:` and `org:` intersect',
+      await hits(`repo:integ/repo-cli repo:${OTHER}/repo-archived org:integ ${MARK}`),
+      [CLI],
+    )
+    // Live refuses a disjoint intersection with a query-parse 422; an empty
+    // answer is the looser equivalent and carries no engine artefact.
+    eq(
+      'a disjoint intersection is empty',
+      await hits(`repo:integ/repo-cli user:${OTHER} ${MARK}`),
+      [],
+    )
+    eq(
+      'a missing repo among several is skipped',
+      await hits(`repo:integ/repo-cli repo:integ/no-such ${MARK}`),
+      [CLI],
+    )
+    // Live answers this 200 with nothing; the 404 predates unscoped search and
+    // is kept.
+    eq(
+      'a query naming only a missing repo is 404',
+      await hits(`repo:integ/no-such ${MARK}`),
+      'HTTP 404',
+    )
+    eq(
+      'and an owner does not turn that 404 into an answer',
+      await hits(`repo:integ/no-such user:integ ${MARK}`),
+      'HTTP 404',
+    )
+    eq('a `repo:` value is taken verbatim', await hits(`repo:${OTHER}/Repo-Mixed ${MARK}`), [MIXED])
+
+    // Qualifier names are exact and case-sensitive, as live reads them;
+    // anything else is a term, split by the tokenizer.
+    eq('a word holding `::` stays terms', await hits(`${MARK}::alpha`), [ARCHIVED, CLI])
+    eq(
+      'an uppercase qualifier name is a term',
+      await hits(`repo:integ/repo-v1 REPO:integ/repo-cli ${MARK}`),
+      [],
+    )
+    eq('a negated qualifier is a term', await hits(`-repo:integ/repo-cli ${MARK}`), [])
+    // Content and metadata filters are dropped rather than matched as words,
+    // which only ever widens; live narrows by them.
+    for (const name of ['language', 'extension', 'filename', 'in', 'size', 'fork']) {
+      eq(`\`${name}:\` is dropped`, await hits(`repo:integ/repo-cli ${name}:x ${MARK}`), [CLI])
+    }
+    eq('and dropping one does not scope', await hits(`language:x ${MARK}`), ALL)
+    // Live refuses an empty qualifier value with a query-parse 422.
+    eq('an empty `user:` is dropped', await hits(`user: ${MARK}`), ALL)
+    eq('an empty `repo:` is dropped', await hits(`repo: ${MARK}`), ALL)
+    // Live lists every file in scope; the fake matches files by terms only.
+    eq('a query of only a scope is empty', await hits('user:integ'), [])
+    eq('a query of only a dropped filter is empty', await hits('language:python'), [])
+
+    eq('`path:` narrows each repository', await hits(`path:notes ${MARK}`), [MIXED, ARCHIVED, CLI])
+    eq('a term compares case-insensitively', await hits(`repo:integ/repo-cli QuokkaSeed`), [CLI])
+    eq(
+      'a `path:` value is taken verbatim',
+      await hits(`repo:integ/repo-cli path:Notes ${MARK}`),
+      [],
+    )
+    const one = await codeSearch(`repo:${OTHER}/Repo-Mixed ${MARK}`)
+    eq('a hit carries the blob it names', field(one.body, 'items'), [
+      {
+        name: 'mixed.md',
+        path: 'notes/mixed.md',
+        sha: mixedSha,
+        score: 1,
+        repository: { name: 'Repo-Mixed', full_name: `${OTHER}/Repo-Mixed` },
+      },
+    ])
+    for (const prefix of ['', '/api/v3']) {
+      for (const q of ['', '  ', null]) {
+        const r = await codeSearch(q, prefix)
+        eq(
+          `an empty query is refused (${JSON.stringify(q)}, ${prefix || '/'})`,
+          [r.status, field(r.body, 'message')],
+          [422, 'Validation Failed'],
+        )
+      }
+    }
 
     const commentsReset = await fetch(`${at}/reset`, {
       method: 'POST',
