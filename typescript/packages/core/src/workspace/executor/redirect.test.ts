@@ -67,12 +67,12 @@ describe('handleRedirect > / >>', () => {
     expect(io.writes['/ram/out.txt']).toBeDefined()
   })
 
-  it('>> appends to existing file', async () => {
+  it('>> dispatches append without reading the target', async () => {
     const writes: { path: string; data: Uint8Array }[] = []
     const dispatch = vi.fn<DispatchFn>((op, path, args) => {
       if (op === 'read')
         return Promise.resolve<[unknown, IOResult]>([encode('pre-'), new IOResult()])
-      if (op === 'write') writes.push({ path: path.virtual, data: args?.[0] as Uint8Array })
+      if (op === 'append') writes.push({ path: path.virtual, data: args?.[0] as Uint8Array })
       return Promise.resolve<[unknown, IOResult]>([null, new IOResult()])
     })
     const execute: ExecuteNodeFn = () =>
@@ -87,7 +87,8 @@ describe('handleRedirect > / >>', () => {
       redirects,
       new SessionState({ sessionId: 'test' }),
     )
-    expect(decode(writes[0]?.data ?? null)).toBe('pre-new')
+    expect(decode(writes[0]?.data ?? null)).toBe('new')
+    expect(dispatch.mock.calls.map(([op]) => op)).toEqual(['append'])
   })
 })
 
@@ -563,11 +564,9 @@ describe('handleRedirect unwritable > target', () => {
     }
   })
 
-  it('rethrows a non-filesystem append pre-read error', async () => {
-    // The `>>` pre-read swallows filesystem errors (the write reports
-    // them) but must not hide a backend bug.
+  it('rethrows a non-filesystem append error', async () => {
     const dispatch = vi.fn<DispatchFn>((op) => {
-      if (op === 'read') return Promise.reject(new Error('backend exploded'))
+      if (op === 'append') return Promise.reject(new Error('backend exploded'))
       return Promise.resolve<[unknown, IOResult]>([null, new IOResult()])
     })
     const execute: ExecuteNodeFn = () =>

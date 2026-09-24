@@ -309,8 +309,7 @@ def start_point_results(
     if args.empty:
         # GNU -empty matches only a size-0 regular file here; a device
         # start point is never empty-eligible.
-        empty = (start.size
-                 or 0) == 0 if start.type is FileType.FILE else False
+        empty = start.size == 0 if start.type is FileType.FILE else False
     find_eval.emit_start_path(results,
                               search_path.mount_path,
                               find_eval.start_basename(search_path),
@@ -659,7 +658,7 @@ async def _is_empty_entry(
         except FileNotFoundError:
             return False
     st = await _stat_entry(stat, path, prefix, index, unstatted)
-    return st is not None and (st.size or 0) == 0
+    return st is not None and st.type is FileType.FILE and st.size == 0
 
 
 async def _walk_collect(

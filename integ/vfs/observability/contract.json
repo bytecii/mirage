@@ -131,7 +131,6 @@
         "langfuse",
         "jaeger",
         "dify",
-        "mem0",
         "trello",
         "linear",
         "slack",
@@ -143,6 +142,19 @@
         "exit": 1,
         "stdout": "",
         "stderr": "{mount}/__nf_new__: Operation not supported\n"
+      }
+    },
+    {
+      "id": "ro_mount_write_refused",
+      "seq": 620006,
+      "targets": [
+        "mem0"
+      ],
+      "command": "echo hi > {mount}/__nf_new__",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "{mount}/__nf_new__: Read-only file system\n"
       }
     },
     {

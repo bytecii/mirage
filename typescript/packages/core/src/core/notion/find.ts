@@ -21,7 +21,7 @@ import type { NotionAccessor } from '../../accessor/notion.ts'
 import { readdir } from './readdir.ts'
 import { stat } from './stat.ts'
 import { stripSlash } from '../../utils/slash.ts'
-import { buildTree, keep, startBasename } from '../../commands/builtin/find_eval.ts'
+import { buildTree, keep, startBasename, treeHasEmpty } from '../../commands/builtin/find_eval.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import { DIR_SIZE } from '../../utils/stat_view.ts'
 
@@ -71,6 +71,7 @@ export async function find(
       type: options.type,
       nameExclude: options.nameExclude,
       orNames: options.orNames,
+      empty: options.empty,
     })
   for (const [entryPath, fileStat] of collected) {
     let rel = entryPath
@@ -88,8 +89,21 @@ export async function find(
     if (options.maxDepth !== undefined && options.maxDepth !== null && depth > options.maxDepth) {
       continue
     }
+    let isEmpty: boolean | null = null
+    if (treeHasEmpty(tree)) {
+      if (isDir) {
+        const childPrefix = entryPath.replace(/\/+$/, '') + '/'
+        isEmpty = !collected.some(([other]) => other !== entryPath && other.startsWith(childPrefix))
+      } else {
+        isEmpty = fileStat.type === FileType.FILE && fileStat.size === 0
+      }
+    }
     if (
-      !keep({ key: rel, name: entryName, kind: isDir ? 'd' : 'f', depth }, tree, options.minDepth)
+      !keep(
+        { key: rel, name: entryName, kind: isDir ? 'd' : 'f', depth, isEmpty },
+        tree,
+        options.minDepth,
+      )
     ) {
       continue
     }

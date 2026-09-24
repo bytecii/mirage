@@ -1185,3 +1185,33 @@ async def test_walk_selection_preserves_newlines_before_rendering():
         stat=AsyncMock(side_effect=lambda path, *_: stats[path.virtual]))
     assert io.matched_runs is not None
     assert [p.virtual for run in io.matched_runs for p in run] == ["/mnt/a\nb"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size, expected", [(None, b""), (0, b"/mnt/a.txt\n"),
+                                            (1, b"")])
+async def test_empty_file_start_requires_known_zero_size(size, expected):
+    stdout, _ = await find(
+        [PathSpec.from_str_path("/mnt/a.txt", "a.txt")],
+        (),
+        find_core=_unreached_core,
+        stat_path=_stat_path(
+            FileStat(name="a.txt", type=FileType.FILE, size=size)),
+        empty=True,
+    )
+    assert stdout == expected
+
+
+@pytest.mark.asyncio
+async def test_empty_walk_does_not_treat_unknown_size_as_zero():
+    stat = AsyncMock(return_value=FileStat(
+        name="records.jsonl", type=FileType.FILE, size=None))
+    readdir = AsyncMock(return_value=[])
+    result = await walk_find(
+        PathSpec.from_str_path("/records.jsonl", "records.jsonl"),
+        readdir=readdir,
+        stat=stat,
+        index=None,
+        args=FindArgs(empty=True),
+    )
+    assert result == []

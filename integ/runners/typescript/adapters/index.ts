@@ -1345,14 +1345,15 @@ async function openMem0(target: Target): Promise<Open> {
   // Any future in-process fake belongs behind the same lazy import.
   const { mem0Fake } = await import('../../../server/mem0/fake.ts')
   const server = await startKitFake(mem0Fake)
-  const mounts: Record<string, Mem0VFS> = {}
+  const mounts: Record<string, Mem0VFS | [Mem0VFS, MountMode]> = {}
   for (const mount of target.mounts) {
-    mounts[mount.path] = new Mem0VFS({
+    const vfs = new Mem0VFS({
       apiKey: 'integ-key',
       host: server.endpoint,
       userId: 'integ-user',
       defaultPageSize: 2,
     })
+    mounts[mount.path] = mount.mode === 'read' ? [vfs, MountMode.READ] : vfs
   }
   const ws = new Workspace(mounts, { mode: MountMode.WRITE })
   const cleanup = async (): Promise<void> => {

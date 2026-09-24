@@ -28,6 +28,7 @@ from mirage.vfs.disk import DiskVFS
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 from mirage.workspace.dispatcher import Dispatcher
+from mirage.workspace.dispatcher.constants import POLICY_WRITE_OPS
 from mirage.workspace.dispatcher.dispatcher import _MountChannel
 from mirage.workspace.mount.mount import MountEntry
 from mirage.workspace.session import SessionState
@@ -452,23 +453,17 @@ async def test_a_read_grant_refuses_link_writes_like_file_writes():
 
 
 @pytest.mark.asyncio
-async def test_a_read_mount_still_takes_a_link_sessionless():
-    # The mount's own mode is NOT this gate. `mode: read` says the
-    # backend cannot write, and a symlink is namespace state needing no
-    # write capability from it -- which is why a link above postgres,
-    # mongodb, chroma and qdrant (all mounted read) is pinned working in
-    # integ/vfs/<svc>/sym.json. Only a session grant binds here.
-    with Workspace({"/ro/": (RAMVFS(), MountMode.READ)}) as ws:
-        await ws.dispatch("symlink",
-                          PathSpec.from_str_path("/ro/lk"),
-                          target="t")
-        assert ws._namespace.is_link("/ro/lk")
-        # And the backend write on that same mount is still refused, so
-        # the two planes are told apart rather than both waved through.
-        with pytest.raises(ReadOnlyError):
-            await ws.dispatch("write",
-                              PathSpec.from_str_path("/ro/f.txt"),
-                              data=b"x")
+@pytest.mark.parametrize("op", sorted(POLICY_WRITE_OPS))
+async def test_read_only_admission_precedes_backend_support_and_io(op):
+    with Workspace({"/ro": (RAMVFS(), MountMode.READ)}) as ws:
+        mount = ws.namespace.mount_for("/ro/file")
+        mount.ensure_ready = AsyncMock(
+            side_effect=AssertionError("backend reached"))
+        with pytest.raises(ReadOnlyError) as exc:
+            await ws.dispatch(op, PathSpec.from_str_path("/ro/file"))
+        assert exc.value.errno == errno.EROFS
+        mount.ensure_ready.assert_not_awaited()
+        assert not ws.namespace.is_link("/ro/file")
 
 
 @pytest.mark.asyncio
@@ -833,3 +828,61 @@ async def test_nofollow_reads_the_links_own_xattrs():
         assert await ws.vfs.listxattr("/r/lk") == ["user.target"]
         assert await ws.vfs.listxattr("/r/lk", nofollow=True) == ["user.own"]
         assert ws.namespace.readlink("/r/lk") == "f"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command, diagnostic", [
+    ("echo x >> /ro/file", "/ro/file: Read-only file system\n"),
+    ("exec >> /ro/file", "/ro/file: Read-only file system\n"),
+    ("ln -s file /ro/link", "ln: read-only mount at /ro/\n"),
+    ("chmod 600 /ro/file", "chmod: read-only mount at /ro/\n"),
+    ("find /ro/file -delete",
+     "find: cannot delete '/ro/file': Read-only file system\n"),
+])
+async def test_shell_mutations_share_read_only_admission(command, diagnostic):
+    with Workspace({"/ro": RAMVFS()}, mode=MountMode.WRITE) as ws:
+        await ws.dispatch("write",
+                          PathSpec.from_str_path("/ro/file"),
+                          data=b"original")
+        mount = ws.namespace.mount_for("/ro/file")
+        mount.mode = MountMode.READ
+        execute = mount.execute_op
+
+        async def no_content_read(op, *args, **kwargs):
+            assert op not in {"read",
+                              "read_bytes"}, "refused write fetched content"
+            return await execute(op, *args, **kwargs)
+
+        mount.execute_op = no_content_read
+        result = await ws.shell(command)
+        assert result.exit_code == 1
+        assert await result.stderr_str() == diagnostic
+        assert not ws.namespace.is_link("/ro/link")
+        mount.execute_op = execute
+        body, _ = await ws.dispatch("read", PathSpec.from_str_path("/ro/file"))
+        assert body == b"original"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hidden", [False, True])
+async def test_rmdir_accounts_for_a_directory_containing_only_a_link(hidden):
+    with Workspace({"/data": RAMVFS()}, mode=MountMode.WRITE) as ws:
+        await ws.shell("mkdir /data/d; ln -s nowhere /data/d/link")
+        session = ws.create_session("remover",
+                                    profile={
+                                        "paths": {
+                                            "hide":
+                                            ["/data/d/link"] if hidden else []
+                                        },
+                                    })
+        token = set_current_session(session)
+        try:
+            if hidden:
+                await ws.vfs.rmdir("/data/d")
+            else:
+                with pytest.raises(OSError) as exc:
+                    await ws.vfs.rmdir("/data/d")
+                assert exc.value.errno == errno.ENOTEMPTY
+        finally:
+            reset_current_session(token)
+        assert ws.namespace.is_link("/data/d/link") is not hidden

@@ -312,3 +312,16 @@ describe('find actions', () => {
     expect(got).toEqual(['a', 'b'])
   })
 })
+
+it('keeps a directory with an unmatched link', async () => {
+  const ws = await shellWs()
+  try {
+    await ws.shell('mkdir /d; ln -s nowhere /d/link')
+    const result = await ws.shell('find /d -type d -delete')
+    expect(result.exitCode).toBe(1)
+    expect(result.stderrText).toBe("find: cannot delete '/d': Directory not empty\n")
+    expect(ws.namespace.isLink('/d/link')).toBe(true)
+  } finally {
+    await ws.close()
+  }
+})

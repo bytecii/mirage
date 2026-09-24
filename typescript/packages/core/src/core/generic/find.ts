@@ -123,7 +123,7 @@ async function isEmptyEntry(
     }
   }
   const st = await statEntry(deps, path, prefix, index)
-  return st !== null && (st.size ?? 0) === 0
+  return st !== null && st.type === FileType.FILE && st.size === 0
 }
 
 async function walk(
@@ -321,7 +321,7 @@ async function searchMatches<A>(
       isEmpty = !allItems.some((other) => other !== item && other.startsWith(childPrefix))
     } else {
       itemStat = await deps.stat(accessor, spec, index)
-      isEmpty = (itemStat.size ?? 0) === 0
+      isEmpty = itemStat.type === FileType.FILE && itemStat.size === 0
     }
   }
   const entry: FindEntry = {
