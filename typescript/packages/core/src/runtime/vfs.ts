@@ -240,7 +240,10 @@ export class RuntimeVFS {
    * "not known". One entry never fails the listing, the way a kernel
    * readdir never stats at all. What went wrong is not lost: the
    * guest's own stat or open of that entry asks the mount again and
-   * reports it. Only the listing itself failing fails the call.
+   * reports it. Only the listing itself failing fails the call. Any
+   * failure but a missing path (a dangling link, an entry gone since the
+   * listing) also warns on the host, since the row the guest sees is
+   * degraded.
    *
    * A row that did stat carries its mode and stamp too, since the
    * struct is already in hand: a guest that seeds a whole tree from
@@ -284,7 +287,10 @@ export class RuntimeVFS {
         let st: VFSStat
         try {
           st = await this.stat(raw)
-        } catch {
+        } catch (err) {
+          if (!isMissingPath(err)) {
+            console.warn(`runtime vfs: readdir ${path}: stat ${raw}: ${String(err)}`)
+          }
           return unclassified
         } finally {
           release()

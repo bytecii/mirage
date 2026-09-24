@@ -154,9 +154,15 @@ describe('RuntimeVFS transport', () => {
       if (op === 'readdir') return Promise.resolve(['/ram/gone'])
       return Promise.reject(Object.assign(new Error('nope'), { code: 'ENOENT' }))
     })
-    expect(await new RuntimeVFS(dispatch).readdir('/ram/')).toEqual([
-      { path: '/ram/gone', size: 0, isDir: false },
-    ])
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      expect(await new RuntimeVFS(dispatch).readdir('/ram/')).toEqual([
+        { path: '/ram/gone', size: 0, isDir: false },
+      ])
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      vi.restoreAllMocks()
+    }
   })
 
   // One record a remote API refuses must not cost the guest the whole
@@ -168,7 +174,8 @@ describe('RuntimeVFS transport', () => {
       if (path === '/ram/bad.txt') return Promise.reject(new Error('upstream 502 Bad Gateway'))
       return Promise.resolve(new FileStat({ name: 'a.txt', size: 4, type: FileType.FILE }))
     })
-    const host = (['debug', 'log', 'info', 'warn', 'error'] as const).map((m) =>
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const stdout = (['debug', 'log', 'info'] as const).map((m) =>
       vi.spyOn(console, m).mockImplementation(() => undefined),
     )
     try {
@@ -176,7 +183,10 @@ describe('RuntimeVFS transport', () => {
         { path: '/ram/a.txt', size: 4, isDir: false, mode: FILE_MODE, mtimeMs: 0 },
         { path: '/ram/bad.txt', size: 0, isDir: false },
       ])
-      for (const spy of host) expect(spy).not.toHaveBeenCalled()
+      expect(warn.mock.calls).toEqual([
+        ['runtime vfs: readdir /ram/: stat /ram/bad.txt: Error: upstream 502 Bad Gateway'],
+      ])
+      for (const spy of stdout) expect(spy).not.toHaveBeenCalled()
     } finally {
       vi.restoreAllMocks()
     }
