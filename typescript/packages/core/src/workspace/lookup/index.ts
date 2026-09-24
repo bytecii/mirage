@@ -29,6 +29,9 @@ export {
   listed,
   lookup,
   lookupAll,
+  program,
+  programNote,
+  programs,
   runtimeRefused,
   verbVisible,
 } from './lookup.ts'

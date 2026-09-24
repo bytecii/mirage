@@ -149,7 +149,7 @@
     "hello.txt",
     "reports",
     "user.json…",
-    "  copy() mounts: ['/.bash_history/', '/data/', '/dev/', '/']",
+    "  copy() mounts: ['/.bash_history/', '/usr/bin/', '/data/', '/dev/', '/']",
     "  ✓ deepcopy raises: Workspace.copy is async (it captures fingerprints for replay…",
     "  ✓ shallow copy raises: Workspace has no useful shallow copy — use `await ws.copy()`…"
   ]

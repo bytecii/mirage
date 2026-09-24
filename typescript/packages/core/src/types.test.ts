@@ -103,6 +103,7 @@ describe('VFSName', () => {
       'airtable',
       'aliyun',
       'backblaze',
+      'bin',
       'box',
       'ceph',
       'chroma',

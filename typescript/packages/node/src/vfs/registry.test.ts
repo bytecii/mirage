@@ -451,8 +451,8 @@ describe('hf VFS in registry', () => {
 describe('VFSName coverage', () => {
   // Names that are deliberately not buildable from the node registry.
   const BROWSER_ONLY = new Set(['opfs'])
-  // `history` is an internal view mount, never named in user config.
-  const INTERNAL = new Set(['history'])
+  // `history` and `bin` are internal view mounts, never named in user config.
+  const INTERNAL = new Set(['history', 'bin'])
 
   it('every VFS name is buildable or explicitly exempt', () => {
     // This is the guard a hardcoded entry count cannot give: adding a backend

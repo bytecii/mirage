@@ -695,7 +695,7 @@
       "command": "ls /",
       "expect": {
         "exit": 0,
-        "stdout": "data\ndev\n",
+        "stdout": "data\ndev\nusr\n",
         "stderr": ""
       }
     },
@@ -709,7 +709,7 @@
       "command": "ls /",
       "expect": {
         "exit": 0,
-        "stdout": "data\ndev\nghost\n",
+        "stdout": "data\ndev\nghost\nusr\n",
         "stderr": ""
       }
     },
