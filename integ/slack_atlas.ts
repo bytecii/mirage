@@ -95,6 +95,21 @@ function userOf(users: Json[], value: JsonValue | undefined): Json {
   )
 }
 
+async function listChannels(request: Request, types: string[]): Promise<Json[]> {
+  const channels: Json[] = []
+  let cursor = ''
+  do {
+    const response = await request('conversations.list', {
+      types: types.join(','),
+      limit: '1000',
+      cursor,
+    })
+    channels.push(...(response.channels as Json[]))
+    cursor = String((response.response_metadata as Json).next_cursor)
+  } while (cursor !== '')
+  return channels
+}
+
 // Wire arguments and CSV fields follow pkg/handler/{channels,conversations}.go
 // at https://github.com/korotovsky/slack-mcp-server/tree/v1.1.23.
 // Resolve names from the fake's users/list and conversations/list responses,
@@ -117,9 +132,9 @@ async function replay(
       .map((t) => t.trim())
       .filter((t) => CHANNEL_TYPES.includes(t))
     if (types.length === 0) types = ['public_channel', 'private_channel']
-    const sorted = channels
-      .filter((c) => types.includes(c.is_private ? 'private_channel' : 'public_channel'))
-      .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+    const sorted = (await listChannels(request, types)).sort((a, b) =>
+      String(a.id).localeCompare(String(b.id)),
+    )
     const cursor = Buffer.from(String(args.cursor ?? ''), 'base64').toString('utf8')
     const start =
       cursor === ''
@@ -245,17 +260,7 @@ async function main(): Promise<void> {
       return reply
     }
     const users = (await request('users.list')).members as Json[]
-    const channels: Json[] = []
-    let cursor = ''
-    do {
-      const response = await request('conversations.list', {
-        types: CHANNEL_TYPES.join(','),
-        limit: '1000',
-        cursor,
-      })
-      channels.push(...(response.channels as Json[]))
-      cursor = String((response.response_metadata as Json).next_cursor)
-    } while (cursor !== '')
+    const channels = await listChannels(request, CHANNEL_TYPES)
     for (const [i, call] of corpus.calls.entries()) {
       const label = `${String(i).padStart(2, '0')} ${call.task} ${call.tool}`
       if (call.skip !== undefined) {

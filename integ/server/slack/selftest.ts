@@ -86,6 +86,24 @@ async function main(): Promise<void> {
     eq('client.userBoot lists DMs, none shared', (boot.ims as Json[]).length, 10)
 
     const types = 'public_channel,private_channel'
+    const listed = async (selected: string): Promise<string[]> =>
+      ((await call('conversations.list', { types: selected })).channels as Json[]).map((c) =>
+        String(c.id),
+      )
+    eq('public-only conversation list excludes private channels', await listed('public_channel'), [
+      'C1',
+      'C10',
+      'C2',
+      'C3',
+      'C4',
+      'C6',
+      'C7',
+      'C8',
+      'C9',
+    ])
+    eq('private-only conversation list excludes public channels', await listed('private_channel'), [
+      'C5',
+    ])
     const first = await call('conversations.list', { types, limit: '1' })
     const channels = first.channels as Json[]
     eq('conversations.list honours limit', channels.length, 1)
