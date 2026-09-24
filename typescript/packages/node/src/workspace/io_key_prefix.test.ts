@@ -47,6 +47,9 @@ describe('io key prefix convention', () => {
   it.each([
     ['tee /data/t.txt > /dev/null', 'x\ny\n'],
     ['csplit -f /data/cs_ /data/seed.txt 2', null],
+    ['csplit /data/seed.txt 2', null],
+    ['split -l 1 /data/seed.txt', null],
+    ['cd /data && split -l 1', 'x\ny\n'],
     ['cp /data/seed.txt /data/copy.txt', null],
     ['grep x /data/seed.txt > /data/red.txt', null],
     ['cat /data/seed.txt >> /data/app.txt', null],

@@ -25,21 +25,22 @@ async def _no_read(path: PathSpec) -> bytes:
 @pytest.mark.asyncio
 async def test_stdin_outputs_are_named_on_the_executing_mount():
     # No operand and no -f to read a prefix from: the executing mount's
-    # prefix names the outputs.
+    # prefix names the outputs, and the writes keys stay mount-relative.
     specs: list[PathSpec] = []
 
     async def write_bytes(path: PathSpec, data: bytes) -> None:
         specs.append(path)
 
-    await csplit([], ["2"],
-                 read_bytes=_no_read,
-                 write_bytes=write_bytes,
-                 stdin=b"a\nb\n",
-                 mount_prefix="/data")
+    _, io = await csplit([], ["2"],
+                         read_bytes=_no_read,
+                         write_bytes=write_bytes,
+                         stdin=b"a\nb\n",
+                         mount_prefix="/data")
     assert [(p.virtual, p.vfs_path) for p in specs] == [
         ("/data/xx00", "xx00"),
         ("/data/xx01", "xx01"),
     ]
+    assert list(io.writes) == ["/xx00", "/xx01"]
 
 
 @pytest.mark.asyncio

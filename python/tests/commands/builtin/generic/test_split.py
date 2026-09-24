@@ -501,19 +501,21 @@ def _no_read_stream(path: PathSpec) -> AsyncIterator[bytes]:
 @pytest.mark.asyncio
 async def test_stdin_outputs_are_named_on_the_executing_mount():
     # No operand to read a prefix from: the executing mount's prefix names
-    # the outputs.
+    # the outputs, and the writes keys stay mount-relative like every
+    # other command's, so the executor can prefix them.
     specs: list[PathSpec] = []
 
     async def write_bytes(path: PathSpec, data: bytes) -> None:
         specs.append(path)
 
-    await split_generic.split([],
-                              read_stream=_no_read_stream,
-                              write_bytes=write_bytes,
-                              stdin=b"a\nb\n",
-                              lines_per_file=1,
-                              mount_prefix="/data")
+    _, io = await split_generic.split([],
+                                      read_stream=_no_read_stream,
+                                      write_bytes=write_bytes,
+                                      stdin=b"a\nb\n",
+                                      lines_per_file=1,
+                                      mount_prefix="/data")
     assert [(p.virtual, p.vfs_path) for p in specs] == [
         ("/data/xaa", "xaa"),
         ("/data/xab", "xab"),
     ]
+    assert list(io.writes) == ["/xaa", "/xab"]

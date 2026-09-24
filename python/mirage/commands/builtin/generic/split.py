@@ -440,7 +440,7 @@ async def split(
     if len(paths) > 2:
         raise extra_operand_error(CommandName.SPLIT, paths[2].raw_path
                                   or paths[2].virtual)
-    prefix_name = paths[1].mount_path if len(paths) >= 2 else "x"
+    prefix_name = paths[1].mount_path if len(paths) >= 2 else "/x"
     if lines_per_file == 0 and byte_limit == 0 and chunks is None:
         lines_per_file = 1000
     suffix_fn = partial(

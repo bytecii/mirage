@@ -445,7 +445,7 @@ export async function splitGeneric(
 ): Promise<CommandFnResult> {
   const fl = new FlagView(opts.flags, specOf('split'))
   if (paths.length > 2) throw extraOperandError(CommandName.SPLIT, paths[2]?.rawPath ?? '')
-  const prefixPath = paths.length >= 2 && paths[1] !== undefined ? paths[1].mountPath : 'x'
+  const prefixPath = paths.length >= 2 && paths[1] !== undefined ? paths[1].mountPath : '/x'
   const mountPrefix = opts.mountPrefix ?? ''
   const linesValue = fl.asStr('lines')
   const bytesValue = fl.asStr('bytes')
