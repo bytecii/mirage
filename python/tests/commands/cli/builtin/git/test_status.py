@@ -189,3 +189,21 @@ def test_a_bare_u_means_all():
 
 def test_an_attached_mode_is_taken_as_typed():
     assert parse_flags(flags(untracked_files="no")).untracked == UNTRACKED_NO
+
+
+@pytest.mark.asyncio
+async def test_quote_path_off_prints_non_ascii_as_itself(
+        git_ws, repo_path: Path):
+    (repo_path / "é.txt").write_text("x\n", encoding="utf-8")
+    config = repo_path / ".git" / "config"
+    config.write_text(config.read_text() + "[core]\n\tquotePath = false\n")
+    assert await run(git_ws, "status --porcelain") == "?? é.txt\n".encode()
+
+
+@pytest.mark.asyncio
+async def test_a_bad_quote_path_value_is_gits_fatal(git_ws, repo_path: Path):
+    config = repo_path / ".git" / "config"
+    config.write_text(config.read_text() + "[core]\n\tquotePath = junk\n")
+    result = await git_ws.shell("git -C /repo status")
+    assert (result.exit_code, result.stderr) == (
+        128, b"fatal: bad boolean config value 'junk' for 'core.quotepath'\n")

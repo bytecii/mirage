@@ -40,4 +40,20 @@ describe('POSIX character classes', () => {
     expect(compiled.test(']_123')).toBe(true)
     expect(compiled.test('abc')).toBe(false)
   })
+  it.each([
+    ['a++', '(?:a+)+'],
+    ['a+?', '(?:a+)?'],
+    ['a{1,2}?', '(?:a{1,2})?'],
+    ['(ab)+?', '(?:(ab)+)?'],
+    ['a|[bc]**', 'a|(?:[bc]*)*'],
+    [String.raw`\++`, String.raw`\++`],
+    ['a{', 'a{'],
+  ])('nests the stacked quantifiers in %s', (pattern, nested) => {
+    expect(translateClasses(pattern)).toBe(nested)
+    expect(translateClasses(pattern, false)).toBe(pattern)
+  })
+  it('keeps backtracking inside a nested quantifier', () => {
+    expect('aaa'.replace(new RegExp(translateClasses('a+?')), 'X')).toBe('X')
+    expect(new RegExp(`^${translateClasses('a++a')}$`).test('aaa')).toBe(true)
+  })
 })

@@ -36,7 +36,7 @@ import {
   renamesEnabled,
   type DiffFlags,
 } from './diff_output.ts'
-import { commitFacts, opened } from './repo.ts'
+import { commitFacts, configBool, opened } from './repo.ts'
 import { resolveCommit } from './revparse.ts'
 import { checkOperands, escaped, fatal, revisionArg } from './util.ts'
 import { encodeText } from '../../../../shell/bytes.ts'
@@ -54,11 +54,11 @@ interface ShowFlags {
 }
 
 /** Read the raw show flag kwargs into a frozen struct. */
-function parseShowFlags(fl: FlagView, defaultRenames = true): ShowFlags {
+function parseShowFlags(fl: FlagView, defaultRenames = true, quotePathFully = true): ShowFlags {
   const spelled = prettyValue(fl)
   return {
     date: fl.asStr('date') ?? 'default',
-    diff: parseDiffFlags(fl, true, 'dense-combined', true, defaultRenames),
+    diff: parseDiffFlags(fl, true, 'dense-combined', true, defaultRenames, quotePathFully),
     pretty: spelled !== null ? parsePretty(spelled) : MEDIUM,
   }
 }
@@ -97,7 +97,11 @@ export async function show(inv: CLIInvocation): Promise<CommandFnResult> {
   try {
     checkOperands(texts, undefined, escaped(inv.argv))
     const repo = await opened(fl, doors)
-    const parsed = parseShowFlags(fl, await renamesEnabled(repo))
+    const parsed = parseShowFlags(
+      fl,
+      await renamesEnabled(repo),
+      await configBool(repo, 'core.quotepath', true),
+    )
     const oid = await resolveCommit(repo, revisionArg(texts))
     const facts = await commitFacts(repo, oid)
     const decor = needsDecorations(parsed.pretty) ? await decorations(repo) : null
@@ -130,7 +134,7 @@ export async function diffTree(inv: CLIInvocation): Promise<CommandFnResult> {
     const bodies = await commitOutput(
       repo,
       commit,
-      parseDiffFlags(fl, false, 'off', false),
+      parseDiffFlags(fl, false, 'off', false, true, await configBool(repo, 'core.quotepath', true)),
       fl.asBool('r'),
       false,
     )

@@ -242,30 +242,68 @@ async function decorateHead(
  * Ordered by committer time with ties broken by insertion, which is what a
  * git log without `--topo-order` prints. Each commit is visited once however
  * many branches reach it.
+ *
+ * A hidden commit takes its whole ancestry out of the walk, through every
+ * parent even under `--first-parent`, which is how git carries a range's
+ * exclusion. With anything hidden the walk is git's limited one: it ends once
+ * every queued commit is hidden, and holds what it found until then, so a
+ * commit that a later hidden one turns out to reach still drops out.
  */
 async function* walkHistory(
   repo: Repo,
   starts: readonly CommitFacts[],
   firstParent: boolean,
+  hidden: readonly CommitFacts[] = [],
 ): AsyncGenerator<CommitFacts> {
   const seen = new Set<string>()
+  const excluded = new Set<string>()
+  const visited = new Map<string, CommitFacts>()
   const queue: CommitFacts[] = []
+  const held: CommitFacts[] = []
+  const hide = async (oids: readonly string[]): Promise<void> => {
+    const stack = [...oids]
+    for (let oid = stack.pop(); oid !== undefined; oid = stack.pop()) {
+      if (excluded.has(oid)) continue
+      excluded.add(oid)
+      const known = visited.get(oid)
+      if (known !== undefined) stack.push(...known.parents)
+      else if (!seen.has(oid)) {
+        seen.add(oid)
+        queue.push(await commitFacts(repo, oid))
+      }
+    }
+  }
+  for (const commit of hidden) {
+    if (seen.has(commit.oid)) continue
+    seen.add(commit.oid)
+    excluded.add(commit.oid)
+    queue.push(commit)
+  }
   for (const start of starts) {
     if (seen.has(start.oid)) continue
     seen.add(start.oid)
     queue.push(start)
   }
+  const limited = hidden.length > 0
   while (queue.length > 0) {
+    if (limited && queue.every((commit) => excluded.has(commit.oid))) break
     queue.sort((a, b) => b.committerTime - a.committerTime)
     const next = queue.shift()
     if (next === undefined) break
-    yield next
+    visited.set(next.oid, next)
+    if (excluded.has(next.oid)) {
+      await hide(next.parents)
+      continue
+    }
+    if (limited) held.push(next)
+    else yield next
     for (const parent of firstParent ? next.parents.slice(0, 1) : next.parents) {
       if (seen.has(parent)) continue
       seen.add(parent)
       queue.push(await commitFacts(repo, parent))
     }
   }
+  for (const commit of held) if (!excluded.has(commit.oid)) yield commit
 }
 
 /**
@@ -280,15 +318,17 @@ async function* walkHistory(
  * @param starts the commits to walk back from; more than one when `--all`
  *   seeds every ref
  * @param flags the parsed invocation
+ * @param hidden commits whose whole history is left out, the `A` of `A..B`
  */
 export async function select(
   repo: Repo,
   starts: readonly CommitFacts[],
   flags: LogFlags,
+  hidden: readonly CommitFacts[] = [],
 ): Promise<CommitFacts[]> {
   const selected: CommitFacts[] = []
   if (flags.maxCount === 0) return selected
-  for await (const commit of walkHistory(repo, starts, flags.firstParent)) {
+  for await (const commit of walkHistory(repo, starts, flags.firstParent, hidden)) {
     if (flags.minParents !== null && commit.parents.length < flags.minParents) continue
     if (
       flags.maxParents !== null &&

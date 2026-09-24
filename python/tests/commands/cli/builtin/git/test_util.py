@@ -64,9 +64,9 @@ async def test_an_unsupported_long_log_flag_is_refused_whole(git_ws):
 
 @pytest.mark.asyncio
 async def test_an_unsupported_show_flag_is_refused(git_ws):
-    result = await git_ws.shell("git -C /repo show --raw HEAD")
+    result = await git_ws.shell("git -C /repo show --word-diff HEAD")
     assert result.exit_code == 128
-    assert result.stderr == b"fatal: unrecognized argument: --raw\n"
+    assert result.stderr == b"fatal: unrecognized argument: --word-diff\n"
 
 
 @pytest.mark.asyncio

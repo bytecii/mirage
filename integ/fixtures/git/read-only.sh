@@ -50,4 +50,77 @@ chmod +x README.md
 at 2025-04-02T10:00:00Z
 git add -A
 git commit -qm 'rename with edits and binary addition'
+body() {
+  for i in $(seq 1 20); do
+    case $i in
+      5) echo 'function handleRequest(request, response) {' ;;
+      15) echo "  $1" ;;
+      *) echo "  body $i" ;;
+    esac
+  done
+}
+git switch -qc evil-base main
+body 'body 15' > f.txt
+seq 1 20 > n.txt
+seq 1 20 > m.txt
+seq 1 30 > h.txt
+printf 'x\ny\nlast' > tail.txt
+printf 'gone\n' > gone.txt
+printf 'perm\n' > perm.txt
+at 2025-05-01T10:00:00Z
+git add -A
+git commit -qm 'evil base'
+git switch -qc evil-side
+body SIDE > f.txt
+seq 1 20 | sed -e 's/^2$/two/' > n.txt
+seq 1 20 | sed -e 's/^2$/two/' > m.txt
+seq 1 30 | sed -e 's/^12$/twelve/' > h.txt
+printf 'x\ny\nSIDE' > tail.txt
+at 2025-05-02T10:00:00Z
+git commit -qam 'evil side'
+git switch -qc evil evil-base
+body MAIN > f.txt
+seq 1 20 | sed -e 's/^8$/eight/' > n.txt
+seq 1 20 | sed -e 's/^5$/five/' > m.txt
+seq 1 30 | sed -e '/^9$/d' -e 's/^20$/twenty/' > h.txt
+printf 'x\ny\nMAIN' > tail.txt
+at 2025-05-03T10:00:00Z
+git commit -qam 'evil main'
+at 2025-05-04T10:00:00Z
+if git merge -q evil-side -m 'evil merge' >/dev/null 2>&1; then
+  echo 'expected a merge conflict' >&2
+  exit 1
+fi
+body BOTH > f.txt
+printf 'x\ny\nBOTH' > tail.txt
+printf 'new\n' > new.txt
+git rm -q gone.txt
+chmod +x perm.txt
+git add -A
+git commit -qm 'evil merge'
 git switch -q main
+git switch -qc quoted main
+printf 'one\ntwo\n' > é.txt
+printf 'x\n' > "$(printf 'tab\there.txt')"
+printf 'q\n' > 'quo"te.txt'
+printf 's\n' > 'sp ace.txt'
+printf 'link me\n' > kind.txt
+mkdir -p dir
+printf 'd\nd2\nd3\n' > dir/naïve.md
+at 2025-06-01T10:00:00Z
+git add -A
+git commit -qm 'quoted base'
+printf 'one\ntwo\nthree\n' > é.txt
+git mv dir/naïve.md dir/ünïcode.md
+git mv 'sp ace.txt' 'späce.txt'
+chmod +x 'späce.txt'
+rm kind.txt
+ln -s é.txt kind.txt
+at 2025-06-02T10:00:00Z
+git add -A
+git commit -qm 'quoted change'
+git switch -q main
+blob=$(printf 'odd\n' | git hash-object -w --stdin)
+tree=$({ git ls-tree main; printf '100644 blob %s\t\377.txt\n' "$blob"; } | git mktree)
+at 2025-05-05T10:00:00Z
+git update-ref refs/heads/odd "$(git commit-tree "$tree" -p main -m 'odd name')"

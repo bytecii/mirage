@@ -1,6 +1,7 @@
 import git from 'isomorphic-git'
 import { VERSION } from '../../../../version.ts'
 
+import { translateClasses } from '../../../../utils/posix.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
 import { IOResult } from '../../../../io/types.ts'
 import type { CommandFnResult } from '../../../config.ts'
@@ -8,10 +9,10 @@ import { FlagView } from '../../../spec/flag_view.ts'
 import type { CLIInvocation } from '../../types.ts'
 import { GitError } from './errors.ts'
 import { parseFlags, refCommits, select } from './history.ts'
-import { commitFacts, opened, repoArgs } from './repo.ts'
+import { opened, repoArgs } from './repo.ts'
 import { loadRefs } from './refs.ts'
 import { readFile } from './io.ts'
-import { resolveCommit } from './revparse.ts'
+import { splitRevisions } from './revparse.ts'
 import { checkOperands, escaped, fatal, startPoint } from './util.ts'
 
 const ENC = new TextEncoder()
@@ -62,7 +63,7 @@ export async function config(inv: CLIInvocation): Promise<CommandFnResult> {
     const key = inv.texts[0] ?? ''
     let pattern: RegExp | null
     try {
-      pattern = regexp ? new RegExp(key) : null
+      pattern = regexp ? new RegExp(translateClasses(configKey(key))) : null
     } catch (err) {
       if (!(err instanceof SyntaxError)) throw err
       return [
@@ -153,10 +154,7 @@ export async function revList(inv: CLIInvocation): Promise<CommandFnResult> {
     checkOperands([...inv.texts], undefined, escaped(inv.argv))
     const repo = await opened(fl, inv.doors ?? {})
     const flags = parseFlags(fl)
-    const starts = flags.allRefs ? await refCommits(repo) : []
-    for (const revision of inv.texts)
-      starts.push(await commitFacts(repo, await resolveCommit(repo, revision)))
-    if (!starts.length && !flags.allRefs)
+    if (!inv.texts.length && !flags.allRefs)
       return [
         null,
         new IOResult({
@@ -164,7 +162,9 @@ export async function revList(inv: CLIInvocation): Promise<CommandFnResult> {
           stderr: ENC.encode('usage: git rev-list [<options>] <commit>...\n'),
         }),
       ]
-    const commits = await select(repo, starts, flags)
+    const [shown, hidden] = await splitRevisions(repo, inv.texts)
+    const starts = flags.allRefs ? [...(await refCommits(repo)), ...shown] : shown
+    const commits = await select(repo, starts, flags, hidden)
     const out = fl.asBool('count')
       ? `${String(commits.length)}\n`
       : commits.map((c) => `${c.oid}\n`).join('')

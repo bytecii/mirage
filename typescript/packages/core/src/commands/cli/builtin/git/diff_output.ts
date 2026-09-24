@@ -4,12 +4,15 @@ import { pairRenames, kindOf } from './changes.ts'
 import { combinedLines } from './combined.ts'
 import { GitError } from './errors.ts'
 import type { CommitFacts } from './format.ts'
-import { filePatch } from './patch.ts'
+import { filePatch, shortOid } from './patch.ts'
+import { quotePath } from './render.ts'
 import { commitFacts, repoArgs, type Repo } from './repo.ts'
 import { similarityScore } from './similarity.ts'
 import { diffstat, statTable, type FileStat } from './summary.ts'
-import { treeEntries, type TreeEntry } from './tree.ts'
+import { treeEntries, treeItems, type TreeEntry } from './tree.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
+
+const RENAME_SCORE = 50
 
 export interface DiffFlags {
   nameOnly: boolean
@@ -23,6 +26,8 @@ export interface DiffFlags {
   renames: number | null
   merge: string
   raw: boolean
+  abbrev: boolean
+  quotePathFully: boolean
 }
 
 export function parseDiffFlags(
@@ -31,18 +36,20 @@ export function parseDiffFlags(
   defaultMerge = 'off',
   porcelain = true,
   defaultRenames = true,
+  quotePathFully = true,
 ): DiffFlags {
   const nameOnly = fl.asBool('name_only'),
     nameStatus = fl.asBool('name_status'),
     stat = fl.asBool('stat'),
     numstat = fl.asBool('numstat'),
     shortstat = fl.asBool('shortstat'),
-    summary = fl.asBool('summary')
-  const modes = nameOnly || nameStatus || stat || numstat || shortstat || summary
+    summary = fl.asBool('summary'),
+    raw = fl.asBool('raw')
+  const modes = nameOnly || nameStatus || stat || numstat || shortstat || summary || raw
   const rename = fl.raw('find_renames')
-  let threshold: number | null = porcelain && defaultRenames ? 50 : null
+  let threshold: number | null = porcelain && defaultRenames ? RENAME_SCORE : null
   if (rename !== undefined && rename !== false) {
-    threshold = 50
+    threshold = RENAME_SCORE
     if (typeof rename === 'string' && rename !== '') {
       threshold = rename.endsWith('%')
         ? Number(rename.slice(0, -1))
@@ -81,7 +88,9 @@ export function parseDiffFlags(
     noPatch: fl.asBool('no_patch'),
     renames: threshold,
     merge,
-    raw: !defaultPatch && !modes && !patch,
+    raw: raw || (!porcelain && !modes && !patch),
+    abbrev: porcelain,
+    quotePathFully,
   }
 }
 
@@ -138,7 +147,15 @@ async function compare(
   return rows
 }
 
-function renameName(old: string, fresh: string): string {
+/**
+ * How a rename names its paths in a diffstat, git's pprint_rename: when either
+ * side needs quoting the two quoted paths stand whole, otherwise the shared
+ * leading and trailing directories fold into `pre/{old => new}/post`.
+ */
+function renameName(old: string, fresh: string, fully = true): string {
+  const quotedOld = quotePath(old, false, fully),
+    quotedFresh = quotePath(fresh, false, fully)
+  if (quotedOld !== old || quotedFresh !== fresh) return `${quotedOld} => ${quotedFresh}`
   const a = old.split('/'),
     b = fresh.split('/'),
     prefix: string[] = [],
@@ -165,72 +182,99 @@ function lines(data: Uint8Array): string[] {
   return text === '' ? [] : text.split(/(?<=\n)/)
 }
 
+/**
+ * Every requested format for one two-tree comparison, in git's order:
+ * `--name-only` and `--name-status` stand alone; otherwise raw rows come first,
+ * then numstat, stat and summary, then a blank line and the patch.
+ */
 async function renderChanges(repo: Repo, rows: Change[], flags: DiffFlags): Promise<string> {
   if (flags.noPatch) return ''
+  const width = flags.abbrev ? repo.abbrev : 40
+  const fully = flags.quotePathFully
   let output: string[] = []
   const numbers: string[] = [],
     summaries: string[] = []
   const stats: FileStat[] = [],
     patches: string[] = []
   for (const row of rows) {
+    const shown = quotePath(row.path, false, fully)
     const status = row.status === 'R' ? `R${String(row.score).padStart(3, '0')}` : row.status
-    const paths = row.status === 'R' ? `${row.oldPath}\t${row.path}` : row.path
-    if (flags.nameOnly) output.push(row.path)
-    else if (flags.nameStatus) output.push(`${status}\t${paths}`)
-    else if (flags.raw)
-      output.push(
-        `:${row.old?.mode ?? '000000'} ${row.new?.mode ?? '000000'} ${row.old?.oid ?? '0'.repeat(40)} ${row.new?.oid ?? '0'.repeat(40)} ${status}\t${paths}`,
-      )
-    else {
-      const before = new Map(row.old ? [[row.path, row.old]] : []),
-        after = new Map(row.new ? [[row.path, row.new]] : [])
-      const counted = await diffstat(repo, before, after)
-      const display = row.status === 'R' ? renameName(row.oldPath, row.path) : row.path
-      let stat = counted[0]
-      if (!stat) {
-        const fresh = (await diffstat(repo, new Map(), after))[0]
-        if (!fresh) throw new Error('Missing renamed entry')
-        stat = { ...fresh, insertions: 0, deletions: 0, oldSize: fresh.newSize }
-      }
-      stat = { ...stat, path: display }
-      stats.push(stat)
-      if (flags.numstat)
-        numbers.push(
-          `${stat.binary ? '-\t-' : `${String(stat.insertions)}\t${String(stat.deletions)}`}\t${display}`,
-        )
-      if (flags.summary) {
-        if (row.status === 'R') summaries.push(` rename ${display} (${String(row.score)}%)`)
-        else if (!row.old && row.new) summaries.push(` create mode ${row.new.mode} ${row.path}`)
-        else if (!row.new && row.old) summaries.push(` delete mode ${row.old.mode} ${row.path}`)
-        else if (row.old && row.new && row.old.mode !== row.new.mode)
-          summaries.push(` mode change ${row.old.mode} => ${row.new.mode} ${row.path}`)
-      }
-      if (flags.patch)
-        patches.push(
-          await filePatch(
-            repo,
-            row.path,
-            row.oldPath,
-            row.old,
-            row.new,
-            row.status === 'R' ? row.score : null,
-          ),
-        )
+    const paths = row.status === 'R' ? `${quotePath(row.oldPath, false, fully)}\t${shown}` : shown
+    if (flags.nameOnly) {
+      output.push(shown)
+      continue
     }
+    if (flags.nameStatus) {
+      output.push(`${status}\t${paths}`)
+      continue
+    }
+    if (flags.raw)
+      output.push(
+        `:${row.old?.mode ?? '000000'} ${row.new?.mode ?? '000000'} ${shortOid(row.old, width)} ${shortOid(row.new, width)} ${status}\t${paths}`,
+      )
+    const display = row.status === 'R' ? renameName(row.oldPath, row.path, fully) : shown
+    if (flags.stat || flags.numstat || flags.shortstat)
+      stats.push(await rowStat(repo, row, display))
+    const stat = stats.at(-1)
+    if (flags.numstat && stat)
+      numbers.push(
+        `${stat.binary ? '-\t-' : `${String(stat.insertions)}\t${String(stat.deletions)}`}\t${display}`,
+      )
+    if (flags.summary) summaries.push(...summaryLines(row, display, shown))
+    if (flags.patch)
+      patches.push(
+        await filePatch(
+          repo,
+          row.path,
+          row.oldPath,
+          row.old,
+          row.new,
+          row.status === 'R' ? row.score : null,
+          repo.abbrev,
+          fully,
+        ),
+      )
   }
-  if (!(flags.nameOnly || flags.nameStatus || flags.raw)) {
+  if (!(flags.nameOnly || flags.nameStatus)) {
     const table = statTable(stats)
     output = [
+      ...output,
       ...numbers,
       ...(flags.stat ? table : flags.shortstat ? table.slice(-1) : []),
       ...summaries,
     ]
   }
-  return (
-    output.map((l) => l + '\n').join('') +
-    (output.length && patches.length ? '\n' : '') +
-    patches.join('')
-  )
+  const head = output.map((l) => l + '\n').join(''),
+    body = patches.join('')
+  return head + (head && body ? '\n' : '') + body
+}
+
+/** The diffstat row for one change, named the way git prints it. */
+async function rowStat(repo: Repo, row: Change, display: string): Promise<FileStat> {
+  const before = new Map(row.old ? [[row.path, row.old]] : []),
+    after = new Map(row.new ? [[row.path, row.new]] : [])
+  const counted = (await diffstat(repo, before, after))[0]
+  if (counted) return { ...counted, path: display }
+  const fresh = (await diffstat(repo, new Map(), after))[0]
+  if (!fresh) throw new Error('Missing renamed entry')
+  return { ...fresh, path: display, insertions: 0, deletions: 0, oldSize: fresh.newSize }
+}
+
+/** The `--summary` lines for one change, git's diff_summary. */
+function summaryLines(row: Change, display: string, shown: string): string[] {
+  const old = row.old,
+    fresh = row.new
+  if (row.status === 'R') {
+    const lines = [` rename ${display} (${String(row.score)}%)`]
+    if (old && fresh && old.mode !== fresh.mode)
+      lines.push(` mode change ${old.mode} => ${fresh.mode}`)
+    return lines
+  }
+  if (!old && fresh) return [` create mode ${fresh.mode} ${shown}`]
+  if (!fresh && old) return [` delete mode ${old.mode} ${shown}`]
+  if (old && fresh && old.mode !== fresh.mode)
+    return [` mode change ${old.mode} => ${fresh.mode} ${shown}`]
+  return []
 }
 
 async function entries(
@@ -240,8 +284,43 @@ async function entries(
 ): Promise<Map<string, TreeEntry>> {
   if (tree === null) return new Map()
   if (recursive) return treeEntries(repo, tree)
-  const { tree: items } = await git.readTree({ ...repoArgs(repo), oid: tree })
+  const items = await treeItems(repo, tree)
   return new Map(items.map((e) => [e.path, { mode: e.mode, oid: e.oid }]))
+}
+
+/**
+ * The counts and summary lines `git commit` prints under its title.
+ *
+ * `--shortstat --summary` of the change, with renames found at git's default
+ * score whatever `diff.renames` says, which is how git's commit summary reads
+ * (pinned against git 2.50).
+ *
+ * @param repo repository to read blobs from
+ * @param before the parent tree
+ * @param after the new tree
+ * @param fully `core.quotePath`
+ */
+export async function commitSummary(
+  repo: Repo,
+  before: ReadonlyMap<string, TreeEntry>,
+  after: ReadonlyMap<string, TreeEntry>,
+  fully = true,
+): Promise<string> {
+  return renderChanges(repo, await compare(repo, before, after, RENAME_SCORE), {
+    nameOnly: false,
+    nameStatus: false,
+    stat: false,
+    numstat: false,
+    shortstat: true,
+    summary: true,
+    patch: false,
+    noPatch: false,
+    renames: RENAME_SCORE,
+    merge: 'off',
+    raw: false,
+    abbrev: true,
+    quotePathFully: fully,
+  })
 }
 
 export async function treeOutput(
@@ -293,33 +372,41 @@ export async function commitOutput(
     .filter((path) => maps.every((m) => m.has(path)))
     .sort(compareCodePoints)
   if (flags.noPatch) return []
-  if (flags.nameOnly || flags.nameStatus || flags.raw)
-    return [
-      common
-        .map((path) => {
-          const rows = maps.map((m) => changeAt(m, path)),
-            status = rows.map((r) => r.status).join('')
-          if (flags.nameOnly) return path + '\n'
-          if (flags.nameStatus) return `${status}\t${path}\n`
-          const all = [...rows.map((r) => r.old), rows[0]?.new ?? null]
-          return (
-            ':'.repeat(maps.length) +
-            all.map((e) => e?.mode ?? '000000').join(' ') +
-            ' ' +
-            all.map((e) => e?.oid ?? '0'.repeat(40)).join(' ') +
-            ` ${status}\t${path}\n`
-          )
-        })
-        .join(''),
-    ]
+  const width = flags.abbrev ? repo.abbrev : 40
+  const names = flags.nameOnly || flags.nameStatus
   const stat =
-    flags.stat || flags.numstat || flags.shortstat || flags.summary
-      ? await renderChanges(repo, comparisons[0] ?? [], { ...flags, patch: false })
+    !names && (flags.stat || flags.numstat || flags.shortstat || flags.summary)
+      ? await renderChanges(repo, comparisons[0] ?? [], { ...flags, patch: false, raw: false })
       : ''
-  const body = flags.patch
-    ? await combinedPatch(repo, maps, common, flags.merge === 'dense-combined')
-    : ''
-  return [stat + (stat && body ? '\n' : '') + body]
+  const listing = (names || flags.raw ? common : [])
+    .map((path) => {
+      const rows = maps.map((m) => changeAt(m, path)),
+        status = rows.map((r) => r.status).join(''),
+        shown = quotePath(path, false, flags.quotePathFully)
+      if (flags.nameOnly) return shown + '\n'
+      if (flags.nameStatus) return `${status}\t${shown}\n`
+      const sides = [...rows.map((r) => r.old), rows[0]?.new ?? null]
+      return (
+        ':'.repeat(maps.length) +
+        sides.map((e) => e?.mode ?? '000000').join(' ') +
+        ' ' +
+        sides.map((e) => shortOid(e, width)).join(' ') +
+        ` ${status}\t${shown}\n`
+      )
+    })
+    .join('')
+  const head = stat + listing
+  const body =
+    flags.patch && !names
+      ? await combinedPatch(
+          repo,
+          maps,
+          common,
+          flags.merge === 'dense-combined',
+          flags.quotePathFully,
+        )
+      : ''
+  return [head + (head && body ? '\n' : '') + body]
 }
 
 async function combinedPatch(
@@ -327,6 +414,7 @@ async function combinedPatch(
   maps: Map<string, Change>[],
   paths: string[],
   dense: boolean,
+  fully = true,
 ): Promise<string> {
   const output: string[] = []
   for (const path of paths) {
@@ -336,26 +424,38 @@ async function combinedPatch(
     const data = await blobData(repo, fresh),
       parents: Uint8Array[] = []
     for (const entry of old) parents.push(await blobData(repo, entry))
-    const body = combinedLines(parents.map(lines), lines(data), dense)
-    output.push(`diff --${dense ? 'cc' : 'combined'} ${path}\n`)
+    const binary = [...parents, data].some((d) => d.subarray(0, 8000).includes(0))
+    const body = binary ? [] : combinedLines(parents.map(lines), lines(data), dense)
+    const mode = fresh?.mode ?? '000000'
+    const moved = old.some((e) => (e?.mode ?? '000000') !== mode)
+    if (!binary && !body.length && !moved) continue
+    const deleted = fresh === null,
+      created = !deleted && rows.every((r) => r.status === 'A')
+    output.push(`diff --${dense ? 'cc' : 'combined'} ${quotePath(path, false, fully)}\n`)
     output.push(
       'index ' +
-        old.map((e) => (e?.oid ?? '0000000').slice(0, 7)).join(',') +
+        old.map((e) => shortOid(e, repo.abbrev)).join(',') +
         '..' +
-        (fresh?.oid ?? '0000000').slice(0, 7) +
+        shortOid(fresh, repo.abbrev) +
         '\n',
     )
-    if (old.some((e) => !e || e.mode !== fresh?.mode))
+    if (moved && created) output.push(`new file mode ${mode}\n`)
+    else if (moved)
       output.push(
-        'mode ' +
+        (deleted ? 'deleted file mode ' : 'mode ') +
           old.map((e) => e?.mode ?? '000000').join(',') +
-          '..' +
-          (fresh?.mode ?? '000000') +
+          (deleted ? '' : `..${mode}`) +
           '\n',
       )
-    if ([...parents, data].some((d) => d.subarray(0, 8000).includes(0)))
+    if (binary) {
       output.push('Binary files differ\n')
-    else if (body.length) output.push(`--- a/${path}\n`, `+++ b/${path}\n`, ...body)
+      continue
+    }
+    output.push(
+      `--- ${created ? '/dev/null' : quotePath(`a/${path}`, false, fully)}\n`,
+      `+++ ${deleted ? '/dev/null' : quotePath(`b/${path}`, false, fully)}\n`,
+      ...body,
+    )
   }
   return output.join('')
 }

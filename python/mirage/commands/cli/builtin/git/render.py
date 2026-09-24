@@ -110,7 +110,7 @@ UNTRACKED_HIDDEN = "Untracked files not listed (use -u option to show "\
 CLEAN_UNSCANNED = "nothing to commit (use -u to show untracked files)"
 
 
-def quote_path(path: str, porcelain: bool) -> str:
+def quote_path(path: str, porcelain: bool, fully: bool = True) -> str:
     """Spell a path the way git spells it, quoting only when it must.
 
     git C-quotes a path holding anything that would not survive being
@@ -120,39 +120,54 @@ def quote_path(path: str, porcelain: bool) -> str:
     an inconsistency: only the former is parsed by splitting on
     whitespace. Verified both ways against git 2.47.
 
+    ``core.quotePath=false`` turns ``fully`` off, and a byte outside
+    ASCII then passes through as itself while everything else is quoted
+    as before (git's cq_must_quote, pinned against git 2.50).
+
     Args:
-        path (str): repository-relative path.
+        path (str): repository-relative path, surrogate-escaped.
         porcelain (bool): whether a space alone forces quoting.
+        fully (bool): whether a byte outside ASCII forces quoting.
     """
     raw = path.encode("utf-8", errors="surrogateescape")
-    special = any(byte in ESCAPES or byte < 0x20 or byte >= 0x7F
-                  for byte in raw)
+    special = any(_must_quote(byte, fully) for byte in raw)
     if not special and not (porcelain and b" " in raw):
         return path
     if not special:
         return f'"{path}"'
-    out = []
+    out = bytearray()
     for byte in raw:
         escape = ESCAPES.get(byte)
         if escape is not None:
-            out.append(escape)
-        elif byte < 0x20 or byte >= 0x7F:
-            out.append(f"\\{byte:03o}")
+            out += escape.encode()
+        elif _must_quote(byte, fully):
+            out += f"\\{byte:03o}".encode()
         else:
-            out.append(chr(byte))
-    body = "".join(out)
-    return f'"{body}"'
+            out.append(byte)
+    return '"' + out.decode("utf-8", errors="surrogateescape") + '"'
 
 
-def short_line(entry: StatusEntry) -> str:
+def _must_quote(byte: int, fully: bool) -> bool:
+    """Whether one byte of a path forces the whole path into quotes.
+
+    Args:
+        byte (int): the byte.
+        fully (bool): whether a byte outside ASCII counts.
+    """
+    return (byte in ESCAPES or byte < 0x20 or byte == 0x7F
+            or (fully and byte > 0x7F))
+
+
+def short_line(entry: StatusEntry, fully: bool = True) -> str:
     """One row of ``--short`` / ``--porcelain`` output.
 
     Args:
         entry (StatusEntry): the row.
+        fully (bool): ``core.quotePath``.
     """
-    path = quote_path(entry.path, True)
+    path = quote_path(entry.path, True, fully)
     if entry.original is not None:
-        path = f"{quote_path(entry.original, True)} -> {path}"
+        path = f"{quote_path(entry.original, True, fully)} -> {path}"
     return f"{entry.index_status}{entry.tree_status} {path}"
 
 
@@ -173,16 +188,19 @@ def branch_line(branch: str | None, commit: str | None,
     return f"{BRANCH_MARK}{branch}"
 
 
-def short_format(rows: list[StatusEntry], header: str | None) -> str:
+def short_format(rows: list[StatusEntry],
+                 header: str | None,
+                 fully: bool = True) -> str:
     """The whole of ``--short`` / ``--porcelain`` output.
 
     Args:
         rows (list[StatusEntry]): every row, already in git's order.
         header (str | None): the ``## `` line, or None without
             ``--branch``.
+        fully (bool): ``core.quotePath``.
     """
     lines = [] if header is None else [header]
-    lines.extend(short_line(row) for row in rows)
+    lines.extend(short_line(row, fully) for row in rows)
     return "".join(f"{line}\n" for line in lines)
 
 
@@ -211,29 +229,31 @@ def _labelled(label: str, path: str, width: int) -> str:
     return f"\t{label:<{width}}{path}"
 
 
-def _staged_entries(rows: list[StatusEntry]) -> list[str]:
+def _staged_entries(rows: list[StatusEntry], fully: bool) -> list[str]:
     """The entry lines of the "Changes to be committed" section.
 
     Args:
         rows (list[StatusEntry]): every row.
+        fully (bool): ``core.quotePath``.
     """
     lines = []
     for row in rows:
         if row.index_status in (UNCHANGED, UNTRACKED, UNMERGED_COLUMN):
             continue
         label = STAGED_LABELS.get(row.index_status, "modified:")
-        path = quote_path(row.path, False)
+        path = quote_path(row.path, False, fully)
         if row.original is not None:
-            path = f"{quote_path(row.original, False)} -> {path}"
+            path = f"{quote_path(row.original, False, fully)} -> {path}"
         lines.append(_labelled(label, path, LABEL_WIDTH))
     return lines
 
 
-def _work_entries(rows: list[StatusEntry]) -> list[str]:
+def _work_entries(rows: list[StatusEntry], fully: bool) -> list[str]:
     """The entry lines of the "Changes not staged for commit" section.
 
     Args:
         rows (list[StatusEntry]): every row.
+        fully (bool): ``core.quotePath``.
     """
     lines = []
     for row in rows:
@@ -241,16 +261,17 @@ def _work_entries(rows: list[StatusEntry]) -> list[str]:
                 UNCHANGED, UNTRACKED):
             continue
         label = WORK_LABELS.get(row.tree_status, "modified:")
-        lines.append(_labelled(label, quote_path(row.path, False),
-                               LABEL_WIDTH))
+        lines.append(
+            _labelled(label, quote_path(row.path, False, fully), LABEL_WIDTH))
     return lines
 
 
-def _unmerged_entries(rows: list[StatusEntry]) -> list[str]:
+def _unmerged_entries(rows: list[StatusEntry], fully: bool) -> list[str]:
     """The entry lines of the "Unmerged paths" section.
 
     Args:
         rows (list[StatusEntry]): every row.
+        fully (bool): ``core.quotePath``.
     """
     lines = []
     for row in rows:
@@ -258,19 +279,20 @@ def _unmerged_entries(rows: list[StatusEntry]) -> list[str]:
         if code not in CONFLICT_LABELS:
             continue
         lines.append(
-            _labelled(CONFLICT_LABELS[code], quote_path(row.path, False),
-                      CONFLICT_WIDTH))
+            _labelled(CONFLICT_LABELS[code],
+                      quote_path(row.path, False, fully), CONFLICT_WIDTH))
     return lines
 
 
-def _untracked_entries(rows: list[StatusEntry]) -> list[str]:
+def _untracked_entries(rows: list[StatusEntry], fully: bool) -> list[str]:
     """The entry lines of the "Untracked files" section.
 
     Args:
         rows (list[StatusEntry]): every row.
+        fully (bool): ``core.quotePath``.
     """
     return [
-        f"\t{quote_path(row.path, False)}" for row in rows
+        f"\t{quote_path(row.path, False, fully)}" for row in rows
         if row.index_status == UNTRACKED
     ]
 
@@ -305,9 +327,13 @@ def _trailer(staged: list[str], work: list[str], unmerged: list[str],
     return [CLEAN_UNSCANNED if hide_untracked else CLEAN]
 
 
-def long_format(rows: list[StatusEntry], branch: str | None,
-                commit: str | None, no_commits: bool, merging: bool,
-                hide_untracked: bool) -> str:
+def long_format(rows: list[StatusEntry],
+                branch: str | None,
+                commit: str | None,
+                no_commits: bool,
+                merging: bool,
+                hide_untracked: bool,
+                fully: bool = True) -> str:
     """The default, human-readable status report.
 
     Args:
@@ -318,11 +344,12 @@ def long_format(rows: list[StatusEntry], branch: str | None,
         no_commits (bool): whether HEAD resolves to nothing yet.
         merging (bool): whether a merge is in progress.
         hide_untracked (bool): whether ``-uno`` suppressed the scan.
+        fully (bool): ``core.quotePath``.
     """
-    staged = _staged_entries(rows)
-    unmerged = _unmerged_entries(rows)
-    work = _work_entries(rows)
-    untracked = _untracked_entries(rows)
+    staged = _staged_entries(rows, fully)
+    unmerged = _unmerged_entries(rows, fully)
+    work = _work_entries(rows, fully)
+    untracked = _untracked_entries(rows, fully)
     lines = [
         f"{ON_BRANCH}{branch}"
         if branch is not None else f"{DETACHED}{commit or ''}"

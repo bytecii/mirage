@@ -23,8 +23,12 @@ from mirage.commands.cli.builtin.git.diff_output import (DiffFlags,
                                                          tree_output)
 from mirage.commands.cli.builtin.git.errors import (GitError,
                                                     InvalidOptionError,
+                                                    NoMergeBaseError,
                                                     NoWorkspaceError)
-from mirage.commands.cli.builtin.git.revparse import resolve_commit
+from mirage.commands.cli.builtin.git.repo import config_bool
+from mirage.commands.cli.builtin.git.revparse import (merge_bases,
+                                                      range_commits,
+                                                      resolve_commit)
 from mirage.commands.cli.builtin.git.session import opened
 from mirage.commands.cli.builtin.git.util import (  # yapf: disable
     check_operands, escaped, fatal)
@@ -35,37 +39,53 @@ from mirage.io.types import ByteSource, IOResult
 
 # Deliberate divergence, verified against git 2.47.3 on a real
 # repository. The patch is correct and applies cleanly, and file
-# headers, mode lines and blob abbreviations match git exactly, but the
-# hunks are not byte-identical:
-#
-#   ours: @@ -3,6 +3,10 @@
-#   git:  @@ -4,6 +4,10 @@ from collections import defaultdict
-#
-# Two causes, both from dulwich rendering through Python's difflib
-# rather than git's xdiff. git appends the enclosing function or section
-# to a hunk header (xfuncname), and git slides a hunk to the equivalent
-# boundary xdiff prefers, so a blank line can be attributed to the
-# additions on one side and the context on the other. Closing this means
-# reimplementing xdl_change_compact and the xfuncname scan; until then
-# do not claim byte parity for diff bodies. `log`, `log --oneline`,
-# `show`'s header and `branch` ARE byte-identical.
+# headers, mode lines, blob abbreviations and hunk function context
+# match git exactly, but a hunk can still sit a line off where git's
+# does (`@@ -3,6 +3,10 @@` against `@@ -4,6 +4,10 @@`): git slides a
+# hunk to the equivalent boundary xdiff prefers (xdl_change_compact),
+# so a blank line can be attributed to the additions on one side and
+# the context on the other. Closing this means reimplementing that
+# pass; until then do not claim byte parity for diff bodies. `log`,
+# `log --oneline`, `show`'s header and `branch` ARE byte-identical.
 
 
-def _render(repo: BaseRepo, old_rev: str, new_rev: str,
-            flags: DiffFlags) -> bytes:
-    """Resolve both revisions and render the patch, synchronously.
+def _render(repo: BaseRepo, texts: tuple[str, ...],
+            flags: DiffFlags) -> tuple[bytes, bytes]:
+    """Resolve both sides and render the patch, synchronously.
+
+    One revision is compared with HEAD and two with each other.
+    ``A..B`` is the two-revision form written as one operand, and
+    ``A...B`` compares B with the merge base of the two, which is what
+    a branch changed since it forked; with several bases git warns and
+    takes the first (pinned against git 2.50).
 
     Runs on a worker thread, because resolving and reading blobs both
     fetch through the dispatcher.
 
     Args:
         repo (BaseRepo): repository to read.
-        old_rev (str): the revision on the minus side.
-        new_rev (str): the revision on the plus side.
+        texts (tuple[str, ...]): the revision operands, at least one.
+        flags (DiffFlags): the parsed diff flags.
+
+    Returns:
+        tuple[bytes, bytes]: the rendered diff and any warning.
     """
-    old = resolve_commit(repo, old_rev)
-    new = resolve_commit(repo, new_rev)
-    return tree_output(repo, old.tree, new.tree, flags)
+    warning = b""
+    ends = range_commits(repo, texts[0]) if len(texts) == 1 else None
+    if ends is None:
+        old = resolve_commit(repo, texts[0])
+        new = resolve_commit(repo, texts[1] if len(texts) >= 2 else HEAD)
+    else:
+        old, new, symmetric = ends
+        if symmetric:
+            bases = merge_bases(repo, old, new)
+            if not bases:
+                raise NoMergeBaseError(texts[0])
+            old = bases[0]
+            if len(bases) > 1:
+                warning = (f"warning: {texts[0]}: multiple merge bases, "
+                           f"using {old.id.decode()}\n").encode()
+    return tree_output(repo, old.tree, new.tree, flags), warning
 
 
 async def diff(inv: CLIInvocation[None]) -> tuple[ByteSource | None, IOResult]:
@@ -94,14 +114,17 @@ async def diff(inv: CLIInvocation[None]) -> tuple[ByteSource | None, IOResult]:
             raise NoWorkspaceError()
         check_operands(texts, InvalidOptionError, escaped(inv.argv))
         repo, _location = await opened(fl, doors)
-        new_rev = texts[1] if len(texts) >= 2 else HEAD
-        body = await asyncio.to_thread(
-            _render, repo, texts[0], new_rev,
+        body, warning = await asyncio.to_thread(
+            _render, repo, tuple(texts),
             parse_diff_flags(fl,
                              default_renames=await
-                             renames_enabled(dispatch, _location)))
+                             renames_enabled(dispatch, _location),
+                             quote_path_fully=await
+                             config_bool(dispatch, _location, b"core",
+                                         b"quotepath", True)))
     except GitError as exc:
         return fatal(exc)
+    result = IOResult(stderr=warning) if warning else IOResult()
     if not body:
-        return None, IOResult()
-    return yield_bytes(body), IOResult()
+        return None, result
+    return yield_bytes(body), result

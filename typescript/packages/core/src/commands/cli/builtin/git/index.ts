@@ -71,15 +71,18 @@ const DATE_OPTION = new Option({
 })
 
 const DIFF_OPTIONS = [
-  new Option({ long: '--name-status', description: 'Name status' }),
-  new Option({ long: '--name-only', description: 'Name only' }),
-  new Option({ long: '--stat', description: 'Stat' }),
-  new Option({ long: '--numstat', description: 'Numstat' }),
-  new Option({ long: '--shortstat', description: 'Shortstat' }),
-  new Option({ long: '--summary', description: 'Summary' }),
-  new Option({ short: '-p', long: '--patch', description: 'Patch' }),
-  new Option({ short: '-s', long: '--no-patch', description: 'No patch' }),
-  new Option({ long: '--no-ext-diff', description: 'No ext diff' }),
+  new Option({ long: '--name-status', description: 'Show changed paths and status' }),
+  new Option({ long: '--name-only', description: 'Show changed paths instead of the patch' }),
+  new Option({ long: '--stat', description: 'Show the diffstat table instead of the patch' }),
+  new Option({ long: '--numstat', description: 'Show added and deleted line counts per path' }),
+  new Option({ long: '--shortstat', description: 'Show only the diffstat summary line' }),
+  new Option({ long: '--summary', description: 'Summarize creations, deletions and mode changes' }),
+  new Option({ short: '-p', long: '--patch', description: 'Show the patch' }),
+  new Option({ short: '-s', long: '--no-patch', description: 'Suppress all diff output' }),
+  new Option({
+    long: '--no-ext-diff',
+    description: 'Accepted for compatibility; there are no external diff drivers to disable',
+  }),
   new Option({
     short: '-M',
     long: '--find-renames',
@@ -87,7 +90,8 @@ const DIFF_OPTIONS = [
     valueOptional: true,
     description: 'Detect renames with an optional similarity threshold',
   }),
-  new Option({ long: '--no-renames', description: 'No renames' }),
+  new Option({ long: '--no-renames', description: 'Turn off rename detection' }),
+  new Option({ long: '--raw', description: 'Show the raw diff format' }),
 ]
 
 const MERGE_OPTIONS = [
@@ -100,12 +104,28 @@ const MERGE_OPTIONS = [
 
 const LOG_OPTIONS = [
   ...MERGE_OPTIONS,
-  new Option({ long: '--after', type: 'str', description: 'After' }),
-  new Option({ long: '--before', type: 'str', description: 'Before' }),
-  new Option({ long: '--max-parents', type: 'int', description: 'Max parents' }),
-  new Option({ long: '--min-parents', type: 'int', description: 'Min parents' }),
-  new Option({ long: '--merges', description: 'Merges' }),
-  new Option({ long: '--no-merges', description: 'No merges' }),
+  new Option({
+    long: '--after',
+    type: 'str',
+    description: 'Commits more recent than a date, like --since',
+  }),
+  new Option({
+    long: '--before',
+    type: 'str',
+    description: 'Commits older than a date, like --until',
+  }),
+  new Option({
+    long: '--max-parents',
+    type: 'int',
+    description: 'Show only commits with at most this many parents',
+  }),
+  new Option({
+    long: '--min-parents',
+    type: 'int',
+    description: 'Show only commits with at least this many parents',
+  }),
+  new Option({ long: '--merges', description: 'Show only merge commits' }),
+  new Option({ long: '--no-merges', description: 'Leave out merge commits' }),
 
   DATE_OPTION,
   new Option({ long: '--decorate', description: 'Print ref names on commits' }),
@@ -176,9 +196,19 @@ const ADD_OPTIONS = [
     description: 'Stage changes to tracked files only',
   }),
   new Option({ short: '-f', long: '--force', description: 'Stage paths an ignore rule covers' }),
+  new Option({
+    short: '-v',
+    long: '--verbose',
+    description: 'Name each path as it is added or removed',
+  }),
 ]
 
 const COMMIT_OPTIONS = [
+  new Option({
+    short: '-a',
+    long: '--all',
+    description: 'Stage modified and deleted tracked files first',
+  }),
   // Required, not defaulted: git would open an editor without it, and a mount
   // has none to open.
   new Option({ short: '-m', long: '--message', type: 'str', description: 'Commit message' }),
@@ -305,9 +335,12 @@ export const GIT = new CLISpec({
       fn: config,
       options: [
         new Option({ long: '--get', description: 'Get a configuration value' }),
-        new Option({ short: '-l', long: '--list' }),
-        new Option({ long: '--show-origin' }),
-        new Option({ long: '--get-regexp' }),
+        new Option({ short: '-l', long: '--list', description: 'List every variable and value' }),
+        new Option({ long: '--show-origin', description: 'Show the file each value comes from' }),
+        new Option({
+          long: '--get-regexp',
+          description: 'Get the variables whose names match a regular expression',
+        }),
       ],
       positional: [new Operand({ type: 'str', name: 'name' })],
     }),
@@ -377,6 +410,7 @@ export const GIT = new CLISpec({
       name: 'reset',
       description: 'Unstage, putting the index back to HEAD',
       fn: reset,
+      options: [new Option({ short: '-q', long: '--quiet', description: 'Only report errors' })],
       rest: PATHSPEC,
       write: true,
     }),

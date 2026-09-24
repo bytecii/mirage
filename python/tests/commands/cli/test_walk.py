@@ -540,3 +540,31 @@ def test_option_shaped_alias_uses_the_declared_leaf():
     result = walk("tool", spec, ["-v", "version"])
     assert result.leaf is leaf
     assert result.group_flags["-v"] is True
+
+
+def test_option_shaped_alias_is_an_operand_after_double_dash():
+    leaf = CLISpec(name="version", aliases=("--version", "-v"), fn=_verb)
+    spec = CLISpec(name="tool", subcommands=(leaf, ))
+    for word in ("--version", "-v"):
+        result = walk("tool", spec, ["--", word])
+        assert result.leaf is None
+        assert result.exit_code == 1
+        assert result.output == (f"tool: '{word}' is not a tool command. "
+                                 "See 'tool --help'.\n").encode()
+    assert walk("tool", spec, ["--", "version"]).leaf is leaf
+
+
+def test_git_root_refuses_double_dash_like_an_unknown_option():
+    leaf = CLISpec(name="status", fn=_verb)
+    inner = CLISpec(name="remote", subcommands=(leaf, ))
+    spec = CLISpec(name="git",
+                   usage_style=UsageStyle.GIT,
+                   subcommands=(leaf, inner))
+    for argv in (["--", "status"], ["--"]):
+        result = walk("git", spec, argv)
+        assert result.leaf is None
+        assert result.exit_code == 129
+        assert result.output.startswith(b"unknown option: --\n")
+    assert walk("git", spec, ["remote", "--", "status"]).leaf is leaf
+    assert walk("git", replace(spec, usage_style=UsageStyle.ARGPARSE),
+                ["--", "status"]).leaf is leaf

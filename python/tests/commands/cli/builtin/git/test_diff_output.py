@@ -20,8 +20,13 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from dulwich.object_store import MemoryObjectStore
+from dulwich.objects import Blob
+from dulwich.refs import DictRefsContainer
+from dulwich.repo import BaseRepo
 
 from mirage.commands.cli.builtin.git import GIT
+from mirage.commands.cli.builtin.git.diff_output import commit_summary
 from mirage.version import __version__
 from tests.commands.cli.builtin.git.conftest import mounted
 
@@ -83,3 +88,56 @@ async def test_rename_config(readonly_repo, tmp_path, flag):
         got = await ws.shell('git -C /repo ' + form)
     assert (got.exit_code, got.stdout or b'', got.stderr
             or b'') == (native.returncode, native.stdout, native.stderr)
+
+
+MODE = 0o100644
+EXECUTABLE = 0o100755
+
+
+def repo_with(*contents: bytes) -> tuple[BaseRepo, list[bytes]]:
+    """A repository holding each blob, and their ids in the same order.
+
+    Args:
+        contents (bytes): blob contents to store.
+    """
+    store = MemoryObjectStore()
+    ids = []
+    for content in contents:
+        blob = Blob.from_string(content)
+        store.add_object(blob)
+        ids.append(blob.id)
+    return BaseRepo(store, DictRefsContainer({})), ids
+
+
+# Pinned against git 2.37 and 2.50: a binary blob counts as a changed
+# file but zero lines, and in a mixed commit the untouched deletions
+# clause drops off the line.
+def test_commit_summary_counts_a_binary_file_but_no_lines():
+    repo, (bin_id, ) = repo_with(b"A\x00B\x00C")
+    assert commit_summary(
+        repo, {}, {b"blob.bin": (MODE, bin_id)
+                   }) == (b" 1 file changed, 0 insertions(+), 0 deletions(-)\n"
+                          b" create mode 100644 blob.bin\n")
+
+
+def test_commit_summary_mixes_binary_files_and_text_lines_like_git():
+    repo, (txt, bin_id) = repo_with(b"x\ny\nz\n", b"DIFFERENT\x00BYTES")
+    after = {b"text.txt": (MODE, txt), b"blob.bin": (MODE, bin_id)}
+    assert commit_summary(repo, {},
+                          after) == (b" 2 files changed, 3 insertions(+)\n"
+                                     b" create mode 100644 blob.bin\n"
+                                     b" create mode 100644 text.txt\n")
+
+
+def test_commit_summary_orders_every_line_by_path():
+    repo, (one, two) = repo_with(b"one\n", b"two\n")
+    before = {b"b": (MODE, one), b"z": (MODE, two)}
+    after = {
+        b"a": (EXECUTABLE, two),
+        b"c": (MODE, one),
+        b"z": (EXECUTABLE, two)
+    }
+    assert commit_summary(repo, before, after).splitlines()[1:] == [
+        b" create mode 100755 a", b" rename b => c (100%)",
+        b" mode change 100644 => 100755 z"
+    ]

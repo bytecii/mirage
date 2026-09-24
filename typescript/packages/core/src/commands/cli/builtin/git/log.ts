@@ -28,9 +28,10 @@ import {
   type Decorations,
 } from './format.ts'
 import { decorations, parseFlags, refCommits, select, type LogFlags } from './history.ts'
-import { commitFacts, opened, type Repo } from './repo.ts'
-import { resolveCommit } from './revparse.ts'
-import { checkOperands, escaped, fatal, revisionArg } from './util.ts'
+import { configBool, opened, type Repo } from './repo.ts'
+import { splitRevisions } from './revparse.ts'
+import { checkOperands, escaped, fatal } from './util.ts'
+import { HEAD } from './constants.ts'
 import { encodeText } from '../../../../shell/bytes.ts'
 
 /**
@@ -79,15 +80,18 @@ function rendered(
   return lines.length > 0 ? `${lines.join('\n')}\n` : ''
 }
 
-/** The starting points a log walks: the revision, plus every ref for --all. */
+/**
+ * The commits a log walks from and the commits it hides: the revisions and
+ * ranges given, HEAD when there are none, plus every ref for --all.
+ */
 async function startingPoints(
   repo: Repo,
-  revision: string,
+  revisions: readonly string[],
   flags: LogFlags,
-): Promise<CommitFacts[]> {
-  const starts = [await commitFacts(repo, await resolveCommit(repo, revision))]
+): Promise<[CommitFacts[], CommitFacts[]]> {
+  const [starts, hidden] = await splitRevisions(repo, revisions.length ? revisions : [HEAD])
   if (flags.allRefs) starts.push(...(await refCommits(repo)))
-  return starts
+  return [starts, hidden]
 }
 
 /** Show commit logs. */
@@ -99,8 +103,8 @@ export async function log(inv: CLIInvocation): Promise<CommandFnResult> {
     checkOperands(texts, undefined, escaped(inv.argv))
     const parsed = parseFlags(fl)
     const repo = await opened(fl, doors)
-    const starts = await startingPoints(repo, revisionArg(texts), parsed)
-    const commits = await select(repo, starts, parsed)
+    const [starts, hidden] = await startingPoints(repo, texts, parsed)
+    const commits = await select(repo, starts, parsed, hidden)
     const decor =
       parsed.decorate || needsDecorations(parsed.pretty) ? await decorations(repo) : null
     let diffFlags = parseDiffFlags(fl, false)
@@ -112,16 +116,24 @@ export async function log(inv: CLIInvocation): Promise<CommandFnResult> {
       diffFlags.nameStatus ||
       diffFlags.numstat ||
       diffFlags.shortstat ||
-      diffFlags.summary
+      diffFlags.summary ||
+      diffFlags.raw
     ) {
-      diffFlags = parseDiffFlags(fl, false, 'off', true, await renamesEnabled(repo))
+      diffFlags = parseDiffFlags(
+        fl,
+        false,
+        'off',
+        true,
+        await renamesEnabled(repo),
+        await configBool(repo, 'core.quotepath', true),
+      )
       const blocks: string[] = []
       for (const commit of commits) {
         const head = rendered([commit], parsed, repo.abbrev, decor)
         const bodies = await commitOutput(repo, commit, diffFlags)
         blocks.push(joinOutput(commit, head, bodies, parsed.pretty.kind, repo.abbrev))
       }
-      out = blocks.join(parsed.oneline ? '' : '\n')
+      out = blocks.join(['tformat', 'oneline'].includes(parsed.pretty.kind) ? '' : '\n')
     } else out = rendered(commits, parsed, repo.abbrev, decor)
     if (out === '') return [null, new IOResult()]
     return [encodeText(out), new IOResult()]

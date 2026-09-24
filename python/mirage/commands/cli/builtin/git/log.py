@@ -17,6 +17,7 @@ import asyncio
 from dulwich.objects import Commit
 from dulwich.repo import BaseRepo
 
+from mirage.commands.cli.builtin.git.constants import HEAD
 from mirage.commands.cli.builtin.git.diff_output import (commit_output,
                                                          join_output,
                                                          parse_diff_flags,
@@ -30,10 +31,11 @@ from mirage.commands.cli.builtin.git.history import (LogFlags, decorations,
                                                      parse_flags, ref_commits,
                                                      select)
 from mirage.commands.cli.builtin.git.objects import abbrev_for
-from mirage.commands.cli.builtin.git.revparse import resolve_commit
+from mirage.commands.cli.builtin.git.repo import config_bool
+from mirage.commands.cli.builtin.git.revparse import split_revisions
 from mirage.commands.cli.builtin.git.session import opened
 from mirage.commands.cli.builtin.git.util import (  # yapf: disable
-    check_operands, escaped, fatal, revision_arg)
+    check_operands, escaped, fatal)
 from mirage.commands.cli.types import CLIDoors, CLIInvocation
 from mirage.commands.spec.flag_view import FlagView
 from mirage.io.stream import yield_bytes
@@ -41,7 +43,7 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.shell.bytes import encode_text
 
 
-def _collect(repo: BaseRepo, revision: str, flags: LogFlags,
+def _collect(repo: BaseRepo, revisions: tuple[str, ...], flags: LogFlags,
              want_decor: bool) -> tuple[list[Commit], Decorations | None]:
     """Resolve the starting points and walk them, synchronously.
 
@@ -53,14 +55,15 @@ def _collect(repo: BaseRepo, revision: str, flags: LogFlags,
 
     Args:
         repo (BaseRepo): repository to walk.
-        revision (str): the revision to start from.
+        revisions (tuple[str, ...]): the revisions and ranges to walk,
+            HEAD when none was given.
         flags (LogFlags): the parsed invocation.
         want_decor (bool): whether the format renders %d/%D.
     """
-    starts = [resolve_commit(repo, revision)]
+    starts, hidden = split_revisions(repo, revisions or (HEAD, ))
     if flags.all_refs:
         starts.extend(ref_commits(repo))
-    commits = select(repo, starts, flags)
+    commits = select(repo, starts, flags, tuple(hidden))
     return commits, decorations(repo) if want_decor else None
 
 
@@ -134,18 +137,21 @@ async def log(inv: CLIInvocation[None]) -> tuple[ByteSource | None, IOResult]:
         parsed = parse_flags(fl)
         repo, _location = await opened(fl, doors)
         commits, decor = await asyncio.to_thread(
-            _collect, repo, revision_arg(texts), parsed,
+            _collect, repo, tuple(texts), parsed,
             (parsed.decorate or needs_decorations(parsed.pretty)))
         diff_flags = parse_diff_flags(fl, default_patch=False)
     except GitError as exc:
         return fatal(exc)
     if any((diff_flags.patch, diff_flags.stat, diff_flags.name_only,
             diff_flags.name_status, diff_flags.numstat, diff_flags.shortstat,
-            diff_flags.summary)):
+            diff_flags.summary, diff_flags.raw)):
         diff_flags = parse_diff_flags(fl,
                                       default_patch=False,
                                       default_renames=await
-                                      renames_enabled(dispatch, _location))
+                                      renames_enabled(dispatch, _location),
+                                      quote_path_fully=await
+                                      config_bool(dispatch, _location, b"core",
+                                                  b"quotepath", True))
         blocks = []
         for commit in commits:
             head = _rendered([commit], parsed, abbrev_for(repo), decor)
@@ -154,7 +160,8 @@ async def log(inv: CLIInvocation[None]) -> tuple[ByteSource | None, IOResult]:
             blocks.append(
                 join_output(commit, head, bodies, parsed.pretty.kind,
                             abbrev_for(repo)))
-        out = (b"" if parsed.oneline else b"\n").join(blocks)
+        out = (b"" if parsed.pretty.kind in ("tformat", "oneline") else
+               b"\n").join(blocks)
     else:
         out = _rendered(commits, parsed, abbrev_for(repo), decor)
     if not out:

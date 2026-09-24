@@ -9,13 +9,14 @@ from mirage.commands.cli.builtin.git.errors import GitError
 from mirage.commands.cli.builtin.git.history import (LogFlags, parse_flags,
                                                      ref_commits, select)
 from mirage.commands.cli.builtin.git.io import read_file
-from mirage.commands.cli.builtin.git.revparse import resolve_commit
+from mirage.commands.cli.builtin.git.revparse import split_revisions
 from mirage.commands.cli.builtin.git.session import opened
 from mirage.commands.cli.builtin.git.util import (check_operands, escaped,
                                                   fatal, start_point)
 from mirage.commands.cli.types import CLIDoors, CLIInvocation
 from mirage.commands.spec.flag_view import FlagView
 from mirage.io.types import ByteSource, IOResult
+from mirage.utils.posix import translate_classes
 from mirage.version import __version__
 
 
@@ -66,7 +67,8 @@ async def config(
                                   stderr=b"error: wrong number of arguments\n")
         key = inv.texts[0] if inv.texts else ""
         try:
-            pattern = re.compile(key) if regexp else None
+            pattern = re.compile(translate_classes(
+                config_key(key))) if regexp else None
         except re.error:
             return None, IOResult(
                 exit_code=6,
@@ -120,9 +122,10 @@ async def show_ref(
 
 def _revisions(repo: BaseRepo, revisions: tuple[str, ...],
                flags: LogFlags) -> list[bytes]:
-    starts = ref_commits(repo) if flags.all_refs else []
-    starts.extend(resolve_commit(repo, rev) for rev in revisions)
-    return [commit.id for commit in select(repo, starts, flags)]
+    starts, hidden = split_revisions(repo, revisions)
+    if flags.all_refs:
+        starts[:0] = ref_commits(repo)
+    return [commit.id for commit in select(repo, starts, flags, tuple(hidden))]
 
 
 async def rev_list(

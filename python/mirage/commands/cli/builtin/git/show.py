@@ -31,6 +31,7 @@ from mirage.commands.cli.builtin.git.format import (MEDIUM, Decorations,
                                                     render_template)
 from mirage.commands.cli.builtin.git.history import decorations, pretty_value
 from mirage.commands.cli.builtin.git.objects import abbrev_for
+from mirage.commands.cli.builtin.git.repo import config_bool
 from mirage.commands.cli.builtin.git.revparse import resolve_commit
 from mirage.commands.cli.builtin.git.session import opened
 from mirage.commands.cli.builtin.git.util import (  # yapf: disable
@@ -50,17 +51,22 @@ class ShowFlags:
     date: str = "default"
 
 
-def parse_show_flags(fl: FlagView, default_renames: bool = True) -> ShowFlags:
+def parse_show_flags(fl: FlagView,
+                     default_renames: bool = True,
+                     quote_path_fully: bool = True) -> ShowFlags:
     """Read the raw show flag kwargs into a frozen struct.
 
     Args:
         fl (FlagView): spec-validated view over the raw flag kwargs.
+        default_renames (bool): ``diff.renames``.
+        quote_path_fully (bool): ``core.quotePath``.
     """
     spelled = pretty_value(fl)
     return ShowFlags(
         diff=parse_diff_flags(fl,
                               default_merge="dense-combined",
-                              default_renames=default_renames),
+                              default_renames=default_renames,
+                              quote_path_fully=quote_path_fully),
         date=fl.as_str("date") or "default",
         pretty=parse_pretty(spelled) if spelled is not None else MEDIUM,
     )
@@ -137,8 +143,9 @@ async def show(inv: CLIInvocation[None]) -> tuple[ByteSource | None, IOResult]:
             raise NoWorkspaceError()
         check_operands(texts, marked=escaped(inv.argv))
         repo, location = await opened(fl, doors)
-        parsed = parse_show_flags(fl, await
-                                  renames_enabled(dispatch, location))
+        parsed = parse_show_flags(
+            fl, await renames_enabled(dispatch, location), await
+            config_bool(dispatch, location, b"core", b"quotepath", True))
         rendered = await asyncio.to_thread(_render, repo, revision_arg(texts),
                                            parsed,
                                            needs_decorations(parsed.pretty))
@@ -158,11 +165,19 @@ def _diff_tree(repo: BaseRepo, revision: str, flags: DiffFlags,
 async def diff_tree(
         inv: CLIInvocation[None]) -> tuple[ByteSource | None, IOResult]:
     fl = FlagView(inv.flags)
+    doors = inv.doors or CLIDoors()
     try:
-        repo, _ = await opened(fl, inv.doors or CLIDoors())
+        if doors.dispatch is None:
+            raise NoWorkspaceError()
+        repo, location = await opened(fl, doors)
+        fully = await config_bool(doors.dispatch, location, b"core",
+                                  b"quotepath", True)
         out = await asyncio.to_thread(
             _diff_tree, repo, inv.texts[0] if inv.texts else "HEAD",
-            parse_diff_flags(fl, default_patch=False, porcelain=False),
+            parse_diff_flags(fl,
+                             default_patch=False,
+                             porcelain=False,
+                             quote_path_fully=fully),
             fl.as_bool("no_commit_id"), fl.as_bool("r"))
         return out, IOResult()
     except GitError as exc:

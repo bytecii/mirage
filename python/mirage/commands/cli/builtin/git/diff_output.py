@@ -13,23 +13,35 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 from io import BytesIO
 
 from dulwich.config import ConfigFile
 from dulwich.diff_tree import _similarity_score
 from dulwich.objects import Blob, Commit, ObjectID, Tree
-from dulwich.patch import write_object_diff
 from dulwich.repo import BaseRepo
 
 from mirage.commands.cli.builtin.git.changes import pair_renames
 from mirage.commands.cli.builtin.git.combined import combined_lines
+from mirage.commands.cli.builtin.git.constants import FUNCNAME_START, GIT_SPACE
 from mirage.commands.cli.builtin.git.errors import GitError
 from mirage.commands.cli.builtin.git.io import read_optional
-from mirage.commands.cli.builtin.git.summary import (diffstat, stat_table,
+from mirage.commands.cli.builtin.git.objects import abbrev_for
+from mirage.commands.cli.builtin.git.render import quote_path
+from mirage.commands.cli.builtin.git.summary import (BINARY_SNIFF, FileStat,
+                                                     diffstat, stat_table,
                                                      tree_entries)
 from mirage.commands.cli.builtin.git.types import RepoLocation
 from mirage.commands.spec.flag_view import FlagView
 from mirage.runtime.types import DispatchFn
+from mirage.shell.bytes import encode_text
+
+OID_HEX = 40
+DEV_NULL = '/dev/null'
+HUNK_CONTEXT = 3
+FUNCNAME_BYTES = 80
+HUNK_HEADER_BYTES = 128
+RENAME_SCORE = 50
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +58,8 @@ class DiffFlags:
     renames: int | None = None
     merge: str = 'off'
     raw: bool = False
+    abbrev: bool = False
+    quote_path_fully: bool = True
 
 
 def parse_diff_flags(fl: FlagView,
@@ -53,15 +67,16 @@ def parse_diff_flags(fl: FlagView,
                      default_patch: bool = True,
                      default_merge: str = 'off',
                      porcelain: bool = True,
-                     default_renames: bool = True) -> DiffFlags:
+                     default_renames: bool = True,
+                     quote_path_fully: bool = True) -> DiffFlags:
     modes = [
         fl.as_bool(key) for key in ('name_only', 'name_status', 'stat',
-                                    'numstat', 'shortstat', 'summary')
+                                    'numstat', 'shortstat', 'summary', 'raw')
     ]
     rename = fl.raw('find_renames')
     threshold = None
     if rename is not None and rename is not False:
-        threshold = 50
+        threshold = RENAME_SCORE
         if isinstance(rename, str) and rename:
             value = rename.removesuffix('%')
             try:
@@ -70,7 +85,7 @@ def parse_diff_flags(fl: FlagView,
             except ValueError as exc:
                 raise GitError(f'invalid similarity index {rename}') from exc
     elif porcelain and default_renames:
-        threshold = 50
+        threshold = RENAME_SCORE
     if fl.as_bool('no_renames'):
         threshold = None
     merge = fl.as_str('diff_merges') or default_merge
@@ -106,7 +121,10 @@ def parse_diff_flags(fl: FlagView,
                      no_patch=fl.as_bool('no_patch'),
                      renames=threshold,
                      merge=merge,
-                     raw=not default_patch and not any(modes) and not patch)
+                     raw=modes[6]
+                     or not porcelain and not any(modes) and not patch,
+                     abbrev=porcelain,
+                     quote_path_fully=quote_path_fully)
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,13 +143,14 @@ def compare(repo: BaseRepo, before: dict[bytes, tuple[int, bytes]],
             threshold: int | None) -> list[Change]:
     changed = sorted(p for p in set(before) | set(after)
                      if before.get(p) != after.get(p))
+    names = {p.decode('utf-8', errors='surrogateescape'): p for p in changed}
     codes = {
-        p.decode(): ('A' if p not in before else
-                     'D' if p not in after else 'T' if before[p][0]
-                     & 0o170000 != after[p][0] & 0o170000 else 'M')
-        for p in changed
+        name: ('A' if p not in before else
+               'D' if p not in after else 'T' if before[p][0]
+               & 0o170000 != after[p][0] & 0o170000 else 'M')
+        for name, p in names.items()
     }
-    entries = {p.decode(): after.get(p, before.get(p)) for p in changed}
+    entries = {name: after.get(p, before.get(p)) for name, p in names.items()}
     pairs = {
         p: (code, None)
         for p, code in codes.items()
@@ -143,8 +162,9 @@ def compare(repo: BaseRepo, before: dict[bytes, tuple[int, bytes]],
         for p, e in entries.items() if e is not None
     }, threshold)
     rows = []
-    for path, (status, origin) in sorted(pairs.items()):
-        name, old_path = path.encode(), (origin or path).encode()
+    for path, (status, origin) in sorted(pairs.items(),
+                                         key=lambda item: names[item[0]]):
+        name, old_path = names[path], names[origin or path]
         old, new = before.get(old_path), after.get(name)
         score = 0
         if origin is not None and old is not None and new is not None:
@@ -155,7 +175,22 @@ def compare(repo: BaseRepo, before: dict[bytes, tuple[int, bytes]],
     return rows
 
 
-def rename_name(old: str, new: str) -> str:
+def rename_name(old: str, new: str, fully: bool = True) -> str:
+    """How a rename names its paths in a diffstat, git's pprint_rename.
+
+    When either side needs quoting the two quoted paths stand whole;
+    otherwise the shared leading and trailing directories fold into
+    ``pre/{old => new}/post``.
+
+    Args:
+        old (str): the source path, surrogate-escaped.
+        new (str): the destination path, surrogate-escaped.
+        fully (bool): ``core.quotePath``.
+    """
+    quoted_old = quote_path(old, False, fully)
+    quoted_new = quote_path(new, False, fully)
+    if quoted_old != old or quoted_new != new:
+        return f'{quoted_old} => {quoted_new}'
     a, b = old.split('/'), new.split('/')
     prefix = []
     while len(a) > 1 and len(b) > 1 and a[0] == b[0]:
@@ -172,93 +207,279 @@ def rename_name(old: str, new: str) -> str:
 
 def render_changes(repo: BaseRepo, rows: list[Change],
                    flags: DiffFlags) -> bytes:
+    """Every requested format for one two-tree comparison, in git's order.
+
+    ``--name-only`` and ``--name-status`` stand alone; otherwise raw
+    rows come first, then numstat, stat and summary, then a blank line
+    and the patch.
+
+    Args:
+        repo (BaseRepo): repository to read blobs from.
+        rows (list[Change]): the paired tree deltas.
+        flags (DiffFlags): the parsed invocation.
+    """
     if flags.no_patch:
         return b''
-    lines = []
-    stats = []
+    width = abbrev_for(repo) if flags.abbrev else OID_HEX
+    fully = flags.quote_path_fully
+    lines: list[str] = []
+    stats: list[FileStat] = []
     numbers: list[str] = []
     summaries: list[str] = []
-    patches = BytesIO()
+    patches: list[bytes] = []
     for row in rows:
-        name, origin = row.path.decode(), row.old_path.decode()
+        name = row.path.decode('utf-8', errors='surrogateescape')
+        origin = row.old_path.decode('utf-8', errors='surrogateescape')
+        shown = quote_path(name, False, fully)
         status = f'R{row.score:03d}' if row.status == 'R' else row.status
-        paths = f'{origin}\t{name}' if row.status == 'R' else name
+        paths = (f'{quote_path(origin, False, fully)}\t{shown}'
+                 if row.status == 'R' else shown)
         if flags.name_only:
-            lines.append(name)
-        elif flags.name_status:
+            lines.append(shown)
+            continue
+        if flags.name_status:
             lines.append(f'{status}\t{paths}')
-        elif flags.raw:
-            oldmode, oldid = row.old or (0, b'0' * 40)
-            newmode, newid = row.new or (0, b'0' * 40)
-            lines.append(f':{oldmode:06o} {newmode:06o} {oldid.decode()} '
-                         f'{newid.decode()} {status}\t{paths}')
-        else:
-            before = {row.path: row.old} if row.old else {}
-            after = {row.path: row.new} if row.new else {}
-            counted = diffstat(repo.object_store, before, after)
-            display = rename_name(origin, name) if row.status == 'R' else name
-            if counted:
-                stats.append(replace(counted[0], path=display))
-            else:
-                # An unchanged blob at a new name still needs a diffstat row.
-                from_stat = diffstat(repo.object_store, {}, after)[0]
-                stats.append(
-                    replace(from_stat,
-                            path=display,
-                            insertions=0,
-                            deletions=0,
-                            old_size=from_stat.new_size))
-            if flags.numstat:
-                stat = stats[-1]
-                counts = ("-\t-" if stat.binary else
-                          f"{stat.insertions}\t{stat.deletions}")
-                numbers.append(f'{counts}\t{display}')
-            if flags.summary:
-                if row.status == 'R':
-                    summaries.append(f' rename {display} ({row.score}%)')
-                elif row.old is None and row.new:
-                    summaries.append(f' create mode {row.new[0]:06o} {name}')
-                elif row.new is None and row.old:
-                    summaries.append(f' delete mode {row.old[0]:06o} {name}')
-                elif row.old and row.new and row.old[0] != row.new[0]:
-                    summaries.append(f' mode change {row.old[0]:06o} => '
-                                     f'{row.new[0]:06o} {name}')
-            if flags.patch:
-                if row.old and row.new and row.old[1] == row.new[
-                        1] and row.status != 'R':
-                    patches.write((f'diff --git a/{origin} b/{name}\n'
-                                   f'old mode {row.old[0]:06o}\n'
-                                   f'new mode {row.new[0]:06o}\n').encode())
-                    continue
-                if row.status == 'R':
-                    patches.write(
-                        (f'diff --git a/{origin} b/{name}\n'
-                         f'similarity index {row.score}%\n'
-                         f'rename from {origin}\nrename to {name}\n').encode())
-                    if row.old == row.new:
-                        continue
-                patch = BytesIO()
-                write_object_diff(patch, repo.object_store,
-                                  (row.old_path if row.old else None,
-                                   row.old[0] if row.old else None,
-                                   ObjectID(row.old[1]) if row.old else None),
-                                  (row.path if row.new else None,
-                                   row.new[0] if row.new else None,
-                                   ObjectID(row.new[1]) if row.new else None))
-                data = patch.getvalue()
-                if row.old and row.new and row.old[0] != row.new[0]:
-                    data = data.replace(b"old file mode ", b"old mode ",
-                                        1).replace(b"new file mode ",
-                                                   b"new mode ", 1)
-                patches.write(
-                    data.split(b'\n', 1)[1] if row.status == 'R' else data)
-    if not (flags.name_only or flags.name_status or flags.raw):
+            continue
+        if flags.raw:
+            lines.append(f':{_mode(row.old):06o} {_mode(row.new):06o} '
+                         f'{_short(row.old, width)} {_short(row.new, width)} '
+                         f'{status}\t{paths}')
+        display = (rename_name(origin, name, fully)
+                   if row.status == 'R' else shown)
+        if flags.stat or flags.numstat or flags.shortstat:
+            stats.append(_row_stat(repo, row, display))
+        if flags.numstat:
+            counts = ('-\t-' if stats[-1].binary else
+                      f'{stats[-1].insertions}\t{stats[-1].deletions}')
+            numbers.append(f'{counts}\t{display}')
+        if flags.summary:
+            summaries.extend(_summary(row, display, shown))
+        if flags.patch:
+            patches.append(
+                file_patch(repo, row, name, origin, abbrev_for(repo), fully))
+    if not (flags.name_only or flags.name_status):
         table = stat_table(stats)
-        lines = numbers + (table if flags.stat else
-                           table[-1:] if flags.shortstat else []) + summaries
-    output = ''.join(line + '\n' for line in lines).encode()
-    return output + (b'\n' if output and patches.getvalue() else
-                     b'') + patches.getvalue()
+        lines += numbers + (table if flags.stat else
+                            table[-1:] if flags.shortstat else []) + summaries
+    output = encode_text(''.join(line + '\n' for line in lines))
+    body = b''.join(patches)
+    return output + (b'\n' if output and body else b'') + body
+
+
+def commit_summary(repo: BaseRepo,
+                   before: dict[bytes, tuple[int, bytes]],
+                   after: dict[bytes, tuple[int, bytes]],
+                   fully: bool = True) -> bytes:
+    """The counts and summary lines ``git commit`` prints under its title.
+
+    ``--shortstat --summary`` of the change, with renames found at git's
+    default score whatever ``diff.renames`` says, which is how git's
+    commit summary reads (pinned against git 2.50).
+
+    Args:
+        repo (BaseRepo): repository to read blobs from.
+        before (dict): the parent tree, path to (mode, blob id).
+        after (dict): the new tree, path to (mode, blob id).
+        fully (bool): ``core.quotePath``.
+    """
+    return render_changes(
+        repo, compare(repo, before, after, RENAME_SCORE),
+        DiffFlags(shortstat=True, summary=True, quote_path_fully=fully))
+
+
+def _mode(entry: tuple[int, bytes] | None) -> int:
+    """An entry's mode, zero for the side that does not exist.
+
+    Args:
+        entry (tuple[int, bytes] | None): the (mode, id) pair or None.
+    """
+    return entry[0] if entry else 0
+
+
+def _short(entry: tuple[int, bytes] | None, width: int) -> str:
+    """An entry's object id cut to ``width``, zeros for a missing side.
+
+    Args:
+        entry (tuple[int, bytes] | None): the (mode, id) pair or None.
+        width (int): how many hex digits to keep.
+    """
+    return (entry[1].decode() if entry else '0' * OID_HEX)[:width]
+
+
+def _row_stat(repo: BaseRepo, row: Change, display: str) -> FileStat:
+    """The diffstat row for one change, named the way git prints it.
+
+    Args:
+        repo (BaseRepo): repository to read blobs from.
+        row (Change): the paired delta.
+        display (str): the quoted or rename-folded name.
+    """
+    before = {row.path: row.old} if row.old else {}
+    after = {row.path: row.new} if row.new else {}
+    counted = diffstat(repo.object_store, before, after)
+    if counted:
+        return replace(counted[0], path=display)
+    fresh = diffstat(repo.object_store, {}, after)[0]
+    return replace(fresh,
+                   path=display,
+                   insertions=0,
+                   deletions=0,
+                   old_size=fresh.new_size)
+
+
+def _summary(row: Change, display: str, shown: str) -> list[str]:
+    """The ``--summary`` lines for one change, git's diff_summary.
+
+    Args:
+        row (Change): the paired delta.
+        display (str): the rename-folded name.
+        shown (str): the quoted destination path.
+    """
+    old, new = row.old, row.new
+    if row.status == 'R':
+        lines = [f' rename {display} ({row.score}%)']
+        if old and new and old[0] != new[0]:
+            lines.append(f' mode change {old[0]:06o} => {new[0]:06o}')
+        return lines
+    if old is None and new:
+        return [f' create mode {new[0]:06o} {shown}']
+    if new is None and old:
+        return [f' delete mode {old[0]:06o} {shown}']
+    if old and new and old[0] != new[0]:
+        return [f' mode change {old[0]:06o} => {new[0]:06o} {shown}']
+    return []
+
+
+def file_patch(repo: BaseRepo,
+               row: Change,
+               name: str,
+               origin: str,
+               width: int,
+               fully: bool = True) -> bytes:
+    """One path's patch, headers and hunks, as git's builtin_diff writes it.
+
+    A change between a file and a symlink is split into a deletion and
+    a creation, the way git's run_diff splits a type change. A ``---``
+    or ``+++`` label holding a space ends in a tab, so a patch tool can
+    tell where the name stops.
+
+    Args:
+        repo (BaseRepo): repository to read blobs from.
+        row (Change): the paired delta.
+        name (str): the destination path, surrogate-escaped.
+        origin (str): the source path, surrogate-escaped.
+        width (int): how many hex digits the index line keeps.
+        fully (bool): ``core.quotePath``.
+    """
+    old, new = row.old, row.new
+    if old and new and old[0] & 0o170000 != new[0] & 0o170000:
+        return (file_patch(repo, replace(
+            row, new=None), name, origin, width, fully) + file_patch(
+                repo, replace(row, old=None), name, origin, width, fully))
+    source = quote_path(f'a/{origin}', False, fully)
+    target = quote_path(f'b/{name}', False, fully)
+    head = [f'diff --git {source} {target}']
+    if old is None and new:
+        head.append(f'new file mode {new[0]:06o}')
+    elif new is None and old:
+        head.append(f'deleted file mode {old[0]:06o}')
+    elif old and new and old[0] != new[0]:
+        head += [f'old mode {old[0]:06o}', f'new mode {new[0]:06o}']
+    if row.status == 'R':
+        head += [
+            f'similarity index {row.score}%',
+            f'rename from {quote_path(origin, False, fully)}',
+            f'rename to {quote_path(name, False, fully)}'
+        ]
+    if old and new and old[1] == new[1]:
+        return encode_text(''.join(line + '\n' for line in head))
+    index = f'index {_short(old, width)}..{_short(new, width)}'
+    if old and new and old[0] == new[0]:
+        index += f' {old[0]:06o}'
+    head.append(index)
+    before, after = blob_data(repo, old), blob_data(repo, new)
+    source = source if old else DEV_NULL
+    target = target if new else DEV_NULL
+    if any(b'\0' in data[:BINARY_SNIFF] for data in (before, after)):
+        head.append(f'Binary files {source} and {target} differ')
+        return encode_text(''.join(line + '\n' for line in head))
+    body = hunks(byte_lines(before), byte_lines(after))
+    if body:
+        head += [
+            f'--- {source}' + ('\t' if ' ' in source else ''),
+            f'+++ {target}' + ('\t' if ' ' in target else '')
+        ]
+    return encode_text(''.join(line + '\n' for line in head)) + body
+
+
+def byte_lines(data: bytes) -> list[bytes]:
+    """Split a blob at each newline only, keeping them, as xdiff does.
+
+    Args:
+        data (bytes): the blob's bytes.
+    """
+    *whole, rest = data.split(b'\n')
+    return [line + b'\n' for line in whole] + ([rest] if rest else [])
+
+
+def hunks(old: list[bytes], new: list[bytes]) -> bytes:
+    """The ``@@`` hunks of a two-way patch, as xdiff's xdl_emit_diff emits.
+
+    Each header carries the nearest earlier line of the old side that
+    starts with a letter, ``_`` or ``$`` (git's default funcname), and
+    keeps the previous hunk's when none lies between the two.
+
+    Args:
+        old (list[bytes]): the old side's lines, newlines kept.
+        new (list[bytes]): the new side's lines, newlines kept.
+    """
+    out = []
+    context = b''
+    searched = -1
+    for group in SequenceMatcher(
+            a=old, b=new, autojunk=False).get_grouped_opcodes(HUNK_CONTEXT):
+        start, stop = group[0][1], group[-1][2]
+        found = next((old[k] for k in range(start - 1, searched, -1)
+                      if old[k] and chr(old[k][0]) in FUNCNAME_START), None)
+        searched = start - 1
+        if found is not None:
+            context = found[:FUNCNAME_BYTES].rstrip(GIT_SPACE)
+        head = (f'@@ -{_span(start, stop)} '
+                f'+{_span(group[0][3], group[-1][4])} @@').encode()
+        if context:
+            head += b' ' + context[:HUNK_HEADER_BYTES - len(head) - 2]
+        out.append(head + b'\n')
+        for tag, i1, i2, j1, j2 in group:
+            if tag == 'equal':
+                out.extend(_hunk_line(b' ', line) for line in old[i1:i2])
+                continue
+            out.extend(_hunk_line(b'-', line) for line in old[i1:i2])
+            out.extend(_hunk_line(b'+', line) for line in new[j1:j2])
+    return b''.join(out)
+
+
+def _span(start: int, stop: int) -> str:
+    """A hunk range: ``start,count``, the count dropped when it is one.
+
+    Args:
+        start (int): the first line, counted from zero.
+        stop (int): one past the last line.
+    """
+    if stop - start == 1:
+        return str(start + 1)
+    return f'{start + 1 if stop > start else start},{stop - start}'
+
+
+def _hunk_line(marker: bytes, line: bytes) -> bytes:
+    """One hunk line, with git's marker when it has no newline.
+
+    Args:
+        marker (bytes): ``b' '``, ``b'-'`` or ``b'+'``.
+        line (bytes): the line, with its newline when it has one.
+    """
+    if line.endswith(b'\n'):
+        return marker + line
+    return marker + line + b'\n\\ No newline at end of file\n'
 
 
 def entries(repo: BaseRepo, tree: bytes | None,
@@ -286,7 +507,6 @@ def commit_output(repo: BaseRepo,
                   flags: DiffFlags,
                   recursive: bool = True,
                   root: bool = True) -> list[bytes]:
-    # Parent selection precedes rendering, so names, stats and patches agree.
     parents = [repo.object_store[p] for p in commit.parents]
     assert all(isinstance(p, Commit) for p in parents)
     trees = [p.tree for p in parents if isinstance(p, Commit)]
@@ -312,35 +532,52 @@ def commit_output(repo: BaseRepo,
     maps = [{row.path: row for row in rows} for rows in comparisons]
     if flags.no_patch:
         return []
-    if flags.name_only or flags.name_status or flags.raw:
-        lines = []
-        for path in sorted(common):
-            status = ''.join(m[path].status for m in maps)
-            name = path.decode()
-            if flags.name_only:
-                lines.append(name)
-            elif flags.name_status:
-                lines.append(f'{status}\t{name}')
-            else:
-                old = [m[path].old or (0, b'0' * 40) for m in maps]
-                new = maps[0][path].new or (0, b'0' * 40)
-                lines.append(':' * len(maps) + ' '.join(f'{e[0]:06o}'
-                                                        for e in [*old, new]) +
-                             ' ' + ' '.join(e[1].decode()
-                                            for e in [*old, new]) +
-                             f' {status}\t{name}')
-        return [''.join(line + '\n' for line in lines).encode()]
-    # Combined stats include clean merges in the first-parent delta.
-    stat = render_changes(repo, comparisons[0], replace(
-        flags, patch=False)) if any((flags.stat, flags.numstat,
-                                     flags.shortstat, flags.summary)) else b''
-    patch = combined_patch(repo, maps, common, flags.merge
-                           == 'dense-combined') if flags.patch else b''
-    return [stat + (b'\n' if stat and patch else b'') + patch]
+    width = abbrev_for(repo) if flags.abbrev else OID_HEX
+    names = flags.name_only or flags.name_status
+    stat = render_changes(
+        repo, comparisons[0], replace(
+            flags, patch=False, raw=False)) if (not names and any(
+                (flags.stat, flags.numstat, flags.shortstat,
+                 flags.summary))) else b''
+    lines = []
+    for path in sorted(common) if names or flags.raw else []:
+        status = ''.join(m[path].status for m in maps)
+        shown = quote_path(path.decode('utf-8', errors='surrogateescape'),
+                           False, flags.quote_path_fully)
+        if flags.name_only:
+            lines.append(shown)
+        elif flags.name_status:
+            lines.append(f'{status}\t{shown}')
+        else:
+            sides = [*(m[path].old for m in maps), maps[0][path].new]
+            lines.append(':' * len(maps) + ' '.join(f'{_mode(e):06o}'
+                                                    for e in sides) + ' ' +
+                         ' '.join(_short(e, width)
+                                  for e in sides) + f' {status}\t{shown}')
+    head = stat + encode_text(''.join(line + '\n' for line in lines))
+    patch = combined_patch(
+        repo, maps, common, flags.merge == 'dense-combined',
+        flags.quote_path_fully) if flags.patch and not names else b''
+    return [head + (b'\n' if head and patch else b'') + patch]
 
 
-def combined_patch(repo: BaseRepo, maps: list[dict[bytes, Change]],
-                   paths: set[bytes], dense: bool) -> bytes:
+def combined_patch(repo: BaseRepo,
+                   maps: list[dict[bytes, Change]],
+                   paths: set[bytes],
+                   dense: bool,
+                   fully: bool = True) -> bytes:
+    """Render ``-c``/``--cc`` for the paths that differ from every parent.
+
+    A path with no hunk left and no mode change prints nothing at all,
+    and the headers follow git's show_combined_header.
+
+    Args:
+        repo (BaseRepo): repository to read blobs from.
+        maps (list[dict[bytes, Change]]): per parent, its rows by path.
+        paths (set[bytes]): the paths changed against every parent.
+        dense (bool): ``--cc`` rather than ``-c``.
+        fully (bool): ``core.quotePath``.
+    """
     out = []
     for path in sorted(paths):
         changes = [m[path] for m in maps]
@@ -348,29 +585,50 @@ def combined_patch(repo: BaseRepo, maps: list[dict[bytes, Change]],
         old = [row.old for row in changes]
         new_data = blob_data(repo, new)
         old_data = [blob_data(repo, entry) for entry in old]
-        body = combined_lines([
-            data.decode('utf-8', errors='replace').splitlines(keepends=True)
-            for data in old_data
-        ],
-                              new_data.decode(
-                                  'utf-8',
-                                  errors='replace').splitlines(keepends=True),
-                              dense)
-        name = path.decode()
-        out.append(f'diff --{"cc" if dense else "combined"} {name}\n')
-        out.append('index ' + ','.join(
-            (entry[1].decode() if entry else '0' * 40)[:7] for entry in old) +
-                   '..' + (new[1].decode() if new else '0' * 40)[:7] + '\n')
-        if any(entry is None or new is None or entry[0] != new[0]
-               for entry in old):
-            out.append('mode ' + ','.join(f'{entry[0] if entry else 0:06o}'
-                                          for entry in old) + '..' +
-                       f'{new[0] if new else 0:06o}\n')
-        if any(b'\0' in data[:8000] for data in [*old_data, new_data]):
+        binary = any(b'\0' in data[:8000] for data in [*old_data, new_data])
+        body = [] if binary else combined_lines(
+            [text_lines(data)
+             for data in old_data], text_lines(new_data), dense)
+        mode = new[0] if new else 0
+        moved = any((entry[0] if entry else 0) != mode for entry in old)
+        if not (binary or body or moved):
+            continue
+        deleted = new is None
+        created = not deleted and all(row.status == 'A' for row in changes)
+        name = path.decode('utf-8', errors='surrogateescape')
+        width = abbrev_for(repo)
+        out.append(f'diff --{"cc" if dense else "combined"} '
+                   f'{quote_path(name, False, fully)}\n')
+        out.append('index ' + ','.join(_short(entry, width) for entry in old) +
+                   '..' + _short(new, width) + '\n')
+        if moved and created:
+            out.append(f'new file mode {mode:06o}\n')
+        elif moved:
+            out.append(('deleted file mode ' if deleted else 'mode ') +
+                       ','.join(f'{entry[0] if entry else 0:06o}'
+                                for entry in old) +
+                       ('' if deleted else f'..{mode:06o}') + '\n')
+        if binary:
             out.append('Binary files differ\n')
-        elif body:
-            out.extend([f'--- a/{name}\n', f'+++ b/{name}\n', *body])
-    return ''.join(out).encode()
+            continue
+        out.append('--- ' + (
+            DEV_NULL if created else quote_path(f'a/{name}', False, fully)) +
+                   '\n')
+        out.append('+++ ' + (
+            DEV_NULL if deleted else quote_path(f'b/{name}', False, fully)) +
+                   '\n')
+        out.extend(body)
+    return encode_text(''.join(out))
+
+
+def text_lines(data: bytes) -> list[str]:
+    """Split a blob at each newline only, the way git does, keeping them.
+
+    Args:
+        data (bytes): the blob's bytes.
+    """
+    *whole, rest = data.decode('utf-8', errors='replace').split('\n')
+    return [line + '\n' for line in whole] + ([rest] if rest else [])
 
 
 def blob_data(repo: BaseRepo, entry: tuple[int, bytes] | None) -> bytes:

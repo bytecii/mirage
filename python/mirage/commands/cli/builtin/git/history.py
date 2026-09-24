@@ -244,8 +244,30 @@ def _decorate_head(repo: BaseRepo, labels: dict[bytes, list[str]]) -> None:
         names.insert(0, "HEAD")
 
 
-def select(repo: BaseRepo, starts: list[Commit],
-           flags: LogFlags) -> list[Commit]:
+def _parents(walker: Walker, commit: Commit,
+             first_parent: bool) -> list[ObjectID]:
+    """The parents a walk follows from one commit.
+
+    ``--first-parent`` narrows the commits shown, never the commits
+    hidden: git carries a range's exclusion through every parent, so
+    ``--first-parent side..main`` still hides what ``side`` merged in.
+    dulwich hides through the same parents it walks, so a hidden commit
+    is handed all of them.
+
+    Args:
+        walker (Walker): the walk, whose hidden set grows as it runs.
+        commit (Commit): the commit whose parents to follow.
+        first_parent (bool): ``--first-parent``.
+    """
+    if first_parent and commit.id not in walker.excluded:
+        return commit.parents[:1]
+    return commit.parents
+
+
+def select(repo: BaseRepo,
+           starts: list[Commit],
+           flags: LogFlags,
+           hidden: tuple[Commit, ...] = ()) -> list[Commit]:
     """The commits a log invocation prints, in the order it prints them.
 
     Order of operations is git's: walk history, drop what the filters
@@ -262,6 +284,8 @@ def select(repo: BaseRepo, starts: list[Commit],
         starts (list[Commit]): the commits to walk back from; more than
             one when ``--all`` seeds every ref.
         flags (LogFlags): the parsed invocation.
+        hidden (tuple[Commit, ...]): commits whose whole history is
+            left out, the ``A`` of ``A..B``.
     """
     store = repo.object_store
     needle = flags.search.encode() if flags.search is not None else None
@@ -272,9 +296,9 @@ def select(repo: BaseRepo, starts: list[Commit],
     walker = Walker(
         store,
         include,
+        exclude=[ObjectID(commit.id) for commit in hidden],
         max_entries=None,
-        get_parents=lambda c: c.parents[:1]
-        if flags.first_parent else c.parents,
+        get_parents=lambda c: _parents(walker, c, flags.first_parent),
         since=int(flags.since) if flags.since is not None else None,
         until=int(flags.until) if flags.until is not None else None,
     )
