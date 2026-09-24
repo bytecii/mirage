@@ -149,6 +149,43 @@
       ]
     },
     {
+      "id": "find_size_number_past_uintmax",
+      "seq": 991525,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "find /data -size 18446744073709551616c; echo \"exit=$?\"; find /data -maxdepth 0 -size -18446744073709551615G",
+      "expect": {
+        "exit": 0,
+        "stdout": "exit=1\n/data\n",
+        "stderr": "find: Invalid argument `18446744073709551616c' to -size\n"
+      },
+      "flags": [
+        "size"
+      ]
+    },
+    {
       "id": "find_empty_size",
       "seq": 684,
       "targets": [

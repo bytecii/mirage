@@ -175,6 +175,13 @@ describe('parseFindExpression', () => {
     expect([e.minSize, e.maxSize]).toEqual(bounds)
   })
 
+  it.each(['18446744073709551615c', '18446744073709551615', '18446744073709551615G'])(
+    'takes -size %s, since GNU bounds the number alone',
+    (spec) => {
+      expect(parseFindExpression(['-size', spec]).maxSize).toBeGreaterThan(0)
+    },
+  )
+
   it.each([
     ['', 'find: invalid null argument to -size'],
     ['+', "find: invalid -size type `+'"],
@@ -186,6 +193,10 @@ describe('parseFindExpression', () => {
     ['1.5', "find: Invalid argument `1.5' to -size"],
     ['+-1', "find: Invalid argument `+-1' to -size"],
     ['12ab', "find: Invalid argument `12ab' to -size"],
+    ['18446744073709551616c', "find: Invalid argument `18446744073709551616c' to -size"],
+    ['18446744073709551616G', "find: Invalid argument `18446744073709551616G' to -size"],
+    ['+18446744073709551616', "find: Invalid argument `+18446744073709551616' to -size"],
+    [' 18446744073709551616', "find: Invalid argument ` 18446744073709551616' to -size"],
   ])('refuses -size %j in GNU wording', (spec, message) => {
     expect(() => parseFindExpression(['-size', spec])).toThrow(new FindParseError(message))
   })

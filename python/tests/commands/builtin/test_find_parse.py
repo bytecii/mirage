@@ -138,6 +138,13 @@ def test_size_block_and_word_units(spec, bounds):
     assert (expr.min_size, expr.max_size) == bounds
 
 
+@pytest.mark.parametrize("unit,factor", [("c", 1), ("", 512), ("G", 1024**3)])
+def test_size_takes_uintmax_in_any_unit(unit, factor):
+    # GNU bounds the number alone: 18446744073709551615G is valid.
+    expr = parse_find_expression(["-size", f"{2**64 - 1}{unit}"])
+    assert expr.max_size == (2**64 - 1) * factor
+
+
 @pytest.mark.parametrize("spec,message", [
     ("", "find: invalid null argument to -size"),
     ("+", "find: invalid -size type `+'"),
@@ -149,6 +156,14 @@ def test_size_block_and_word_units(spec, bounds):
     ("1.5", "find: Invalid argument `1.5' to -size"),
     ("+-1", "find: Invalid argument `+-1' to -size"),
     ("12ab", "find: Invalid argument `12ab' to -size"),
+    ("18446744073709551616c",
+     "find: Invalid argument `18446744073709551616c' to -size"),
+    ("18446744073709551616G",
+     "find: Invalid argument `18446744073709551616G' to -size"),
+    ("+18446744073709551616",
+     "find: Invalid argument `+18446744073709551616' to -size"),
+    (" 18446744073709551616",
+     "find: Invalid argument ` 18446744073709551616' to -size"),
 ])
 def test_size_refusals_use_gnu_wording(spec, message):
     with pytest.raises(FindParseError) as exc:

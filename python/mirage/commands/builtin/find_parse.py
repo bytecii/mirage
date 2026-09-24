@@ -54,7 +54,8 @@ def parse_size(spec: str) -> tuple[int | None, int | None]:
     ceil(size/unit) > N, -N keeps ceil(size/unit) < N, N alone keeps
     ceil(size/unit) == N. Expressed as inclusive byte bounds: +N ->
     [N*unit + 1, inf), -N -> [0, (N-1)*unit], N -> [(N-1)*unit + 1,
-    N*unit].
+    N*unit]. N past UINTMAX is invalid in any unit, as GNU's get_num
+    refuses it.
 
     Args:
         spec (str): the argument as typed.
@@ -70,7 +71,8 @@ def parse_size(spec: str) -> tuple[int | None, int | None]:
         raise FindParseError(f"find: invalid -size type `{spec[-1]}'")
     sign = body[:1] if body.startswith(("+", "-")) else ""
     number = body[len(sign):]
-    if not re.fullmatch(r"[ \t\n\v\f\r]*\+?[0-9]+", number):
+    if (not re.fullmatch(rf"{constants.C_SPACE}\+?[0-9]+", number)
+            or int(number) > constants.UINTMAX):
         raise FindParseError(f"find: Invalid argument `{spec}' to -size")
     n = int(number)
     if sign == "+":
