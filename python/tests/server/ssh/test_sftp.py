@@ -252,3 +252,39 @@ async def test_scp_reaches_the_workspace(ssh, tmp_path):
         result = await conn.run("cat /up.txt")
     assert result.stdout == "scp payload\n"
     assert (tmp_path / "down.txt").read_text() == "scp payload\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("directory", [False, True])
+@pytest.mark.parametrize("posix", [False, True])
+async def test_open_file_follows_rename(ssh, directory, posix):
+    async with ssh.connect() as conn, conn.start_sftp_client() as sftp:
+        await sftp.mkdir("/old")
+        async with sftp.open("/old/file", "w+") as f:
+            await f.write("before")
+            rename = sftp.posix_rename if posix else sftp.rename
+            await rename("/old" if directory else "/old/file", "/new")
+            await f.write("after", offset=6)
+            await f.truncate(9)
+            assert (await f.stat()).size == 9
+            await f.seek(0)
+            assert await f.read() == "beforeaft"
+        target = "/new/file" if directory else "/new"
+        async with sftp.open(target) as f:
+            assert await f.read() == "beforeaft"
+        assert not await sftp.exists("/old/file")
+
+
+@pytest.mark.asyncio
+async def test_refused_rename_keeps_the_open_file(ssh):
+    async with ssh.connect() as conn, conn.start_sftp_client() as sftp:
+        async with sftp.open("/taken", "w") as f:
+            await f.write("untouched")
+        async with sftp.open("/source", "w") as f:
+            with pytest.raises(asyncssh.SFTPError):
+                await sftp.rename("/source", "/taken")
+            await f.write("retained")
+        async with sftp.open("/source") as f:
+            assert await f.read() == "retained"
+        async with sftp.open("/taken") as f:
+            assert await f.read() == "untouched"

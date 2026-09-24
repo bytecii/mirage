@@ -19,11 +19,14 @@ import type { ServerChannel } from 'ssh2'
 // How far the client may type or pipe ahead of whoever reads it before
 // the channel is paused and SSH flow control pushes back.
 export const MAX_BUFFERED = 1024 * 1024
+export const MAX_LINE = 1024 * 1024
+export const MAX_TERMINAL_LINE = 1024
 
-/** A control the client sent in band with its input. */
+/** A control or input limit delivered in band with channel input. */
 export const Mark = {
   EOF: 'eof',
   INTERRUPT: 'interrupt',
+  LIMIT: 'limit',
 } as const
 export type Mark = (typeof Mark)[keyof typeof Mark]
 
@@ -113,6 +116,10 @@ export class LineDiscipline {
         break
     }
     if (b < 0x20 && b !== TAB) return
+    if (this.line.length >= MAX_TERMINAL_LINE) {
+      this.echoed.push(0x07)
+      return
+    }
     this.line.push(b)
     this.echoed.push(b)
   }
@@ -156,6 +163,7 @@ export class ChannelInput {
   private buffered = 0
   private closed = false
   private paused = false
+  private echoBlocked = false
   private waiters: (() => void)[] = []
   private interruptHandler: (() => void) | null = null
   private readonly discipline: LineDiscipline | null
@@ -166,6 +174,11 @@ export class ChannelInput {
     this.finish()
   }
 
+  private readonly onDrain = (): void => {
+    this.echoBlocked = false
+    this.resume()
+  }
+
   constructor(
     private readonly channel: ServerChannel,
     tty: boolean,
@@ -173,7 +186,10 @@ export class ChannelInput {
     this.discipline = tty
       ? new LineDiscipline(
           (bytes) => {
-            channel.write(bytes)
+            if (!channel.write(bytes)) {
+              this.echoBlocked = true
+              this.pause()
+            }
           },
           {
             line: (bytes) => {
@@ -192,12 +208,14 @@ export class ChannelInput {
 
   start(): void {
     this.channel.on('data', this.onData)
+    this.channel.on('drain', this.onDrain)
     this.channel.on('end', this.onEnd)
     this.channel.on('close', this.onEnd)
   }
 
   close(): void {
     this.channel.off('data', this.onData)
+    this.channel.off('drain', this.onDrain)
     this.channel.off('end', this.onEnd)
     this.channel.off('close', this.onEnd)
     this.finish()
@@ -234,19 +252,24 @@ export class ChannelInput {
 
   private push(item: Item): void {
     this.items.push(item)
-    if (typeof item !== 'string') {
-      this.buffered += item.byteLength
-      if (this.buffered >= MAX_BUFFERED && !this.paused) {
-        this.paused = true
-        this.channel.pause()
-      }
-    }
+    this.buffered += typeof item === 'string' ? 1 : item.byteLength
+    if (this.buffered >= MAX_BUFFERED) this.pause()
     this.wake()
   }
 
   private took(size: number): void {
     this.buffered -= size
-    if (this.paused && this.buffered < MAX_BUFFERED) {
+    this.resume()
+  }
+
+  private pause(): void {
+    if (this.paused) return
+    this.paused = true
+    this.channel.pause()
+  }
+
+  private resume(): void {
+    if (this.paused && !this.echoBlocked && this.buffered < MAX_BUFFERED) {
       this.paused = false
       this.channel.resume()
     }
@@ -273,10 +296,11 @@ export class ChannelInput {
    * The next line, with its newline, or the control that came first: a
    * final unterminated line at the channel's EOF is returned as is,
    * `Mark.INTERRUPT` is a Ctrl-C typed at the prompt, and `Mark.EOF` is
-   * Ctrl-D or the channel's EOF.
+   * Ctrl-D or the channel's EOF, and `Mark.LIMIT` is an oversized line.
    */
   async readline(): Promise<Uint8Array | Mark> {
     const parts: Uint8Array[] = []
+    let size = 0
     for (;;) {
       while (this.items.length > 0) {
         const item = this.items[0]
@@ -284,9 +308,12 @@ export class ChannelInput {
         if (typeof item === 'string') {
           if (parts.length > 0) return concat(parts)
           this.items.shift()
+          this.took(1)
           return item
         }
         const cut = item.indexOf(LF)
+        size += cut < 0 ? item.byteLength : cut
+        if (size > MAX_LINE) return Mark.LIMIT
         if (cut < 0) {
           this.items.shift()
           this.took(item.byteLength)
@@ -309,6 +336,7 @@ export class ChannelInput {
   async read(): Promise<Uint8Array> {
     for (;;) {
       const item = this.items.shift()
+      if (typeof item === 'string') this.took(1)
       if (item === Mark.EOF) return new Uint8Array(0)
       if (item !== undefined && typeof item !== 'string') {
         this.took(item.byteLength)

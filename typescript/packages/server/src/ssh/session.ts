@@ -100,10 +100,15 @@ export async function openSession(
 ): Promise<void> {
   await ws.ensureSessionsLoaded()
   const session = ws.createSession(sessionId)
-  const missing = Object.entries(env).filter(([name]) => !(name in session.env))
-  if (missing.length === 0) return
-  const line = `export ${missing.map(([k, v]) => `${k}=${shellQuote(v)}`).join(' ')}`
-  await ws.shell(line, { sessionId, record: false })
+  try {
+    const missing = Object.entries(env).filter(([name]) => !(name in session.env))
+    if (missing.length === 0) return
+    const line = `export ${missing.map(([k, v]) => `${k}=${shellQuote(v)}`).join(' ')}`
+    await ws.shell(line, { sessionId, record: false })
+  } catch (err) {
+    await ws.closeSession(sessionId)
+    throw err
+  }
 }
 
 /**
@@ -230,6 +235,10 @@ export class ShellChannel {
     while (!this.lost) {
       if (this.tty) await this.output.write(encoder.encode(this.currentPrompt()))
       const item = await this.input.readline()
+      if (item === Mark.LIMIT) {
+        await this.output.write(encoder.encode('mirage: shell input line too long\n'), true)
+        return 1
+      }
       if (item === Mark.EOF) {
         if (this.tty) await this.output.write(encoder.encode('logout\n'))
         return status
@@ -237,6 +246,7 @@ export class ShellChannel {
       if (item === Mark.INTERRUPT) {
         if (this.tty) await this.output.write(encoder.encode('^C\n'))
         status = INTERRUPTED
+        if (this.live()) stampInterrupt(this.entry.runner.ws, this.sessionId)
         continue
       }
       const line = decoder.decode(item).replace(/[\r\n]+$/, '')

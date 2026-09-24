@@ -276,6 +276,9 @@ class MirageSFTPServer {
   private file(buf: Buffer): OpenFile {
     const handle = this.handle(buf)
     if (handle.kind !== 'file') throw new SFTPStatusError(STATUS.FAILURE, 'not a file handle')
+    const ctx = this.core?.handles.get(handle.fd)
+    if (ctx === undefined) throw new SFTPStatusError(STATUS.FAILURE, 'invalid handle')
+    handle.path = ctx.path
     return handle
   }
 

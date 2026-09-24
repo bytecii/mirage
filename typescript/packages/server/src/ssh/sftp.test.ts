@@ -402,3 +402,89 @@ describe('sftp', () => {
     expect(ids.filter((id) => id.startsWith('ssh_'))).toEqual([])
   })
 })
+
+describe('open files across rename', () => {
+  it.each([false, true])(
+    'retains writes and handle operations (directory=%s)',
+    async (directory) => {
+      const sftp = await sftpOf(await connect(await startHarness()))
+      await done((cb) => {
+        sftp.mkdir('/old', cb)
+      })
+      const handle = await call<Buffer>((cb) => {
+        sftp.open('/old/file', 'w+', cb)
+      })
+      const before = Buffer.from('before')
+      await done((cb) => {
+        sftp.write(handle, before, 0, before.length, 0, cb)
+      })
+      await done((cb) => {
+        sftp.rename(directory ? '/old' : '/old/file', '/new', cb)
+      })
+      const after = Buffer.from('after')
+      await done((cb) => {
+        sftp.write(handle, after, 0, after.length, 6, cb)
+      })
+      await done((cb) => {
+        sftp.fsetstat(handle, { size: 9 }, cb)
+      })
+      expect(
+        (
+          await call<Stats>((cb) => {
+            sftp.fstat(handle, cb)
+          })
+        ).size,
+      ).toBe(9)
+      await done((cb) => {
+        sftp.close(handle, cb)
+      })
+      const content = await call<Buffer>((cb) => {
+        sftp.readFile(directory ? '/new/file' : '/new', cb)
+      })
+      expect(content.toString()).toBe('beforeaft')
+      await expect(
+        call<Stats>((cb) => {
+          sftp.stat('/old/file', cb)
+        }),
+      ).rejects.toMatchObject({
+        code: STATUS.NO_SUCH_FILE,
+      })
+    },
+  )
+})
+
+it('keeps the open file when rename is refused', async () => {
+  const sftp = await sftpOf(await connect(await startHarness()))
+  await done((cb) => {
+    sftp.writeFile('/taken', 'untouched', cb)
+  })
+  const handle = await call<Buffer>((cb) => {
+    sftp.open('/source', 'w', cb)
+  })
+  await expect(
+    done((cb) => {
+      sftp.rename('/source', '/taken', cb)
+    }),
+  ).rejects.toThrow()
+  const data = Buffer.from('retained')
+  await done((cb) => {
+    sftp.write(handle, data, 0, data.length, 0, cb)
+  })
+  await done((cb) => {
+    sftp.close(handle, cb)
+  })
+  expect(
+    (
+      await call<Buffer>((cb) => {
+        sftp.readFile('/source', cb)
+      })
+    ).toString(),
+  ).toBe('retained')
+  expect(
+    (
+      await call<Buffer>((cb) => {
+        sftp.readFile('/taken', cb)
+      })
+    ).toString(),
+  ).toBe('untouched')
+})

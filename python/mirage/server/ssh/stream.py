@@ -36,15 +36,18 @@ READ_SIZE = 64 * 1024
 # How far the client may type or pipe ahead of whoever reads it before
 # the channel stops being read and SSH flow control pushes back.
 MAX_BUFFERED = 1024 * 1024
+MAX_LINE = 1024 * 1024
+MAX_TERMINAL_LINE = 1024
 
 Send = Callable[[bytes, bool], Awaitable[None]]
 
 
 class Mark(Enum):
-    """A control the client sent in band with its input."""
+    """A control or input limit delivered in band with channel input."""
 
     EOF = "eof"
     INTERRUPT = "interrupt"
+    LIMIT = "limit"
 
 
 def encode(text: str) -> bytes:
@@ -138,10 +141,9 @@ class ChannelInput:
 
     def _push(self, item: bytes | Mark) -> None:
         self._items.append(item)
-        if isinstance(item, bytes):
-            self._buffered += len(item)
-            if self._buffered >= MAX_BUFFERED:
-                self._room.clear()
+        self._buffered += len(item) if isinstance(item, bytes) else 1
+        if self._buffered >= MAX_BUFFERED:
+            self._room.clear()
         self._changed.set()
 
     def _took(self, size: int) -> None:
@@ -160,7 +162,7 @@ class ChannelInput:
             bytes | Mark: the line (a final unterminated one at the
                 channel's EOF is returned as is), ``Mark.INTERRUPT`` for
                 a Ctrl-C typed at the prompt, or ``Mark.EOF`` for Ctrl-D
-                or the channel's EOF.
+                or the channel's EOF; ``Mark.LIMIT`` for an oversized line.
         """
         line = bytearray()
         while True:
@@ -170,8 +172,12 @@ class ChannelInput:
                     if line:
                         return bytes(line)
                     self._items.popleft()
+                    self._took(1)
                     return item
                 cut = item.find(b"\n")
+                size = len(item) if cut < 0 else cut
+                if len(line) + size > MAX_LINE:
+                    return Mark.LIMIT
                 if cut < 0:
                     self._items.popleft()
                     self._took(len(item))
@@ -198,6 +204,8 @@ class ChannelInput:
         while True:
             if self._items:
                 item = self._items.popleft()
+                if isinstance(item, Mark):
+                    self._took(1)
                 if item is Mark.EOF:
                     return b""
                 if isinstance(item, bytes):

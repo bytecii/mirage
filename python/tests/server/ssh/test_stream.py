@@ -237,3 +237,25 @@ async def test_loop_stdin_and_sender_cross_to_the_channel_loop():
     assert got == [b"piped\n", b"more"]
     assert process.stdout.data == ["done"]
     await source.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tail", ["x", "x\n", "xx\nignored\n"])
+async def test_readline_bounds_accumulated_input(monkeypatch, tail):
+    monkeypatch.setattr(stream, "MAX_LINE", 4)
+    source = await _started(["aa", "aa", tail])
+    try:
+        assert await source.readline() is Mark.LIMIT
+    finally:
+        await source.close()
+
+
+@pytest.mark.asyncio
+async def test_readline_accepts_limit_and_resets_for_next_line(monkeypatch):
+    monkeypatch.setattr(stream, "MAX_LINE", 4)
+    source = await _started(["aaaa\nbbbb\n"])
+    try:
+        assert await source.readline() == b"aaaa\n"
+        assert await source.readline() == b"bbbb\n"
+    finally:
+        await source.close()

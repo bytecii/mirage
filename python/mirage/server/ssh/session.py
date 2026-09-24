@@ -96,15 +96,22 @@ async def open_session(ws: Workspace,
     """
     await ws.ensure_sessions_loaded()
     session = ws.create_session(session_id)
-    missing = {k: v for k, v in (env or {}).items() if k not in session.env}
-    if not missing:
-        return
-    line = "export " + " ".join(f"{k}={shlex.quote(v)}"
-                                for k, v in missing.items())
-    io = await ws.shell(line, session_id=session_id, record=False)
-    if io.exit_code != 0:
-        logger.debug("ssh: login env refused on %s: %s", session_id, await
-                     io.stderr_str())
+    try:
+        missing = {
+            k: v
+            for k, v in (env or {}).items() if k not in session.env
+        }
+        if not missing:
+            return
+        line = "export " + " ".join(f"{k}={shlex.quote(v)}"
+                                    for k, v in missing.items())
+        io = await ws.shell(line, session_id=session_id, record=False)
+        if io.exit_code != 0:
+            logger.debug("ssh: login env refused on %s: %s", session_id, await
+                         io.stderr_str())
+    except BaseException:
+        await ws.close_session(session_id)
+        raise
 
 
 async def run_line(ws: Workspace, session_id: str, line: str, stdin: LoopStdin,
@@ -279,6 +286,10 @@ class ShellChannel:
             if self._tty:
                 await self._output.write(encode(self._prompt()))
             item = await self._input.readline()
+            if item is Mark.LIMIT:
+                await self._output.write(
+                    b"mirage: shell input line too long\n", stderr=True)
+                return 1
             if item is Mark.EOF:
                 if self._tty:
                     await self._output.write(b"logout\n")
@@ -287,6 +298,10 @@ class ShellChannel:
                 if self._tty:
                     await self._output.write(b"^C\n")
                 status = INTERRUPTED
+                if self._live():
+                    runner = self._entry.runner
+                    await runner.call(
+                        stamp_interrupt(runner.ws, self._session_id))
                 continue
             line = decode(item).rstrip("\r\n")
             if not line.strip():

@@ -73,16 +73,18 @@ The Python daemon needs the `ssh` extra (`pip install 'mirage-ai[ssh]'`); the Ty
 - **A login environment.** `HOME` is `/`, where every session starts, `USER` and `LOGNAME` are the workspace id, `SSH_CLIENT` and `SSH_CONNECTION` describe the connection, and `TERM` comes from the client's terminal. A variable the profile already set keeps its value, and each one clears the session's `pre_session` gate like any `export`.
 - **History.** Typed lines land in `/.bash_history` like any other top-level line. The login environment line does not.
 - **An interactive shell.** With a terminal (`ssh` with no command), the door prints `mirage:<cwd>$ `, echoes and edits the line, and treats Ctrl-C as an interrupt: the running line is cancelled and `$?` reads 130, as in bash. Ctrl-D on an empty line or `exit [N]` ends the shell. Without a terminal (`ssh -T host < script`), lines are read from stdin with no prompt, the way `bash -s` reads them.
+- **Bounded input.** A non-terminal shell line may contain up to 1 MiB before its newline. Longer lines close the channel with status 1 and `mirage: shell input line too long`; no prefix is executed. Streaming stdin to a command is not subject to the line limit. Terminal editors ring the bell and ignore additional input at their line limit; Backspace and Ctrl-U still work.
 - **The client's exit status.** `ssh host cmd` exits with the line's status, and a dropped connection cancels the line it was running.
 
 Only public keys are accepted: no passwords, no keyboard-interactive. Nothing is forwarded: no ports, no agent, no X11. A subsystem other than SFTP is refused.
 
 ## Differences Between the Daemons
 
-The two daemons serve the same door, with three differences:
+The two daemons serve the same door, with these differences:
 
 | | Python | TypeScript |
 | --- | --- | --- |
 | Legacy `scp -O` (the SCP protocol) | Served. | Not served. Modern `scp` uses SFTP and works on both. |
+| Terminal line limit | 1024 characters. | 1024 bytes. |
 | Command output | Streamed as the line produces it. | Sent when the line finishes, as the HTTP API sends it. |
 | `authorized_keys` options (`from=`, `command=`, ...) | Enforced by asyncssh; `command=` forces the line that runs. | Not interpreted, so a key line carrying options is skipped with a warning rather than accepted as if it had none. |

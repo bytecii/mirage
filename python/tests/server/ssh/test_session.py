@@ -19,6 +19,7 @@ import asyncssh
 import pytest
 
 from mirage import RAMVFS, MountMode, Workspace
+from mirage.server.ssh import stream
 from mirage.server.ssh.session import ends_shell, login_env
 from tests.server.ssh.conftest import start_harness, stop_harness
 
@@ -201,6 +202,8 @@ async def test_ctrl_c_at_the_prompt_drops_the_half_typed_line(ssh):
         await _read_until(process, "$ ")
         process.stdin.write("echo never-run\x03")
         await _read_until(process, "^C")
+        process.stdin.write("echo status=$?\n")
+        await _read_until(process, "status=130")
         process.stdin.write("echo ran\n")
         seen = await _read_until(process, "ran\r\n")
         process.stdin.write("exit\n")
@@ -250,3 +253,45 @@ async def test_unsupported_subsystem_is_refused(ssh):
         err = await process.stderr.read()
     assert err == "mirage: unsupported subsystem: netconf\n"
     assert process.exit_status == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_login_setup_closes_session(ssh, monkeypatch):
+    ws = ssh.entry.runner.ws
+
+    async def fail_export(*args, **kwargs):
+        raise RuntimeError("login export failed")
+
+    monkeypatch.setattr(ws, "shell", fail_export)
+    async with ssh.connect() as conn:
+        for _ in range(2):
+            result = await conn.run("echo never")
+            assert result.exit_status == 1
+            assert "login export failed" in result.stderr
+            assert not any(
+                s.session_id.startswith("ssh_") for s in ws.list_sessions())
+
+
+@pytest.mark.asyncio
+async def test_oversized_plain_shell_line_is_refused(ssh, monkeypatch):
+    monkeypatch.setattr(stream, "MAX_LINE", 16)
+    async with ssh.connect() as conn:
+        process = await conn.create_process()
+        process.stdin.write("echo never" + "x" * 17)
+        result = await asyncio.wait_for(process.wait(), 5)
+        assert result.exit_status == 1
+        assert result.stdout == ""
+        assert "shell input line too long" in result.stderr
+
+
+@pytest.mark.asyncio
+async def test_terminal_editor_bounds_unsubmitted_input(ssh):
+    async with ssh.connect() as conn:
+        process = await conn.create_process(term_type="xterm")
+        await _read_until(process, "$ ")
+        process.stdin.write("x" * (stream.MAX_TERMINAL_LINE + 1))
+        await _read_until(process, "\x07")
+        process.stdin.write("\x15echo recovered\n")
+        await _read_until(process, "recovered\r\n")
+        process.stdin.write("exit\n")
+        await asyncio.wait_for(process.wait_closed(), 5)

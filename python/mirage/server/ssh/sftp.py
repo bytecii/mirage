@@ -336,7 +336,14 @@ class MirageSFTPServer(asyncssh.SFTPServer):
     async def fsetstat(self, file_obj: object,
                        attrs: asyncssh.SFTPAttrs) -> None:
         f = opened(file_obj)
-        await self._call(lambda core: set_size(core, f.path, attrs.size))
+
+        def resize(core: MountCore) -> None:
+            ctx = core.handles.get(f.fh)
+            if ctx is None:
+                raise asyncssh.SFTPFailure("invalid handle")
+            set_size(core, ctx.path, attrs.size)
+
+        await self._call(resize)
 
     async def scandir(self, path: bytes) -> AsyncIterator[asyncssh.SFTPName]:
         p = self._path(path)

@@ -23,7 +23,7 @@ from mirage.server.ssh.config import SSHConfig
 from mirage.server.ssh.keys import load_host_key
 from mirage.server.ssh.session import handle_process
 from mirage.server.ssh.sftp import MirageSFTPServer
-from mirage.server.ssh.stream import ENCODING, ERRORS
+from mirage.server.ssh.stream import ENCODING, ERRORS, MAX_TERMINAL_LINE
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,7 @@ async def start_ssh_server(registry: WorkspaceRegistry,
         process_factory=functools.partial(handle_process, registry),
         sftp_factory=functools.partial(MirageSFTPServer, registry),
         allow_scp=True,
+        max_line_length=MAX_TERMINAL_LINE,
         agent_forwarding=False,
         gss_host=None,
         encoding=ENCODING,

@@ -15,12 +15,14 @@
 import { PassThrough } from 'node:stream'
 import { ExecuteResult } from '@struktoai/mirage-core/workspace/workspace/types'
 import type { ServerChannel } from 'ssh2'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   ChannelInput,
   ChannelOutput,
   LineDiscipline,
   MAX_BUFFERED,
+  MAX_LINE,
+  MAX_TERMINAL_LINE,
   Mark,
   channelStdin,
   deliver,
@@ -197,4 +199,50 @@ describe('ChannelOutput', () => {
     await deliver(new ExecuteResult(enc.encode('out\n'), enc.encode('err\n'), 0), output)
     expect(chan.written).toEqual(['out\r\n', 'err\r\n'])
   })
+})
+
+describe('input limits', () => {
+  it.each(['x', 'x\n', 'xx\nignored\n'])('bounds a line across chunks: %j', async (tail) => {
+    const [chan, input] = started(false)
+    const line = input.readline()
+    chan.send('a'.repeat(MAX_LINE / 2))
+    await Promise.resolve()
+    chan.send('a'.repeat(MAX_LINE / 2))
+    await Promise.resolve()
+    chan.send(tail)
+    expect(await line).toBe(Mark.LIMIT)
+    input.close()
+  })
+
+  it('accepts the limit and resets for the next line', async () => {
+    const [chan, input] = started(false)
+    chan.send('a'.repeat(MAX_LINE) + '\nb\n')
+    expect((await input.readline()).length).toBe(MAX_LINE + 1)
+    expect(dec.decode((await input.readline()) as Uint8Array)).toBe('b\n')
+    input.close()
+  })
+
+  it('bounds the terminal editor before it submits a line', async () => {
+    const [chan, input] = started(true)
+    chan.send('a'.repeat(MAX_TERMINAL_LINE))
+    chan.send('b'.repeat(MAX_TERMINAL_LINE))
+    chan.send('\x7fc\r')
+    expect(dec.decode((await input.readline()) as Uint8Array)).toBe(
+      'a'.repeat(MAX_TERMINAL_LINE - 1) + 'c\n',
+    )
+    input.close()
+  })
+})
+
+it('keeps terminal input paused until its echo drains', async () => {
+  const [chan, input] = started(true)
+  vi.spyOn(chan, 'write').mockReturnValue(false)
+  const resume = vi.spyOn(chan, 'resume')
+  chan.send('line\r')
+  expect(chan.pauses).toBe(1)
+  expect(dec.decode((await input.readline()) as Uint8Array)).toBe('line\n')
+  expect(resume).not.toHaveBeenCalled()
+  chan.emit('drain')
+  expect(resume).toHaveBeenCalledOnce()
+  input.close()
 })

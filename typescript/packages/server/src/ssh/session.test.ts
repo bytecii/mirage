@@ -19,7 +19,7 @@ import { MountMode } from '@struktoai/mirage-core/types'
 import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
 import { Workspace } from '@struktoai/mirage-node'
 import ssh2, { type Client, type ClientChannel } from 'ssh2'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkspaceRegistry, type WorkspaceEntry } from '../registry.ts'
 import { mintKeyPair } from './keys.ts'
 import { startSSHServer } from './server.ts'
@@ -311,6 +311,8 @@ describe('shell channels', () => {
     await readUntil(stream, '$ ')
     stream.write('echo never-run\x03')
     await readUntil(stream, '^C')
+    stream.write('echo status=$?\r')
+    await readUntil(stream, 'status=130')
     stream.write('echo ran\r')
     const seen = await readUntil(stream, 'ran\r\n')
     stream.write('exit\r')
@@ -341,5 +343,35 @@ describe('subsystems', () => {
       })
     })
     expect(run).toEqual({ stdout: '', stderr: 'mirage: unsupported subsystem: netconf\n', code: 1 })
+  })
+})
+
+it('closes sessions when login environment setup fails', async () => {
+  const h = await startHarness()
+  const spy = vi
+    .spyOn(h.entry.runner.ws, 'shell')
+    .mockRejectedValue(new Error('login export failed'))
+  try {
+    const client = await connect(h)
+    for (let i = 0; i < 2; i++) {
+      const result = await exec(client, 'echo never')
+      expect(result.code).toBe(1)
+      expect(result.stderr).toContain('login export failed')
+      expect(sshSessions(h)).toEqual([])
+    }
+  } finally {
+    spy.mockRestore()
+  }
+})
+
+it('refuses an oversized plain shell line without executing it', async () => {
+  const client = await connect(await startHarness())
+  const stream = await shell(client, null)
+  const result = collect(stream)
+  stream.write('echo never' + 'x'.repeat(1024 * 1024))
+  expect(await result).toEqual({
+    stdout: '',
+    stderr: 'mirage: shell input line too long\n',
+    code: 1,
   })
 })

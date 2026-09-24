@@ -466,3 +466,17 @@ async def test_ops_run_on_a_loop_the_caller_hands_in():
         thread.join()
         loop.close()
     assert data == b"on the given loop"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("directory", [False, True])
+async def test_rename_keeps_open_handles_on_the_moved_file(seeded, directory):
+    fh = seeded.open("/sub/b.txt")
+    seeded.write("/sub/b.txt", b"BEFORE", 0, fh)
+    seeded.rename("/sub" if directory else "/sub/b.txt", "/moved")
+    seeded.write("/sub/b.txt", b"AFTER", 6, fh)
+    seeded.release(fh)
+    target = "/moved/b.txt" if directory else "/moved"
+    assert seeded.read(target, 100, 0, None) == b"BEFOREAFTER"
+    with pytest.raises(FileNotFoundError):
+        seeded.getattr("/sub/b.txt")
