@@ -28,6 +28,23 @@ import {
   dataSourceIdOf,
 } from './wire.ts'
 
+// A title query is folded in JS, so rows arrive in keyset order one batch at a
+// time and the scan stops as soon as a page's worth matched. With no query the
+// first batch is the page.
+async function firstMatches<R extends { titleText: string }>(
+  fetch: (skip: number) => Promise<R[]>,
+  take: number,
+  matches: (row: R) => boolean,
+): Promise<R[]> {
+  const kept: R[] = []
+  for (let skip = 0; kept.length < take; skip += take) {
+    const batch = await fetch(skip)
+    kept.push(...batch.filter(matches))
+    if (batch.length < take) break
+  }
+  return kept.slice(0, take)
+}
+
 // With no object filter a search answers pages AND databases (a 2025-09-03
 // caller gets data sources, which replaced databases in search). The MCP-Atlas
 // recordings of live Notion show both: `{}` opened with six databases, and a
@@ -103,12 +120,13 @@ export async function searchResults(
     database: boolean
   }[] = []
   if (includeDatabases) {
-    const scan = { where: { ...where, ...bounds(true) }, orderBy }
-    const rows =
-      query === ''
-        ? await db.notionDatabase.findMany({ ...scan, take })
-        : await db.notionDatabase.findMany(scan)
-    for (const row of rows.filter(matches).slice(0, take))
+    const scan = { where: { ...where, ...bounds(true) }, orderBy, take }
+    const rows = await firstMatches(
+      (skip) => db.notionDatabase.findMany({ ...scan, skip }),
+      take,
+      matches,
+    )
+    for (const row of rows)
       found.push({
         row,
         database: true,
@@ -116,13 +134,13 @@ export async function searchResults(
       })
   }
   if (!onlyDatabases) {
-    const scan = { where: { ...where, ...bounds(false) }, orderBy }
-    const rows =
-      query === ''
-        ? await db.notionPage.findMany({ ...scan, take })
-        : await db.notionPage.findMany(scan)
-    for (const row of rows.filter(matches).slice(0, take))
-      found.push({ row, database: false, item: pageJson(row, version) })
+    const scan = { where: { ...where, ...bounds(false) }, orderBy, take }
+    const rows = await firstMatches(
+      (skip) => db.notionPage.findMany({ ...scan, skip }),
+      take,
+      matches,
+    )
+    for (const row of rows) found.push({ row, database: false, item: pageJson(row, version) })
   }
   const sign = ascending ? 1 : -1
   found.sort((a, b) => {

@@ -467,8 +467,16 @@ async function main(): Promise<void> {
     // Resume mixed page/data-source results at every boundary in both
     // directions. Small pages exercise the database keyset instead of a
     // full materialized search on each cursor request (#1202).
-    for (const direction of ['ascending', 'descending']) {
-      const base = { sort: { direction, timestamp: 'last_edited_time' } }
+    for (const [direction, query] of [
+      ['ascending', ''],
+      ['descending', ''],
+      ['ascending', 'o'],
+      ['descending', 'o'],
+    ] as const) {
+      const base = {
+        sort: { direction, timestamp: 'last_edited_time' },
+        ...(query === '' ? {} : { query }),
+      }
       const all = results(await request(at, 'POST', '/v1/search', base)).map((row) => row.id!)
       const paged: JsonValue[] = []
       let cursor: JsonValue = null
@@ -482,7 +490,8 @@ async function main(): Promise<void> {
         cursor = page.next_cursor ?? null
         check('cursor makes progress', paged.length <= all.length)
       } while (cursor !== null)
-      eq(`keyset pagination preserves ${direction} order`, paged, all)
+      eq(`keyset pagination preserves ${direction} order for "${query}"`, paged, all)
+      if (query !== '') check('a title query pages across more than one match', all.length > 1)
     }
     const folded = await request(at, 'POST', '/v1/pages', {
       parent: { page_id: PAGE },
