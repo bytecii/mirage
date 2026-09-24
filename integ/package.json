@@ -41,6 +41,7 @@
     "selftest": "tsx server/kit/selftest/run.ts",
     "hf-hub:selftest": "tsx server/hf_hub/selftest.ts",
     "hf-mcp:capture": "tsx server/hf_hub/capture.ts",
+    "slack:atlas": "tsx slack_atlas.ts",
     "slack:selftest": "tsx server/slack/selftest.ts",
     "slack:server": "tsx server/slack/main.ts",
     "trello:server": "tsx server/trello/main.ts",
