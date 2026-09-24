@@ -134,20 +134,23 @@ async def _expand_brace_word(
         call_stack (CallStack | None): shell call stack.
     """
     pieces: list[str] = []
-    values: list[str] = []
+    atoms: list[TSNodeLike] = []
     for child in node.children:
         if not child.is_named or child.type in BRACE_LITERAL_TYPES:
             pieces.append(get_text(child))
         else:
-            values.append(await expand_node_marked(child,
-                                                   session,
-                                                   execute_fn,
-                                                   call_stack,
-                                                   view=view))
-            pieces.append(make_inert(len(values) - 1))
+            atoms.append(child)
+            pieces.append(make_inert(len(atoms) - 1))
     words = expand_template("".join(pieces))
     if words is None:
         return None
+    values = [
+        await expand_node_marked(atom,
+                                 session,
+                                 execute_fn,
+                                 call_stack,
+                                 view=view) for atom in atoms
+    ]
     home = home_dir(session)
     return [
         substitute(

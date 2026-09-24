@@ -728,7 +728,7 @@ async def test_grep_reads_the_mount_boundaries_off_the_bag():
 @pytest.mark.asyncio
 async def test_grep_still_reports_a_path_with_no_mount_below_it():
     readdir, stat, rb, rs = _make_backend({})
-    _, io = await grep(
+    out, io = await grep(
         [_spec("/nope")],
         ["x"],
         CommandOpts(flags={"r": True}, ns=_mount_parent_ns("/ghost/deep")),
@@ -737,6 +737,7 @@ async def test_grep_still_reports_a_path_with_no_mount_below_it():
         read_bytes=rb,
         read_stream=rs,
     )
+    await _drain_async(out)
     assert io.exit_code == 2
     assert b"/nope" in (io.stderr or b"")
 

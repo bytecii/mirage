@@ -76,11 +76,13 @@ async def test_subdir_narrows_and_fetches_fewer(mock_github_api, github_env,
                                                 counting_read, monkeypatch):
     accessor, index = github_env
     monkeypatch.setitem(_NGLOBALS, "SCOPE_WARN", 1)
-    await grep(accessor, [_subdir()], ['import'],
-               CommandOpts(index=index, flags={
-                   'r': True,
-                   'w': True
-               }))
+    stdout, _ = await grep(
+        accessor, [_subdir()], ['import'],
+        CommandOpts(index=index, flags={
+            'r': True,
+            'w': True
+        }))
+    await materialize(stdout)
     # /src holds 7 files; code search narrows to the import-matching subset.
     assert 0 < len(counting_read) < 7
 
@@ -93,11 +95,13 @@ async def test_regex_scans_every_file(mock_github_api, github_env,
     # Excluded even under -w.
     accessor, index = github_env
     monkeypatch.setitem(_NGLOBALS, "SCOPE_WARN", 1)
-    await grep(accessor, [_root()], ['import.*os'],
-               CommandOpts(index=index, flags={
-                   'r': True,
-                   'w': True
-               }))
+    stdout, _ = await grep(
+        accessor, [_root()], ['import.*os'],
+        CommandOpts(index=index, flags={
+            'r': True,
+            'w': True
+        }))
+    await materialize(stdout)
     assert len(counting_read) == len(MOCK_BLOBS)
 
 

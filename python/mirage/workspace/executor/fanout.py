@@ -23,8 +23,11 @@ from mirage.commands.builtin.find_parse import parse_find_expression
 from mirage.commands.builtin.generic.crossmount.fanout.du import \
     merge_du_blocks
 from mirage.commands.builtin.generic.crossmount.types import RunSingle
+from mirage.commands.builtin.generic.grep import filename_mode
 from mirage.commands.config import ExecContext
 from mirage.commands.errors import FindParseError
+from mirage.commands.spec import SPECS
+from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.context import path_allowed
 from mirage.io import IOResult
@@ -558,10 +561,11 @@ async def _fan_out_traversal(
             if adjusted is None or _pruned_away(mount_root, tree):
                 continue
             sub_flags = adjusted
-            if cmd_name == "rg":
+            if cmd_name == "rg" or (cmd_name == "grep" and filename_mode(
+                    FlagView(sub_flags, spec=SPECS["grep"])) is None):
                 # A tree search labels every hit; a descendant mount
                 # whose root is a single file would otherwise drop the
-                # filename (rg labels only multi-file or -H runs).
+                # filename without the inherited -H.
                 sub_flags["H"] = True
             sub_texts = _adjust_depth_texts(texts, target_path, mount.prefix)
             # The descendant operand keeps the traversal root's typed
@@ -586,6 +590,7 @@ async def _fan_out_traversal(
             # across a tree holding a view mount without a du op).
             continue
         if cmd_name == "find" and io.matched_runs is not None:
+            await materialize(stdout)
             if mount is primary_mount:
                 # One run per operand, minus the rows a descendant
                 # mount answers for.

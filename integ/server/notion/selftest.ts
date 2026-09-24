@@ -464,6 +464,46 @@ async function main(): Promise<void> {
         .sort(),
       ['child_page', 'paragraph'],
     )
+    // Resume mixed page/data-source results at every boundary in both
+    // directions. Small pages exercise the database keyset instead of a
+    // full materialized search on each cursor request (#1202).
+    for (const [direction, query] of [
+      ['ascending', ''],
+      ['descending', ''],
+      ['ascending', 'o'],
+      ['descending', 'o'],
+    ] as const) {
+      const base = {
+        sort: { direction, timestamp: 'last_edited_time' },
+        ...(query === '' ? {} : { query }),
+      }
+      const all = results(await request(at, 'POST', '/v1/search', base)).map((row) => row.id!)
+      const paged: JsonValue[] = []
+      let cursor: JsonValue = null
+      do {
+        const page = await request(at, 'POST', '/v1/search', {
+          ...base,
+          page_size: 1,
+          ...(cursor === null ? {} : { start_cursor: cursor }),
+        })
+        paged.push(...results(page).map((row) => row.id!))
+        cursor = page.next_cursor ?? null
+        check('cursor makes progress', paged.length <= all.length)
+      } while (cursor !== null)
+      eq(`keyset pagination preserves ${direction} order for "${query}"`, paged, all)
+      if (query !== '') check('a title query pages across more than one match', all.length > 1)
+    }
+    const folded = await request(at, 'POST', '/v1/pages', {
+      parent: { page_id: PAGE },
+      properties: { title: { title: [{ text: { content: 'Équipe plan' } }] } },
+    })
+    const unicode = await request(at, 'POST', '/v1/search', { query: 'équipe', page_size: 1 })
+    eq(
+      'search folds a non-ASCII title query',
+      results(unicode).map((row) => row.id!),
+      [folded.id!],
+    )
+    eq('a folded query that fits one page has no next page', unicode.has_more, false)
     await liveReads(at)
     process.stdout.write(`notion selftest: ${String(checks)} checks passed\n`)
   } finally {
