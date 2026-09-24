@@ -14,13 +14,16 @@
 
 import re
 from collections.abc import Mapping, Sequence
+from typing import Literal, cast
 
 from mirage.commands.builtin.constants import PatternType
 from mirage.commands.builtin.grep_pattern import bre_source
+from mirage.commands.builtin.types import GrepSearchMeta, GrepSearchOptions
 from mirage.commands.builtin.utils.paths import has_unresolved_glob
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.types import PathSpec
+from mirage.vfs.types import SearchOps, SearchQuery
 
 
 def classify_pattern(
@@ -372,3 +375,44 @@ def text_search_results(lines: Sequence[str]) -> bool:
     """
     return all("\0" not in line and not any(0xd800 <= ord(c) <= 0xdfff
                                             for c in line) for line in lines)
+
+
+def grep_search_meta(search: SearchOps | None) -> GrepSearchMeta | None:
+    """Read grep's opt-in metadata without interpreting other namespaces.
+
+    Args:
+        search (SearchOps | None): the resource's optional search capability.
+    """
+    if search is None or "grep" not in search.meta:
+        return None
+    meta = search.meta["grep"]
+    if not isinstance(meta, dict) or set(meta) - {"mode", "stream"}:
+        raise ValueError(
+            "search.meta.grep must contain mode and optional stream")
+    mode = meta.get("mode")
+    stream = meta.get("stream", False)
+    if mode not in ("literal", "regex") or not isinstance(stream, bool):
+        raise ValueError(
+            "search.meta.grep requires mode=literal|regex and boolean stream")
+    return GrepSearchMeta(mode=cast(Literal["literal", "regex"], mode),
+                          stream=stream)
+
+
+def grep_search_options(query: SearchQuery) -> GrepSearchOptions:
+    """Parse grep's options; a plain resource query is literal text.
+
+    Args:
+        query (SearchQuery): resource query with optional grep namespace.
+    """
+    options = query.options.get("grep", {})
+    allowed = {"ignore_case", "fixed_string", "whole_word", "basic"}
+    if not isinstance(options, dict) or set(options) - allowed:
+        raise ValueError("search.options.grep contains unknown options")
+    if any(not isinstance(value, bool) for value in options.values()):
+        raise ValueError("search.options.grep values must be boolean")
+    return GrepSearchOptions(
+        ignore_case=options.get("ignore_case", False) is True,
+        fixed_string=options.get("fixed_string", True) is True,
+        whole_word=options.get("whole_word", False) is True,
+        basic=options.get("basic", False) is True,
+    )

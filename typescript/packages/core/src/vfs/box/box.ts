@@ -1,0 +1,116 @@
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
+
+import { BoxAccessor } from '../../accessor/box.ts'
+import { BOX_COMMANDS } from '../../commands/builtin/box/index.ts'
+import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+import type { RegisteredCommand } from '../../commands/config.ts'
+import { BoxTokenManager } from '../../core/box/client.ts'
+import { read as boxRead } from '../../core/box/read.ts'
+import { readdir as boxReaddir } from '../../core/box/readdir.ts'
+import { stat as boxStat } from '../../core/box/stat.ts'
+import { BOX_OPS } from '../../ops/box/index.ts'
+import type { RegisteredOp } from '../../ops/registry.ts'
+import { BaseVFS } from '../base.ts'
+import type { VFS } from '../base.ts'
+import { BOX_PROMPT } from './prompt.ts'
+import { PathSpec, VFSName } from '../../types.ts'
+import type { FileStat } from '../../types.ts'
+import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
+import { redactBoxConfig, type BoxConfig, type BoxConfigRedacted } from './config.ts'
+import { buildDeltaHook } from '../../core/box/watch.ts'
+import { type DeltaHook } from '../../watch/index.ts'
+
+const boxResolveGlob = makeResolveGlob(boxReaddir)
+
+export interface BoxVFSState {
+  type: string
+  config: BoxConfigRedacted
+}
+
+export class BoxVFS extends BaseVFS implements VFS {
+  readonly kind: string = VFSName.BOX
+  readonly cachesReads: boolean = true
+  // Box item listings carry an exact byte `size` for every file (0
+  // included); sizeless weblinks are filtered out of listings.
+  readonly sizesAlwaysKnown: boolean = true
+  override readonly indexTtl: number = 86_400
+  readonly prompt: string = BOX_PROMPT
+  readonly config: BoxConfig
+  readonly accessor: BoxAccessor
+
+  constructor(config: BoxConfig) {
+    super()
+    this.config = config
+    // The whole config goes to the token manager, never a hand-picked
+    // subset: a field added to BoxConfig would silently stop reaching it
+    // (that is how gdrive lost apiBase and kept refreshing at the real
+    // Google endpoint against a fake server).
+    const tm = new BoxTokenManager(config)
+    this.accessor = new BoxAccessor({
+      tokenManager: tm,
+      ...(config.rootFolderId !== undefined ? { rootFolderId: config.rootFolderId } : {}),
+      ...(config.contentSearch !== undefined ? { contentSearch: config.contentSearch } : {}),
+    })
+  }
+
+  commands(): readonly RegisteredCommand[] {
+    return BOX_COMMANDS
+  }
+
+  ops(): readonly RegisteredOp[] {
+    return BOX_OPS
+  }
+
+  readFile(p: PathSpec): Promise<Uint8Array> {
+    return boxRead(this.accessor, p, this.index)
+  }
+
+  readdir(p: PathSpec): Promise<string[]> {
+    return boxReaddir(this.accessor, p, this.index)
+  }
+
+  stat(p: PathSpec): Promise<FileStat> {
+    return boxStat(this.accessor, p, this.index)
+  }
+
+  glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {
+    const effective =
+      prefix !== ''
+        ? paths.map((p) =>
+            mountPrefixOf(p.virtual, p.vfsPath) !== ''
+              ? p
+              : new PathSpec({
+                  virtual: p.virtual,
+                  directory: p.directory,
+                  ...(p.pattern !== null ? { pattern: p.pattern } : {}),
+                  resolved: p.resolved,
+                  vfsPath: mountKey(p.virtual, prefix),
+                }),
+          )
+        : paths
+    return boxResolveGlob(this.accessor, effective, this.index)
+  }
+
+  deltaHook(): DeltaHook {
+    return buildDeltaHook(this.accessor)
+  }
+
+  override getState(): Promise<BoxVFSState> {
+    return Promise.resolve({
+      type: this.kind,
+      config: redactBoxConfig(this.config),
+    })
+  }
+}

@@ -18,10 +18,10 @@ from mirage.ops.types import LinkView, MountView, StatPath
 from mirage.types import FileStat, PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.utils.path import respell_raw
+from mirage.vfs.types import DuEntries
 
 logger = logging.getLogger(__name__)
 
-DuEntries = tuple[list[tuple[str, int]], int]
 ComputeSize = Callable[[PathSpec], Awaitable[int]]
 ComputeEntries = Callable[[PathSpec], Awaitable[DuEntries]]
 

@@ -41,7 +41,6 @@ export interface NotionVFSState {
 export class NotionVFS extends BaseVFS implements VFS {
   readonly kind: string = VFSName.NOTION
   readonly cachesReads: boolean = true
-  override readonly indexTtl: number = 600
   readonly prompt: string = NOTION_PROMPT
   readonly writePrompt: string = NOTION_WRITE_PROMPT
   readonly config: NotionConfig
@@ -53,10 +52,6 @@ export class NotionVFS extends BaseVFS implements VFS {
     const opts: MCPNotionTransportOptions = { authProvider: config.authProvider }
     if (config.serverUrl !== undefined) opts.serverUrl = config.serverUrl
     this.accessor = new NotionAccessor(new MCPNotionTransport(opts))
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
   }
 
   commands(): readonly RegisteredCommand[] {
@@ -102,9 +97,5 @@ export class NotionVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactNotionConfig(this.config),
     })
-  }
-
-  override loadState(_state: NotionVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

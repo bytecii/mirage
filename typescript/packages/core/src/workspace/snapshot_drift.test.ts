@@ -81,9 +81,6 @@ class FakeRemoteVFS extends BaseVFS implements VFS {
     this.accessor = accessor
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
   override close(): Promise<void> {
     return Promise.resolve()
   }
@@ -549,9 +546,6 @@ it.each(
     let closed = false
     class AsyncStateVFS extends BaseVFS {
       readonly kind = 'ram'
-      open(): Promise<void> {
-        return Promise.resolve()
-      }
       override async getState(): Promise<{ type: string }> {
         enter()
         await release

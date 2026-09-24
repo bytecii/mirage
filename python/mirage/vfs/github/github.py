@@ -15,10 +15,12 @@
 from typing import Any
 
 from mirage.accessor.github import GitHubAccessor
+from mirage.commands.builtin.github import COMMANDS
 from mirage.core.github.config import GitHubConfig
 from mirage.core.github.readdir import readdir
 from mirage.core.github.tree_entry import TreeEntry
 from mirage.core.github.watch import build_delta_hook
+from mirage.ops.github import OPS as GITHUB_VFS_OPS
 from mirage.types import PathSpec, VFSName
 from mirage.utils.glob_walk import make_resolve_glob
 from mirage.vfs.base import BaseVFS
@@ -109,12 +111,9 @@ class GitHubVFS(BaseVFS):
                                        tree=tree,
                                        truncated=truncated)
         super().__init__()
-        from mirage.commands.builtin.github import COMMANDS as _github_cmds
-        from mirage.ops.github import OPS as _github_vfs_ops
-
-        for fn in _github_cmds:
+        for fn in COMMANDS:
             self.register(fn)
-        for fn in _github_vfs_ops:
+        for fn in GITHUB_VFS_OPS:
             self.register_op(fn)
 
     def delta_hook(self) -> DeltaHook:
@@ -166,6 +165,3 @@ class GitHubVFS(BaseVFS):
             default_branch=self.accessor.default_branch,
             truncated=self.accessor.truncated,
         )
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        pass

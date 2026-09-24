@@ -42,10 +42,6 @@ export class OneDriveVFS extends BaseVFS implements VFS {
     this.accessor = new OneDriveAccessor(config)
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return ONEDRIVE_COMMANDS
   }
@@ -77,9 +73,5 @@ export class OneDriveVFS extends BaseVFS implements VFS {
   override getState(): OneDriveVFSState {
     const config: OneDriveConfigRedacted = redactOneDriveConfig(this.config)
     return { type: this.kind, config }
-  }
-
-  override loadState(_state: OneDriveVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

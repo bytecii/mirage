@@ -76,7 +76,6 @@ export class S3VFS extends BaseVFS implements VFS {
   // stat and read both stamp the ETag, so the gate compares like with
   // like. Inherited by every S3AliasVFS provider.
   readonly readRevalidatable: boolean = true
-  override readonly indexTtl: number = 600
   readonly prompt: string = S3_PROMPT
   readonly config: S3Config
   readonly accessor: S3Accessor
@@ -122,10 +121,6 @@ export class S3VFS extends BaseVFS implements VFS {
 
   override storageId(): string {
     return s3StorageId(this.kind, this.config)
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
   }
 
   commands(): readonly RegisteredCommand[] {
@@ -239,9 +234,5 @@ export class S3VFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactConfig(this.config),
     })
-  }
-
-  override loadState(_state: S3VFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

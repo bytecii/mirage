@@ -82,10 +82,6 @@ export class RAMVFS extends BaseVFS implements VFS {
     append: appendCore,
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   ops(): readonly RegisteredOp[] {
     return RAM_OPS
   }

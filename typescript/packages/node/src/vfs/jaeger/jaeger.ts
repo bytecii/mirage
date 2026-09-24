@@ -44,7 +44,6 @@ export class JaegerVFS extends BaseVFS implements VFS {
   // from the search payload the listing already fetched, and operations.json
   // is sized by one call per service directory the caller opens.
   readonly sizesAlwaysKnown: boolean = true
-  override readonly indexTtl: number = 600
   readonly prompt: string = JAEGER_PROMPT
   readonly config: JaegerConfig
   readonly accessor: JaegerAccessor
@@ -70,10 +69,6 @@ export class JaegerVFS extends BaseVFS implements VFS {
       accessorConfig.defaultToTimestamp = config.defaultToTimestamp
     }
     this.accessor = new JaegerAccessor(new HttpJaegerTransport(transportOpts), accessorConfig)
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
   }
 
   commands(): readonly RegisteredCommand[] {
@@ -119,9 +114,5 @@ export class JaegerVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactJaegerConfig(this.config),
     })
-  }
-
-  override loadState(_state: JaegerVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

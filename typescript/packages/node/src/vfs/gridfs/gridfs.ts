@@ -62,7 +62,6 @@ export class GridFSVFS extends BaseVFS implements VFS {
   // stat and read both stamp str(file_id), so the gate compares like
   // with like.
   readonly readRevalidatable: boolean = true
-  override readonly indexTtl: number = 600
   readonly prompt: string = GRIDFS_PROMPT
   readonly config: GridFSConfig
   readonly accessor: GridFSAccessor
@@ -98,10 +97,6 @@ export class GridFSVFS extends BaseVFS implements VFS {
     }
     this.config = cfg
     this.accessor = new GridFSAccessor(this.config)
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
   }
 
   override async close(): Promise<void> {
@@ -220,9 +215,5 @@ export class GridFSVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactConfig(this.config),
     })
-  }
-
-  override loadState(_state: GridFSVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

@@ -96,6 +96,21 @@ describe('makeGenericCommands', () => {
     expect(names).toContain('cat')
   })
 
+  // A name no builder has did nothing, so a typo left the generic registered
+  // beside the bespoke command, and mem0's `search` read as if it displaced
+  // something.
+  it('refuses a name no builder has', () => {
+    expect(() =>
+      makeGenericCommands('fake', makeOps(), { overrides: new Set(['cat', 'search']) }),
+    ).toThrow(/no generic builder named search/)
+    expect(() =>
+      makeGenericCommands('fake', makeOps(), { provisionOverrides: { gerp: () => null } }),
+    ).toThrow(/no generic builder named gerp/)
+    expect(() =>
+      makeGenericCommands('fake', makeOps(), { opsOverrides: { lss: makeOps() } }),
+    ).toThrow(/no generic builder named lss/)
+  })
+
   it('attaches aggregate only for local backends', () => {
     const local = makeGenericCommands('ram', makeOps({ local: true })).find((c) => c.name === 'cat')
     const remote = makeGenericCommands('s3', makeOps({ local: false })).find(

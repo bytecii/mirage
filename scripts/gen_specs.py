@@ -35,6 +35,7 @@ from mirage.vfs.registry import REGISTRY, resolve_class
 logger = logging.getLogger(__name__)
 
 OUT = Path(__file__).resolve().parent.parent / "spec" / "python" / "general"
+VFS_COMMANDS = OUT.parent / "vfs_commands"
 
 BUILTIN = Path(mirage.commands.builtin.__file__).resolve().parent
 
@@ -182,12 +183,48 @@ def _spec_payload(spec: Any) -> dict[str, Any]:
     return payload
 
 
-def _emit_one(name: str, spec: Any, rcs: list[RegisteredCommand]) -> None:
+def _emit_one(name: str,
+              spec: Any,
+              rcs: list[RegisteredCommand],
+              out: Path = OUT) -> None:
     payload = _spec_payload(spec)
     payload["_meta"] = _meta_for(rcs)
-    path = OUT / f"{name}.json"
+    path = out / f"{name.replace(' ', '_')}.json"
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True, default=_default) + "\n")
+
+
+def _emit_vfs_commands(registry: dict[str, list[RegisteredCommand]]) -> None:
+    """Dump every registered command SPECS does not declare.
+
+    A backend verb (``trello card create``) carries its spec inline, so
+    the SPECS loop never sees it and the parity gate could not tell a
+    flag one language dropped. Each name gets the spec its registrations
+    share; two registrations of one name with different specs is itself
+    a failure. The directory is rewritten whole so a removed verb leaves
+    no file behind.
+
+    Args:
+        registry (dict[str, list[RegisteredCommand]]): registrations keyed
+            by command name, as collected for the spec dump.
+    """
+    names = sorted(name for name in registry if name not in SPECS)
+    VFS_COMMANDS.mkdir(parents=True, exist_ok=True)
+    for stale in VFS_COMMANDS.glob("*.json"):
+        stale.unlink()
+    for name in names:
+        rcs = registry[name]
+        payloads = {
+            json.dumps(_spec_payload(rc.spec),
+                       sort_keys=True,
+                       default=_default)
+            for rc in rcs
+        }
+        if len(payloads) > 1:
+            raise SystemExit(f"{name!r} is registered with {len(payloads)} "
+                             "different specs")
+        _emit_one(name, rcs[0].spec, rcs, VFS_COMMANDS)
+    print(f"emitted {len(names)} backend command specs to {VFS_COMMANDS}")
 
 
 def _vfs_class(name: str, ref: str | type) -> type[BaseVFS]:
@@ -246,7 +283,11 @@ def _capabilities() -> dict[str, dict[str, Any]]:
     mongodb where typescript pins 0, so an ``ls`` of a live schema could
     be ten minutes stale. ``storage_id`` and ``statfs`` are reported as
     "does this class override the base" rather than by value, because the
-    base answers are per-instance identity and UNKNOWN.
+    base answers are per-instance identity and UNKNOWN. ``has_prompt`` and
+    ``has_write_prompt`` say whether the mount describes itself to an
+    agent; the text is prose each side words for itself, but its absence is
+    not: node's GitHubVFS carried no prompt, so its file prompt left every
+    GitHub mount out while python and the browser described theirs.
     """
     out: dict[str, dict[str, Any]] = {}
     for name in sorted(REGISTRY):
@@ -259,6 +300,8 @@ def _capabilities() -> dict[str, dict[str, Any]]:
             "sizes_always_known": cls.SIZES_ALWAYS_KNOWN,
             "storage_id": cls.storage_id is not BaseVFS.storage_id,
             "statfs": cls.statfs is not BaseVFS.statfs,
+            "has_prompt": bool(cls.PROMPT),
+            "has_write_prompt": bool(cls.WRITE_PROMPT),
         }
     return out
 
@@ -375,6 +418,7 @@ def main() -> None:
     for name, spec in sorted(SPECS.items()):
         _emit_one(name, spec, registry.get(name, []))
     print(f"emitted {len(SPECS)} specs to {OUT}")
+    _emit_vfs_commands(registry)
     _emit_vfs_names(registry)
 
 

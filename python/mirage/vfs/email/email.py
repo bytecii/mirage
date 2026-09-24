@@ -15,8 +15,10 @@
 from typing import Any
 
 from mirage.accessor.email import EmailAccessor
+from mirage.commands.builtin.email import COMMANDS
 from mirage.core.email.config import EmailConfig
 from mirage.core.email.readdir import readdir
+from mirage.ops.email import OPS
 from mirage.types import PathSpec, VFSName
 from mirage.utils.glob_walk import make_resolve_glob
 from mirage.vfs.base import BaseVFS
@@ -45,9 +47,6 @@ class EmailVFS(BaseVFS):
         super().__init__()
         self.config = config
         self.accessor = EmailAccessor(config)
-        from mirage.commands.builtin.email import COMMANDS
-        from mirage.ops.email import OPS
-
         for fn in COMMANDS:
             self.register(fn)
         for fn in OPS:
@@ -62,6 +61,3 @@ class EmailVFS(BaseVFS):
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        pass

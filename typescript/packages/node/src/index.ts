@@ -271,14 +271,14 @@ export type {
   DiscordConfig,
   DiscordConfigRedacted,
 } from '@struktoai/mirage-core/core/discord/config'
-export { TrelloVFS, type TrelloVFSState } from './vfs/trello/trello.ts'
+export { TrelloVFS, type TrelloVFSState } from '@struktoai/mirage-core/vfs/trello/trello'
 export {
   normalizeTrelloConfig,
   redactTrelloConfig,
   type TrelloConfig,
   type TrelloConfigRedacted,
-} from './vfs/trello/config.ts'
-export { LinearVFS, type LinearVFSState } from './vfs/linear/linear.ts'
+} from '@struktoai/mirage-core/vfs/trello/config'
+export { LinearVFS, type LinearVFSState } from '@struktoai/mirage-core/vfs/linear/linear'
 export {
   normalizeLinearConfig,
   redactLinearConfig,
@@ -296,71 +296,71 @@ export type { NotionConfig, NotionConfigRedacted } from '@struktoai/mirage-core/
 export type { Mem0Config } from '@struktoai/mirage-core/vfs/mem0/config'
 export type { OneDriveConfig } from '@struktoai/mirage-core/accessor/onedrive'
 export type { SharePointConfig } from '@struktoai/mirage-core/accessor/sharepoint'
-export { LangfuseVFS, type LangfuseVFSState } from './vfs/langfuse/langfuse.ts'
+export { LangfuseVFS, type LangfuseVFSState } from '@struktoai/mirage-core/vfs/langfuse/langfuse'
 export { JaegerVFS, type JaegerVFSState } from './vfs/jaeger/jaeger.ts'
 export {
   normalizeLangfuseConfig,
   redactLangfuseConfig,
   type LangfuseConfig,
   type LangfuseConfigRedacted,
-} from './vfs/langfuse/config.ts'
-export { GitHubVFS, type GitHubVFSState } from './vfs/github/github.ts'
+} from '@struktoai/mirage-core/vfs/langfuse/config'
+export { GitHubVFS, type GitHubVFSState } from '@struktoai/mirage-core/vfs/github/github'
 export {
   normalizeGitHubConfig,
   redactGitHubConfig,
   type GitHubConfig,
   type GitHubConfigRedacted,
 } from '@struktoai/mirage-core/core/github/config'
-export { GDocsVFS, type GDocsVFSState } from './vfs/gdocs/gdocs.ts'
+export { GDocsVFS, type GDocsVFSState } from '@struktoai/mirage-core/vfs/gdocs/gdocs'
 export {
   normalizeGDocsConfig,
   redactGDocsConfig,
   type GDocsConfig,
   type GDocsConfigRedacted,
 } from '@struktoai/mirage-core/vfs/gdocs/config'
-export { GSheetsVFS, type GSheetsVFSState } from './vfs/gsheets/gsheets.ts'
+export { GSheetsVFS, type GSheetsVFSState } from '@struktoai/mirage-core/vfs/gsheets/gsheets'
 export {
   normalizeGSheetsConfig,
   redactGSheetsConfig,
   type GSheetsConfig,
   type GSheetsConfigRedacted,
 } from '@struktoai/mirage-core/vfs/gsheets/config'
-export { GSlidesVFS, type GSlidesVFSState } from './vfs/gslides/gslides.ts'
+export { GSlidesVFS, type GSlidesVFSState } from '@struktoai/mirage-core/vfs/gslides/gslides'
 export {
   normalizeGSlidesConfig,
   redactGSlidesConfig,
   type GSlidesConfig,
   type GSlidesConfigRedacted,
 } from '@struktoai/mirage-core/vfs/gslides/config'
-export { GDriveVFS, type GDriveVFSState } from './vfs/gdrive/gdrive.ts'
+export { GDriveVFS, type GDriveVFSState } from '@struktoai/mirage-core/vfs/gdrive/gdrive'
 export {
   normalizeGDriveConfig,
   redactGDriveConfig,
   type GDriveConfig,
   type GDriveConfigRedacted,
 } from '@struktoai/mirage-core/vfs/gdrive/config'
-export { DropboxVFS, type DropboxVFSState } from './vfs/dropbox/dropbox.ts'
+export { DropboxVFS, type DropboxVFSState } from '@struktoai/mirage-core/vfs/dropbox/dropbox'
 export {
   normalizeDropboxConfig,
   redactDropboxConfig,
   type DropboxConfig,
   type DropboxConfigRedacted,
 } from './vfs/dropbox/config.ts'
-export { BoxVFS, type BoxVFSState } from './vfs/box/box.ts'
+export { BoxVFS, type BoxVFSState } from '@struktoai/mirage-core/vfs/box/box'
 export {
   normalizeBoxConfig,
   redactBoxConfig,
   type BoxConfig,
   type BoxConfigRedacted,
-} from './vfs/box/config.ts'
-export { GmailVFS, type GmailVFSState } from './vfs/gmail/gmail.ts'
+} from '@struktoai/mirage-core/vfs/box/config'
+export { GmailVFS, type GmailVFSState } from '@struktoai/mirage-core/vfs/gmail/gmail'
 export {
   normalizeGmailConfig,
   redactGmailConfig,
   type GmailConfig,
   type GmailConfigRedacted,
 } from '@struktoai/mirage-core/vfs/gmail/config'
-export { GCalVFS, type GCalVFSState } from './vfs/gcal/gcal.ts'
+export { GCalVFS, type GCalVFSState } from '@struktoai/mirage-core/vfs/gcal/gcal'
 export {
   normalizeGCalConfig,
   redactGCalConfig,

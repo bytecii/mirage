@@ -20,9 +20,7 @@ from mirage.commands.builtin.generic.cp import cp as generic_cp
 from mirage.commands.builtin.generic.cp import parse_flags
 from mirage.commands.builtin.generic.find import parse_find_args, walk_find
 from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
-                                                          Operation,
-                                                          OperationFn,
-                                                          bound_op,
+                                                          Operation, bound_op,
                                                           overlaid_stat)
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
@@ -32,6 +30,7 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.ops.types import StatOverlay
 from mirage.types import NativeCopy, PathSpec, PrimitiveCopy
 from mirage.utils.key_prefix import rekey
+from mirage.vfs.types import OperationFn
 
 
 async def _walk_find(readdir: OperationFn,

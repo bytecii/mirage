@@ -269,6 +269,41 @@ async def run_pool(
     return errors
 
 
+def run_verdict(facet: str | None, ran: int, strict: bool,
+                env_skipped: list[str], unadapted: list[str]) -> str | None:
+    """The reason a finished run must exit 2, or None.
+
+    A skip is one line on stderr and exit 0, so a facet whose service
+    never came up (or whose env var got renamed in the workflow) reports
+    green having tested nothing; every facet has targets on both hosts,
+    so zero of them running is always a broken job. That guard only fires
+    when *every* target skipped, so a two-target facet that loses one
+    still reports green: CI passes --strict, which starts every service
+    its facet declares, so there a missing variable is a broken job
+    rather than a local convenience. A target that lists this host but
+    has no adapter here skips the same quiet way, and --allow-skip does
+    not excuse it: the manifest says it runs.
+
+    Args:
+        facet (str | None): the facet the run selected, if any.
+        ran (int): how many targets were eligible to run.
+        strict (bool): whether --strict was passed.
+        env_skipped (list[str]): targets skipped for missing env, outside
+            --allow-skip, as ``id (VARS)``.
+        unadapted (list[str]): targets that list this host but have no
+            adapter for it.
+    """
+    if facet and ran == 0:
+        return f"facet {facet!r} ran no targets"
+    if strict and env_skipped:
+        return (f"strict: {len(env_skipped)} target(s) skipped for missing "
+                f"env: {'; '.join(env_skipped)}")
+    if strict and unadapted:
+        return (f"strict: {len(unadapted)} target(s) list {HOST} but have "
+                f"no {HOST} adapter: {', '.join(unadapted)}")
+    return None
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", action="append", dest="targets")
@@ -314,6 +349,7 @@ async def main() -> None:
     ran = 0
     allow_skip = harness.parse_allow_skip(services, args.allow_skip)
     env_skipped: list[str] = []
+    unadapted: list[str] = []
     eligible: list[dict] = []
     for target_id in selected:
         target = manifest[target_id]
@@ -322,6 +358,7 @@ async def main() -> None:
             continue
         if target["mounts"][0]["vfs"] not in adapters.BUILDERS:
             print(f"skip [{target_id}]: no {HOST} adapter", file=sys.stderr)
+            unadapted.append(target_id)
             continue
         missing = harness.missing_env(services, target, HOST)
         if missing:
@@ -344,23 +381,9 @@ async def main() -> None:
         raised = await run_pool(eligible, cases, root, report, emit, services,
                                 args.target_jobs)
 
-    # A skip is one line on stderr and exit 0, so a facet whose service
-    # never came up (or whose env var got renamed in the workflow)
-    # reports green having tested nothing. Every facet has targets on
-    # both hosts, so zero of them running is always a broken job.
-    if args.facet and ran == 0:
-        print(f"facet {args.facet!r} ran no targets", file=sys.stderr)
-        sys.exit(2)
-
-    # The facet guard above only fires when *every* target skipped, so a
-    # two-target facet that loses one still reports green. CI passes
-    # --strict, which starts every service its facet declares, so there a
-    # missing variable is a broken job rather than a local convenience.
-    if args.strict and env_skipped:
-        print(
-            f"strict: {len(env_skipped)} target(s) skipped for missing "
-            f"env: {'; '.join(env_skipped)}",
-            file=sys.stderr)
+    verdict = run_verdict(args.facet, ran, args.strict, env_skipped, unadapted)
+    if verdict is not None:
+        print(verdict, file=sys.stderr)
         sys.exit(2)
 
     if args.emit:

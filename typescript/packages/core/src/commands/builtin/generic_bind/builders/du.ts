@@ -23,9 +23,9 @@ import {
   DEFAULT_MAX_DU_ENTRIES,
   type ComputeEntries,
   type ComputeSize,
-  type DuEntries,
   runDu,
 } from '../../generic/du.ts'
+import { type DuEntries } from '../../../../vfs/types.ts'
 import { type Builder, type CommandIO, resolveGlobOf } from '../adapter.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
 
