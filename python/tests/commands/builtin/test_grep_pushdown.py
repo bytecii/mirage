@@ -1,10 +1,12 @@
 import re
+from unittest.mock import AsyncMock
 
 import pytest
 
 from mirage.commands.builtin import grep_pushdown
 from mirage.commands.builtin.constants import PatternType
 from mirage.types import PathSpec
+from mirage.vfs.types import SearchOps, SearchQuery
 
 
 def test_classify_pattern_newline_list_is_regex():
@@ -307,3 +309,37 @@ def test_binary_mode_requires_scanning(mode):
                                            ("hello\udcff", False)])
 def test_search_result_binary_guard(text, expected):
     assert grep_pushdown.text_search_results([text]) is expected
+
+
+@pytest.mark.parametrize("meta", [{
+    "mode": "semantic"
+}, {
+    "mode": "literal",
+    "stream": None
+}, {
+    "mode": "literal",
+    "typo": True
+}, None])
+def test_grep_metadata_rejects_invalid_opt_in(meta):
+    with pytest.raises(ValueError):
+        grep_pushdown.grep_search_meta(
+            SearchOps(search=AsyncMock(), meta={"grep": meta}))
+
+
+@pytest.mark.parametrize("options", [{
+    "ignore_case": "true"
+}, {
+    "typo": True
+}, None])
+def test_grep_options_reject_invalid_values(options):
+    with pytest.raises(ValueError):
+        grep_pushdown.grep_search_options(
+            SearchQuery("query", options={"grep": options}))
+
+
+def test_plain_query_and_other_namespaces_do_not_require_grep():
+    options = grep_pushdown.grep_search_options(
+        SearchQuery("a.*b", options={"limit": 20}))
+    assert options.fixed_string
+    assert grep_pushdown.grep_search_meta(
+        SearchOps(search=AsyncMock(), meta={"semantic": True})) is None

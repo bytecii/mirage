@@ -16,19 +16,16 @@ from typing import Any
 
 from mirage.accessor.gslides import GSlidesAccessor
 from mirage.commands.builtin.gslides import COMMANDS
+from mirage.commands.builtin.gslides.io import IO
 from mirage.core.google.client import TokenManager
-from mirage.core.gslides.readdir import readdir
 from mirage.ops.gslides import OPS as GSLIDES_VFS_OPS
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.vfs.base import BaseVFS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.gslides.config import GSlidesConfig
 from mirage.vfs.gslides.prompt import PROMPT, WRITE_PROMPT
 
-_resolve_glob = make_resolve_glob(readdir)
 
-
-class GSlidesVFS(BaseVFS):
+class GSlidesVFS(BoundVFS):
 
     accessor: GSlidesAccessor
     name: str = VFSName.GSLIDES
@@ -41,7 +38,7 @@ class GSlidesVFS(BaseVFS):
     WRITE_PROMPT: str = WRITE_PROMPT
 
     def __init__(self, config: GSlidesConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self._token_manager = TokenManager(config)
         self.accessor = GSlidesAccessor(self.config, self._token_manager)
@@ -56,15 +53,5 @@ class GSlidesVFS(BaseVFS):
         await self._token_manager.close()
         await super().close()
 
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        return await _resolve_glob(self.accessor, paths, index=self._index)
-
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        pass

@@ -270,7 +270,7 @@ def _empty_state(candidate: _Candidate,
                  nonempty_directories: set[str]) -> bool:
     if candidate.is_directory:
         return candidate.key not in nonempty_directories
-    return (candidate.size or 0) == 0
+    return candidate.size == 0
 
 
 async def _hydrate_scan_candidate(

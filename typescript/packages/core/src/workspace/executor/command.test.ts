@@ -29,9 +29,6 @@ class StubVFS extends BaseVFS implements VFS {
   constructor(readonly kind: string) {
     super()
   }
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
   override close(): Promise<void> {
     return Promise.resolve()
   }

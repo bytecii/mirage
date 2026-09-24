@@ -55,6 +55,13 @@ export function ebadfStdin(): FsError {
   return fsError('-', 'EBADF')
 }
 
+/** EFBIG: a read the backend refuses to render whole (a records file past its
+ * mount's record cap); python's FileTooLargeError. Per-operand, like ENOENT,
+ * so a read-family command reports it and moves on. */
+export function efbig(path: string | { virtual: string }): FsError {
+  return fsError(path, 'EFBIG')
+}
+
 export function ebusy(path: string | { virtual: string }): FsError {
   return fsError(path, 'EBUSY')
 }
@@ -289,6 +296,9 @@ const STRERROR: Record<string, string> = {
   ENOTEMPTY: gnuPhrase('ENOTEMPTY'),
   ENOTSUP: gnuPhrase('ENOTSUP'),
   EXDEV: gnuPhrase('EXDEV'),
+  // A read the backend refuses to render whole, raised by a mount's size
+  // cap (not a POSIX condition mirage names, the way EBADF is not).
+  EFBIG: 'File too large',
 }
 
 // GNU strerror text for a POSIX error code, or null if not a recognized
@@ -325,6 +335,11 @@ export function isFsError(err: unknown): boolean {
 // `except FileNotFoundError`. Three modules had grown their own copy of this.
 export function isEnoent(err: unknown): boolean {
   return err instanceof Error && (err as Error & { code?: string }).code === 'ENOENT'
+}
+
+// Python's twin is `except FileTooLargeError`.
+export function isEfbig(err: unknown): boolean {
+  return err instanceof Error && (err as Error & { code?: string }).code === 'EFBIG'
 }
 
 // Python's twin is `except IsADirectoryError`. GNU sometimes spells a

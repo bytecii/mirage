@@ -30,10 +30,10 @@ from mirage.commands.spec import CommandSpec
 from mirage.io.types import IOResult
 from mirage.types import (ContentType, FileStat, FileType, PathSpec,
                           ReadPolicy, ReadSpec)
-from mirage.vfs.generic import _DIRECT_OPS, GenericVFS, direct_ops
+from mirage.vfs.bound import _DIRECT_OPS, direct_ops
+from mirage.vfs.generic import GenericVFS
 from mirage.vfs.ram.ram import RAMVFS
 from mirage.vfs.ram.store import RAMStore
-from mirage.vfs.s3.s3 import S3VFS
 from mirage.workspace.mount.read_policy import check_read_capability
 
 PAGES = {
@@ -275,7 +275,7 @@ def test_direct_ops_cover_the_builtin_vocabulary():
     kit = GenericVFS(name="ram-kit",
                      accessor=RAMAccessor(RAMStore()),
                      io=RAM_IO)
-    assert set(RAMVFS._ops) <= set(kit._ops)
+    assert set(RAMVFS()._ops) <= set(kit._ops)
 
 
 @pytest.mark.asyncio
@@ -362,7 +362,7 @@ def test_only_a_reshaped_table_field_is_adapted():
     ops = direct_ops(S3_IO, lambda: NULL_INDEX)
     checked = 0
     for op, field in _DIRECT_OPS.items():
-        published = S3VFS._ops.get(op)
+        published = ops.get(op)
         table_fn = getattr(S3_IO, field)
         if published is None or table_fn is None:
             continue

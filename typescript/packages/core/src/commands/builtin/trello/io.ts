@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { VFSAdapter } from '../../../vfs/adapter.ts'
+
 import type { TrelloAccessor } from '../../../accessor/trello.ts'
 import { read as trelloRead } from '../../../core/trello/read.ts'
 import { readdir as trelloReaddir } from '../../../core/trello/readdir.ts'
@@ -19,11 +21,9 @@ import { stat as trelloStat } from '../../../core/trello/stat.ts'
 import type { CommandIO } from '../generic_bind/index.ts'
 import { streamFromBytes } from '../utils/wrap.ts'
 
-export const TRELLO_IO: CommandIO<TrelloAccessor> = {
-  readdir: trelloReaddir,
-  readBytes: trelloRead,
-  readStream: (a, p, i) => streamFromBytes(trelloRead, a, p, i),
-  stat: trelloStat,
+export const TRELLO_IO: CommandIO<TrelloAccessor> = new VFSAdapter<TrelloAccessor>({
+  read: { readdir: trelloReaddir, readBytes: trelloRead, stat: trelloStat },
+  native: { readStream: (a, p, i) => streamFromBytes(trelloRead, a, p, i) },
   isMounted: () => true,
   local: false,
-}
+}).toCommandIO()

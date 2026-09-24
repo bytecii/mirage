@@ -134,6 +134,28 @@ class BaseVFS:
     async def resolve_glob(self,
                            paths: list[PathSpec],
                            prefix: str = "") -> list[PathSpec]:
+        """Expand the patterned specs in ``paths`` against this backend.
+
+        ``prefix`` is the mount prefix without its trailing slash
+        (``/mnt/lin``). Every caller stamps each spec's ``vfs_path`` with
+        ``mount_key(virtual, prefix)`` before calling: the workspace
+        expander, its mid-path and globstar walks, and the builtins'
+        ``expand_operands`` (commands never come here; they glob through
+        their ``CommandIO.resolve_glob``, which takes no prefix). So an
+        implementation may read ``vfs_path`` and ignore ``prefix``, as the
+        API backends do, and one that re-derives ``vfs_path`` from
+        ``prefix``, as the storage backends and the typescript twins do,
+        computes the same key. The re-derivation only matters to a caller
+        outside the workspace handing over an unstamped spec
+        (``PathSpec.from_str_path`` keys it from the root).
+
+        Args:
+            paths (list[PathSpec]): specs to expand, keyed under the mount.
+            prefix (str): the owning mount's prefix, no trailing slash.
+
+        Returns:
+            list[PathSpec]: one spec per match.
+        """
         raise NotImplementedError
 
     def storage_id(self) -> str:
@@ -161,13 +183,6 @@ class BaseVFS:
         return CapacityResult(state=CapacityState.UNKNOWN)
 
     def __getattr__(self, name: str) -> Any:
-        # Read through the instance, not the class. A builtin sets ``_ops``
-        # as a class attribute and resolves the same either way, but a kit
-        # backend has no class of its own to hang one on and builds the map
-        # per instance in ``GenericVFS.__init__``; ``type(self)._ops``
-        # read past it and reported every op the table carried as missing.
-        # No recursion: ``_ops`` is always found, on the class if nowhere
-        # else, so this lookup never re-enters ``__getattr__``.
         fn = self._ops.get(name)
         if fn is not None:
             return partial(fn, self.accessor)
@@ -223,7 +238,16 @@ class BaseVFS:
         }
 
     def load_state(self, state: dict[str, Any]) -> None:
-        pass
+        """Take back what ``get_state`` put out.
+
+        A no-op by default, which is right for every VFS whose bytes live
+        in the remote service: its state is a redacted config, and the
+        restored mount reaches its data through that config alone. Only a
+        VFS holding content of its own (ram, disk, redis) overrides this.
+
+        Args:
+            state (dict[str, Any]): the payload ``get_state`` produced.
+        """
 
     @property
     def is_closed(self) -> bool:

@@ -20,9 +20,6 @@ import { makeStorageKey, vfsStorageId } from './storage.ts'
 
 class StoreVFS extends BaseVFS implements VFS {
   readonly kind = 'ram'
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
 }
 
 // A VFS pinned by config, the way disk/s3/redis are: two instances
@@ -34,9 +31,6 @@ class RootedVFS extends BaseVFS implements VFS {
   }
   override storageId(): string {
     return `${this.kind}:${this.root}`
-  }
-  open(): Promise<void> {
-    return Promise.resolve()
   }
 }
 

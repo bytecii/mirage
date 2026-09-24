@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest'
 import {
   eacces,
   eaccesRefused,
+  efbig,
   erofsReadOnly,
   enoent,
   enotsup,
@@ -89,6 +90,16 @@ describe('enotsup', () => {
   it('formats as a GNU operand line at the chokepoint', () => {
     const line = formatFsError('mv', enotsup('email', 'unlink', '/mail/a.txt'))
     expect(DEC.decode(line)).toBe('mv: /mail/a.txt: Operation not supported\n')
+  })
+})
+
+describe('efbig', () => {
+  it('is a per-operand fs error that formats as GNU File too large', () => {
+    const err = efbig({ virtual: '/at/records.jsonl' })
+    expect(err.code).toBe('EFBIG')
+    expect(err.virtualPath).toBe('/at/records.jsonl')
+    expect(isFsError(err)).toBe(true)
+    expect(DEC.decode(formatFsError('cat', err))).toBe('cat: /at/records.jsonl: File too large\n')
   })
 })
 

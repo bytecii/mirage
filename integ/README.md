@@ -15,7 +15,9 @@ implementations cannot drift apart.
   onedrive, gws, mail, gcs, ...) store per run in SQLite through `server/kit/`;
   `server/launcher/main.ts` hosts all of them in one process, one pinned port
   each from `ci/fakes.json`, and announces one `NAME_URL=...` line per arm.
-  Each fake has a selftest: `pnpm run <name>:selftest`.
+  Some fakes carry a selftest (`pnpm run <name>:selftest`; the list is the
+  `*:selftest` scripts in `package.json`); linear and trello have none, and
+  the battery is what exercises them.
 - `prisma/`: one schema per kit fake.
 - `fixtures/`: the seed data cases assume.
 

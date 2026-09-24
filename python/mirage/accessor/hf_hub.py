@@ -32,7 +32,7 @@ class HfRepoConfig(BaseModel):
     value the VFS disagrees with.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     repo_id: str
     token: SecretStr | None = None

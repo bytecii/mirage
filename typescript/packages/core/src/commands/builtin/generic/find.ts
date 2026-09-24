@@ -262,8 +262,7 @@ function startPointResults(
   }
   emitStartPath(results, rstripSlash(root.mountPath) || '/', startBasename(root.virtual), {
     kind: printfKind(start),
-    isEmpty:
-      usesEmpty && printfKind(start) === 'f' ? (start.size ?? 0) === 0 : usesEmpty ? false : null,
+    isEmpty: usesEmpty && printfKind(start) === 'f' ? start.size === 0 : usesEmpty ? false : null,
     exists: true,
     tree,
     maxDepth: options.maxDepth ?? null,

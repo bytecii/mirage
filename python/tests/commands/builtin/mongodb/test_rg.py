@@ -26,7 +26,7 @@ from mirage.vfs.mongodb.config import MongoDBConfig
 
 GENERICS = "mirage.commands.builtin.generic_bind.search._GENERICS"
 RESOLVE = "mirage.commands.builtin.generic_bind.adapter.make_resolve_glob"
-SEARCH_COLLECTION = "mirage.core.mongodb.search.search_collection"
+SEARCH_COLLECTION = "mirage.core.mongodb.search.search_entity"
 
 
 @pytest.fixture

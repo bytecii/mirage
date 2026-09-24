@@ -121,7 +121,12 @@ def mock_github_api(monkeypatch):
     async def _read_bytes(config, owner, repo, sha, session=None):
         return MOCK_BLOBS[sha]
 
-    async def _search_code(config, owner, repo, query, path_filter=None):
+    async def _search_code(config,
+                           owner,
+                           repo,
+                           query,
+                           path_filter=None,
+                           session=None):
         results = MOCK_SEARCH_RESULTS.get(query, [])
         if path_filter:
             results = [r for r in results if r.path.startswith(path_filter)]

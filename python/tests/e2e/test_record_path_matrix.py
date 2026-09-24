@@ -83,8 +83,7 @@ _GENERIC_OUT = [
 # ram, disk and redis record nothing for same-mount cp/mv/rm/rmdir/rm -r.
 _NATIVE_APPEND = [
     ("write", K),
-    ("read", K),
-    ("write", K),
+    ("append", K),
     ("append", K),
     ("write", NEW),
     ("truncate", NEW),
@@ -119,11 +118,9 @@ _S3 = [
     ("write", C),
 ]
 
-# ssh records nothing for tee -a, cat (cached), cp, mv, rm, rmdir, rm -r,
-# split's streamed read or the op-door append.
+# ssh records nothing for >>, tee -a, cat (cached), cp, mv, rm, rmdir,
+# rm -r, split's streamed read or the op-door append.
 _SSH = [
-    ("write", K),
-    ("read", K),
     ("write", K),
     ("write", NEW),
     ("truncate", NEW),

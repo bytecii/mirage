@@ -12,22 +12,14 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import dataclasses
 from typing import Any, Generic, TypeVar
 
 from mirage.accessor.hf_hub import HfHubAccessor
 from mirage.commands.builtin.hf_hub import COMMANDS as HF_COMMANDS
-from mirage.commands.builtin.hf_hub.io import IO as HF_IO
-from mirage.core.hf_hub.exists import exists
-from mirage.core.hf_hub.read import read_bytes
-from mirage.core.hf_hub.readdir import readdir
-from mirage.core.hf_hub.stat import stat as hf_stat
-from mirage.core.hf_hub.stream import range_read, read_stream
+from mirage.commands.builtin.hf_hub.io import IO
 from mirage.core.hf_hub.watch import build_delta_hook
 from mirage.ops.hf_hub import OPS as HF_OPS
-from mirage.types import PathSpec
-from mirage.utils.key_prefix import mount_key
-from mirage.vfs.base import BaseVFS
+from mirage.vfs.bound import BoundVFS
 from mirage.watch.base import DeltaHook
 
 # The accessor a subclass narrows to. TypeScript spells this as an abstract
@@ -42,17 +34,9 @@ A = TypeVar("A", bound=HfHubAccessor)
 # first: it answers `dispatch("write", ...)` and the FUSE adapter, so
 # leaving the mutations here would have kept every write path open except
 # the shell one.
-_OPS = {
-    "read_bytes": read_bytes,
-    "readdir": readdir,
-    "stat": hf_stat,
-    "read_stream": read_stream,
-    "range_read": range_read,
-    "exists": exists,
-}
 
 
-class HfHubVFS(BaseVFS, Generic[A]):
+class HfHubVFS(BoundVFS, Generic[A]):
     """Everything a Hub repo mount does, for whichever repo type it is.
 
     Models, datasets and spaces are one API and one tree; they differ only
@@ -75,11 +59,10 @@ class HfHubVFS(BaseVFS, Generic[A]):
     # literal, the way every other VFS writes it: the spec dump reads
     # this off the source, and an imported name reads as unresolvable.
     index_ttl: float = 86_400
-    _ops: dict[str, Any] = _OPS
     SUPPORTS_SNAPSHOT: bool = True
 
     def __init__(self, config: Any) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self.accessor = self.ACCESSOR(self.config)
         for fn in HF_COMMANDS:
@@ -90,20 +73,5 @@ class HfHubVFS(BaseVFS, Generic[A]):
     def delta_hook(self) -> DeltaHook:
         return build_delta_hook(self.accessor)
 
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        if prefix:
-            paths = [
-                dataclasses.replace(p, vfs_path=mount_key(p.virtual, prefix))
-                if isinstance(p, PathSpec) else p for p in paths
-            ]
-        return await HF_IO.resolve_glob(self.accessor, paths, self._index)
-
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        pass

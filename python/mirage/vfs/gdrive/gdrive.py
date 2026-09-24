@@ -15,20 +15,19 @@
 from typing import Any
 
 from mirage.accessor.gdrive import GDriveAccessor
-from mirage.core.gdrive.readdir import readdir
+from mirage.commands.builtin.gdrive import COMMANDS
+from mirage.commands.builtin.gdrive.io import IO
 from mirage.core.gdrive.watch import build_delta_hook
 from mirage.core.google.client import TokenManager
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.vfs.base import BaseVFS
+from mirage.ops.gdrive import OPS as GDRIVE_VFS_OPS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.gdrive.config import GoogleDriveConfig
 from mirage.vfs.gdrive.prompt import PROMPT
 from mirage.watch.base import DeltaHook
 
-_resolve_glob = make_resolve_glob(readdir)
 
-
-class GoogleDriveVFS(BaseVFS):
+class GoogleDriveVFS(BoundVFS):
 
     accessor: GDriveAccessor
     name: str = VFSName.GDRIVE
@@ -41,13 +40,10 @@ class GoogleDriveVFS(BaseVFS):
     SUPPORTS_SNAPSHOT: bool = True
 
     def __init__(self, config: GoogleDriveConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self._token_manager = TokenManager(config)
         self.accessor = GDriveAccessor(self.config, self._token_manager)
-        from mirage.commands.builtin.gdrive import COMMANDS
-        from mirage.ops.gdrive import OPS as GDRIVE_VFS_OPS
-
         for fn in COMMANDS:
             self.register(fn)
         for op in GDRIVE_VFS_OPS:
@@ -61,15 +57,5 @@ class GoogleDriveVFS(BaseVFS):
     def delta_hook(self) -> DeltaHook:
         return build_delta_hook(self.accessor)
 
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        return await _resolve_glob(self.accessor, paths, index=self._index)
-
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        pass

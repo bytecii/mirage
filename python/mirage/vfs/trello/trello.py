@@ -15,17 +15,16 @@
 from typing import Any
 
 from mirage.accessor.trello import TrelloAccessor
-from mirage.core.trello.readdir import readdir
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.vfs.base import BaseVFS
+from mirage.commands.builtin.trello import COMMANDS
+from mirage.commands.builtin.trello.io import IO
+from mirage.ops.trello import OPS as TRELLO_VFS_OPS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.trello.config import TrelloConfig
 from mirage.vfs.trello.prompt import PROMPT, WRITE_PROMPT
 
-_resolve_glob = make_resolve_glob(readdir)
 
-
-class TrelloVFS(BaseVFS):
+class TrelloVFS(BoundVFS):
 
     accessor: TrelloAccessor
     name: str = VFSName.TRELLO
@@ -34,26 +33,13 @@ class TrelloVFS(BaseVFS):
     WRITE_PROMPT: str = WRITE_PROMPT
 
     def __init__(self, config: TrelloConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self.accessor = TrelloAccessor(self.config)
-        from mirage.commands.builtin.trello import COMMANDS
-        from mirage.ops.trello import OPS as TRELLO_VFS_OPS
-
         for fn in COMMANDS:
             self.register(fn)
         for fn in TRELLO_VFS_OPS:
             self.register_op(fn)
 
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        return await _resolve_glob(self.accessor, paths, index=self._index)
-
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        pass

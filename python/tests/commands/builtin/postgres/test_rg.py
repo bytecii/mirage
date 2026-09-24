@@ -48,6 +48,8 @@ def accessor():
 def _guard_reads(monkeypatch):
     # The stat guard is captured by the search factory at import, so fake
     # what it reads at call time: the pool (above) and the client queries.
+    monkeypatch.setattr("mirage.core.postgres.client.list_schemas",
+                        AsyncMock(return_value=["public"]))
     monkeypatch.setattr("mirage.core.postgres.client.list_tables",
                         AsyncMock(return_value=["books"]))
     monkeypatch.setattr("mirage.core.postgres.client.fetch_columns",

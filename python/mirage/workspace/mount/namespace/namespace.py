@@ -583,17 +583,22 @@ class Namespace:
         await self._store.delete([path for path, _meta in moved])
         return len(moved)
 
-    async def purge_under(self, directory: str) -> int:
+    async def purge_under(
+        self, directory: str, keep: frozenset[str] = frozenset()) -> int:
         """Drop every node entry under a directory (``rm -r`` semantics).
 
         Args:
             directory (str): absolute virtual directory path being removed.
+            keep (frozenset[str]): entries under it that survive.
 
         Returns:
             int: number of entries dropped.
         """
         base = directory.rstrip("/") + "/"
-        doomed = [path for path in self._nodes if path.startswith(base)]
+        doomed = [
+            path for path in self._nodes
+            if path.startswith(base) and path not in keep
+        ]
         for path in doomed:
             del self._nodes[path]
         if doomed:

@@ -31,6 +31,7 @@ export interface Mount {
   vfs: string
   backend: string
   mode?: string
+  config?: Record<string, unknown>
   fixture?: string
   // Mount this prefix over an already-built mount's storage instead of
   // allocating fresh storage, so cp/mv can be exercised against two
@@ -49,6 +50,8 @@ export interface Mount {
   volume?: string
   prefix?: string
   root?: string
+  // The bases an airtable mount is scoped to (AirtableConfig.base_ids).
+  base_ids?: string[]
   drive?: string
 }
 
@@ -278,9 +281,11 @@ export function loadTargets(root: string): Map<string, Target> {
  * The service -> per-host required env vars table.
  *
  * An empty list means the host needs nothing because its adapter starts an
- * in-process fake; the two hosts differ here (python self-hosts s3, ssh, hf,
- * box, databricks, discord, linear and dify, typescript does not), so the
- * asymmetry is spelled out per host rather than inferred.
+ * in-process fake (or the backend needs no service). The two hosts differ per
+ * service (python starts s3 and ssh itself where typescript reads an
+ * endpoint; typescript needs nothing for quickjs where python reads
+ * MIRAGE_QUICKJS_HOME), so each host's list is spelled out in targets.json
+ * rather than inferred.
  */
 export function loadServices(root: string): Map<string, ServiceEnv> {
   const data = JSON.parse(readFileSync(join(root, 'targets.json'), 'utf8')) as {

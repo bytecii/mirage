@@ -81,8 +81,7 @@ const GENERIC_OUT: [string, string][] = [
 
 const SHELL_LEDGER: [string, string][] = [
   ['write', K],
-  ['read', K],
-  ['write', K],
+  ['append', K],
   ['append', K],
   ['write', NEW],
   ['truncate', NEW],

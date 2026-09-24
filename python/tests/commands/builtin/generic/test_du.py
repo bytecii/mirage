@@ -5,12 +5,13 @@ from mirage.commands.builtin.generic.du import (DuFlags, _depth, du,
                                                 parse_depth, parse_flags,
                                                 rollup, run_du, separate_total,
                                                 to_virtual)
-from mirage.commands.builtin.generic_bind import CommandIO, DuOps
+from mirage.commands.builtin.generic_bind import CommandIO
 from mirage.commands.errors import UsageError
 from mirage.ops.types import LinkView, MountView
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.vfs.disk import DiskVFS
 from mirage.vfs.ram import RAMVFS
+from mirage.vfs.types import DuOps
 
 
 async def _ok(value):

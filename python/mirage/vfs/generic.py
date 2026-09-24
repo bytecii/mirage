@@ -12,120 +12,27 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Any
 
 from mirage.accessor.base import Accessor
-from mirage.cache.index import IndexCacheStore, IndexConfig
+from mirage.cache.index import IndexConfig
 from mirage.commands.builtin.generic_bind import (CommandIO,
                                                   make_generic_commands)
 from mirage.ops.generic import make_generic_ops
 from mirage.ops.registry import RegisteredOp
-from mirage.types import PathSpec
-from mirage.vfs.base import BaseVFS
-
-# The direct-attribute surface a builtin backend publishes as its
-# ``_ops`` class attribute, which ``BaseVFS.__getattr__`` binds the
-# accessor into. Keys are the builtins' own spelling rather than
-# ``CommandIO``'s, because this is the vocabulary an out-of-tree caller
-# already reads off ram, s3 or disk; ``find``, ``rm_r`` and
-# ``read_range`` are spelled differently there. ``is_mounted``,
-# ``dir_copy`` and ``set_attrs`` are deliberately absent: no builtin
-# publishes them, and a kit backend that grew two names its builtin twin
-# lacks would not be the same surface.
-_DIRECT_OPS: dict[str, str] = {
-    "readdir": "readdir",
-    "read_bytes": "read_bytes",
-    "range_read": "read_range",
-    "read_stream": "read_stream",
-    "stat": "stat",
-    "write": "write",
-    "append": "append",
-    "create": "create",
-    "mkdir": "mkdir",
-    "unlink": "unlink",
-    "rmdir": "rmdir",
-    "rm_recursive": "rm_r",
-    "rename": "rename",
-    "copy": "copy",
-    "truncate": "truncate",
-    "exists": "exists",
-    "find_flat": "find",
-}
+from mirage.vfs.adapter import VFSAdapter
+from mirage.vfs.bound import BoundVFS
 
 
-def range_adapter(
-    fn: Callable[..., Awaitable[bytes]],
-    index: Callable[[], IndexCacheStore],
-) -> Callable[..., Awaitable[bytes]]:
-    """Adapt a table's ``read_range`` slot to the VFS API's shape.
-
-    The one field whose two callers disagree about more than a name. A
-    builtin publishes ``range_read(accessor, path, start, end)`` with the
-    end exclusive, while the table slot is ``(accessor, path, index,
-    offset, size)``, and ``BaseVFS.__getattr__`` binds only the
-    accessor. Forwarded raw, the table function took ``start`` as its
-    index and ``end`` as its offset, so an object-store table read from
-    ``end`` to EOF instead of the window asked for, and one that touched
-    the index at all crashed on an int.
-
-    The index is read per call rather than captured, because
-    ``set_index`` can replace the store after construction.
-
-    Args:
-        fn (Callable): the table's ``read_range`` slot.
-        index (Callable): reads the owning VFS's current index.
-    """
-
-    async def range_read(accessor: Any, path: PathSpec, start: int,
-                         end: int) -> bytes:
-        return await fn(accessor, path, index(), start, end - start)
-
-    return range_read
-
-
-def direct_ops(
-    io: CommandIO,
-    index: Callable[[], IndexCacheStore],
-) -> dict[str, Callable[..., Any]]:
-    """Map a table's core functions onto the builtin ``_ops`` names.
-
-    A builtin sets ``_ops`` as a class attribute; a kit backend has no
-    class to hang one on, so it is derived per instance from the same
-    table that feeds the commands and the ops. Fields the table leaves
-    None are omitted, so the surface a kit backend publishes is exactly
-    what it can answer.
-
-    Every field forwards as it stands but one: ``read_range`` is the
-    only slot whose shape differs from the name it publishes under, so
-    it goes through :func:`range_adapter`.
-
-    Args:
-        io (CommandIO): the backend's IO table.
-        index (Callable): reads the owning VFS's current index,
-            which ``read_range`` needs and nothing else does yet.
-    """
-    ops: dict[str, Callable[..., Any]] = {}
-    for name, field in _DIRECT_OPS.items():
-        fn = getattr(io, field)
-        if fn is None:
-            continue
-        ops[name] = (range_adapter(fn, index) if field == "read_range" else fn)
-    if io.du is not None:
-        ops["du_size"] = io.du.size
-        ops["du_entries"] = io.du.entries
-    return ops
-
-
-class GenericVFS(BaseVFS):
-    """A full backend generated from one :class:`CommandIO` table.
+class GenericVFS(BoundVFS):
+    """A backend generated from capabilities or a CommandIO table.
 
     The one-file path for custom backends: supply an accessor and the
-    core functions on a ``CommandIO`` (readdir/read_bytes/stat at
-    minimum), and the whole generic command set — plus glob resolution —
-    is wired automatically. Optional fields on the table unlock more
-    surface (``write`` enables the byte-mutation family, ``find`` and
-    ``du_size`` become native fast paths), and the escape hatches
+    three core functions on a ``VFSAdapter`` (readdir/read_bytes/stat),
+    and the generic commands plus glob resolution are wired automatically.
+    Optional fields unlock more surface (``write`` enables byte mutations,
+    ``find`` and ``du`` become native fast paths), and the escape hatches
     mirror what builtin backends use: ``overrides`` suppresses generic
     commands the backend replaces, ``commands`` appends bespoke
     ``@command`` verbs, and ``ops`` registers ``@op`` handlers for FUSE
@@ -147,7 +54,7 @@ class GenericVFS(BaseVFS):
             registry key when the class is exposed via
             ``register_vfs`` or a ``mirage.vfs`` entry point.
         accessor (Accessor): backend handle passed to every core fn.
-        io (CommandIO): the backend's IO table.
+        io (CommandIO | VFSAdapter): resource capabilities or a prebuilt table.
         prompt (str): LLM-facing description of the mounted layout.
         write_prompt (str): appended when mounted writable.
         overrides (set[str] | None): generic command names the backend
@@ -189,7 +96,7 @@ class GenericVFS(BaseVFS):
         *,
         name: str,
         accessor: Accessor,
-        io: CommandIO,
+        io: CommandIO | VFSAdapter,
         prompt: str = "",
         write_prompt: str = "",
         overrides: set[str] | None = None,
@@ -203,20 +110,18 @@ class GenericVFS(BaseVFS):
         read_revalidatable: bool = False,
         index: IndexConfig | None = None,
     ) -> None:
-        super().__init__(index=index)
+        super().__init__(io=io, index=index)
         if not name:
             raise ValueError("GenericVFS requires a non-empty name")
+        io = self.io
         self.name = name
         self.accessor = accessor
-        self.io = io
         self.PROMPT = prompt
         self.WRITE_PROMPT = write_prompt
         self.caches_reads = caches_reads
         self.SIZES_ALWAYS_KNOWN = sizes_always_known
         self.SUPPORTS_SNAPSHOT = supports_snapshot
         self.READ_REVALIDATABLE = read_revalidatable
-        self._resolve = io.resolve_glob
-        self._ops = direct_ops(io, lambda: self.index)
         for fn in make_generic_commands(
                 name,
                 io,
@@ -237,11 +142,6 @@ class GenericVFS(BaseVFS):
                 self.register_op(ro)
         for ro in user_ops:
             self.register_op(ro)
-
-    async def resolve_glob(self,
-                           paths: list[Any],
-                           prefix: str = "") -> list[PathSpec]:
-        return await self._resolve(self.accessor, paths, self._index)
 
     def get_state(self) -> dict[str, Any]:
         # The base cannot know a subclass's constructor, so by default a

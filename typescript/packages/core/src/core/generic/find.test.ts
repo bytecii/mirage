@@ -63,6 +63,17 @@ function makeDeps(
 const ROOT = new PathSpec({ vfsPath: '', virtual: '/', directory: '/' })
 
 describe('walkFind', () => {
+  it('does not classify an unknown-size file as empty', async () => {
+    const deps: WalkFindDeps = {
+      readdir: () => Promise.resolve([]),
+      stat: () =>
+        Promise.resolve(new FileStat({ name: 'records.jsonl', type: FileType.FILE, size: null })),
+    }
+    expect(await walkFind(PathSpec.fromStrPath('/records.jsonl'), deps, { empty: true })).toEqual(
+      [],
+    )
+  })
+
   it('walks recursively and sorts by codepoint', async () => {
     const deps = makeDeps(
       {
@@ -305,7 +316,7 @@ describe('isEnoent', () => {
 // search-backed backends (chroma, dify) get the whole subtree from one
 // walk, so -empty has to answer off that list rather than a readdir.
 const SEARCH_DIRS = new Set(['/', '/guides', '/api'])
-const SEARCH_SIZES: Record<string, number> = { '/api/reference': 900 }
+const SEARCH_SIZES: Record<string, number> = { '/api/reference': 900, '/empty': 0 }
 
 function makeSearchDeps(
   keys: string[],
@@ -371,9 +382,9 @@ describe('makeSearchBackedFind — -empty', () => {
   })
 
   it('keeps a zero-length file', async () => {
-    const deps = makeSearchDeps(['/', '/api', '/api/reference', '/unsized'])
+    const deps = makeSearchDeps(['/', '/api', '/api/reference', '/unsized', '/empty'])
     const find = makeSearchBackedFind(deps)
-    expect(await find({}, ROOT, { empty: true }, new RAMIndexCacheStore())).toEqual(['/unsized'])
+    expect(await find({}, ROOT, { empty: true }, new RAMIndexCacheStore())).toEqual(['/empty'])
   })
 
   it('forces the kind lookup it branches on', async () => {
