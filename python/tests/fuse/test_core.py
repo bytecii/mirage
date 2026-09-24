@@ -12,9 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
 import errno
 import os
 import stat
+import threading
 import time
 
 import pytest
@@ -444,3 +446,23 @@ def test_drain_ops_omits_internal_mount_identity():
     core = MountCore(ws.vfs)
     assert core.drain_ops() == [record.to_dict()]
     assert core.drain_ops() == []
+
+
+@pytest.mark.asyncio
+async def test_ops_run_on_a_loop_the_caller_hands_in():
+    # The daemon's SFTP adapter serves a workspace pinned to its runner
+    # loop, so the core must run ops there instead of on a private loop.
+    ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
+    await ws.shell("tee /a.txt", stdin=b"on the given loop")
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        core = MountCore(ws.vfs, loop=loop)
+        assert core._loop is loop
+        data = await asyncio.to_thread(core.read, "/a.txt", 64, 0, None)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        loop.close()
+    assert data == b"on the given loop"

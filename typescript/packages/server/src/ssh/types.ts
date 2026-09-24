@@ -12,29 +12,16 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { defineConfig } from 'tsup'
+import type { SSHConfig } from './config.ts'
 
-export default defineConfig({
-  entry: [
-    'src/index.ts',
-    'src/bin/daemon.ts',
-    'src/paths.ts',
-    'src/env.ts',
-    'src/daemon_config.ts',
-    'src/host_validation_constants.ts',
-    'src/workspace_config.ts',
-    'src/auth/config.ts',
-    'src/auth/storage.ts',
-    'src/ssh/config.ts',
-  ],
-  format: ['esm'],
-  dts: {
-    compilerOptions: {
-      ignoreDeprecations: '6.0',
-    },
-  },
-  sourcemap: true,
-  clean: true,
-  target: 'es2022',
-  platform: 'node',
-})
+/** A running SSH door, as the daemon holds it. */
+export interface SSHListener {
+  readonly port: number
+  close(): Promise<void>
+}
+
+/** The daemon's SSH door: its config, and the listener once it is open. */
+export interface SSHDoor {
+  readonly config: SSHConfig | null
+  listener: SSHListener | null
+}

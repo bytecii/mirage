@@ -69,12 +69,18 @@ class MountCore:
         session (SessionState | None): bind every op to this session's mount
             grants, exactly as a shell command in that session would run.
             None means unrestricted.
+        loop (asyncio.AbstractEventLoop | None): a running loop to run ops
+            on, such as the daemon's per-workspace runner loop, so an
+            adapter serving a hosted workspace touches it only from the
+            loop that owns it. None starts a private loop thread, which is
+            what a kernel mount wants.
     """
 
     def __init__(self,
                  ops: Ops,
                  root_prefix: str = "",
-                 session: SessionState | None = None) -> None:
+                 session: SessionState | None = None,
+                 loop: asyncio.AbstractEventLoop | None = None) -> None:
         self._ops = ops
         self._session = session
         self._now = time.time_ns()
@@ -87,10 +93,10 @@ class MountCore:
         # as owned by the mounting user (see mount.py). Mirrors fs.ts.
         self._uid = os.getuid() if hasattr(os, "getuid") else 0
         self._gid = os.getgid() if hasattr(os, "getgid") else 0
-        self._loop = asyncio.new_event_loop()
-        self._loop_thread = threading.Thread(target=self._loop.run_forever,
-                                             daemon=True)
-        self._loop_thread.start()
+        if loop is None:
+            loop = asyncio.new_event_loop()
+            threading.Thread(target=loop.run_forever, daemon=True).start()
+        self._loop = loop
 
     @property
     def ops(self) -> Ops:
