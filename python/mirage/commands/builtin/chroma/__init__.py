@@ -17,7 +17,7 @@ from mirage.commands.builtin.chroma.io import IO as _IO
 from mirage.commands.builtin.chroma.search import search
 from mirage.commands.builtin.generic_bind import make_generic_commands
 
-_CHROMA_OVERRIDES = {"find", "search"}
+_CHROMA_OVERRIDES = {"find"}
 
 COMMANDS = [
     *make_generic_commands(

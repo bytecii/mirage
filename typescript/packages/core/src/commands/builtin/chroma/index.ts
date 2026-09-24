@@ -20,7 +20,7 @@ import { CHROMA_FIND } from './find.ts'
 import { CHROMA_IO } from './io.ts'
 import { CHROMA_SEARCH } from './search.ts'
 
-const CHROMA_OVERRIDES = new Set(['find', 'search'])
+const CHROMA_OVERRIDES = new Set(['find'])
 
 export const CHROMA_COMMANDS: readonly RegisteredCommand[] = [
   ...makeGenericCommands<ChromaAccessor>(VFSName.CHROMA, CHROMA_IO, {

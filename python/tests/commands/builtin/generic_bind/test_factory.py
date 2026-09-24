@@ -241,3 +241,26 @@ async def test_slash_guard_leaves_write_absent_when_the_backend_has_none():
     assert guarded.write is None
     assert guarded.append is None
     assert guarded.truncate is None
+
+
+@pytest.mark.parametrize("option", [
+    {
+        "overrides": {"cat", "search"}
+    },
+    {
+        "provision_overrides": {
+            "gerp": lambda *a, **k: None
+        }
+    },
+    {
+        "ops_overrides": {
+            "lss": _ops(_CountingBackend(b""))
+        }
+    },
+])
+def test_a_name_no_builder_has_is_refused(option):
+    """A name no builder has did nothing, so a typo left the generic
+    registered beside the bespoke command, and mem0's ``search`` read as
+    if it displaced something."""
+    with pytest.raises(ValueError, match="no generic builder named"):
+        make_generic_commands("fake", _ops(_CountingBackend(b"")), **option)
