@@ -119,6 +119,38 @@ function searchCommand(
     )
 }
 
+describe('adapter search on a - operand', () => {
+  it('reads the pipe, not the backend', async () => {
+    // A `-` operand is the line's stdin, which no backend holds. Asked about
+    // it, a search that answers any operand said "no match" and the pipe was
+    // never read.
+    const asked: string[] = []
+    const answerEverything = (_accessor: FakeAccessor, operand: PathSpec): Promise<string[]> => {
+      asked.push(operand.rawPath)
+      return Promise.resolve([])
+    }
+    const dash = new PathSpec({
+      virtual: '/h/-',
+      directory: '/h/',
+      vfsPath: '-',
+      resolved: true,
+      rawPath: '-',
+    })
+    for (const name of ['grep', 'rg'] as const) {
+      const io: CommandIO<FakeAccessor> = {
+        ...makeIO(),
+        search: { search: answerEverything, meta: { grep: { mode: 'literal', stream: false } } },
+      }
+      const stdin = new TextEncoder().encode('x ada\n')
+      const [out, result] = unwrap(
+        await runSearch(io, name, new FakeAccessor(), [dash], ['ada'], { ...opts(), stdin }),
+      )
+      expect([await drain(out), result.exitCode]).toEqual(['x ada\n', 0])
+    }
+    expect(asked).toEqual([])
+  })
+})
+
 describe('adapter search', () => {
   it('answers a matched kind from its searcher', async () => {
     const search = searchCommand({ room: roomSearcher }, makeIO(), {})

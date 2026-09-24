@@ -18,6 +18,7 @@ import type { GrepSearchOptions, GrepSearchMeta } from './types.ts'
 import type { PathSpec } from '../../types.ts'
 import { PatternType } from './constants.ts'
 import { hasUnresolvedGlob } from './utils/operands.ts'
+import { isStdin } from './utils/stream.ts'
 import { breSource } from './grep_pattern.ts'
 import { FlagView } from '../spec/flag_view.ts'
 import { type FlagValue } from '../spec/types.ts'
@@ -218,9 +219,11 @@ export function searchPushdownOk(bag: Record<string, FlagValue>, pattern: string
 // A multi-operand line therefore takes the generic scan, which searches each
 // operand in turn the way GNU does. A glob operand defers for the older
 // reason: an unexpanded pattern segment would be read as a literal entity
-// name.
+// name. A `-` operand defers because it is the line's stdin, which no backend
+// holds: asked about `<mount>/-`, the search answered "no match" and the pipe
+// was never read.
 export function loneOperand(paths: PathSpec[]): PathSpec | null {
-  if (paths.length !== 1 || hasUnresolvedGlob(paths)) return null
+  if (paths.length !== 1 || hasUnresolvedGlob(paths) || paths.some(isStdin)) return null
   return paths[0] ?? null
 }
 
