@@ -16,18 +16,15 @@ from typing import Any
 
 from mirage.accessor.discord import DiscordAccessor
 from mirage.commands.builtin.discord import COMMANDS
+from mirage.commands.builtin.discord.io import IO
 from mirage.core.discord.config import DiscordConfig
-from mirage.core.discord.readdir import readdir
 from mirage.ops.discord import OPS as DISCORD_VFS_OPS
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.vfs.base import BaseVFS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.discord.prompt import PROMPT, WRITE_PROMPT
 
-_resolve_glob = make_resolve_glob(readdir)
 
-
-class DiscordVFS(BaseVFS):
+class DiscordVFS(BoundVFS):
 
     accessor: DiscordAccessor
     name: str = VFSName.DISCORD
@@ -40,20 +37,13 @@ class DiscordVFS(BaseVFS):
     WRITE_PROMPT: str = WRITE_PROMPT
 
     def __init__(self, config: DiscordConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self.accessor = DiscordAccessor(self.config)
         for fn in COMMANDS:
             self.register(fn)
         for fn in DISCORD_VFS_OPS:
             self.register_op(fn)
-
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        return await _resolve_glob(self.accessor, paths, index=self._index)
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)

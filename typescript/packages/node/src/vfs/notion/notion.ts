@@ -12,33 +12,29 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { BoundVFS } from '@struktoai/mirage-core/vfs/bound'
+import { NOTION_IO } from '@struktoai/mirage-core/commands/builtin/notion/io'
 import { NotionAccessor } from '@struktoai/mirage-core/accessor/notion'
-import { makeResolveGlob } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
+
 import { NOTION_COMMANDS } from '@struktoai/mirage-core/commands/builtin/notion/index'
 import type { RegisteredCommand } from '@struktoai/mirage-core/commands/config'
 import { HttpNotionTransport } from '@struktoai/mirage-core/core/notion/client'
 import { redactNotionConfig } from '@struktoai/mirage-core/core/notion/config'
 import type { NotionConfig, NotionConfigRedacted } from '@struktoai/mirage-core/core/notion/config'
-import { read as notionRead } from '@struktoai/mirage-core/core/notion/read'
-import { readdir as notionReaddir } from '@struktoai/mirage-core/core/notion/readdir'
-import { stat as notionStat } from '@struktoai/mirage-core/core/notion/stat'
+
 import { NOTION_OPS } from '@struktoai/mirage-core/ops/notion/index'
 import type { RegisteredOp } from '@struktoai/mirage-core/ops/registry'
-import { BaseVFS } from '@struktoai/mirage-core/vfs/base'
+
 import type { VFS } from '@struktoai/mirage-core/vfs/base'
 import { NOTION_PROMPT, NOTION_WRITE_PROMPT } from '@struktoai/mirage-core/vfs/notion/prompt'
-import { PathSpec, VFSName } from '@struktoai/mirage-core/types'
-import type { FileStat } from '@struktoai/mirage-core/types'
-import { mountKey, mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
-
-const resolveNotionGlob = makeResolveGlob<NotionAccessor>(notionReaddir)
+import { VFSName } from '@struktoai/mirage-core/types'
 
 export interface NotionVFSState {
   type: string
   config: NotionConfigRedacted
 }
 
-export class NotionVFS extends BaseVFS implements VFS {
+export class NotionVFS extends BoundVFS<NotionAccessor> implements VFS {
   readonly kind: string = VFSName.NOTION
   readonly cachesReads: boolean = true
   readonly prompt: string = NOTION_PROMPT
@@ -47,7 +43,7 @@ export class NotionVFS extends BaseVFS implements VFS {
   readonly accessor: NotionAccessor
 
   constructor(config: NotionConfig) {
-    super()
+    super(NOTION_IO)
     this.config = config
     const transportOpts: { apiKey: string; baseUrl?: string; apiVersion?: string } = {
       apiKey: config.apiKey,
@@ -63,36 +59,6 @@ export class NotionVFS extends BaseVFS implements VFS {
 
   ops(): readonly RegisteredOp[] {
     return NOTION_OPS
-  }
-
-  readFile(p: PathSpec): Promise<Uint8Array> {
-    return notionRead(this.accessor, p, this.index)
-  }
-
-  readdir(p: PathSpec): Promise<string[]> {
-    return notionReaddir(this.accessor, p, this.index)
-  }
-
-  stat(p: PathSpec): Promise<FileStat> {
-    return notionStat(this.accessor, p, this.index)
-  }
-
-  glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {
-    const effective =
-      prefix !== ''
-        ? paths.map((p) =>
-            mountPrefixOf(p.virtual, p.vfsPath) !== ''
-              ? p
-              : new PathSpec({
-                  virtual: p.virtual,
-                  directory: p.directory,
-                  ...(p.pattern !== null ? { pattern: p.pattern } : {}),
-                  resolved: p.resolved,
-                  vfsPath: mountKey(p.virtual, prefix),
-                }),
-          )
-        : paths
-    return resolveNotionGlob(this.accessor, effective, this.index)
   }
 
   override getState(): Promise<NotionVFSState> {

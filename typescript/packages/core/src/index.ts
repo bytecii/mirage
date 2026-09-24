@@ -63,6 +63,7 @@ export { normalizeDatabricksVolumeConfig } from './vfs/databricks_volume/config.
 export { DevVFS } from './vfs/dev/dev.ts'
 export { DifyVFS } from './vfs/dify/dify.ts'
 export { GenericVFS } from './vfs/generic.ts'
+export { checkReadContract, type ReadFixture } from './vfs/testing.ts'
 export { VFSAdapter } from './vfs/adapter.ts'
 export type {
   NativeReadOps,

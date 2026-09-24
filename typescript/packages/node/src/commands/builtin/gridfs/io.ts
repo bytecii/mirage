@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { VFSAdapter } from '@struktoai/mirage-core/vfs/adapter'
+import { VFSAdapter, appendFromRead } from '@struktoai/mirage-core/vfs/adapter'
 
 import { rangeOf } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
 import type { CommandIO } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
@@ -45,6 +45,7 @@ export const GRIDFS_IO: CommandIO<GridFSAccessor> = new VFSAdapter<GridFSAccesso
     du: { size: gridfsDu, entries: gridfsDuAll },
   },
   writes: {
+    append: appendFromRead(gridfsRead, gridfsWrite),
     write: gridfsWrite,
     mkdir: gridfsMkdir,
     unlink: gridfsUnlink,

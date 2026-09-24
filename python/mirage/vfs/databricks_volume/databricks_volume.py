@@ -12,54 +12,20 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import dataclasses
 from typing import Any
 
 from mirage.accessor.databricks_volume import DatabricksVolumeAccessor
 from mirage.commands.builtin.databricks_volume import \
     COMMANDS as DATABRICKS_VOLUME_COMMANDS
-from mirage.core.databricks_volume.copy import copy
-from mirage.core.databricks_volume.create import create
-from mirage.core.databricks_volume.exists import exists
-from mirage.core.databricks_volume.mkdir import mkdir
-from mirage.core.databricks_volume.read import read_bytes
-from mirage.core.databricks_volume.readdir import readdir
-from mirage.core.databricks_volume.rename import rename
-from mirage.core.databricks_volume.rm import rm_recursive
-from mirage.core.databricks_volume.rmdir import rmdir
-from mirage.core.databricks_volume.stat import stat as databricks_stat
-from mirage.core.databricks_volume.stream import range_read, read_stream
-from mirage.core.databricks_volume.unlink import unlink
-from mirage.core.databricks_volume.write import write_bytes
+from mirage.commands.builtin.databricks_volume.io import IO
 from mirage.ops.databricks_volume import OPS as DATABRICKS_VOLUME_OPS
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.utils.key_prefix import mount_key
-from mirage.vfs.base import BaseVFS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.databricks_volume.config import DatabricksVolumeConfig
 from mirage.vfs.databricks_volume.prompt import PROMPT
 
-_resolve_glob = make_resolve_glob(readdir)
 
-_DATABRICKS_VOLUME_OPS = {
-    "read_bytes": read_bytes,
-    "readdir": readdir,
-    "stat": databricks_stat,
-    "read_stream": read_stream,
-    "range_read": range_read,
-    "exists": exists,
-    "write": write_bytes,
-    "create": create,
-    "unlink": unlink,
-    "mkdir": mkdir,
-    "rmdir": rmdir,
-    "copy": copy,
-    "rename": rename,
-    "rm_recursive": rm_recursive,
-}
-
-
-class DatabricksVolumeVFS(BaseVFS):
+class DatabricksVolumeVFS(BoundVFS):
     accessor: DatabricksVolumeAccessor
     name: str = VFSName.DATABRICKS_VOLUME
     caches_reads: bool = True
@@ -67,7 +33,6 @@ class DatabricksVolumeVFS(BaseVFS):
     # Content-Length, both the exact byte count the download returns;
     # readdir backfills any lister-omitted size with one HEAD.
     SIZES_ALWAYS_KNOWN: bool = True
-    _ops: dict[str, Any] = _DATABRICKS_VOLUME_OPS
     PROMPT: str = PROMPT
 
     def __init__(
@@ -75,7 +40,7 @@ class DatabricksVolumeVFS(BaseVFS):
         config: DatabricksVolumeConfig,
         client: Any | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self.accessor = DatabricksVolumeAccessor(self.config, client)
 
@@ -83,18 +48,6 @@ class DatabricksVolumeVFS(BaseVFS):
             self.register(fn)
         for op in DATABRICKS_VOLUME_OPS:
             self.register_op(op)
-
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        if prefix:
-            paths = [
-                dataclasses.replace(p, vfs_path=mount_key(p.virtual, prefix))
-                if isinstance(p, PathSpec) else p for p in paths
-            ]
-        return await _resolve_glob(self.accessor, paths, self._index)
 
     def get_state(self) -> dict[str, Any]:
         redacted = ["token"]

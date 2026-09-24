@@ -16,19 +16,16 @@ from typing import Any
 
 from mirage.accessor.gdocs import GDocsAccessor
 from mirage.commands.builtin.gdocs import COMMANDS
-from mirage.core.gdocs.readdir import readdir
+from mirage.commands.builtin.gdocs.io import IO
 from mirage.core.google.client import TokenManager
 from mirage.ops.gdocs import OPS as GDOCS_VFS_OPS
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.vfs.base import BaseVFS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.gdocs.config import GDocsConfig
 from mirage.vfs.gdocs.prompt import PROMPT, WRITE_PROMPT
 
-_resolve_glob = make_resolve_glob(readdir)
 
-
-class GDocsVFS(BaseVFS):
+class GDocsVFS(BoundVFS):
 
     accessor: GDocsAccessor
     name: str = VFSName.GDOCS
@@ -41,7 +38,7 @@ class GDocsVFS(BaseVFS):
     WRITE_PROMPT: str = WRITE_PROMPT
 
     def __init__(self, config: GDocsConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self._token_manager = TokenManager(config)
         self.accessor = GDocsAccessor(self.config, self._token_manager)
@@ -54,13 +51,6 @@ class GDocsVFS(BaseVFS):
         """Drain the token manager's connection pool with the VFS."""
         await self._token_manager.close()
         await super().close()
-
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        return await _resolve_glob(self.accessor, paths, index=self._index)
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)

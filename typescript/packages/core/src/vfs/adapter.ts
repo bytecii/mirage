@@ -2,7 +2,7 @@ import type { Accessor } from '../accessor/base.ts'
 import type { CommandIO } from '../commands/builtin/generic_bind/adapter.ts'
 import { streamFromBytes } from '../commands/builtin/utils/wrap.ts'
 import { isEnoent } from '../utils/errors.ts'
-import type { NativeReadOps, ReadOps, WriteOps, SearchOps } from './types.ts'
+import type { NativeReadOps, ReadOps, WriteOps, SearchOps, ReadBytesOp, WriteOp } from './types.ts'
 
 export interface VFSAdapterOptions<A extends Accessor = Accessor> {
   read: ReadOps<A>
@@ -39,5 +39,25 @@ export class VFSAdapter<A extends Accessor = Accessor> {
       ...native,
       ...writes,
     }
+  }
+}
+
+/** Explicit non-atomic read/modify/write append for byte stores. */
+export function appendFromRead<A extends Accessor>(
+  read: ReadBytesOp<A>,
+  write: WriteOp<A>,
+): WriteOp<A> {
+  return async (accessor, path, data) => {
+    let previous: Uint8Array
+    try {
+      previous = await read(accessor, path)
+    } catch (error) {
+      if (!isEnoent(error)) throw error
+      previous = new Uint8Array()
+    }
+    const merged = new Uint8Array(previous.length + data.length)
+    merged.set(previous)
+    merged.set(data, previous.length)
+    await write(accessor, path, merged)
   }
 }

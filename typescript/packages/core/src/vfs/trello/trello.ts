@@ -12,32 +12,29 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { BoundVFS } from '../bound.ts'
+import { TRELLO_IO } from '../../commands/builtin/trello/io.ts'
 import { TrelloAccessor } from '../../accessor/trello.ts'
-import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+
 import { TRELLO_COMMANDS } from '../../commands/builtin/trello/index.ts'
 import type { RegisteredCommand } from '../../commands/config.ts'
 import { HttpTrelloTransport } from '../../core/trello/client.ts'
-import { read as trelloRead } from '../../core/trello/read.ts'
-import { readdir as trelloReaddir } from '../../core/trello/readdir.ts'
-import { stat as trelloStat } from '../../core/trello/stat.ts'
+
 import type { RegisteredOp } from '../../ops/registry.ts'
 import { TRELLO_OPS } from '../../ops/trello/index.ts'
-import { BaseVFS } from '../base.ts'
+
 import type { VFS } from '../base.ts'
 import { TRELLO_PROMPT, TRELLO_WRITE_PROMPT } from './prompt.ts'
-import { PathSpec, VFSName } from '../../types.ts'
-import type { FileStat } from '../../types.ts'
-import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
-import { redactTrelloConfig, type TrelloConfig, type TrelloConfigRedacted } from './config.ts'
+import { VFSName } from '../../types.ts'
 
-const resolveTrelloGlob = makeResolveGlob(trelloReaddir)
+import { redactTrelloConfig, type TrelloConfig, type TrelloConfigRedacted } from './config.ts'
 
 export interface TrelloVFSState {
   type: string
   config: TrelloConfigRedacted
 }
 
-export class TrelloVFS extends BaseVFS implements VFS {
+export class TrelloVFS extends BoundVFS<TrelloAccessor> implements VFS {
   readonly kind: string = VFSName.TRELLO
   readonly cachesReads: boolean = true
   readonly prompt: string = TRELLO_PROMPT
@@ -46,7 +43,7 @@ export class TrelloVFS extends BaseVFS implements VFS {
   readonly accessor: TrelloAccessor
 
   constructor(config: TrelloConfig) {
-    super()
+    super(TRELLO_IO)
     this.config = config
     const transportOpts: { apiKey: string; apiToken: string; baseUrl?: string } = {
       apiKey: config.apiKey,
@@ -65,36 +62,6 @@ export class TrelloVFS extends BaseVFS implements VFS {
 
   ops(): readonly RegisteredOp[] {
     return TRELLO_OPS
-  }
-
-  readFile(p: PathSpec): Promise<Uint8Array> {
-    return trelloRead(this.accessor, p, this.index)
-  }
-
-  readdir(p: PathSpec): Promise<string[]> {
-    return trelloReaddir(this.accessor, p, this.index)
-  }
-
-  stat(p: PathSpec): Promise<FileStat> {
-    return trelloStat(this.accessor, p, this.index)
-  }
-
-  glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {
-    const effective =
-      prefix !== ''
-        ? paths.map((p) =>
-            mountPrefixOf(p.virtual, p.vfsPath) !== ''
-              ? p
-              : new PathSpec({
-                  virtual: p.virtual,
-                  directory: p.directory,
-                  ...(p.pattern !== null ? { pattern: p.pattern } : {}),
-                  resolved: p.resolved,
-                  vfsPath: mountKey(p.virtual, prefix),
-                }),
-          )
-        : paths
-    return resolveTrelloGlob(this.accessor, effective, this.index)
   }
 
   override getState(): Promise<TrelloVFSState> {

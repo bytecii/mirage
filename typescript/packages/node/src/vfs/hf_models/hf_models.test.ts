@@ -22,7 +22,7 @@ import { HfModelsVFS } from './hf_models.ts'
 // listing is recursive, so one paged fetch is the whole tree and the generic
 // walk over it costs no requests. A native op would buy a constant factor and
 // cost a second implementation of the same traversal.
-const PY_OPS = ['read_bytes', 'readdir', 'stat', 'read_stream', 'range_read', 'exists']
+const PY_OPS = ['readBytes', 'readdir', 'stat', 'readStream', 'readRange', 'exists']
 
 // The mount is read-only, so the byte-mutation ops are absent here exactly as
 // they are in python's `_OPS`. This list is the op-dispatcher channel, which a
@@ -46,8 +46,9 @@ afterEach(() => {
 describe('HfModelsVFS', () => {
   it('exposes the python-parity ops map and flags', () => {
     const vfs = new HfModelsVFS({ repoId: 'ns/model' })
-    expect(Object.keys(vfs.opsMap).sort()).toEqual([...PY_OPS].sort())
-    for (const op of PY_ABSENT_OPS) expect(vfs.opsMap[op]).toBeUndefined()
+    for (const op of PY_OPS) expect(vfs.io).toHaveProperty(op)
+    for (const op of PY_ABSENT_OPS)
+      expect((vfs.io as unknown as Record<string, unknown>)[op]).toBeUndefined()
     expect(vfs.kind).toBe('hf_models')
     expect(vfs.cachesReads).toBe(true)
     expect(vfs.supportsSnapshot).toBe(true)

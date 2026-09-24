@@ -16,18 +16,15 @@ from typing import Any
 
 from mirage.accessor.postgres import PostgresAccessor
 from mirage.commands.builtin.postgres import COMMANDS
-from mirage.core.postgres.readdir import readdir
+from mirage.commands.builtin.postgres.io import IO
 from mirage.ops.postgres import OPS as POSTGRES_VFS_OPS
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.vfs.base import BaseVFS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.postgres.config import PostgresConfig
 from mirage.vfs.postgres.prompt import PROMPT
 
-_resolve_glob = make_resolve_glob(readdir)
 
-
-class PostgresVFS(BaseVFS):
+class PostgresVFS(BoundVFS):
 
     accessor: PostgresAccessor
     name: str = VFSName.POSTGRES
@@ -38,20 +35,13 @@ class PostgresVFS(BaseVFS):
     PROMPT: str = PROMPT
 
     def __init__(self, config: PostgresConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self.accessor = PostgresAccessor(self.config)
         for fn in COMMANDS:
             self.register(fn)
         for op in POSTGRES_VFS_OPS:
             self.register_op(op)
-
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        return await _resolve_glob(self.accessor, paths, index=self._index)
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)
