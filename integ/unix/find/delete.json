@@ -38,7 +38,23 @@
       "seq": 500311,
       "targets": [
         "ram",
-        "disk"
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
       ],
       "command": "mkdir -p /data/find_link_dir && ln -s missing /data/find_link_dir/link && find /data/find_link_dir -type d -delete",
       "expect": {
@@ -52,7 +68,23 @@
       "seq": 500312,
       "targets": [
         "ram",
-        "disk"
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
       ],
       "command": "find /data/find_link_dir -delete",
       "expect": {
@@ -66,7 +98,23 @@
       "seq": 500313,
       "targets": [
         "ram",
-        "disk"
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
       ],
       "command": "echo x > /data/delete_twice && find /data/delete_twice -delete -delete -print",
       "expect": {
