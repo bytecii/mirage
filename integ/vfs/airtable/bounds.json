@@ -64,6 +64,19 @@
         "stdout": "-rw-r--r-- 1 - -    - - records.jsonl\n-rw-r--r-- 1 - - 6067 Jan  1 00:00 table.json\ndrwxr-xr-x 1 - - 4096 - views\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "at_test_s_past_cap",
+      "seq": 720205,
+      "targets": [
+        "airtable"
+      ],
+      "command": "test -s /airtable/bases/Product_Roadmap__appRoadmapBase001/Backlog__tblBacklog0000003/records.jsonl && echo nonempty",
+      "expect": {
+        "exit": 0,
+        "stdout": "nonempty\n",
+        "stderr": ""
+      }
     }
   ]
 }
