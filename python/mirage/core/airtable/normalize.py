@@ -17,6 +17,19 @@ from typing import Any
 from mirage.core.render.json import json_bytes, jsonl_bytes
 
 
+def normalize_base_summary(base: dict[str, Any]) -> dict[str, Any]:
+    """One base as the listing names it: id, name and permission level.
+
+    Args:
+        base (dict[str, Any]): the base-listing row.
+    """
+    return {
+        "base_id": base.get("id"),
+        "base_name": base.get("name"),
+        "permission_level": base.get("permissionLevel"),
+    }
+
+
 def normalize_base(base: dict[str, Any],
                    tables: list[dict[str, Any]]) -> dict[str, Any]:
     """base.json: the base and the tables it holds.
@@ -26,12 +39,7 @@ def normalize_base(base: dict[str, Any],
         tables (list[dict[str, Any]]): the base's schema tables.
     """
     return {
-        "base_id":
-        base.get("id"),
-        "base_name":
-        base.get("name"),
-        "permission_level":
-        base.get("permissionLevel"),
+        **normalize_base_summary(base),
         "tables": [{
             "table_id": table.get("id"),
             "table_name": table.get("name"),
@@ -104,6 +112,34 @@ def normalize_record(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def normalize_comment(comment: dict[str, Any]) -> dict[str, Any]:
+    """One comment on a record, with its author flattened.
+
+    Args:
+        comment (dict[str, Any]): a listed or created comment.
+    """
+    author = comment.get("author")
+    who = author if isinstance(author, dict) else {}
+    return {
+        "comment_id": comment.get("id"),
+        "author_id": who.get("id"),
+        "author_email": who.get("email"),
+        "author_name": who.get("name"),
+        "text": comment.get("text"),
+        "created_time": comment.get("createdTime"),
+        "last_updated_time": comment.get("lastUpdatedTime"),
+    }
+
+
+def normalize_deletion(row: dict[str, Any]) -> dict[str, Any]:
+    """One deleted record, as the delete answer names it.
+
+    Args:
+        row (dict[str, Any]): an ``{id, deleted}`` answer row.
+    """
+    return {"record_id": row.get("id"), "deleted": row.get("deleted")}
+
+
 def to_json_bytes(value: Any) -> bytes:
     """Render a .json leaf.
 
@@ -120,3 +156,12 @@ def records_jsonl(records: list[dict[str, Any]]) -> bytes:
         records (list[dict[str, Any]]): listed records.
     """
     return jsonl_bytes([normalize_record(r) for r in records])
+
+
+def deletions_jsonl(rows: list[dict[str, Any]]) -> bytes:
+    """Render deleted records one per line, in the order they were deleted.
+
+    Args:
+        rows (list[dict[str, Any]]): delete answer rows.
+    """
+    return jsonl_bytes([normalize_deletion(r) for r in rows])

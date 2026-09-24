@@ -26,12 +26,19 @@ function field(row: Row, key: string): unknown {
   return row[key] ?? null
 }
 
-/** base.json: the base and the tables it holds. */
-export function normalizeBase(base: Row, tables: readonly Row[]): Row {
+/** One base as the listing names it: id, name and permission level. */
+export function normalizeBaseSummary(base: Row): Row {
   return {
     base_id: field(base, 'id'),
     base_name: field(base, 'name'),
     permission_level: field(base, 'permissionLevel'),
+  }
+}
+
+/** base.json: the base and the tables it holds. */
+export function normalizeBase(base: Row, tables: readonly Row[]): Row {
+  return {
+    ...normalizeBaseSummary(base),
     tables: tables.map((table) => ({
       table_id: field(table, 'id'),
       table_name: field(table, 'name'),
@@ -88,6 +95,27 @@ export function normalizeRecord(record: Row): Row {
   }
 }
 
+/** One comment on a record, with its author flattened. */
+export function normalizeComment(comment: Row): Row {
+  const author = comment.author
+  const who: Row =
+    typeof author === 'object' && author !== null && !Array.isArray(author) ? (author as Row) : {}
+  return {
+    comment_id: field(comment, 'id'),
+    author_id: field(who, 'id'),
+    author_email: field(who, 'email'),
+    author_name: field(who, 'name'),
+    text: field(comment, 'text'),
+    created_time: field(comment, 'createdTime'),
+    last_updated_time: field(comment, 'lastUpdatedTime'),
+  }
+}
+
+/** One deleted record, as the delete answer names it. */
+export function normalizeDeletion(row: Row): Row {
+  return { record_id: field(row, 'id'), deleted: field(row, 'deleted') }
+}
+
 /** Render a .json leaf. */
 export function toJsonBytes(value: unknown): Uint8Array {
   return jsonBytes(value)
@@ -96,4 +124,9 @@ export function toJsonBytes(value: unknown): Uint8Array {
 /** Render records one per line, in the order they were listed. */
 export function recordsJsonl(listed: readonly Row[]): Uint8Array {
   return jsonlBytes(listed.map(normalizeRecord))
+}
+
+/** Render deleted records one per line, in the order they were deleted. */
+export function deletionsJsonl(rows: readonly Row[]): Uint8Array {
+  return jsonlBytes(rows.map(normalizeDeletion))
 }

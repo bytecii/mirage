@@ -14,8 +14,11 @@
 
 import json
 
-from mirage.core.airtable.normalize import (normalize_base, normalize_record,
-                                            normalize_table, records_jsonl)
+from mirage.core.airtable.normalize import (deletions_jsonl, normalize_base,
+                                            normalize_base_summary,
+                                            normalize_comment,
+                                            normalize_record, normalize_table,
+                                            records_jsonl)
 
 
 def test_base_json_lists_its_tables():
@@ -114,3 +117,46 @@ def test_records_render_one_line_each_in_listing_order():
     assert [json.loads(line)["record_id"]
             for line in lines] == ["rec2", "rec1"]
     assert records_jsonl([]) == b""
+
+
+def test_a_base_summary_is_base_json_without_its_tables():
+    base = {"id": "appA", "name": "A", "permissionLevel": "edit"}
+    assert normalize_base_summary(base) == {
+        "base_id": "appA",
+        "base_name": "A",
+        "permission_level": "edit",
+    }
+    full = normalize_base(base, [])
+    assert {k: v for k, v in full.items() if k != "tables"} == \
+        normalize_base_summary(base)
+
+
+def test_a_comment_flattens_its_author():
+    comment = {
+        "id": "comA",
+        "author": {
+            "id": "usrA",
+            "email": "a@example.com",
+            "name": "A"
+        },
+        "text": "hi",
+        "createdTime": "2026-01-01T00:00:00.000Z",
+        "lastUpdatedTime": None,
+        "mentioned": {},
+    }
+    assert normalize_comment(comment) == {
+        "comment_id": "comA",
+        "author_id": "usrA",
+        "author_email": "a@example.com",
+        "author_name": "A",
+        "text": "hi",
+        "created_time": "2026-01-01T00:00:00.000Z",
+        "last_updated_time": None,
+    }
+    assert normalize_comment({"id": "comB"})["author_id"] is None
+
+
+def test_deletions_render_one_line_each():
+    rows = deletions_jsonl([{"id": "rec1", "deleted": True}])
+    assert rows == b'{"record_id":"rec1","deleted":true}\n'
+    assert deletions_jsonl([]) == b""
