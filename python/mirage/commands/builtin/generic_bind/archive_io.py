@@ -6,10 +6,11 @@ from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.archive.types import Walked
 from mirage.commands.builtin.generic.archive.walk import DirProbe, WalkFn
 from mirage.commands.builtin.generic.find import parse_find_args, walk_find
-from mirage.commands.builtin.generic_bind.adapter import CommandIO, OperationFn
+from mirage.commands.builtin.generic_bind.adapter import CommandIO
 from mirage.ops.types import ChildMounts
 from mirage.runtime.types import DispatchFn
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.vfs.types import OperationFn
 
 logger = logging.getLogger(__name__)
 

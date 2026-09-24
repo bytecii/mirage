@@ -23,6 +23,7 @@ import {
   type WalkFindDeps,
 } from './find.ts'
 import { isEnoent } from '../../utils/errors.ts'
+import { CommandTimeoutError } from '../../commands/errors.ts'
 import { parseFindExpression } from '../../commands/builtin/find_parse.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { rstripSlash } from '../../utils/slash.ts'
@@ -221,6 +222,54 @@ describe('walkFind', () => {
   it('drops entries whose stat raises ENOENT during size filtering', async () => {
     const deps = makeDeps({ '/': ['/a.json'] })
     expect(await walkFind(ROOT, deps, { minSize: 1 })).toEqual([])
+  })
+
+  const FLAKY_TREE = { '/': ['/a.json', '/b.json', '/c.json'] }
+  const FLAKY_STATS = {
+    '/': {},
+    '/a.json': { size: 1 },
+    '/b.json': { size: 1 },
+    '/c.json': { size: 1 },
+  }
+
+  // One entry's stat fails the way a dropped request does; every other
+  // entry answers.
+  function flaky(err: Error, calls: string[] = []): WalkFindDeps {
+    const base = makeDeps(FLAKY_TREE, FLAKY_STATS)
+    return {
+      ...base,
+      stat: (spec, index) => {
+        calls.push(spec.virtual)
+        return spec.virtual === '/b.json' ? Promise.reject(err) : base.stat(spec, index)
+      },
+    }
+  }
+
+  it('records an entry whose stat fails and keeps it as a leaf when the caller collects', async () => {
+    const err = new Error('socket hang up')
+    const unstatted = new Map<string, unknown>()
+    const deps = { ...flaky(err), unstatted }
+    expect(await walkFind(ROOT, deps, { type: 'f' })).toEqual(['/a.json', '/b.json', '/c.json'])
+    expect([...unstatted]).toEqual([['/b.json', err]])
+  })
+
+  it('fails a test only the stat answers without asking again', async () => {
+    const calls: string[] = []
+    const unstatted = new Map<string, unknown>()
+    const deps = { ...flaky(new Error('socket hang up'), calls), unstatted }
+    expect(await walkFind(ROOT, deps, { minSize: 1 })).toEqual(['/', '/a.json', '/c.json'])
+    expect(calls.filter((p) => p === '/b.json')).toHaveLength(1)
+  })
+
+  it('propagates an entry failure the caller does not collect', async () => {
+    await expect(walkFind(ROOT, flaky(new Error('socket hang up')))).rejects.toThrow(
+      'socket hang up',
+    )
+  })
+
+  it('propagates a timeout even when the caller collects', async () => {
+    const deps = { ...flaky(new CommandTimeoutError('stat', 5)), unstatted: new Map() }
+    await expect(walkFind(ROOT, deps)).rejects.toThrow('timed out')
   })
 })
 

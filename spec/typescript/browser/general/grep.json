@@ -64,7 +64,7 @@
       "github": {
         "filetypes": [],
         "has_aggregate": true,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": false
       },
       "gmail": {

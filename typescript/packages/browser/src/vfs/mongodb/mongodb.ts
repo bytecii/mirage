@@ -88,16 +88,6 @@ export class MongoDBVFS extends BaseVFS implements VFS {
     }
   }
 
-  // The rows live in the database, so a restored mount reaches them
-  // through its config alone — there is nothing to take back.
-  override loadState(_state: MongoDBVFSState): Promise<void> {
-    return Promise.resolve()
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   override async close(): Promise<void> {
     await this.driver.close()
     await super.close()

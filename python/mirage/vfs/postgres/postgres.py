@@ -15,7 +15,9 @@
 from typing import Any
 
 from mirage.accessor.postgres import PostgresAccessor
+from mirage.commands.builtin.postgres import COMMANDS
 from mirage.core.postgres.readdir import readdir
+from mirage.ops.postgres import OPS as POSTGRES_VFS_OPS
 from mirage.types import PathSpec, VFSName
 from mirage.utils.glob_walk import make_resolve_glob
 from mirage.vfs.base import BaseVFS
@@ -39,9 +41,6 @@ class PostgresVFS(BaseVFS):
         super().__init__()
         self.config = config
         self.accessor = PostgresAccessor(self.config)
-        from mirage.commands.builtin.postgres import COMMANDS
-        from mirage.ops.postgres import OPS as POSTGRES_VFS_OPS
-
         for fn in COMMANDS:
             self.register(fn)
         for op in POSTGRES_VFS_OPS:
@@ -56,6 +55,3 @@ class PostgresVFS(BaseVFS):
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        pass

@@ -63,17 +63,54 @@ export function translateBracket(pattern: string, start: number, out: string[]):
   throw new SyntaxError('Unmatched [, [^, [:, [., or [=')
 }
 
-export function translateClasses(pattern: string): string {
+const INTERVAL = /\{\d+(?:,\d*)?\}/y
+
+/**
+ * Expand POSIX brackets while preserving regex operators and escapes. With
+ * `nest`, a quantifier stacked on a quantified atom repeats that whole
+ * repetition, the way glibc reads an ERE: `a++` is `(a+)+` and `a+?` is
+ * `(a+)?`, never a syntax error or the host's lazy form.
+ */
+export function translateClasses(pattern: string, nest = true): string {
   const out: string[] = []
+  const groups: number[] = []
+  let atom: number | null = null
+  let quantified = false
   let idx = 0
   while (idx < pattern.length) {
-    if (pattern.charAt(idx) === '\\' && idx + 1 < pattern.length) {
+    const ch = pattern.charAt(idx)
+    INTERVAL.lastIndex = idx
+    const interval = ch === '{' ? INTERVAL.exec(pattern) : null
+    if ('*+?'.includes(ch) || interval !== null) {
+      const token = interval?.[0] ?? ch
+      if (nest && quantified && atom !== null)
+        out.splice(atom, out.length - atom, '(?:', ...out.slice(atom), ')')
+      out.push(token)
+      quantified = atom !== null
+      idx += token.length
+      continue
+    }
+    quantified = false
+    if (ch === '\\' && idx + 1 < pattern.length) {
+      atom = out.length
       out.push(pattern.slice(idx, idx + 2))
       idx += 2
-    } else if (pattern.charAt(idx) === '[') {
+    } else if (ch === '[') {
+      atom = out.length
       idx = translateBracket(pattern, idx, out)
+    } else if (ch === '(') {
+      groups.push(out.length)
+      atom = null
+      out.push(ch)
+      idx += 1
+    } else if (ch === ')') {
+      atom = groups.pop() ?? null
+      out.push(ch)
+      idx += 1
     } else {
-      out.push(pattern.charAt(idx++))
+      atom = '|^$'.includes(ch) ? null : out.length
+      out.push(ch)
+      idx += 1
     }
   }
   return out.join('')

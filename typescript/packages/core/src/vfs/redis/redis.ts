@@ -124,7 +124,7 @@ export class RedisResourceBase extends BaseVFS implements VFS {
     return prefix === '' ? base : `${base}/${prefix}`
   }
 
-  open(): Promise<void> {
+  override open(): Promise<void> {
     return this.store.open()
   }
 

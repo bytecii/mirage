@@ -42,10 +42,6 @@ export class SharePointVFS extends BaseVFS implements VFS {
     this.accessor = new SharePointAccessor(config)
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return SHAREPOINT_COMMANDS
   }
@@ -77,9 +73,5 @@ export class SharePointVFS extends BaseVFS implements VFS {
   override getState(): SharePointVFSState {
     const config: SharePointConfigRedacted = redactSharePointConfig(this.config)
     return { type: this.kind, config }
-  }
-
-  override loadState(_state: SharePointVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

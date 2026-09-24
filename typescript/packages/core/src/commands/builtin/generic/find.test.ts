@@ -354,12 +354,13 @@ describe('generic command find', () => {
   })
 
   it.each([
-    ['maxdepth', 'abc', '-maxdepth'],
-    ['mindepth', 'xx', '-mindepth'],
-    ['size', '', '-size'],
-    ['size', 'abc', '-size'],
-    ['mtime', 'abc', '-mtime'],
-  ])('exits 1 with clean stderr for invalid %s=%s', async (flag, value, label) => {
+    ['maxdepth', 'abc', "find: invalid argument 'abc' to '-maxdepth'"],
+    ['mindepth', 'xx', "find: invalid argument 'xx' to '-mindepth'"],
+    ['size', '', 'find: invalid null argument to -size'],
+    ['size', 'abc', "find: Invalid argument `abc' to -size"],
+    ['size', '5x', "find: invalid -size type `x'"],
+    ['mtime', 'abc', "find: invalid argument 'abc' to '-mtime'"],
+  ])('exits 1 with clean stderr for invalid %s=%s', async (flag, value, message) => {
     const opts = {
       stdin: null,
       flags: { [flag]: value },
@@ -371,8 +372,6 @@ describe('generic command find', () => {
     const [out, io] = result as [Uint8Array | null, IOResult]
     expect(out).toBeNull()
     expect(io.exitCode).toBe(1)
-    expect(DEC.decode(io.stderr as Uint8Array)).toBe(
-      `find: invalid argument '${value}' to '${label}'\n`,
-    )
+    expect(DEC.decode(io.stderr as Uint8Array)).toBe(`${message}\n`)
   })
 })

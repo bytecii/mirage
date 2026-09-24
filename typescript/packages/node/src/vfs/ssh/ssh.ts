@@ -91,10 +91,6 @@ export class SSHVFS extends BaseVFS implements VFS {
     this.accessor = new SSHAccessor(config)
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   override async close(): Promise<void> {
     await this.accessor.close()
     await super.close()
@@ -199,9 +195,5 @@ export class SSHVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactSshConfig(this.config),
     }
-  }
-
-  override loadState(_state: SSHVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

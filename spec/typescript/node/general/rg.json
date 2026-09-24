@@ -34,7 +34,7 @@
       "discord": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": false
       },
       "disk": {
@@ -52,7 +52,7 @@
       "email": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": false
       },
       "gcal": {
@@ -76,13 +76,13 @@
       "github": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": false
       },
       "gmail": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": false
       },
       "gridfs": {
@@ -148,7 +148,7 @@
       "langfuse": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": false
       },
       "linear": {
@@ -226,7 +226,7 @@
       "slack": {
         "filetypes": [],
         "has_aggregate": false,
-        "has_provision": false,
+        "has_provision": true,
         "has_write": false
       },
       "ssh": {

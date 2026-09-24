@@ -12,6 +12,17 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type {
+  ReadOps,
+  NativeReadOps,
+  WriteOps,
+  SearchOps,
+  ReadStreamOp,
+  ReaddirOp,
+  ResolveGlobOp,
+  StatOp,
+} from '../../../vfs/types.ts'
+
 import type { Accessor } from '../../../accessor/base.ts'
 import {
   effectivePathMode,
@@ -31,20 +42,8 @@ import { moveReveals } from '../../../utils/hidden.ts'
 import { removeRemnants, visibleBelow, type RemnantChannel } from '../../../utils/remnants.ts'
 import type { IndexCacheStore } from '../../../cache/index/store.ts'
 import type { StatOverlay } from '../../../ops/types.ts'
-import type { FindOptions } from '../../../vfs/base.ts'
-import {
-  FileType,
-  MountMode,
-  PathSpec,
-  type CopyFn,
-  type FindFn,
-  type FileStat,
-  type MoveFn,
-  type ReadBytesFn,
-  type ReadStreamFn,
-  type ReaddirFn,
-  type StatFn,
-} from '../../../types.ts'
+
+import { FileType, MountMode, PathSpec, type FileStat } from '../../../types.ts'
 import { eacces, eisdir, erofsReadOnly, isMissError } from '../../../utils/errors.ts'
 import type { ChildMounts } from '../../../ops/types.ts'
 import {
@@ -54,76 +53,8 @@ import {
 } from '../../../utils/glob_walk.ts'
 import { norm, parent } from '../../../utils/path.ts'
 import { stripSlash } from '../../../utils/slash.ts'
-import type { DuEntries } from '../generic/du.ts'
+
 import type { AggregateFn, CommandFnResult, CommandOpts, ProvisionFn } from '../../config.ts'
-
-export type ReaddirOp<A extends Accessor = Accessor> = ReaddirFn<
-  [accessor: A, path: PathSpec, index?: IndexCacheStore]
->
-
-type ReadBytesOp<A extends Accessor = Accessor> = ReadBytesFn<
-  [accessor: A, path: PathSpec, index?: IndexCacheStore]
->
-
-type ReadStreamOp<A extends Accessor = Accessor> = ReadStreamFn<
-  [accessor: A, path: PathSpec, index?: IndexCacheStore]
->
-
-export type StatOp<A extends Accessor = Accessor> = StatFn<
-  [accessor: A, path: PathSpec, index?: IndexCacheStore]
->
-
-type WriteOp<A extends Accessor = Accessor> = (
-  accessor: A,
-  path: PathSpec,
-  data: Uint8Array,
-) => Promise<void>
-
-type ExistsOp<A extends Accessor = Accessor> = (accessor: A, path: PathSpec) => Promise<boolean>
-
-type PathOp<A extends Accessor = Accessor> = (accessor: A, path: PathSpec) => Promise<void>
-
-// `PathOp` plus the rmdir slot's optional `index`: the hidden-remnant
-// guard turns a refused rmdir into a raw listing of the same directory,
-// and an indexed backend cannot list a nested path without it. Backend
-// rmdirs keep their two-parameter shape and simply never receive it.
-type RmdirOp<A extends Accessor = Accessor> = (
-  accessor: A,
-  path: PathSpec,
-  index?: IndexCacheStore,
-) => Promise<void>
-
-type MkdirOp<A extends Accessor = Accessor> = (
-  accessor: A,
-  path: PathSpec,
-  parents?: boolean,
-) => Promise<void>
-
-type RenameOp<A extends Accessor = Accessor> = MoveFn<[accessor: A, src: PathSpec, dst: PathSpec]>
-
-type CopyOp<A extends Accessor = Accessor> = CopyFn<[accessor: A, src: PathSpec, dst: PathSpec]>
-
-type FindOp<A extends Accessor = Accessor> = FindFn<
-  [accessor: A, path: PathSpec, options: FindOptions, index?: IndexCacheStore]
->
-
-type DuSizeOp<A extends Accessor = Accessor> = (
-  accessor: A,
-  path: PathSpec,
-  index?: IndexCacheStore,
-) => Promise<number>
-
-type DuEntriesOp<A extends Accessor = Accessor> = (
-  accessor: A,
-  path: PathSpec,
-  index?: IndexCacheStore,
-) => Promise<DuEntries>
-
-export type ResolveGlobOp<A extends Accessor = Accessor> = (
-  accessor: A,
-  paths: readonly PathSpec[],
-  index?: IndexCacheStore,
-) => Promise<PathSpec[]>
 
 export function makeResolveGlob<A extends Accessor = Accessor>(
   readdir: ReaddirOp<A>,
@@ -136,58 +67,18 @@ export function makeResolveGlob<A extends Accessor = Accessor>(
     resolveGlobWith(readdir, accessor, paths, index, maxGlobMatches, children, stat, targetStat)
 }
 
-// A backend's native du, both halves at once. The generic derives its
-// per-directory rows from `entries`, so a backend offering only the
-// cheaper `size` would silently print operand totals with no directory
-// rows and an inert `-a`. Pairing them makes native du all-or-nothing,
-// so that degraded shape cannot be reached by omission (#645).
-export interface DuOps<A extends Accessor = Accessor> {
-  size: DuSizeOp<A>
-  entries: DuEntriesOp<A>
-}
-
-export interface CommandIO<A extends Accessor = Accessor> {
-  readdir: ReaddirOp<A>
-  readBytes: ReadBytesOp<A>
-  // A byte window without reading the whole file. Optional: a backend that
-  // renders its content has no remote range to ask for, and the generic ops
-  // factory reads and slices for anything that omits it.
-  readRange?: (
-    accessor: A,
-    path: PathSpec,
-    index: IndexCacheStore | undefined,
-    offset: number,
-    size: number | null,
-  ) => Promise<Uint8Array>
+export interface CommandIO<A extends Accessor = Accessor>
+  extends ReadOps<A>, NativeReadOps<A>, WriteOps<A> {
   readStream: ReadStreamOp<A>
-  stat: StatOp<A>
   isMounted: (accessor: A) => boolean
   local?: boolean
   maxGlobMatches?: number
-  write?: WriteOp<A>
-  exists?: ExistsOp<A>
-  mkdir?: MkdirOp<A>
-  unlink?: PathOp<A>
-  rmdir?: RmdirOp<A>
-  rmR?: PathOp<A>
-  rename?: RenameOp<A>
-  copy?: CopyOp<A>
-  dirCopy?: CopyOp<A>
-  create?: PathOp<A>
-  truncate?: (accessor: A, path: PathSpec, length: number) => Promise<void>
-  find?: FindOp<A>
-  du?: DuOps<A>
   maxDuEntries?: number
-  // Typed like `write`, now that the tee generic actually calls it. It stayed
-  // an `any` bag for as long as nothing read it, which is what let five
-  // backends wire a slot no builder could consume.
-  append?: (accessor: A, path: PathSpec, data: Uint8Array) => Promise<void>
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  setAttrs?: (...args: any[]) => unknown
   // Child names the namespace owes a directory (nested mount roots and
   // symlinks). Stamped per invocation from opts.childMounts by the
   // factory, because it is session-scoped state while the adapter itself
   // is built once per backend.
+  search?: SearchOps<A>
   globChildren?: ChildMounts
   // What an owed name points at, the namespace's own stat resolved
   // through the workspace. Stamped beside globChildren from opts.ns.links,

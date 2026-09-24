@@ -19,7 +19,7 @@ from mirage.utils import key_prefix as kp
 
 
 class HfBucketsConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     bucket: str
     token: SecretStr | None = None

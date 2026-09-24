@@ -4,6 +4,7 @@ import pytest
 
 from mirage.core.generic.find import make_search_backed_find, relative_depth
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.stat_view import DIR_SIZE
 
 KEYS = ["/", "/guides", "/guides/quickstart", "/api", "/api/reference"]
 
@@ -109,23 +110,25 @@ async def test_a_plain_walk_needs_neither_resolve_nor_stat():
 async def test_size_bounds_keep_only_files_in_range():
     ops = Ops()
     find = build(ops)
-    assert await find(object(), ROOT, min_size=100) == ["/api/reference"]
+    assert await find(object(), ROOT, min_size=100,
+                      max_size=1000) == ["/api/reference"]
 
 
 @pytest.mark.asyncio
-async def test_directories_count_as_size_zero():
-    # The deliberate GNU divergence in CLAUDE.md: a directory is size 0,
-    # so an upper bound of 0 keeps every directory and drops both files.
+async def test_directories_count_as_dir_size():
+    # A directory is DIR_SIZE bytes, so a window around it keeps every
+    # directory and drops both files.
     ops = Ops()
     find = build(ops)
-    assert await find(object(), ROOT, max_size=0) == sorted(DIRS)
+    assert await find(object(), ROOT, min_size=DIR_SIZE,
+                      max_size=DIR_SIZE) == sorted(DIRS)
 
 
 @pytest.mark.asyncio
 async def test_a_sizeless_file_counts_as_size_zero():
     ops = Ops(keys=["/", "/unsized"])
     find = build(ops)
-    assert await find(object(), ROOT, max_size=0) == ["/", "/unsized"]
+    assert await find(object(), ROOT, max_size=0) == ["/unsized"]
 
 
 @pytest.mark.asyncio

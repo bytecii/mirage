@@ -149,3 +149,25 @@ async def test_read_missing_raises_file_not_found():
                 PathSpec.from_str_path("/od/Docs/a.txt",
                                        mount_key("/od/Docs/a.txt", "/od")))
     assert str(exc.value) == "/od/Docs/a.txt"
+
+
+_MM_META = re.compile(r".*/root:/m/k\.txt(\?.*)?$")
+_MM_CONTENT = _BASE + "/root:/m/k.txt:/content"
+_MM_SPEC = PathSpec(virtual="/m/m/k.txt",
+                    directory="/m/m/",
+                    vfs_path="m/k.txt")
+
+
+@pytest.mark.asyncio
+async def test_recorded_read_names_the_virtual_path():
+    # A key named like its mount: neither m/k.txt nor /m/k.txt is virtual.
+    scope = RecordingScope()
+    try:
+        with aioresponses() as m:
+            m.get(_MM_META, payload={"id": "01", "cTag": "c1", "versions": []})
+            m.get(_MM_CONTENT, body=b"bytes")
+            data = await read_bytes(_accessor(), _MM_SPEC)
+    finally:
+        scope.close()
+    assert data == b"bytes"
+    assert [r.path for r in scope.records] == ["/m/m/k.txt"]

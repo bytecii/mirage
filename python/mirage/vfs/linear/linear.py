@@ -15,10 +15,12 @@
 from typing import Any
 
 from mirage.accessor.linear import LinearAccessor
+from mirage.commands.builtin.linear import COMMANDS
 from mirage.core.linear.config import LinearConfig
 from mirage.core.linear.read import read
 from mirage.core.linear.readdir import readdir
 from mirage.core.linear.stat import stat
+from mirage.ops.linear import OPS as LINEAR_VFS_OPS
 from mirage.types import PathSpec, VFSName
 from mirage.utils.glob_walk import make_resolve_glob
 from mirage.vfs.base import BaseVFS
@@ -50,9 +52,6 @@ class LinearVFS(BaseVFS):
         super().__init__()
         self.config = config
         self.accessor = LinearAccessor(self.config)
-        from mirage.commands.builtin.linear import COMMANDS
-        from mirage.ops.linear import OPS as LINEAR_VFS_OPS
-
         for fn in COMMANDS:
             self.register(fn)
         for op in LINEAR_VFS_OPS:
@@ -67,6 +66,3 @@ class LinearVFS(BaseVFS):
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)
-
-    def load_state(self, state: dict[str, Any]) -> None:
-        pass

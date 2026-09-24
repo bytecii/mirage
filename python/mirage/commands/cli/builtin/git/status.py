@@ -23,6 +23,7 @@ from mirage.commands.cli.builtin.git.objects import abbrev_for
 from mirage.commands.cli.builtin.git.refs import read_head
 from mirage.commands.cli.builtin.git.render import (branch_line, long_format,
                                                     short_format)
+from mirage.commands.cli.builtin.git.repo import config_bool
 from mirage.commands.cli.builtin.git.session import opened
 from mirage.commands.cli.builtin.git.types import HeadRef, RepoLocation
 from mirage.commands.cli.builtin.git.util import fatal, links_of
@@ -96,10 +97,11 @@ async def render_report(dispatch: DispatchFn,
     """
     rows, state, no_commits = await collect(dispatch, stat_path, repo,
                                             location, UNTRACKED_NORMAL, links)
+    fully = await config_bool(dispatch, location, b"core", b"quotepath", True)
     commit = None if head.commit is None else short(head.commit.encode(),
                                                     abbrev_for(repo))
     return long_format(rows, head.branch, commit, no_commits, state.merging,
-                       False)
+                       False, fully)
 
 
 async def status(
@@ -131,6 +133,8 @@ async def status(
         rows, state, no_commits = await collect(dispatch, stat_path, repo,
                                                 location, parsed.untracked,
                                                 links_of(doors))
+        fully = await config_bool(dispatch, location, b"core", b"quotepath",
+                                  True)
     except GitError as exc:
         return fatal(exc)
     commit = None if head.commit is None else short(head.commit.encode(),
@@ -138,8 +142,9 @@ async def status(
     if parsed.porcelain or parsed.short:
         header = branch_line(head.branch, commit,
                              no_commits) if parsed.branch else None
-        body = short_format(rows, header)
+        body = short_format(rows, header, fully)
     else:
         body = long_format(rows, head.branch, commit, no_commits,
-                           state.merging, parsed.untracked == UNTRACKED_NO)
+                           state.merging, parsed.untracked == UNTRACKED_NO,
+                           fully)
     return yield_bytes(body.encode()), IOResult()

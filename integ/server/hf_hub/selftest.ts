@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { testMcpRuns } from './runs.ts'
 import { spawn } from 'node:child_process'
 import type { ChildProcessByStdio } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
@@ -2398,3 +2399,4 @@ async function main(): Promise<void> {
 }
 
 await main()
+await testMcpRuns()

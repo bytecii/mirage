@@ -48,10 +48,6 @@ export class HistoryViewVFS extends BaseVFS implements VFS {
     this.accessor = new HistoryAccessor(observer)
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   ops(): readonly RegisteredOp[] {
     return HISTORY_OPS
   }

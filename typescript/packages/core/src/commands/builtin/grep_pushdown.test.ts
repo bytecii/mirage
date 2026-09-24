@@ -16,6 +16,8 @@ import { describe, expect, it } from 'vitest'
 import { PathSpec } from '../../types.ts'
 import { PatternType } from './constants.ts'
 import {
+  grepSearchMeta,
+  grepSearchOptions,
   textSearchResults,
   classifyPattern,
   extractRequiredLiteral,
@@ -313,4 +315,25 @@ it.each([
   ['hello\udcff', false],
 ] as const)('checks provider snippets %j', (text, expected) => {
   expect(textSearchResults([text])).toBe(expected)
+})
+
+it.each([
+  { mode: 'semantic' },
+  { mode: 'literal', stream: null },
+  { mode: 'literal', typo: true },
+  null,
+])('rejects invalid grep metadata %j', (grep) => {
+  expect(() => grepSearchMeta({ search: () => Promise.resolve([]), meta: { grep } })).toThrow()
+})
+
+it.each([{ ignore_case: 'true' }, { typo: true }, null])(
+  'rejects invalid grep options %j',
+  (grep) => {
+    expect(() => grepSearchOptions({ query: 'query', options: { grep } })).toThrow()
+  },
+)
+
+it('leaves resource namespaces opaque and treats plain queries as literal', () => {
+  expect(grepSearchOptions({ query: 'a.*b', options: { limit: 20 } }).fixedString).toBe(true)
+  expect(grepSearchMeta({ search: () => Promise.resolve([]), meta: { semantic: true } })).toBeNull()
 })

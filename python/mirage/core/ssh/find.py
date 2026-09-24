@@ -23,6 +23,7 @@ from mirage.core.ssh.client import _abs
 from mirage.core.ssh.config import SSHConfig
 from mirage.types import PathSpec
 from mirage.utils.dates import in_mtime_window
+from mirage.utils.stat_view import DIR_SIZE
 
 
 async def find(
@@ -144,8 +145,7 @@ def _matches(
     if not keep(find_entry, tree, mindepth):
         return False
     if min_size is not None or max_size is not None:
-        # Directories count as size 0 for -size (deliberate GNU divergence).
-        size = 0 if is_dir else (entry.attrs.size or 0)
+        size = DIR_SIZE if is_dir else (entry.attrs.size or 0)
         if min_size is not None and size < min_size:
             return False
         if max_size is not None and size > max_size:

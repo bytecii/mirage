@@ -48,7 +48,6 @@ export class DiscordVFS extends BaseVFS implements VFS {
   // are rendered at readdir from payloads the listing already fetched, and
   // attachments carry Discord's CDN byte count.
   readonly sizesAlwaysKnown: boolean = true
-  override readonly indexTtl: number = 600
   readonly prompt: string = DISCORD_PROMPT
   readonly writePrompt: string = DISCORD_WRITE_PROMPT
   readonly config: DiscordConfig
@@ -58,10 +57,6 @@ export class DiscordVFS extends BaseVFS implements VFS {
     super()
     this.config = config
     this.accessor = new DiscordAccessor(new NodeDiscordTransport(config.token, config.baseUrl))
-  }
-
-  open(): Promise<void> {
-    return Promise.resolve()
   }
 
   commands(): readonly RegisteredCommand[] {
@@ -107,9 +102,5 @@ export class DiscordVFS extends BaseVFS implements VFS {
       type: this.kind,
       config: redactDiscordConfig(this.config),
     })
-  }
-
-  override loadState(_state: DiscordVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

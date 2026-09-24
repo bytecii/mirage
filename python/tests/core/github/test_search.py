@@ -12,7 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -48,7 +48,8 @@ async def test_search_code_basic(mock_get, config):
     mock_get.assert_awaited_once_with(config.token,
                                       "/search/code",
                                       params={"q": "import os repo:acme/proj"},
-                                      base_url=None)
+                                      base_url=None,
+                                      session=None)
 
 
 @pytest.mark.asyncio
@@ -68,7 +69,8 @@ async def test_search_code_with_path_filter(mock_get, config):
         config.token,
         "/search/code",
         params={"q": "import os repo:acme/proj path:src/"},
-        base_url=None)
+        base_url=None,
+        session=None)
 
 
 @pytest.mark.asyncio
@@ -117,3 +119,18 @@ async def test_narrow_paths_logs_and_continues_on_error(mock_search, config):
     paths = [PathSpec(vfs_path="src", virtual="/src", directory="/src")]
     out = await narrow_paths(config, "acme", "proj", "import", paths)
     assert out == []
+
+
+@pytest.mark.asyncio
+@patch("mirage.core.github.search.github_get", new_callable=AsyncMock)
+async def test_narrow_paths_forwards_the_session_pool(mock_get, config):
+    # The mount's grep push-down passes its accessor pool; a search that
+    # dropped it opened an aiohttp session per code-search request.
+    mock_get.return_value = {"items": []}
+    pool = MagicMock()
+    await narrow_paths(config,
+                       "acme",
+                       "proj",
+                       "needle", [PathSpec.from_str_path("/")],
+                       session=pool)
+    assert mock_get.await_args.kwargs["session"] is pool

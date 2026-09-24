@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { runLifecycleTests } from './runs.ts'
 import { spawn } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -869,8 +870,8 @@ async function main(): Promise<void> {
       // runs() reads.
       const mid = await call(lazy, '/_kit/health')
       check(
-        'health lists no internal build while one is running',
-        (mid.json as { runs: string[] }).runs.every((r) => !r.startsWith('_')),
+        'health counts no internal build while one is running',
+        (mid.json as { runs: number }).runs === 1,
         JSON.stringify(mid.json),
       )
       const raced = await call(lazy, '/boards', { runInPath: 'z1', tenant: 'slow' })
@@ -1028,3 +1029,4 @@ async function main(): Promise<void> {
 }
 
 await main()
+await runLifecycleTests()

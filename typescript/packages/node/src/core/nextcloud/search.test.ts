@@ -1,8 +1,9 @@
 import type { PredNode } from '@struktoai/mirage-core/commands/builtin/find_eval'
 import { PathSpec } from '@struktoai/mirage-core/types'
+import { DIR_SIZE } from '@struktoai/mirage-core/utils/stat_view'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NextcloudAccessor } from '../../accessor/nextcloud.ts'
-import { searchFiles, supportsQuery } from './search/index.ts'
+import { searchFiles, supportsQuery, type Bounds } from './search/index.ts'
 import { SEARCH_PAGE_SIZE } from './search/constants.ts'
 import { globToLike, requestBody } from './search/query.ts'
 import { relativePath, searchTarget } from './search/target.ts'
@@ -125,6 +126,22 @@ describe('Nextcloud Files Search query', () => {
     ['a backslash escape', 'a\\b'],
   ])('refuses to push down %s', (_label, pattern) => {
     expect(supportsQuery({ tree: { op: 'name', pattern, icase: false } })).toBe(false)
+  })
+
+  it.each<[string, Bounds, boolean]>([
+    ['a lower bound below DIR_SIZE', { lower: 10, upper: null }, true],
+    ['an upper bound below DIR_SIZE', { lower: null, upper: 100 }, false],
+    ['a lower bound above DIR_SIZE', { lower: DIR_SIZE + 1, upper: null }, false],
+    ['exactly DIR_SIZE', { lower: DIR_SIZE, upper: DIR_SIZE }, true],
+  ])('keeps directories in a size query only when DIR_SIZE fits: %s', (_label, size, keeps) => {
+    const target = requiredTarget('https://cloud.example/remote.php/dav/files/alice/')
+    const body = requestBody(
+      target,
+      PathSpec.fromStrPath('/Accounting'),
+      { tree: { op: 'true' }, size },
+      0,
+    )
+    expect(body.includes('<d:or>')).toBe(keeps)
   })
 
   it('broadens SQL wildcard and backslash literals safely', () => {

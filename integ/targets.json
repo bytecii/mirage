@@ -1280,7 +1280,47 @@
           "path": "/pg",
           "vfs": "postgres",
           "backend": "postgres",
-          "mode": "read"
+          "mode": "read",
+          "config": {
+            "schemas": [
+              "public"
+            ]
+          }
+        },
+        {
+          "path": "/pg-limited",
+          "vfs": "postgres",
+          "backend": "postgres",
+          "mode": "read",
+          "config": {
+            "schemas": [
+              "public"
+            ],
+            "max_read_rows": 3
+          }
+        },
+        {
+          "path": "/pg-contract",
+          "vfs": "postgres",
+          "backend": "postgres",
+          "mode": "read",
+          "config": {
+            "schemas": [
+              "contract"
+            ]
+          }
+        },
+        {
+          "path": "/pg-bytes",
+          "vfs": "postgres",
+          "backend": "postgres",
+          "mode": "read",
+          "config": {
+            "schemas": [
+              "byte_budget"
+            ],
+            "max_read_bytes": 64
+          }
         }
       ]
     },
@@ -1297,6 +1337,26 @@
           "vfs": "mongodb",
           "backend": "mongodb",
           "mode": "read"
+        },
+        {
+          "path": "/mongo-limited",
+          "vfs": "mongodb",
+          "backend": "mongodb",
+          "mode": "read",
+          "config": {
+            "max_doc_limit": 3
+          }
+        },
+        {
+          "path": "/mongo-denied",
+          "vfs": "mongodb",
+          "backend": "mongodb",
+          "mode": "read",
+          "config": {
+            "databases": [
+              "excluded"
+            ]
+          }
         }
       ]
     },
@@ -2114,6 +2174,28 @@
           "path": "/scratch",
           "vfs": "ram",
           "backend": "ram"
+        }
+      ]
+    },
+    {
+      "id": "trello-scoped",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "trello",
+      "facet": "project",
+      "mounts": [
+        {
+          "path": "/scoped",
+          "vfs": "trello",
+          "backend": "trello",
+          "config": {
+            "workspace_id": "org_strukto",
+            "board_ids": [
+              "brd_ops"
+            ]
+          }
         }
       ]
     },

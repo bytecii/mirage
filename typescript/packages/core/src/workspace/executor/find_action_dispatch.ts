@@ -13,8 +13,10 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { compareCodePoints } from '../../utils/sort.ts'
+import { contentSize } from '../../utils/stat_view.ts'
 import { resolvePath } from '../../utils/path.ts'
-import { fsStrerror, gnuStrerror, isFsError } from '../../utils/errors.ts'
+import { gnuStrerror } from '../../utils/errors.ts'
+import { failureText } from '../../errors/classify.ts'
 import { formatFindLs } from '../../commands/builtin/utils/formatting.ts'
 import {
   expandPrintf,
@@ -342,9 +344,7 @@ async function deleteRow(
  */
 function refusalWhy(err: unknown): string {
   if (err instanceof PolicyDenied) return err.message
-  return (
-    (isFsError(err) ? fsStrerror(err) : null) ?? (err instanceof Error ? err.message : String(err))
-  )
+  return failureText(err)
 }
 
 /**
@@ -407,7 +407,7 @@ async function printfFacts(
   const link = links !== null && links.statAt(ps.virtual) !== null
   const target = link ? await links.targetStat(ps.virtual) : null
   return {
-    size: st.size ?? 0,
+    size: contentSize(st),
     kind: link ? 'l' : printfKind(st),
     mtimeEpoch: modifiedTs(st.modified) ?? 0,
     mode: st.mode,

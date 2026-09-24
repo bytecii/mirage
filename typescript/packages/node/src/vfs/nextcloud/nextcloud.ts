@@ -77,10 +77,6 @@ export class NextcloudVFS extends BaseVFS implements VFS {
     this.accessor = new NextcloudAccessor(config)
   }
 
-  open(): Promise<void> {
-    return Promise.resolve()
-  }
-
   commands(): readonly RegisteredCommand[] {
     return NEXTCLOUD_COMMANDS
   }
@@ -186,9 +182,5 @@ export class NextcloudVFS extends BaseVFS implements VFS {
 
   override getState(): Promise<NextcloudVFSState> {
     return Promise.resolve({ type: this.kind, config: redactNextcloudConfig(this.config) })
-  }
-
-  override loadState(_state: NextcloudVFSState): Promise<void> {
-    return Promise.resolve()
   }
 }

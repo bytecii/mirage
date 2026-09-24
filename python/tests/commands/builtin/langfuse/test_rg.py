@@ -29,8 +29,8 @@ RESOLVE = "mirage.commands.builtin.generic_bind.adapter.make_resolve_glob"
 
 # The searchers live in the grep module and rg shares them, so the fetch
 # fakes patch the names the searchers read at call time.
-FETCH_TRACES = "mirage.commands.builtin.langfuse.grep.fetch_traces"
-FETCH_SESSIONS = "mirage.commands.builtin.langfuse.grep.fetch_sessions"
+FETCH_TRACES = "mirage.core.langfuse.search.fetch_traces"
+FETCH_SESSIONS = "mirage.core.langfuse.search.fetch_sessions"
 
 
 @pytest.fixture

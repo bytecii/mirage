@@ -11,7 +11,7 @@ from mirage.commands.builtin.generic.find import (apply_mount_prefix,
                                                   find_walk_generic,
                                                   parse_find_args, walk_find)
 from mirage.commands.config import CommandOpts
-from mirage.commands.errors import FindParseError
+from mirage.commands.errors import CommandTimeoutError, FindParseError
 from mirage.ops.types import LinkView
 from mirage.types import (ContentType, FileStat, FileType, FindType, MountMode,
                           PathSpec)
@@ -336,6 +336,89 @@ async def test_walk_find_stat_fallback_treats_not_found_as_file():
     assert results == ["/mystery"]
 
 
+def _flaky(exc: Exception, calls: list[str] | None = None):
+    """A readdir/stat pair whose one entry fails its stat like a dropped
+    request, every other entry answering.
+
+    Args:
+        exc (Exception): what the failing entry's stat raises.
+        calls (list[str] | None): records every path statted.
+    """
+    stats = {
+        "/": FileStat(name="/", type=FileType.DIRECTORY),
+        **{
+            f"/{n}.json": FileStat(name=f"{n}.json",
+                                   size=1,
+                                   type=FileType.FILE)
+            for n in "abc"
+        },
+    }
+
+    async def readdir(spec: PathSpec, _index):
+        return ["/a.json", "/b.json", "/c.json"]
+
+    async def stat(spec: PathSpec, _index):
+        if calls is not None:
+            calls.append(spec.virtual)
+        if spec.virtual == "/b.json":
+            raise exc
+        return stats[spec.virtual]
+
+    return readdir, stat
+
+
+@pytest.mark.asyncio
+async def test_walk_find_records_an_entry_whose_stat_fails_and_walks_on():
+    exc = RuntimeError("upstream 502 Bad Gateway")
+    readdir, stat = _flaky(exc)
+    unstatted: dict[str, Exception] = {}
+    results = await walk_find(_root_spec(),
+                              readdir=readdir,
+                              stat=stat,
+                              index=None,
+                              args=FindArgs(type=FindType.FILE),
+                              unstatted=unstatted)
+    assert results == ["/a.json", "/b.json", "/c.json"]
+    assert unstatted == {"/b.json": exc}
+
+
+@pytest.mark.asyncio
+async def test_walk_find_fails_a_stat_test_without_asking_again():
+    calls: list[str] = []
+    readdir, stat = _flaky(RuntimeError("upstream 502 Bad Gateway"), calls)
+    results = await walk_find(_root_spec(),
+                              readdir=readdir,
+                              stat=stat,
+                              index=None,
+                              args=FindArgs(min_size=1),
+                              unstatted={})
+    assert results == ["/", "/a.json", "/c.json"]
+    assert calls.count("/b.json") == 1
+
+
+@pytest.mark.asyncio
+async def test_walk_find_propagates_an_entry_failure_it_does_not_collect():
+    readdir, stat = _flaky(RuntimeError("upstream 502 Bad Gateway"))
+    with pytest.raises(RuntimeError, match="502"):
+        await walk_find(_root_spec(),
+                        readdir=readdir,
+                        stat=stat,
+                        index=None,
+                        args=FindArgs())
+
+
+@pytest.mark.asyncio
+async def test_walk_find_propagates_a_timeout_even_when_collecting():
+    readdir, stat = _flaky(CommandTimeoutError("stat", 5))
+    with pytest.raises(CommandTimeoutError):
+        await walk_find(_root_spec(),
+                        readdir=readdir,
+                        stat=stat,
+                        index=None,
+                        args=FindArgs(),
+                        unstatted={})
+
+
 @pytest.mark.asyncio
 async def test_walk_find_empty_matches_empty_files_and_dirs():
 
@@ -477,38 +560,41 @@ async def test_walk_find_size_filter_propagates_other_stat_errors():
                         args=FindArgs(min_size=1))
 
 
-@pytest.mark.parametrize("kwargs,flag,value", [
+@pytest.mark.parametrize("kwargs,message", [
     ({
         "maxdepth": "abc"
-    }, "-maxdepth", "abc"),
+    }, "find: invalid argument 'abc' to '-maxdepth'"),
     ({
         "mindepth": "xx"
-    }, "-mindepth", "xx"),
+    }, "find: invalid argument 'xx' to '-mindepth'"),
     ({
         "size": ""
-    }, "-size", ""),
+    }, "find: invalid null argument to -size"),
     ({
         "size": "abc"
-    }, "-size", "abc"),
+    }, "find: Invalid argument `abc' to -size"),
+    ({
+        "size": "5x"
+    }, "find: invalid -size type `x'"),
     ({
         "mtime": "abc"
-    }, "-mtime", "abc"),
+    }, "find: invalid argument 'abc' to '-mtime'"),
 ])
 def test_parse_find_args_invalid_numeric_raises_find_parse_error(
-        kwargs, flag, value):
+        kwargs, message):
     with pytest.raises(FindParseError) as exc:
         parse_find_args((), **kwargs)
-    assert str(exc.value) == f"find: invalid argument '{value}' to '{flag}'"
+    assert str(exc.value) == message
 
 
-@pytest.mark.parametrize("expr", [
-    "-maxdepth abc",
-    "-mindepth xx",
-    "-size ''",
-    "-size abc",
-    "-mtime abc",
+@pytest.mark.parametrize("expr,message", [
+    ("-maxdepth abc", "find: invalid argument 'abc' to '-maxdepth'"),
+    ("-mindepth xx", "find: invalid argument 'xx' to '-mindepth'"),
+    ("-size ''", "find: invalid null argument to -size"),
+    ("-size abc", "find: Invalid argument `abc' to -size"),
+    ("-mtime abc", "find: invalid argument 'abc' to '-mtime'"),
 ])
-def test_find_invalid_numeric_arg_exits_one_with_clean_stderr(expr):
+def test_find_invalid_numeric_arg_exits_one_with_clean_stderr(expr, message):
 
     async def _go() -> tuple[int, str]:
         ws = Workspace({"/": RAMVFS()}, mode=MountMode.WRITE)
@@ -518,8 +604,7 @@ def test_find_invalid_numeric_arg_exits_one_with_clean_stderr(expr):
 
     code, stderr = asyncio.run(_go())
     assert code == 1
-    assert stderr.startswith("find: invalid argument ")
-    assert stderr.endswith("\n")
+    assert stderr == message + "\n"
 
 
 # ── Issue #312 parse-level regression tests ────────────────

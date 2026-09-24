@@ -32,7 +32,7 @@ import { quoteText } from '../../quote.ts'
 import type { LinkView, MountView, StatPath } from '../../../ops/types.ts'
 import { compareCodePoints } from '../../../utils/sort.ts'
 
-export type DuEntries = [entries: [string, number][], total: number]
+import type { DuEntries } from '../../../vfs/types.ts'
 export type ComputeSize = (p: PathSpec) => Promise<number>
 export type ComputeEntries = (p: PathSpec) => Promise<DuEntries>
 

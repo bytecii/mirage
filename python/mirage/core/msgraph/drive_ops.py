@@ -39,6 +39,7 @@ from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import enoent, listing_error
 from mirage.utils.filetype import content_type_for_path
 from mirage.utils.ranges import window_for
+from mirage.utils.stat_view import DIR_SIZE
 
 SIMPLE_UPLOAD_MAX = 4 * 1024 * 1024
 UPLOAD_CHUNK = 10 * 327680
@@ -341,7 +342,6 @@ async def capture_item_metadata(config: MsGraphConfig,
 async def read_item(config: MsGraphConfig,
                     loc: DriveLoc,
                     virtual: str,
-                    label: str,
                     backend: str,
                     offset: int = 0,
                     size: int | None = None,
@@ -382,7 +382,7 @@ async def read_item(config: MsGraphConfig,
             raise enoent(virtual)
         raise
     record("read",
-           label,
+           virtual,
            backend,
            len(data),
            timer,
@@ -394,12 +394,11 @@ async def read_item(config: MsGraphConfig,
 async def stream_item(config: MsGraphConfig,
                       loc: DriveLoc,
                       virtual: str,
-                      label: str,
                       backend: str,
                       chunk_size: int = 8192,
                       session: SessionArg = None) -> AsyncIterator[bytes]:
     pinned = revision_for(virtual)
-    rec = record_stream("read", label, backend)
+    rec = record_stream("read", virtual, backend)
     url = loc.item("/content")
     auth = True
     try:
@@ -568,9 +567,7 @@ async def find_items(
             if not keep(entry, tree, mindepth):
                 continue
             if min_size is not None or max_size is not None:
-                # Directories count as size 0 for -size (deliberate GNU
-                # divergence).
-                effective = 0 if is_dir else size
+                effective = DIR_SIZE if is_dir else size
                 if min_size is not None and effective < min_size:
                     continue
                 if max_size is not None and effective > max_size:
