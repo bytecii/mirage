@@ -15,6 +15,7 @@
 import json
 
 from mirage.accessor.trello import TrelloAccessor
+from mirage.commands.builtin.trello._scope import require_card
 from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec.flag_view import FlagView
@@ -47,6 +48,7 @@ async def trello_card_label_remove(
     # A card write is addressed by id, not path, so only the mount-wide
     # grant can admit it (a write-granting carve-out names no card).
     require_mount_writable()
+    await require_card(accessor, card_id)
     card = await card_remove_label(config,
                                    card_id=card_id,
                                    label_id=label_id,
