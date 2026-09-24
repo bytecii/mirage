@@ -64,7 +64,7 @@ from mirage.workspace.cli import CLIInstall
 from mirage.workspace.dispatcher import Dispatcher
 from mirage.workspace.executor.statement import restore_status
 from mirage.workspace.file_prompt import build_file_prompt
-from mirage.workspace.lookup import program, programs
+from mirage.workspace.lookup import program_note, programs
 from mirage.workspace.mount import MountEntry, MountRegistry
 from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.mount.namespace.store import NamespaceStore
@@ -297,10 +297,9 @@ class Workspace:
         self._registry.mount(
             BIN_PREFIX,
             BinViewVFS(
-                lambda: programs(self._op_session(), self._registry),
-                lambda name: program(name, self._op_session(), self.
-                                     _registry) is not None), MountMode.READ,
-            ReadSpec())
+                lambda: programs(self._op_session(), self._registry), lambda
+                name: program_note(name, self._op_session(), self._registry)),
+            MountMode.READ, ReadSpec())
         # The facade delegates every op to the dispatcher, so FUSE and
         # programmatic ws.vfs walk the same pipeline as a shell command
         # and the policy gates fire exactly once, at that door. It runs

@@ -18,14 +18,13 @@ import { renderStub } from './render.ts'
 const DEC = new TextDecoder()
 
 describe('renderStub', () => {
-  it('runs the command by name', () => {
-    const stub = DEC.decode(renderStub('ls'))
-    expect(stub.startsWith('#!/bin/sh\n')).toBe(true)
-    expect(stub.endsWith('command ls "$@"\n')).toBe(true)
-    expect(stub).toContain('man ls')
+  it('says its note and runs the command by name', () => {
+    expect(DEC.decode(renderStub('ls', 'ls is built into mirage.'))).toBe(
+      '#!/bin/sh\n# ls is built into mirage.\ncommand ls "$@"\n',
+    )
   })
 
   it('quotes a name the shell would split', () => {
-    expect(DEC.decode(renderStub('my tool'))).toContain(`command 'my tool' "$@"`)
+    expect(DEC.decode(renderStub('my tool', 'note'))).toContain(`command 'my tool' "$@"`)
   })
 })

@@ -30,8 +30,8 @@ class BinViewVFS(BaseVFS):
     Args:
         programs (Callable[[], list[str]]): every program name the
             session can run, sorted.
-        runs (Callable[[str], bool]): whether one name runs as a
-            program.
+        note (Callable[[str], str | None]): the line one program's file
+            says about it, None when the name runs as no program.
     """
 
     accessor: BinAccessor
@@ -40,9 +40,9 @@ class BinViewVFS(BaseVFS):
     SIZES_ALWAYS_KNOWN: bool = True
 
     def __init__(self, programs: Callable[[], list[str]],
-                 runs: Callable[[str], bool]) -> None:
+                 note: Callable[[str], str | None]) -> None:
         super().__init__()
-        self.accessor = BinAccessor(programs, runs)
+        self.accessor = BinAccessor(programs, note)
         for fn in COMMANDS:
             self.register(fn)
         for op in OPS:

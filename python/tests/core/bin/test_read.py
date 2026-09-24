@@ -21,7 +21,9 @@ from mirage.types import PathSpec
 
 
 def _accessor() -> BinAccessor:
-    return BinAccessor(lambda: ["cat", "ls"], lambda n: n in ("cat", "ls"))
+    return BinAccessor(
+        lambda: ["cat", "ls"], lambda n: f"{n} is built into mirage."
+        if n in ("cat", "ls") else None)
 
 
 def _spec(path: str) -> PathSpec:
@@ -32,7 +34,8 @@ def _spec(path: str) -> PathSpec:
 
 @pytest.mark.asyncio
 async def test_read_renders_a_programs_stub():
-    assert await read(_accessor(), _spec("/usr/bin/ls")) == render_stub("ls")
+    assert await read(_accessor(), _spec("/usr/bin/ls")) == render_stub(
+        "ls", "ls is built into mirage.")
 
 
 @pytest.mark.asyncio

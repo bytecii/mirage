@@ -33,7 +33,7 @@ async def readdir(accessor: BinAccessor,
     """
     key = path.mount_path.strip("/")
     if key != "":
-        if "/" not in key and accessor.runs(key):
+        if "/" not in key and accessor.note(key) is not None:
             raise enotdir(path)
         raise enoent(path)
     base = path.virtual.rstrip("/")

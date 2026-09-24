@@ -15,13 +15,26 @@
 from mirage.commands.cli.types import CLISpec
 from mirage.io import IOResult
 from mirage.policy.types import AdmissionRules
+from mirage.runtime.base import Runtime
+from mirage.runtime.constants import EXTERNAL_COMMANDS
+from mirage.runtime.mixin import ProcessExecutorMixin
+from mirage.runtime.types import ProcessExecution, RunResult
 from mirage.types import MountMode
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 from mirage.workspace.lookup import (SHELL_CONSUMERS, Consumer,
                                      command_visible, lookup, lookup_all,
-                                     program, programs, verb_visible)
+                                     program, program_note, programs,
+                                     verb_visible)
 from mirage.workspace.session import SessionState
+
+
+class _Sandbox(Runtime, ProcessExecutorMixin):
+    name = "sandbox"
+    captures = ("gcc", EXTERNAL_COMMANDS)
+
+    async def run_process(self, request: ProcessExecution) -> RunResult:
+        return RunResult(stdout=b"", stderr=None, exit_code=0)
 
 
 def _fixture() -> tuple[SessionState, Workspace]:
@@ -238,3 +251,48 @@ def test_programs_follows_the_allow_list():
     narrow = SessionState(session_id="n",
                           commands=AdmissionRules(allow=("cat", )))
     assert programs(narrow, ws._registry) == ["cat"]
+
+
+def test_program_has_no_file_for_a_shell_word_a_mount_also_registers():
+    session, ws = _fixture()
+    assert lookup_all("history", session,
+                      ws._registry) == [Consumer.SESSION, Consumer.MOUNT]
+    assert program("history", session, ws._registry) is None
+    assert "history" not in programs(session, ws._registry)
+
+
+def test_program_is_no_file_for_a_name_only_the_fallback_takes():
+    session = SessionState(session_id="t")
+    ws = Workspace({"/": RAMVFS()}, runtimes=[_Sandbox()])
+    assert lookup("native-tool", session, ws._registry) is Consumer.EXTERNAL
+    assert program("native-tool", session, ws._registry) is None
+    assert program("gcc", session, ws._registry) is Consumer.EXTERNAL
+    assert "gcc" in programs(session, ws._registry)
+
+
+def test_program_note_says_what_runs_the_name():
+    session, ws = _fixture()
+    registry = ws._registry
+    ws.register_cli("prog", _cli_tree())
+    assert program_note(
+        "cat", session,
+        registry) == ("cat is built into mirage. Help: cat --help")
+    assert program_note("prog", session, registry) == (
+        "prog is a CLI registered with this workspace. Help: prog --help")
+    assert program_note(
+        "python3", session,
+        registry) == ("python3 runs on the workspace's monty runtime.")
+    # A builtin's --help varies, so its line names none.
+    for name in ("echo", "ln", "xargs"):
+        assert program_note(name, session,
+                            registry) == f"{name} is built into mirage."
+    assert program_note("cd", session, registry) is None
+
+
+def test_program_note_names_the_runtime_a_capture_runs_on():
+    session = SessionState(session_id="t")
+    ws = Workspace({"/": RAMVFS()}, runtimes=[_Sandbox()])
+    assert program_note(
+        "gcc", session,
+        ws._registry) == ("gcc runs on the workspace's sandbox runtime.")
+    assert program_note("native-tool", session, ws._registry) is None

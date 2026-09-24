@@ -15,12 +15,10 @@
 from mirage.core.bin.render import render_stub
 
 
-def test_stub_runs_the_command_by_name():
-    stub = render_stub("ls").decode()
-    assert stub.startswith("#!/bin/sh\n")
-    assert stub.endswith('command ls "$@"\n')
-    assert "man ls" in stub
+def test_stub_says_its_note_and_runs_the_command_by_name():
+    assert render_stub("ls", "ls is built into mirage.") == (
+        b'#!/bin/sh\n# ls is built into mirage.\ncommand ls "$@"\n')
 
 
 def test_stub_quotes_a_name_the_shell_would_split():
-    assert b"command 'my tool' \"$@\"" in render_stub("my tool")
+    assert b"command 'my tool' \"$@\"" in render_stub("my tool", "note")

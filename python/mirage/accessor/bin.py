@@ -26,11 +26,12 @@ class BinAccessor(Accessor):
     Args:
         programs (Callable[[], list[str]]): every program name the
             session can run, sorted.
-        runs (Callable[[str], bool]): whether one name runs as a
-            program, which is what gives it a file.
+        note (Callable[[str], str | None]): the line one program's file
+            says about it, None when the name runs as no program, which
+            is what gives it a file.
     """
 
     def __init__(self, programs: Callable[[], list[str]],
-                 runs: Callable[[str], bool]) -> None:
+                 note: Callable[[str], str | None]) -> None:
         self.programs = programs
-        self.runs = runs
+        self.note = note

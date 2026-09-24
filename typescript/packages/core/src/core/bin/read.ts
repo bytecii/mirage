@@ -22,6 +22,7 @@ import { renderStub } from './render.ts'
 export function read(accessor: BinAccessor, path: PathSpec): Promise<Uint8Array> {
   const key = stripSlash(path.mountPath)
   if (key === '') return Promise.reject(eisdir(path))
-  if (key.includes('/') || !accessor.runs(key)) return Promise.reject(enoent(path))
-  return Promise.resolve(renderStub(key))
+  const note = key.includes('/') ? null : accessor.note(key)
+  if (note === null) return Promise.reject(enoent(path))
+  return Promise.resolve(renderStub(key, note))
 }

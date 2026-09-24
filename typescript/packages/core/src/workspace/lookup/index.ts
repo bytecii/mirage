@@ -30,6 +30,7 @@ export {
   lookup,
   lookupAll,
   program,
+  programNote,
   programs,
   runtimeRefused,
   verbVisible,

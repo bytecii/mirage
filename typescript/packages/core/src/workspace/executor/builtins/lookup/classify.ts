@@ -31,7 +31,14 @@ function kindOf(consumer: Consumer, name: string): NameKind {
   return NameKind.FILE
 }
 
-/** Classify the name as the layer that would run it, null if none does. */
+/**
+ * Classify the name as the layer that would run it, null if none does.
+ *
+ * A layer that would run a program reports one only where the name has a
+ * file (`program`): a word only the external fallback capture takes still
+ * runs, but is not found, as bash reports a name its
+ * `command_not_found_handle` would take.
+ */
 export function classify(
   name: string,
   session: SessionState,
@@ -40,7 +47,10 @@ export function classify(
   if (sessionEntry(session.aliases, name) !== undefined) return NameKind.ALIAS
   if (KEYWORDS.has(name)) return NameKind.KEYWORD
   const consumer = lookup(name, session, registry)
-  return consumer === Consumer.UNKNOWN ? null : kindOf(consumer, name)
+  if (consumer === Consumer.UNKNOWN) return null
+  const kind = kindOf(consumer, name)
+  if (kind === NameKind.FILE && program(name, session, registry) === null) return null
+  return kind
 }
 
 /**
@@ -57,7 +67,10 @@ export function classify(
  * Duplicate kinds are dropped, since the kinds are coarser than the
  * layers: a program both a mount and a CLI answer for is one file. A
  * builtin that is a program too ends with that file's line, as bash's
- * `type -a echo` does after its builtin line.
+ * `type -a echo` does after its builtin line. A file is reported only
+ * where `program` finds one, so a layer the name runs from without a file
+ * (the external fallback, a mount command under a shell-only builtin)
+ * prints no line.
  */
 export function classifyAll(
   name: string,
@@ -70,13 +83,13 @@ export function classifyAll(
   const kinds: NameKind[] =
     sessionEntry(session.aliases, name) !== undefined ? [NameKind.ALIAS] : []
   if (KEYWORDS.has(name)) kinds.push(NameKind.KEYWORD)
+  const hasFile = program(name, session, registry) !== null
   for (const consumer of lookupAll(name, session, registry)) {
     const kind = kindOf(consumer, name)
+    if (kind === NameKind.FILE && !hasFile) continue
     if (!kinds.includes(kind)) kinds.push(kind)
   }
-  if (!kinds.includes(NameKind.FILE) && program(name, session, registry) !== null) {
-    kinds.push(NameKind.FILE)
-  }
+  if (!kinds.includes(NameKind.FILE) && hasFile) kinds.push(NameKind.FILE)
   return kinds
 }
 

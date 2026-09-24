@@ -12,23 +12,15 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { Accessor } from './base.ts'
+import type { BinAccessor } from '../../accessor/bin.ts'
+import type { PathSpec } from '../../types.ts'
+import { erofsReadOnly } from '../../utils/errors.ts'
 
 /**
- * Accessor over the workspace's command lookup for the /usr/bin view.
- * Both answers are the calling session's, so a program its allow list
- * hides has no file either: `programs` is every program name the session
- * can run, sorted, and `note` is the line one program's file says about
- * it, null when the name runs as no program, which is what gives it a
- * file.
+ * Refuse a write into the view, as a read-only file system does. What the
+ * view holds is the lookup's to say, so every write op lands here, whatever
+ * it would have done; `path` is the path the op writes, a rename's source.
  */
-export class BinAccessor extends Accessor {
-  readonly programs: () => string[]
-  readonly note: (name: string) => string | null
-
-  constructor(programs: () => string[], note: (name: string) => string | null) {
-    super()
-    this.programs = programs
-    this.note = note
-  }
+export function refuse(_accessor: BinAccessor, path: PathSpec): Promise<never> {
+  return Promise.reject(erofsReadOnly('Read-only file system', path))
 }

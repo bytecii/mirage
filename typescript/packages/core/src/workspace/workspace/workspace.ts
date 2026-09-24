@@ -26,7 +26,7 @@ import type { VFS } from '../../vfs/base.ts'
 import { HISTORY_PREFIX, HistoryViewVFS } from '../../vfs/history/history.ts'
 import { BIN_PREFIX } from '../../shell/constants.ts'
 import { BinViewVFS } from '../../vfs/bin/bin.ts'
-import { program, programs } from '../lookup/lookup.ts'
+import { programNote, programs } from '../lookup/lookup.ts'
 import { vfsStateRequiresOverride } from '../../vfs/secrets.ts'
 import { GENERAL_COMMANDS } from '../../commands/builtin/general/index.ts'
 import { cliSpecFor } from '../../commands/cli/specs.ts'
@@ -358,7 +358,7 @@ export class Workspace {
       BIN_PREFIX,
       new BinViewVFS(
         () => programs(this.opSession(), this.registry),
-        (name) => program(name, this.opSession(), this.registry) !== null,
+        (name) => programNote(name, this.opSession(), this.registry),
       ),
       MountMode.READ,
       DEFAULT_READ_SPEC,

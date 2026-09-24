@@ -12,30 +12,23 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import errno
+from typing import Any
+
 from mirage.accessor.bin import BinAccessor
-from mirage.cache.index import NULL_INDEX, IndexCacheStore
-from mirage.core.bin.render import render_stub
 from mirage.types import PathSpec
-from mirage.utils.errors import eisdir, enoent
+from mirage.utils.errors import ReadOnlyError
 
 
-async def read(accessor: BinAccessor,
-               path: PathSpec,
-               index: IndexCacheStore = NULL_INDEX) -> bytes:
-    """Render one program's file.
+async def refuse(accessor: BinAccessor, path: PathSpec, *args: Any,
+                 **kwargs: Any) -> None:
+    """Refuse a write into the view, as a read-only file system does.
+
+    What the view holds is the lookup's to say, so every write op lands
+    here, whatever it would have done.
 
     Args:
         accessor (BinAccessor): Accessor holding the lookup.
-        path (PathSpec): Virtual path under the view.
-        index (IndexCacheStore): Unused; op signature parity.
-
-    Returns:
-        bytes: The program's stub, fresh on every call.
+        path (PathSpec): The path the op writes; a rename's source.
     """
-    key = path.mount_path.strip("/")
-    if key == "":
-        raise eisdir(path)
-    note = None if "/" in key else accessor.note(key)
-    if note is None:
-        raise enoent(path)
-    return render_stub(key, note)
+    raise ReadOnlyError(errno.EROFS, "Read-only file system", path.virtual)

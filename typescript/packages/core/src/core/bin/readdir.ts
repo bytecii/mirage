@@ -21,7 +21,7 @@ import { rstripSlash, stripSlash } from '../../utils/slash.ts'
 export function readdir(accessor: BinAccessor, path: PathSpec): Promise<string[]> {
   const key = stripSlash(path.mountPath)
   if (key !== '') {
-    if (!key.includes('/') && accessor.runs(key)) return Promise.reject(enotdir(path))
+    if (!key.includes('/') && accessor.note(key) !== null) return Promise.reject(enotdir(path))
     return Promise.reject(enoent(path))
   }
   const base = rstripSlash(path.virtual)

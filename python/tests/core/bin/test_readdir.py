@@ -20,7 +20,9 @@ from mirage.types import PathSpec
 
 
 def _accessor() -> BinAccessor:
-    return BinAccessor(lambda: ["cat", "ls"], lambda n: n in ("cat", "ls"))
+    return BinAccessor(
+        lambda: ["cat", "ls"], lambda n: f"{n} is built into mirage."
+        if n in ("cat", "ls") else None)
 
 
 def _spec(path: str) -> PathSpec:

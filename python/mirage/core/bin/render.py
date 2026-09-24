@@ -15,18 +15,18 @@
 from mirage.utils.quote import shell_quote
 
 
-def render_stub(name: str) -> bytes:
+def render_stub(name: str, note: str) -> bytes:
     """The body of one program's file: a script that runs the command.
 
-    mirage runs every program in-process, so the file is not the
-    program; it is where PATH finds it, and running it by path runs the
-    command the name does (``command`` skips a shadowing function).
+    mirage runs every program itself, so the file is not the program;
+    it is where PATH finds it, its one comment says what runs the name,
+    and running it by path runs the command the name does (``command``
+    skips a shadowing function).
 
     Args:
         name (str): the program name.
+        note (str): the line the file says about the program.
     """
-    word = shell_quote(name)
     return (f"#!/bin/sh\n"
-            f"# {name} runs inside mirage; this file is where PATH finds it"
-            f" (see: man {word}).\n"
-            f"command {word} \"$@\"\n").encode()
+            f"# {note}\n"
+            f"command {shell_quote(name)} \"$@\"\n").encode()

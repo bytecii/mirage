@@ -21,7 +21,7 @@ import { stat } from './stat.ts'
 function accessor(names: string[]): BinAccessor {
   return new BinAccessor(
     () => names,
-    (name) => names.includes(name),
+    (name) => (names.includes(name) ? `${name} is built into mirage.` : null),
   )
 }
 
@@ -39,7 +39,7 @@ describe('stat', () => {
     const st = await stat(accessor(['ls']), spec('/usr/bin/ls'))
     expect(st.type).toBe(FileType.FILE)
     expect(st.mode).toBe(0o755)
-    expect(st.size).toBe(renderStub('ls').byteLength)
+    expect(st.size).toBe(renderStub('ls', 'ls is built into mirage.').byteLength)
   })
 
   it('the view root is a directory and a miss is ENOENT', async () => {

@@ -21,7 +21,7 @@ import { renderStub } from './render.ts'
 function accessor(names: string[]): BinAccessor {
   return new BinAccessor(
     () => names,
-    (name) => names.includes(name),
+    (name) => (names.includes(name) ? `${name} is built into mirage.` : null),
   )
 }
 
@@ -36,7 +36,9 @@ function spec(path: string): PathSpec {
 
 describe('read', () => {
   it("renders a program's stub", async () => {
-    expect(await read(accessor(['cat', 'ls']), spec('/usr/bin/ls'))).toEqual(renderStub('ls'))
+    expect(await read(accessor(['cat', 'ls']), spec('/usr/bin/ls'))).toEqual(
+      renderStub('ls', 'ls is built into mirage.'),
+    )
   })
 
   it('refuses the view root and a name that runs nothing', async () => {

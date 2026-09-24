@@ -16,15 +16,11 @@ import { shellQuote } from '../../utils/quote.ts'
 
 /**
  * The body of one program's file: a script that runs the command. mirage
- * runs every program in-process, so the file is not the program; it is
- * where PATH finds it, and running it by path runs the command the name
- * does (`command` skips a shadowing function).
+ * runs every program itself, so the file is not the program; it is where
+ * PATH finds it, its one comment (`note`) says what runs the name, and
+ * running it by path runs the command the name does (`command` skips a
+ * shadowing function).
  */
-export function renderStub(name: string): Uint8Array {
-  const word = shellQuote(name)
-  return new TextEncoder().encode(
-    '#!/bin/sh\n' +
-      `# ${name} runs inside mirage; this file is where PATH finds it (see: man ${word}).\n` +
-      `command ${word} "$@"\n`,
-  )
+export function renderStub(name: string, note: string): Uint8Array {
+  return new TextEncoder().encode(`#!/bin/sh\n# ${note}\ncommand ${shellQuote(name)} "$@"\n`)
 }

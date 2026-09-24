@@ -12,23 +12,26 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { Accessor } from './base.ts'
+import { describe, expect, it } from 'vitest'
+import { BinAccessor } from '../../accessor/bin.ts'
+import { PathSpec } from '../../types.ts'
+import { refuse } from './refuse.ts'
 
-/**
- * Accessor over the workspace's command lookup for the /usr/bin view.
- * Both answers are the calling session's, so a program its allow list
- * hides has no file either: `programs` is every program name the session
- * can run, sorted, and `note` is the line one program's file says about
- * it, null when the name runs as no program, which is what gives it a
- * file.
- */
-export class BinAccessor extends Accessor {
-  readonly programs: () => string[]
-  readonly note: (name: string) => string | null
-
-  constructor(programs: () => string[], note: (name: string) => string | null) {
-    super()
-    this.programs = programs
-    this.note = note
-  }
-}
+describe('refuse', () => {
+  it('answers every write as a read-only file system', async () => {
+    const accessor = new BinAccessor(
+      () => ['ls'],
+      () => null,
+    )
+    const path = new PathSpec({
+      virtual: '/usr/bin/ls',
+      directory: '/usr/bin',
+      resolved: false,
+      vfsPath: '/ls',
+    })
+    await expect(refuse(accessor, path)).rejects.toMatchObject({
+      code: 'EROFS',
+      virtualPath: '/usr/bin/ls',
+    })
+  })
+})

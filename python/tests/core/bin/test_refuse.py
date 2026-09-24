@@ -12,16 +12,23 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.commands.builtin.bin.io import IO
-from mirage.core.bin.refuse import refuse
-from mirage.ops.generic import make_generic_ops
-from mirage.ops.registry import RegisteredOp
+import errno
 
-# The IO wires reads only, so the view registers no write command; each
-# write op is its own refusal instead of a missing op, which would answer
-# "Operation not supported" where a read-only directory says EROFS.
-OPS = make_generic_ops("bin", IO) + [
-    RegisteredOp(name=name, vfs="bin", filetype=None, fn=refuse, write=True)
-    for name in ("write", "append", "create", "mkdir", "unlink", "rmdir",
-                 "rename", "truncate", "setattr")
-]
+import pytest
+
+from mirage.accessor.bin import BinAccessor
+from mirage.core.bin.refuse import refuse
+from mirage.types import PathSpec
+from mirage.utils.errors import ReadOnlyError
+
+
+@pytest.mark.asyncio
+async def test_refuse_answers_every_write_as_a_read_only_file_system():
+    accessor = BinAccessor(lambda: ["ls"], lambda n: None)
+    path = PathSpec(virtual="/usr/bin/ls",
+                    directory="/usr/bin",
+                    vfs_path="/ls")
+    with pytest.raises(ReadOnlyError) as info:
+        await refuse(accessor, path, b"data")
+    assert info.value.errno == errno.EROFS
+    assert info.value.filename == "/usr/bin/ls"

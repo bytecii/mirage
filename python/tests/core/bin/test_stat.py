@@ -21,7 +21,9 @@ from mirage.types import FileType, PathSpec
 
 
 def _accessor() -> BinAccessor:
-    return BinAccessor(lambda: ["ls"], lambda n: n == "ls")
+    return BinAccessor(
+        lambda: ["ls"], lambda n: "ls is built into mirage."
+        if n == "ls" else None)
 
 
 def _spec(path: str) -> PathSpec:
@@ -35,7 +37,7 @@ async def test_stat_a_program_is_an_executable_file_sized_to_its_stub():
     st = await stat(_accessor(), _spec("/usr/bin/ls"))
     assert st.type is FileType.FILE
     assert st.mode == 0o755
-    assert st.size == len(render_stub("ls"))
+    assert st.size == len(render_stub("ls", "ls is built into mirage."))
 
 
 @pytest.mark.asyncio

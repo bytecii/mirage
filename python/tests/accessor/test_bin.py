@@ -16,7 +16,9 @@ from mirage.accessor.bin import BinAccessor
 
 
 def test_accessor_holds_the_lookups_it_was_given():
-    accessor = BinAccessor(lambda: ["ls"], lambda n: n == "ls")
+    accessor = BinAccessor(
+        lambda: ["ls"], lambda n: "ls is built into mirage."
+        if n == "ls" else None)
     assert accessor.programs() == ["ls"]
-    assert accessor.runs("ls")
-    assert not accessor.runs("cd")
+    assert accessor.note("ls") == "ls is built into mirage."
+    assert accessor.note("cd") is None

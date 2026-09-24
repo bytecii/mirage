@@ -18,6 +18,7 @@ from mirage.policy.match import head_visible, node_visible
 from mirage.runtime.constants import EXTERNAL_COMMANDS
 from mirage.runtime.mixin import LineExecutorMixin, ProcessExecutorMixin
 from mirage.runtime.routing.types import RouteDecision
+from mirage.utils.quote import shell_quote
 from mirage.workspace.lookup.constants import (INTERPRETER_NAMES, KEYWORDS,
                                                NAMESPACE_COMMANDS, SHELL_NAMES,
                                                SHELL_ONLY_BUILTINS)
@@ -235,11 +236,15 @@ def program(name: str, session: SessionState,
 
     A program is what a real system ships as a file on PATH, so it has
     one under ``/usr/bin`` here: every mount, namespace and CLI command,
-    every runtime capture, and each builtin a real system also finds on
-    disk (echo, test, xargs). The shell's own words (cd, export:
-    ``SHELL_ONLY_BUILTINS``), reserved words, functions and aliases have
-    no file. A function shadowing a program leaves the file in place,
-    as it does on PATH.
+    every name a runtime captures by name, and each builtin a real
+    system also finds on disk (echo, test, xargs). The shell's own words
+    (cd, export, history: ``SHELL_ONLY_BUILTINS``), reserved words,
+    functions and aliases have no file, and a shell word keeps none
+    when a mount registers the same name, since the builtin is what
+    runs. Nor does a name only the external fallback capture takes: it
+    takes any word, so like bash's ``command_not_found_handle`` it runs
+    a name without making it a program. A function shadowing a program
+    leaves the file in place, as it does on PATH.
 
     Args:
         name (str): the command word.
@@ -253,9 +258,47 @@ def program(name: str, session: SessionState,
         if consumer is Consumer.FUNCTION:
             continue
         if consumer is Consumer.SESSION and name in SHELL_ONLY_BUILTINS:
-            continue
+            return None
+        if (consumer is Consumer.EXTERNAL
+                and name not in registry.runtime_bindings):
+            return None
         return consumer
     return None
+
+
+def program_note(name: str, session: SessionState,
+                 registry: MountRegistry) -> str | None:
+    """What a program's ``/usr/bin`` file says about it, None when the
+    name is no program.
+
+    One line: what runs the name, and ``--help`` where the program's
+    spec answers it, which a mount command's and a CLI's do; a builtin's
+    answer varies (``ln --help`` and ``echo --help`` print no help), so
+    a builtin's line names none.
+
+    Args:
+        name (str): the command word.
+        session (SessionState): shell session (function table, allow
+            list).
+        registry (MountRegistry): mount registry (command registration,
+            runtimes).
+    """
+    consumer = program(name, session, registry)
+    if consumer is None:
+        return None
+    runtime = registry.runtime_bindings.get(name)
+    if runtime is not None and (consumer is Consumer.EXTERNAL
+                                or name in INTERPRETER_NAMES):
+        return f"{name} runs on the workspace's {runtime.name} runtime."
+    help_line = f" Help: {shell_quote(name)} --help"
+    if consumer is Consumer.CLI:
+        return f"{name} is a CLI registered with this workspace.{help_line}"
+    mount = (registry.mount_for_command(name)
+             if consumer is Consumer.MOUNT else None)
+    spec = mount.spec_for(name) if mount is not None else None
+    if spec is not None and any(o.long == "--help" for o in spec.options):
+        return f"{name} is built into mirage.{help_line}"
+    return f"{name} is built into mirage."
 
 
 def programs(session: SessionState, registry: MountRegistry) -> list[str]:

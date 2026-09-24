@@ -12,9 +12,25 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { BinAccessor } from '../../accessor/bin.ts'
 import { BIN_IO } from '../../commands/builtin/bin/io.ts'
+import { refuse } from '../../core/bin/refuse.ts'
 import { VFSName } from '../../types.ts'
 import { makeGenericOps } from '../generic/factory.ts'
 import type { RegisteredOp } from '../registry.ts'
 
-export const BIN_OPS: readonly RegisteredOp[] = makeGenericOps(VFSName.BIN, BIN_IO)
+// The IO wires reads only, so the view registers no write command; each
+// write op is its own refusal instead of a missing op, which would answer
+// "Operation not supported" where a read-only directory says EROFS.
+export const BIN_OPS: readonly RegisteredOp[] = [
+  ...makeGenericOps(VFSName.BIN, BIN_IO),
+  ...['write', 'append', 'create', 'mkdir', 'unlink', 'rmdir', 'rename', 'truncate', 'setattr'].map(
+    (name): RegisteredOp => ({
+      name,
+      vfs: VFSName.BIN,
+      filetype: null,
+      fn: (accessor, path) => refuse(accessor as BinAccessor, path),
+      write: true,
+    }),
+  ),
+]

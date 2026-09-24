@@ -20,7 +20,7 @@ import { readdir } from './readdir.ts'
 function accessor(names: string[]): BinAccessor {
   return new BinAccessor(
     () => names,
-    (name) => names.includes(name),
+    (name) => (names.includes(name) ? `${name} is built into mirage.` : null),
   )
 }
 

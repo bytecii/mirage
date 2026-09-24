@@ -36,9 +36,9 @@ export class BinViewVFS extends BaseVFS implements VFS {
   readonly sizesAlwaysKnown = true
   readonly accessor: BinAccessor
 
-  constructor(programs: () => string[], runs: (name: string) => boolean) {
+  constructor(programs: () => string[], note: (name: string) => string | null) {
     super()
-    this.accessor = new BinAccessor(programs, runs)
+    this.accessor = new BinAccessor(programs, note)
   }
 
   open(): Promise<void> {

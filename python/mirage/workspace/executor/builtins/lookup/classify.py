@@ -44,6 +44,11 @@ def classify(name: str, session: SessionState,
              registry: MountRegistry) -> NameKind | None:
     """Classify the name as the layer that would run it, None if none does.
 
+    A layer that would run a program reports one only where the name
+    has a file (``program``): a word only the external fallback capture
+    takes still runs, but is not found, as bash reports a name its
+    ``command_not_found_handle`` would take.
+
     Args:
         name (str): the operand word.
         session (SessionState): shell session (function table).
@@ -56,7 +61,10 @@ def classify(name: str, session: SessionState,
     consumer = lookup(name, session, registry)
     if consumer is Consumer.UNKNOWN:
         return None
-    return _kind(consumer, name)
+    kind = _kind(consumer, name)
+    if kind is NameKind.FILE and program(name, session, registry) is None:
+        return None
+    return kind
 
 
 def classify_all(name: str, session: SessionState,
@@ -74,7 +82,10 @@ def classify_all(name: str, session: SessionState,
     Duplicate kinds are dropped, since the kinds are coarser than the
     layers: a program both a mount and a CLI answer for is one file.
     A builtin that is a program too ends with that file's line, as
-    bash's ``type -a echo`` does after its builtin line.
+    bash's ``type -a echo`` does after its builtin line. A file is
+    reported only where ``program`` finds one, so a layer the name
+    runs from without a file (the external fallback, a mount command
+    under a shell-only builtin) prints no line.
 
     Args:
         name (str): the operand word.
@@ -87,12 +98,14 @@ def classify_all(name: str, session: SessionState,
     kinds: list[NameKind] = [NameKind.ALIAS] if name in session.aliases else []
     if name in KEYWORDS:
         kinds.append(NameKind.KEYWORD)
+    has_file = program(name, session, registry) is not None
     for consumer in lookup_all(name, session, registry):
         kind = _kind(consumer, name)
+        if kind is NameKind.FILE and not has_file:
+            continue
         if kind not in kinds:
             kinds.append(kind)
-    if (NameKind.FILE not in kinds
-            and program(name, session, registry) is not None):
+    if NameKind.FILE not in kinds and has_file:
         kinds.append(NameKind.FILE)
     return kinds
 
