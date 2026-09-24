@@ -16,7 +16,7 @@ import re
 
 from mirage.accessor.mongodb import MongoDBAccessor
 from mirage.core.hierarchy.scope import ScopeMatch
-from mirage.core.hierarchy.search import Searcher, SearchQuery, query_matcher
+from mirage.core.hierarchy.search import Searcher, query_matcher
 from mirage.core.mongodb._schema_json import (build_collection_schema_json,
                                               build_database_json)
 from mirage.core.mongodb.client import list_collections, list_databases
@@ -24,6 +24,7 @@ from mirage.core.mongodb.scope import entity_kind
 from mirage.core.mongodb.stream import read_stream, render_doc
 from mirage.core.mongodb.types import KIND_TO_DIR, EntityKind
 from mirage.types import PathSpec
+from mirage.vfs.types import SearchQuery
 
 # A directory's answer is grep -r's over the files under it, spelled
 # relative to the mount, in the order a walk visits them (sorted, so

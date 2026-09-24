@@ -13,21 +13,22 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+from dataclasses import replace
 from functools import partial
 
 import pytest
 
 from mirage.cache.index import NULL_INDEX
 from mirage.commands.builtin.generic_bind.adapter import CommandIO
-from mirage.commands.builtin.generic_bind.search import make_search
-from mirage.commands.builtin.grep_pushdown import literal_pushdown_operand
+from mirage.commands.builtin.generic_bind.search import run_search
 from mirage.commands.builtin.utils.wrap import stream_from_bytes
 from mirage.commands.config import CommandOpts
 from mirage.core.hierarchy.scope import ScopeMatch
-from mirage.core.hierarchy.search import SearchQuery
+from mirage.core.hierarchy.search import make_search_op
 from mirage.io.types import ByteSource
 from mirage.types import ContentType, FileStat, FileType, PathSpec
 from mirage.utils.errors import enoent
+from mirage.vfs.types import SearchOps, SearchQuery
 from tests.core.hierarchy.conftest import FakeAccessor, detect_scope, spec
 
 CONTENT = b"x ada\ny\n"
@@ -70,7 +71,7 @@ IO = CommandIO(readdir=_readdir_op,
 
 async def _room_searcher(accessor: FakeAccessor, match: ScopeMatch,
                          query: SearchQuery) -> list[str]:
-    return [f"rooms/{match.slots['room']}:{query.pattern}"]
+    return [f"rooms/{match.slots['room']}:{query.query}"]
 
 
 async def _empty_searcher(accessor: FakeAccessor, match: ScopeMatch,
@@ -87,11 +88,22 @@ async def _drain(source: ByteSource | None) -> bytes:
     return b"".join(chunks)
 
 
+def _search_command(searchers, io, *, guard=False, stream=False):
+    search = make_search_op(detect_scope, searchers,
+                            io.stat if guard else None)
+    return partial(
+        run_search,
+        replace(io,
+                search=SearchOps(
+                    search=search,
+                    meta={"grep": {
+                        "mode": "literal",
+                        "stream": stream
+                    }})), "grep")
+
+
 def test_matched_kind_answers_from_the_searcher():
-    search = make_search("grep",
-                         detect_scope, {"room": _room_searcher},
-                         IO,
-                         qualify=literal_pushdown_operand)
+    search = _search_command({'room': _room_searcher}, IO)
     out, result = asyncio.run(
         search(FakeAccessor(), [spec("/rooms/red")], ["ada"], CommandOpts()))
     assert result.exit_code == 0
@@ -99,10 +111,7 @@ def test_matched_kind_answers_from_the_searcher():
 
 
 def test_empty_answer_is_exit_1():
-    search = make_search("grep",
-                         detect_scope, {"room": _empty_searcher},
-                         IO,
-                         qualify=literal_pushdown_operand)
+    search = _search_command({'room': _empty_searcher}, IO)
     out, result = asyncio.run(
         search(FakeAccessor(), [spec("/rooms/red")], ["ada"], CommandOpts()))
     assert result.exit_code == 1
@@ -110,10 +119,7 @@ def test_empty_answer_is_exit_1():
 
 
 def test_unmatched_kind_takes_the_generic_scan():
-    search = make_search("grep",
-                         detect_scope, {"room": _room_searcher},
-                         IO,
-                         qualify=literal_pushdown_operand)
+    search = _search_command({'room': _room_searcher}, IO)
     out, result = asyncio.run(
         search(FakeAccessor(), [spec("/rooms/red/a.json")], ["ada"],
                CommandOpts()))
@@ -122,10 +128,7 @@ def test_unmatched_kind_takes_the_generic_scan():
 
 
 def test_shaping_flag_defers_to_the_generic_scan():
-    search = make_search("grep",
-                         detect_scope, {"room": _room_searcher},
-                         IO,
-                         qualify=literal_pushdown_operand)
+    search = _search_command({'room': _room_searcher}, IO)
     out, result = asyncio.run(
         search(FakeAccessor(), [spec("/rooms/red/a.json")], ["ada"],
                CommandOpts(flags={"v": True})))
@@ -142,11 +145,7 @@ def test_guard_probes_existence_before_searching():
                    stat=_absent_stat,
                    is_mounted=lambda a: True,
                    local=False)
-    search = make_search("grep",
-                         detect_scope, {"room": _room_searcher},
-                         io,
-                         qualify=literal_pushdown_operand,
-                         guard=True)
+    search = _search_command({'room': _room_searcher}, io, guard=True)
     with pytest.raises(FileNotFoundError):
         asyncio.run(
             search(FakeAccessor(), [spec("/rooms/red")], ["ada"],
@@ -168,11 +167,7 @@ def test_stream_first_pull_failure_falls_back_to_bytes():
                    stat=_stat_op,
                    is_mounted=lambda a: True,
                    local=False)
-    search = make_search("grep",
-                         detect_scope, {"room": _room_searcher},
-                         io,
-                         qualify=literal_pushdown_operand,
-                         stream=True)
+    search = _search_command({'room': _room_searcher}, io, stream=True)
     out, result = asyncio.run(
         search(FakeAccessor(), [spec("/rooms/red/a.json")], ["ada"],
                CommandOpts()))
@@ -194,11 +189,7 @@ def test_stream_failure_after_data_propagates():
                    stat=_stat_op,
                    is_mounted=lambda a: True,
                    local=False)
-    search = make_search("grep",
-                         detect_scope, {"room": _room_searcher},
-                         io,
-                         qualify=literal_pushdown_operand,
-                         stream=True)
+    search = _search_command({'room': _room_searcher}, io, stream=True)
     with pytest.raises(FileNotFoundError):
         out, _ = asyncio.run(
             search(FakeAccessor(), [spec("/rooms/red/a.json")], ["ada"],
@@ -214,12 +205,9 @@ def test_query_carries_the_honored_flags():
         seen.append(query)
         return ["line"]
 
-    search = make_search("grep",
-                         detect_scope, {"room": recorder},
-                         IO,
-                         qualify=literal_pushdown_operand)
+    search = _search_command({'room': recorder}, IO)
     asyncio.run(
         search(FakeAccessor(), [spec("/rooms/red")], ["ada"],
                CommandOpts(flags={"i": True})))
-    assert seen[0].ignore_case
-    assert not seen[0].fixed_string
+    assert seen[0].options["grep"]["ignore_case"]
+    assert not seen[0].options["grep"]["fixed_string"]

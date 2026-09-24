@@ -13,31 +13,15 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import re
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping
 
+from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.grep_pattern import compile_pattern
+from mirage.commands.builtin.grep_pushdown import grep_search_options
 from mirage.core.hierarchy.probe import A
-from mirage.core.hierarchy.scope import ScopeMatch
-
-
-@dataclass(frozen=True, slots=True)
-class SearchQuery:
-    """One qualified grep/rg push-down request.
-
-    Args:
-        pattern (str): the resolved pattern list, as the line typed it.
-        ignore_case (bool): -i.
-        fixed_string (bool): -F.
-        whole_word (bool): -w.
-        basic (bool): a basic regular expression, which is what grep
-            reads unless -E says otherwise; rg's are extended.
-    """
-    pattern: str
-    ignore_case: bool = False
-    fixed_string: bool = False
-    whole_word: bool = False
-    basic: bool = False
+from mirage.core.hierarchy.scope import ROOT, DetectFn, ScopeMatch
+from mirage.types import PathSpec
+from mirage.vfs.types import SearchOp, SearchQuery, StatOp
 
 
 def query_matcher(query: SearchQuery) -> re.Pattern[str]:
@@ -50,11 +34,38 @@ def query_matcher(query: SearchQuery) -> re.Pattern[str]:
     Args:
         query (SearchQuery): the qualified request.
     """
-    return compile_pattern(query.pattern,
-                           ignore_case=query.ignore_case,
-                           fixed_string=query.fixed_string,
-                           whole_word=query.whole_word,
-                           basic=query.basic)
+    options = grep_search_options(query)
+    return compile_pattern(query.query,
+                           ignore_case=options.ignore_case,
+                           fixed_string=options.fixed_string,
+                           whole_word=options.whole_word,
+                           basic=options.basic)
 
 
 Searcher = Callable[[A, ScopeMatch, SearchQuery], Awaitable[list[str]]]
+
+
+def make_search_op(detect: DetectFn,
+                   searchers: Mapping[str, Searcher[A]],
+                   stat: StatOp | None = None) -> SearchOp:
+    """Adapt scope-specific search functions to the VFS search contract.
+
+    Args:
+        detect (DetectFn): classify the requested path.
+        searchers (Mapping[str, Searcher]): supported scope handlers.
+        stat (StatOp | None): optional existence check for non-root scopes.
+    """
+
+    async def search(accessor: A,
+                     path: PathSpec,
+                     query: SearchQuery,
+                     index: IndexCacheStore = NULL_INDEX) -> list[str] | None:
+        match = detect(path)
+        searcher = searchers.get(match.kind)
+        if searcher is None:
+            return None
+        if stat is not None and match.kind != ROOT:
+            await stat(accessor, path, index)
+        return await searcher(accessor, match, query)
+
+    return search

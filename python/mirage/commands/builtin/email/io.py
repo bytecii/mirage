@@ -12,13 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from functools import partial
-
-from mirage.commands.builtin.generic_bind import CommandIO
-from mirage.commands.builtin.utils.wrap import stream_from_bytes
 from mirage.core.email.read import read as _read
 from mirage.core.email.readdir import readdir as _readdir
 from mirage.core.email.stat import stat as _stat
+from mirage.vfs.adapter import VFSAdapter
+from mirage.vfs.types import ReadOps
 
 # Email folders/messages/attachments are read through the generic factory
 # (with filetype commands for columnar attachments); find, grep and rg keep
@@ -26,13 +24,8 @@ from mirage.core.email.stat import stat as _stat
 # CLI (commands/cli/builtin/himalaya) is the send/reply/forward/triage
 # surface; the generic byte-mutation commands are intentionally absent (no
 # write op wired).
-IO = CommandIO(
-    readdir=_readdir,
-    read_bytes=_read,
-    read_stream=partial(stream_from_bytes, _read),
-    stat=_stat,
-    is_mounted=lambda a: True,
-    local=False,
-)
+IO = VFSAdapter(read=ReadOps(readdir=_readdir, read_bytes=_read, stat=_stat),
+                is_mounted=lambda a: True,
+                local=False).to_command_io()
 
 resolve_glob = IO.resolve_glob

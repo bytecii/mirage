@@ -12,10 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { grepSearchOptions } from '../../commands/builtin/grep_pushdown.ts'
 import type { PostgresAccessor } from '../../accessor/postgres.ts'
 import type { ScopeMatch } from '../hierarchy/scope.ts'
-import { queryMatcher, type Searcher, type SearchQuery } from '../hierarchy/search.ts'
+import { queryMatcher, type Searcher } from '../hierarchy/search.ts'
+import { type SearchQuery } from '../../vfs/types.ts'
 import {
+  fetchBoundedQuery,
   fetchColumns,
   listMatviews,
   listSchemas,
@@ -78,15 +81,15 @@ function escapeLike(pattern: string): string {
 // from its cast would be found by the scan and missed by the query. Mirrors
 // `_answerable` in `mirage/core/postgres/search.py`.
 function answerable(columns: readonly [string, string][], query: SearchQuery): boolean {
-  const pattern = query.pattern
+  const pattern = query.query
   for (const ch of pattern) {
     if (STRUCTURAL.has(ch) || (ch.codePointAt(0) ?? 0) < 0x20) return false
   }
-  const folded = query.ignoreCase ? pattern.toLowerCase() : pattern
+  const folded = grepSearchOptions(query).ignoreCase ? pattern.toLowerCase() : pattern
   if (NULL.includes(folded)) return false
   for (const [name, dataType] of columns) {
     if (!SAME_TEXT_TYPES.has(dataType)) return false
-    const key = query.ignoreCase ? name.toLowerCase() : name
+    const key = grepSearchOptions(query).ignoreCase ? name.toLowerCase() : name
     if (key.includes(folded)) return false
   }
   return true
@@ -120,21 +123,39 @@ export async function searchEntity(
   ])
   if (columns.length === 0) return []
   if (answerable(columns, query)) {
-    const op = query.ignoreCase ? 'ILIKE' : 'LIKE'
+    const op = grepSearchOptions(query).ignoreCase ? 'ILIKE' : 'LIKE'
     const clauses = columns.map(([name]) => `${quoteIdent(name)}::text ${op} $1`)
     for (const [name, dataType] of columns) {
       if (STRING_TYPES.has(dataType)) clauses.push(`${quoteIdent(name)} ~ '[[:cntrl:]]'`)
     }
     const sql =
       `SELECT * FROM ${qualified(schema, entity)} ` + `WHERE ${clauses.join(' OR ')} LIMIT $2`
-    const result = await accessor.store.query(sql, [`%${escapeLike(query.pattern)}%`, cap + 1])
-    if (result.rows.length > cap) {
+    const maxBytes = accessor.config.maxReadBytes
+    const rows = await fetchBoundedQuery(
+      accessor,
+      sql,
+      [`%${escapeLike(query.query)}%`, cap + 1],
+      new Set(columns.map(([name]) => name)),
+      maxBytes,
+    )
+    const byteError = `${schema}/${kind}/${entity}/rows.jsonl: more than ${String(maxBytes)} bytes match (max_read_bytes); narrow the pattern`
+    if (rows === null) throw new Error(byteError)
+    if (rows.length > cap) {
       throw new Error(
         `${schema}/${kind}/${entity}/rows.jsonl: more than ${String(cap)} rows match ` +
           `(max_read_rows); narrow the pattern`,
       )
     }
-    return result.rows.map(rowLine).filter((line) => matcher.test(line))
+    const lines: string[] = []
+    const encoder = new TextEncoder()
+    let renderedBytes = 0
+    for (const row of rows) {
+      const line = rowLine(row)
+      renderedBytes += encoder.encode(line).length + 1
+      if (renderedBytes > maxBytes) throw new Error(byteError)
+      if (matcher.test(line)) lines.push(line)
+    }
+    return lines
   }
   const text = new TextDecoder().decode(await readRows(accessor, schema, kind, entity))
   return splitLines(text).filter((line) => matcher.test(line))

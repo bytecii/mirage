@@ -24,7 +24,6 @@ import { type CommandFn, type ProvisionFn, type RegisteredCommand, command } fro
 import { specOf } from '../../spec/builtins.ts'
 import {
   type CommandIO,
-  type StatOp,
   resolveGlobOf,
   supports,
   withAbortGuard,
@@ -32,6 +31,7 @@ import {
   withPathGuards,
   withPolicyGuard,
 } from './adapter.ts'
+import { type StatOp } from '../../../vfs/types.ts'
 import { BUILDERS } from './builders/index.ts'
 import { defaultProvision } from './provision.ts'
 import { compareCodePoints } from '../../../utils/sort.ts'

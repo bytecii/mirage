@@ -311,6 +311,32 @@
         "stdout": "{\"__mirage_bytes\":null}\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "postgres_byte_budget_wide_grep",
+      "seq": 611303,
+      "targets": [
+        "postgres"
+      ],
+      "command": "grep -F é /pg-bytes/byte_budget/tables/wide/rows.jsonl",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "grep: byte_budget/tables/wide/rows.jsonl: more than 64 bytes match (max_read_bytes); narrow the pattern\n"
+      }
+    },
+    {
+      "id": "postgres_byte_budget_wide_rg",
+      "seq": 611304,
+      "targets": [
+        "postgres"
+      ],
+      "command": "rg -F é /pg-bytes/byte_budget/tables/wide/rows.jsonl",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "rg: byte_budget/tables/wide/rows.jsonl: more than 64 bytes match (max_read_bytes); narrow the pattern\n"
+      }
     }
   ]
 }

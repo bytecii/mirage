@@ -496,6 +496,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -557,6 +558,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_range",
@@ -570,6 +572,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_range",
@@ -606,6 +609,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -618,6 +622,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -656,6 +661,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 5000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -668,6 +674,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -680,6 +687,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -692,6 +700,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -704,6 +713,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -716,6 +726,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -728,6 +739,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -740,10 +752,12 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -752,6 +766,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -764,6 +779,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -776,10 +792,12 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -788,6 +806,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -852,10 +871,12 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -864,6 +885,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -981,6 +1003,7 @@
       "max_du_entries": 500,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_range",
@@ -994,6 +1017,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -1006,6 +1030,7 @@
       "max_du_entries": 1000,
       "max_glob_matches": 10000,
       "slots": [
+        "exists",
         "is_mounted",
         "read_bytes",
         "read_stream",

@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { VFSAdapter } from '../../../vfs/adapter.ts'
+
 import type { SlackAccessor } from '../../../accessor/slack.ts'
 import { read as slackRead, readRange as slackReadRange } from '../../../core/slack/read.ts'
 import { DU_MAX_ENTRIES } from '../../../core/slack/constants.ts'
@@ -20,13 +22,13 @@ import { stat as slackStat } from '../../../core/slack/stat.ts'
 import { type CommandIO, rangeOf } from '../generic_bind/index.ts'
 import { streamFromBytes } from '../utils/wrap.ts'
 
-export const SLACK_IO: CommandIO<SlackAccessor> = {
-  readdir: slackReaddir,
-  readBytes: slackRead,
-  readRange: rangeOf(slackReadRange),
-  readStream: (a, p, i) => streamFromBytes(slackRead, a, p, i),
-  stat: slackStat,
+export const SLACK_IO: CommandIO<SlackAccessor> = new VFSAdapter<SlackAccessor>({
+  read: { readdir: slackReaddir, readBytes: slackRead, stat: slackStat },
+  native: {
+    readRange: rangeOf(slackReadRange),
+    readStream: (a, p, i) => streamFromBytes(slackRead, a, p, i),
+  },
   isMounted: () => true,
   local: false,
   maxDuEntries: DU_MAX_ENTRIES,
-}
+}).toCommandIO()

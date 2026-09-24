@@ -124,18 +124,39 @@ async def fetch_bounded_rows(conn: asyncpg.Connection, schema: str, name: str,
         column["name"]
         for column in await fetch_columns(conn, schema, name)
     }
+    return await fetch_bounded_query(
+        conn, f"SELECT * FROM {qualified(schema, name)} LIMIT $1", [limit],
+        columns, max_bytes)
+
+
+async def fetch_bounded_query(
+    conn: asyncpg.Connection,
+    query: str,
+    params: list[Any],
+    columns: set[str],
+    max_bytes: int,
+) -> list[dict[str, Any]] | None:
+    """Apply a byte budget before transferring a generated row query.
+
+    Args:
+        conn (asyncpg.Connection): the connection.
+        query (str): internally generated SELECT with a row limit.
+        params (list[Any]): bound query values.
+        columns (set[str]): projected column names, for marker isolation.
+        max_bytes (int): maximum database JSONL bytes to transfer.
+    """
     marker = "__mirage_bytes"
     while marker in columns:
         marker += "_"
     # Keep the gate and fetch in one statement/snapshot. The LEFT JOIN emits
     # only a null row plus the size on overflow, never the oversized values.
     rows = await conn.fetch(
-        "WITH data AS MATERIALIZED (SELECT * FROM "
-        f"{qualified(schema, name)} LIMIT $1), "
+        f"WITH data AS MATERIALIZED ({query}), "
         "budget AS (SELECT COALESCE(SUM("
         "octet_length(row_to_json(data)::text) + 1), 0) AS bytes FROM data) "
         f"SELECT data.*, budget.bytes AS {quote_ident(marker)} "
-        "FROM budget LEFT JOIN data ON budget.bytes <= $2", limit, max_bytes)
+        f"FROM budget LEFT JOIN data ON budget.bytes <= ${len(params) + 1}",
+        *params, max_bytes)
     size = int(rows[0][marker])
     if size > max_bytes:
         return None

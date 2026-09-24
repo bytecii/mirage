@@ -18,11 +18,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mirage.accessor.postgres import PostgresAccessor
-from mirage.core.hierarchy.search import SearchQuery
 from mirage.core.postgres.search import (format_grep_results, search_database,
                                          search_entity, search_kind,
                                          search_schema)
 from mirage.vfs.postgres.config import PostgresConfig
+from mirage.vfs.types import SearchQuery
 
 
 @asynccontextmanager
@@ -58,7 +58,11 @@ def _columns(*pairs: tuple[str, str]) -> list[dict[str, str]]:
 
 def _conn(columns, rows) -> MagicMock:
     conn = MagicMock()
-    conn.fetch = AsyncMock(side_effect=[columns, rows])
+    bounded = [{**row, "__mirage_bytes": 100} for row in rows]
+    conn.fetch = AsyncMock(
+        side_effect=[columns, bounded or [{
+            "__mirage_bytes": 0
+        }]])
     return conn
 
 
@@ -94,7 +98,12 @@ def _scanning_conn(columns, rows) -> MagicMock:
 
 
 def _query(pattern: str, ignore_case: bool = False) -> SearchQuery:
-    return SearchQuery(pattern=pattern, ignore_case=ignore_case)
+    return SearchQuery(
+        query=pattern,
+        options={"grep": {
+            "ignore_case": ignore_case,
+            "fixed_string": False
+        }})
 
 
 USERS = _columns(("id", "integer"), ("name", "text"))
@@ -129,7 +138,7 @@ async def test_search_entity_casts_every_column_and_takes_escaped_rows():
     conn = _conn(USERS, [])
     await search_entity(_accessor_with_conn(conn), "public", "tables", "users",
                         _query("user_id"))
-    sql, pattern, limit = conn.fetch.await_args_list[1].args
+    sql, pattern, limit, max_bytes = conn.fetch.await_args_list[1].args
     # grep is case-sensitive by default, so the push-down uses LIKE; an
     # integer column is searched through its cast, which spells it the way
     # the line does; a string column holding a control character is a
@@ -142,6 +151,28 @@ async def test_search_entity_casts_every_column_and_takes_escaped_rows():
     assert pattern == "%user\\_id%"
     # One past the ceiling, to tell a full answer from a cut one.
     assert limit == 10_001
+    assert max_bytes == 10 * 1024 * 1024
+    assert "LEFT JOIN data ON budget.bytes <= $3" in sql
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("database_bytes", [65, 1])
+async def test_search_refuses_database_and_rendered_byte_overflows(
+        database_bytes):
+    conn = _conn(USERS, [])
+    conn.fetch.side_effect = [
+        USERS,
+        [{
+            "name": "needle" + "x" * 1024,
+            "__mirage_bytes": database_bytes,
+        }]
+    ]
+    accessor = _accessor_with_conn(conn)
+    accessor.config = PostgresConfig(dsn="postgres://localhost/db",
+                                     max_read_bytes=64)
+    with pytest.raises(ValueError, match="max_read_bytes"):
+        await search_entity(accessor, "public", "tables", "users",
+                            _query("needle"))
 
 
 @pytest.mark.asyncio

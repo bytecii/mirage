@@ -19,7 +19,6 @@ import { join } from 'node:path'
 import {
   Accessor,
   command,
-  type CommandIO,
   CommandSpec,
   ContentType,
   eisdir,
@@ -32,12 +31,12 @@ import {
   MountMode,
   type PathSpec,
   registerVfsFactory,
-  streamFromBytes,
+  VFSAdapter,
   Workspace,
 } from '@struktoai/mirage-node'
 
 // A whole custom backend in one script: four core functions over your
-// data source, one CommandIO table, one GenericVFS. Every generic
+// data source, a read adapter with optional writes, one GenericVFS. Every generic
 // command (ls, cat, grep, find, head, wc, ...) works for free, and so
 // does versioning, in the shape the content calls for: the wiki's pages
 // are the VFS's own, so they ride its state and a snapshot rebuilds
@@ -149,16 +148,11 @@ const wikiTitles = command({
   },
 })
 
-function makeIO(writable = true): CommandIO<WikiAccessor> {
-  return {
-    readdir,
-    readBytes,
-    readStream: (a, p, i) => streamFromBytes(readBytes, a, p, i),
-    stat,
-    ...(writable ? { write } : {}),
-    isMounted: () => true,
-    local: false,
-  }
+function makeIO(writable = true): VFSAdapter<WikiAccessor> {
+  return new VFSAdapter({
+    read: { readdir, readBytes, stat },
+    ...(writable ? { writes: { write } } : {}),
+  })
 }
 
 class WikiVFS extends GenericVFS<WikiAccessor> {

@@ -12,11 +12,12 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from mirage.commands.builtin.generic_bind import CommandIO
 from mirage.core.dify.read import read_bytes as _read
 from mirage.core.dify.read import read_stream as _read_stream
 from mirage.core.dify.readdir import readdir as _readdir
 from mirage.core.dify.stat import stat as _stat
+from mirage.vfs.adapter import VFSAdapter
+from mirage.vfs.types import NativeReadOps, ReadOps
 
 # Dify knowledge-base documents are read through the generic factory. cat and
 # find keep wrappers to avoid an extra document-detail API call per path: the
@@ -26,14 +27,10 @@ from mirage.core.dify.stat import stat as _stat
 # package factory. search pushes down to the Dify retrieval API. Dify is
 # read-only, so the generic byte-mutation commands are intentionally absent
 # (no write op wired).
-IO = CommandIO(
-    readdir=_readdir,
-    read_bytes=_read,
-    read_range=_read,
-    read_stream=_read_stream,
-    stat=_stat,
-    is_mounted=lambda a: True,
-    local=False,
-)
+IO = VFSAdapter(read=ReadOps(readdir=_readdir, read_bytes=_read, stat=_stat),
+                native=NativeReadOps(read_range=_read,
+                                     read_stream=_read_stream),
+                is_mounted=lambda a: True,
+                local=False).to_command_io()
 
 resolve_glob = IO.resolve_glob

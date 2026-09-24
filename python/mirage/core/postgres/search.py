@@ -17,14 +17,16 @@ from functools import partial
 import orjson
 
 from mirage.accessor.postgres import PostgresAccessor
+from mirage.commands.builtin.grep_pushdown import grep_search_options
 from mirage.core.hierarchy.scope import ScopeMatch
-from mirage.core.hierarchy.search import Searcher, SearchQuery, query_matcher
+from mirage.core.hierarchy.search import Searcher, query_matcher
 from mirage.core.postgres import client
 from mirage.core.postgres._schema_json import build_entity_schema_json
 from mirage.core.postgres.client import (canonicalize_row, qualified,
                                          quote_ident)
 from mirage.core.postgres.read import read_rows, row_line
 from mirage.core.postgres.semantic import build_entity_semantic_json
+from mirage.vfs.types import SearchQuery
 
 # Column types whose `::text` is the value exactly as a rows.jsonl line
 # spells it, so a LIKE over the cast finds every row whose line holds
@@ -75,16 +77,17 @@ def _answerable(columns: list[tuple[str, str]], query: SearchQuery) -> bool:
             in column order.
         query (SearchQuery): the qualified request; a literal pattern.
     """
-    pattern = query.pattern
+    pattern = query.query
     if any(ch in _STRUCTURAL or ord(ch) < 0x20 for ch in pattern):
         return False
-    folded = pattern.lower() if query.ignore_case else pattern
+    folded = pattern.lower() if grep_search_options(
+        query).ignore_case else pattern
     if folded in _NULL:
         return False
     for name, data_type in columns:
         if data_type not in _SAME_TEXT_TYPES:
             return False
-        key = name.lower() if query.ignore_case else name
+        key = name.lower() if grep_search_options(query).ignore_case else name
         if folded in key:
             return False
     return True
@@ -124,7 +127,7 @@ async def search_entity(accessor: PostgresAccessor, schema: str, kind: str,
         if not columns:
             return []
         if _answerable(columns, query):
-            op = "ILIKE" if query.ignore_case else "LIKE"
+            op = "ILIKE" if grep_search_options(query).ignore_case else "LIKE"
             clauses = [
                 f"{quote_ident(name)}::text {op} $1" for name, _ in columns
             ]
@@ -134,14 +137,30 @@ async def search_entity(accessor: PostgresAccessor, schema: str, kind: str,
             ]
             sql = (f"SELECT * FROM {qualified(schema, entity)} "
                    f"WHERE {' OR '.join(clauses)} LIMIT $2")
-            rows = await conn.fetch(sql, f"%{_escape_like(query.pattern)}%",
-                                    cap + 1)
+            max_bytes = accessor.config.max_read_bytes
+            rows = await client.fetch_bounded_query(
+                conn, sql, [f"%{_escape_like(query.query)}%", cap + 1],
+                {name
+                 for name, _ in columns}, max_bytes)
+            byte_error = (f"{schema}/{kind}/{entity}/rows.jsonl: "
+                          f"more than {max_bytes} bytes match "
+                          "(max_read_bytes); narrow the pattern")
+            if rows is None:
+                raise ValueError(byte_error)
             if len(rows) > cap:
                 raise ValueError(f"{schema}/{kind}/{entity}/rows.jsonl: "
                                  f"more than {cap} rows match "
                                  "(max_read_rows); narrow the pattern")
-            lines = [row_line(canonicalize_row(dict(r))) for r in rows]
-            return [line for line in lines if matcher.search(line)]
+            lines: list[str] = []
+            rendered_bytes = 0
+            for row in rows:
+                line = row_line(canonicalize_row(dict(row)))
+                rendered_bytes += len(line.encode()) + 1
+                if rendered_bytes > max_bytes:
+                    raise ValueError(byte_error)
+                if matcher.search(line):
+                    lines.append(line)
+            return lines
     data = await read_rows(accessor, schema, entity, kind=kind)
     return [
         line for line in data.decode().split("\n")[:-1] if matcher.search(line)

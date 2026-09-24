@@ -16,16 +16,15 @@ import asyncio
 import hashlib
 import tempfile
 from copy import deepcopy
-from functools import partial
 from pathlib import Path
 
-from mirage import (NULL_INDEX, Accessor, CommandIO, CommandSpec, ContentType,
-                    FileStat, FileType, GenericVFS, IndexCacheStore, IOResult,
-                    MountMode, PathSpec, Workspace, command, register_vfs,
-                    stream_from_bytes)
+from mirage import (NULL_INDEX, Accessor, CommandSpec, ContentType, FileStat,
+                    FileType, GenericVFS, IndexCacheStore, IOResult, MountMode,
+                    PathSpec, ReadOps, VFSAdapter, Workspace, WriteOps,
+                    command, register_vfs)
 
 # A whole custom backend in one script: four async core functions over
-# your data source, one CommandIO table, one GenericVFS. Every
+# your data source, a read adapter with optional writes, one GenericVFS. Every
 # generic command (ls, cat, grep, find, head, wc, ...) works for free,
 # and so does versioning, in the shape the content calls for: the wiki's
 # pages are the VFS's own, so they ride its state and a snapshot
@@ -124,15 +123,10 @@ async def wiki_titles(accessor, paths, texts, opts):
     return ("\n".join(titles) + "\n").encode(), IOResult()
 
 
-def make_io(*, writable: bool = True) -> CommandIO:
-    return CommandIO(
-        readdir=readdir,
-        read_bytes=read_bytes,
-        read_stream=partial(stream_from_bytes, read_bytes),
-        stat=stat,
-        write=write if writable else None,
-        is_mounted=lambda a: True,
-        local=False,
+def make_io(*, writable: bool = True) -> VFSAdapter:
+    return VFSAdapter(
+        read=ReadOps(readdir=readdir, read_bytes=read_bytes, stat=stat),
+        writes=WriteOps(write=write) if writable else WriteOps(),
     )
 
 

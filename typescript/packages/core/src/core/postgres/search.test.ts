@@ -28,7 +28,7 @@ vi.mock('./client.ts', async () => {
 
 import { PostgresAccessor } from '../../accessor/postgres.ts'
 import { resolvePostgresConfig } from '../../vfs/postgres/config.ts'
-import type { SearchQuery } from '../hierarchy/search.ts'
+import type { SearchQuery } from '../../vfs/types.ts'
 import type { PgDriver } from './_driver.ts'
 import * as client from './client.ts'
 import { formatGrepResults, searchEntity, searchKind } from './search.ts'
@@ -48,6 +48,8 @@ function makeAccessor(
   cols: Row[],
   rows: Row[],
   maxReadRows = 10_000,
+  maxReadBytes = 10 * 1024 * 1024,
+  databaseBytes = 100,
 ): { accessor: PostgresAccessor; calls: [string, unknown[]][] } {
   const calls: [string, unknown[]][] = []
   const driver: PgDriver = {
@@ -64,7 +66,10 @@ function makeAccessor(
       }
       if (sql.startsWith('WITH data AS MATERIALIZED')) {
         return Promise.resolve({
-          rows: rows.map((row) => ({ ...row, __mirage_bytes: 100 })),
+          rows:
+            rows.length === 0
+              ? [{ __mirage_bytes: 0 }]
+              : rows.map((row) => ({ ...row, __mirage_bytes: databaseBytes })),
           rowCount: rows.length,
         })
       }
@@ -73,12 +78,17 @@ function makeAccessor(
     }) as PgDriver['query'],
     close: () => Promise.resolve(),
   }
-  const cfg = resolvePostgresConfig({ dsn: 'postgres://localhost/db', maxReadRows })
+  const cfg = resolvePostgresConfig({ dsn: 'postgres://localhost/db', maxReadRows, maxReadBytes })
   return { accessor: new PostgresAccessor(driver, cfg), calls }
 }
 
 function query(pattern: string, ignoreCase = false): SearchQuery {
-  return { pattern, ignoreCase, fixedString: false, wholeWord: false, basic: true }
+  return {
+    query: pattern,
+    options: {
+      grep: { ignore_case: ignoreCase, fixed_string: false, whole_word: false, basic: true },
+    },
+  }
 }
 
 describe('searchEntity', () => {
@@ -114,13 +124,27 @@ describe('searchEntity', () => {
     expect(sql).not.toContain('"id" ~')
     // `_` is escaped so it matches literally; one past the ceiling tells a
     // full answer from a cut one.
-    expect(params).toEqual(['%user\\_id%', 10_001])
+    expect(params).toEqual(['%user\\_id%', 10_001, 10 * 1024 * 1024])
+    expect(sql).toContain('LEFT JOIN data ON budget.bytes <= $3')
   })
 
   it('folds case with ILIKE under -i', async () => {
     const { accessor, calls } = makeAccessor(USERS, [])
     await searchEntity(accessor, 'public', 'tables', 'users', query('ALI', true))
     expect(calls[1]?.[0]).toContain('ILIKE')
+  })
+
+  it.each([65, 1])('refuses database and rendered byte overflows (%i)', async (databaseBytes) => {
+    const { accessor } = makeAccessor(
+      USERS,
+      [{ name: 'needle' + 'x'.repeat(1024) }],
+      10_000,
+      64,
+      databaseBytes,
+    )
+    await expect(
+      searchEntity(accessor, 'public', 'tables', 'users', query('needle')),
+    ).rejects.toThrow('max_read_bytes')
   })
 
   // A tab renders as `\t` in the line, so `t` matches it there while no LIKE

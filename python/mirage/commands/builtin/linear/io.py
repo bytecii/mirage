@@ -12,26 +12,19 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from functools import partial
-
-from mirage.commands.builtin.generic_bind import CommandIO
-from mirage.commands.builtin.utils.wrap import stream_from_bytes
 from mirage.core.linear.read import read as _read
 from mirage.core.linear.readdir import readdir as _readdir
 from mirage.core.linear.stat import stat as _stat
+from mirage.vfs.adapter import VFSAdapter
+from mirage.vfs.types import ReadOps
 
 # Linear teams/issues/projects are read through the generic factory (find
 # included); the account's verbs are the `linear` CLI
 # (commands/cli/builtin/linear), which reads and writes by id. The generic
 # byte-mutation commands are intentionally absent (mutations go through
 # that CLI, no write op wired).
-IO = CommandIO(
-    readdir=_readdir,
-    read_bytes=_read,
-    read_stream=partial(stream_from_bytes, _read),
-    stat=_stat,
-    is_mounted=lambda a: True,
-    local=False,
-)
+IO = VFSAdapter(read=ReadOps(readdir=_readdir, read_bytes=_read, stat=_stat),
+                is_mounted=lambda a: True,
+                local=False).to_command_io()
 
 resolve_glob = IO.resolve_glob

@@ -51,6 +51,9 @@ from mirage.policy import (Ask, Decision, Decisions, Explanation, Outcome,
 from mirage.policy.types import OpsContext
 from mirage.vfs.base import BaseVFS
 from mirage.vfs.generic import GenericVFS
+from mirage.vfs.adapter import VFSAdapter
+from mirage.vfs.types import (DuOps, NativeReadOps, ReadOps, SearchOps,
+                              SearchQuery, WriteOps)
 from mirage.vfs.registry import (build_vfs, known_vfs_names, register_vfs)
 from mirage.runtime.base import Runtime
 from mirage.runtime.config import RuntimeConfig
@@ -119,6 +122,13 @@ __all__ = [
     "FileType",
     "FlagView",
     "GenericVFS",
+    "VFSAdapter",
+    "SearchOps",
+    "SearchQuery",
+    "DuOps",
+    "ReadOps",
+    "NativeReadOps",
+    "WriteOps",
     "IOResult",
     "IndexCacheStore",
     "IndexConfig",

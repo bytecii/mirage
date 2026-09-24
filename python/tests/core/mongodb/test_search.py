@@ -18,10 +18,10 @@ import pytest
 
 from mirage.accessor.mongodb import MongoDBAccessor
 from mirage.core.hierarchy.scope import ScopeMatch
-from mirage.core.hierarchy.search import SearchQuery
 from mirage.core.mongodb.scope import detect_scope
 from mirage.core.mongodb.search import SEARCHERS
 from mirage.vfs.mongodb.config import MongoDBConfig
+from mirage.vfs.types import SearchQuery
 
 DOCS = {
     ("app", "books"): [
@@ -70,9 +70,15 @@ def _match(path: str) -> ScopeMatch:
 async def _search(path: str, pattern: str, **flags) -> list[str]:
     match = _match(path)
     return await SEARCHERS[match.kind](_accessor(), match,
-                                       SearchQuery(pattern=pattern,
-                                                   basic=True,
-                                                   **flags))
+                                       SearchQuery(query=pattern,
+                                                   options={
+                                                       "grep": {
+                                                           "basic": True,
+                                                           "fixed_string":
+                                                           False,
+                                                           **flags
+                                                       }
+                                                   }))
 
 
 @pytest.mark.asyncio

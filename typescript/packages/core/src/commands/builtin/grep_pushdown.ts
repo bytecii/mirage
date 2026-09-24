@@ -12,6 +12,9 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { Accessor } from '../../accessor/base.ts'
+import type { SearchOps, SearchQuery } from '../../vfs/types.ts'
+import type { GrepSearchOptions, GrepSearchMeta } from './types.ts'
 import type { PathSpec } from '../../types.ts'
 import { PatternType } from './constants.ts'
 import { hasUnresolvedGlob } from './utils/operands.ts'
@@ -258,4 +261,49 @@ export function textSearchResults(lines: readonly string[]): boolean {
         return cp >= 0xd800 && cp <= 0xdfff
       }),
   )
+}
+
+/** Read only grep's opt-in namespace; other capability metadata is opaque. */
+export function grepSearchMeta<A extends Accessor>(
+  search: SearchOps<A> | undefined,
+): GrepSearchMeta | null {
+  if (search?.meta?.grep === undefined) return null
+  const meta = search.meta.grep
+  if (
+    meta === null ||
+    typeof meta !== 'object' ||
+    Array.isArray(meta) ||
+    Object.keys(meta).some((key) => !['mode', 'stream'].includes(key))
+  ) {
+    throw new Error('search.meta.grep must contain mode and optional stream')
+  }
+  const mode = meta.mode
+  const stream = meta.stream === undefined ? false : meta.stream
+  if ((mode !== 'literal' && mode !== 'regex') || typeof stream !== 'boolean') {
+    throw new Error('search.meta.grep requires mode=literal|regex and boolean stream')
+  }
+  return { mode, stream }
+}
+
+/** A plain resource query is literal text; grep owns its optional namespace. */
+export function grepSearchOptions(query: SearchQuery): GrepSearchOptions {
+  const options = query.options?.grep === undefined ? {} : query.options.grep
+  const allowed = ['ignore_case', 'fixed_string', 'whole_word', 'basic']
+  if (
+    options === null ||
+    typeof options !== 'object' ||
+    Array.isArray(options) ||
+    Object.keys(options).some((key) => !allowed.includes(key))
+  ) {
+    throw new Error('search.options.grep contains unknown options')
+  }
+  if (Object.values(options).some((value) => typeof value !== 'boolean')) {
+    throw new Error('search.options.grep values must be boolean')
+  }
+  return {
+    ignoreCase: options.ignore_case === true,
+    fixedString: options.fixed_string !== false,
+    wholeWord: options.whole_word === true,
+    basic: options.basic === true,
+  }
 }

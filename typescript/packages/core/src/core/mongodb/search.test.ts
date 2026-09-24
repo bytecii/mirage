@@ -21,7 +21,7 @@ vi.mock('./_schema_json.ts', () => ({
 
 import { MongoDBAccessor } from '../../accessor/mongodb.ts'
 import { resolveMongoDBConfig } from '../../vfs/mongodb/config.ts'
-import type { SearchQuery } from '../hierarchy/search.ts'
+import type { GrepSearchOptions } from '../../commands/builtin/types.ts'
 import { arrayIter, stubMongoDriver } from './_test_util.ts'
 import { detectScope } from './scope.ts'
 import { SEARCHERS } from './search.ts'
@@ -55,19 +55,22 @@ function accessor(docs: Record<string, Record<string, unknown>[]> = DOCS): Mongo
 async function search(
   path: string,
   pattern: string,
-  flags: Partial<SearchQuery> = {},
+  flags: Partial<GrepSearchOptions> = {},
   acc: MongoDBAccessor = accessor(),
 ): Promise<string[]> {
   const match = detectScope(path)
   const searcher = SEARCHERS[match.kind]
   if (searcher === undefined) throw new Error(`no searcher for ${match.kind}`)
   return searcher(acc, match, {
-    pattern,
-    ignoreCase: false,
-    fixedString: false,
-    wholeWord: false,
-    basic: true,
-    ...flags,
+    query: pattern,
+    options: {
+      grep: {
+        ignore_case: flags.ignoreCase ?? false,
+        fixed_string: flags.fixedString ?? false,
+        whole_word: flags.wholeWord ?? false,
+        basic: flags.basic ?? true,
+      },
+    },
   })
 }
 
