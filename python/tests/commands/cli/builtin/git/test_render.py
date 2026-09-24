@@ -157,3 +157,22 @@ def test_the_two_sections_can_name_the_same_path():
     body = long_format([row("a.txt", "M", "M")], "main", None, False, False,
                        False)
     assert body.count("\tmodified:   a.txt") == 2
+
+
+# Pinned against git 2.50 with core.quotePath=false: a byte outside
+# ASCII passes through, and everything git quotes anyway still is.
+UNQUOTED = [
+    ("héllo.txt", "héllo.txt"),
+    ("tab\thé.txt", '"tab\\thé.txt"'),
+    ("del\x7f.txt", '"del\\177.txt"'),
+    ("\udcff.txt", "\udcff.txt"),
+]
+
+
+@pytest.mark.parametrize("path,human", UNQUOTED)
+def test_quote_path_off_leaves_non_ascii_alone(path, human):
+    assert quote_path(path, False, False) == human
+
+
+def test_an_undecodable_byte_is_quoted_as_itself():
+    assert quote_path("\udcff.txt", False) == '"\\377.txt"'

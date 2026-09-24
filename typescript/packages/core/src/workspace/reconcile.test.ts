@@ -241,7 +241,7 @@ describe('Reconciler', () => {
       const ram = new RAMVFS()
       await ram.writeFile(PathSpec.fromStrPath('/f.txt'), new TextEncoder().encode('v1'))
       const ws = new Workspace({ '/data': ram })
-      const logged = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+      const logged = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
       try {
         const mount = withFresh(mountOf(ws, '/data/f.txt'))
         vi.spyOn(ws.opsRegistry, 'call').mockImplementation(() =>
@@ -287,7 +287,7 @@ describe('Reconciler', () => {
       const ws = new Workspace({ '/data': new RAMVFS() })
       await ws.namespace.ensureLoaded()
       const mount = withFresh(mountOf(ws, '/data/f.txt'))
-      vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined)
       vi.spyOn(ws.opsRegistry, 'call').mockImplementation(() =>
         Promise.reject(
           failure === 'bug'

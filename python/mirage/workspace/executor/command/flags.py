@@ -119,9 +119,8 @@ def parse_flags(
         list[PathSpec]), and parser warnings (e.g. ignored unknown options).
     """
     # Build string argv and PathSpec lookup
-    argv = [
-        item.virtual if isinstance(item, PathSpec) else item for item in parts
-    ]
+    argv = [("-" if item.raw_path == "-" else item.virtual) if isinstance(
+        item, PathSpec) else item for item in parts]
     scope_map: dict[str, PathSpec] = {}
     for item in parts:
         if isinstance(item, PathSpec):

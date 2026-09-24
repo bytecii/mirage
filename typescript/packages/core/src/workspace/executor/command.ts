@@ -21,6 +21,12 @@ import type { VFS } from '../../vfs/base.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
 import type { JobTable } from '../../shell/job_table/index.ts'
 import { PathSpec } from '../../types.ts'
+import {
+  PROGRAM_FILE_COMMANDS,
+  prepareProgram,
+  programFiles,
+} from '../../commands/builtin/generic/program.ts'
+import type { ParsedCommand } from './command/types.ts'
 import { identityFrom } from '../../commands/builtin/utils/identity.ts'
 import type { MountEntry } from '../mount/mount.ts'
 import type { Namespace } from '../mount/namespace/namespace.ts'
@@ -280,6 +286,52 @@ export async function handleCommand(
     return [standardOut, new IOResult(), new ExecutionNode({ command: cmdStr, exitCode: 0 })]
   }
 
+  let prepared: ParsedCommand | null = null
+  if (PROGRAM_FILE_COMMANDS.has(cmdName)) {
+    const programSpec = SPECS[cmdName]
+    if (programSpec !== undefined) {
+      const candidate = parseFlags(
+        parts.slice(1),
+        registeredSpec(cmdName, programSpec),
+        cmdName,
+        session.cwd,
+      )
+      if (programFiles(cmdName, candidate.flagKwargs).length > 0) {
+        prepared = candidate
+        const refusal = optionError(cmdName, prepared)
+        if (refusal !== null) {
+          const [msg, code] = refusal
+          return [
+            null,
+            new IOResult({ exitCode: code, stderr: msg }),
+            new ExecutionNode({ command: cmdStr, exitCode: code, stderr: msg }),
+          ]
+        }
+        const [texts, flags, remaining, error] = await prepareProgram(
+          cmdName,
+          prepared.texts,
+          prepared.flagKwargs,
+          stdin,
+          dispatch,
+        )
+        if (error !== null) {
+          return [
+            null,
+            error,
+            new ExecutionNode({
+              command: cmdStr,
+              exitCode: error.exitCode,
+              stderr: await materialize(error.stderr),
+            }),
+          ]
+        }
+        stdin = remaining
+        prepared = { ...prepared, texts, flagKwargs: flags }
+        pathScopes.splice(0, pathScopes.length, ...prepared.paths)
+      }
+    }
+  }
+
   // Path-valued flags (e.g. shuf --output=/dst/out) own a mount just like
   // positional operands, so they join routing and mount validation instead of
   // being dropped whenever a positional path is also present.
@@ -339,12 +391,14 @@ export async function handleCommand(
     // `option '--version' doesn't allow an argument` and the two-mount line
     // was `unrecognized option '--vers=x'`.
     const sharedSpec = SPECS[cmdName]
-    const csParsed = parseFlags(
-      parts.slice(1),
-      sharedSpec !== undefined ? registeredSpec(cmdName, sharedSpec) : null,
-      cmdName,
-      session.cwd,
-    )
+    const csParsed =
+      prepared ??
+      parseFlags(
+        parts.slice(1),
+        sharedSpec !== undefined ? registeredSpec(cmdName, sharedSpec) : null,
+        cmdName,
+        session.cwd,
+      )
     const csFlags = csParsed.flagKwargs
     const csTexts = findExprTokens ?? csParsed.texts
     const csRefusal = optionError(cmdName, csParsed)
@@ -501,7 +555,8 @@ export async function handleCommand(
       new ExecutionNode({ command: cmdStr, exitCode: 127 }),
     ]
   }
-  const parsedLine = parseFlags(parts.slice(1), mount.specFor(cmdName), cmdName, session.cwd)
+  const parsedLine =
+    prepared ?? parseFlags(parts.slice(1), mount.specFor(cmdName), cmdName, session.cwd)
   const { paths: parsedPaths, flagKwargs, warnings: parseWarnings } = parsedLine
   const textsRaw = parsedLine.texts
   const refusal = optionError(cmdName, parsedLine)

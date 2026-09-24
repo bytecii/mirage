@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { isEacces, isEnoent } from '../../utils/errors.ts'
+import { isEntryError } from '../../commands/errors.ts'
 import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { IndexCacheStore } from '../../cache/index/store.ts'
 import type { FindOptions } from '../../vfs/base.ts'
@@ -49,6 +50,13 @@ export interface WalkFindDeps {
   // continues; one that does not is not left with a silent gap in its
   // listing, the refusal propagates.
   unreadable?: string[]
+  // Where an entry the walk could not stat is recorded, with its error, in
+  // walk order: GNU's find names it and carries on, and the entry stays in
+  // the walk unclassified, a leaf, as a missing one already does, that
+  // fails every test only its stat could answer. It is never statted
+  // again. A caller that does not collect them gets the failure
+  // propagated instead.
+  unstatted?: Map<string, unknown>
 }
 
 interface WalkEntry {
@@ -78,12 +86,17 @@ async function statEntry(
     resolved: false,
     vfsPath: mountKey(path, prefix),
   })
+  if (deps.unstatted?.has(path) === true) return null
   try {
     return await deps.stat(spec, index)
   } catch (err) {
-    // Only missing entries resolve to null; API errors (rate limit, auth) propagate.
+    // Missing entries resolve to null. Any other failure does too when the
+    // caller collects it; otherwise it (a rate limit, an auth failure)
+    // propagates.
     if (isEnoent(err)) return null
-    throw err
+    if (deps.unstatted === undefined || !isEntryError(err)) throw err
+    deps.unstatted.set(path, err)
+    return null
   }
 }
 

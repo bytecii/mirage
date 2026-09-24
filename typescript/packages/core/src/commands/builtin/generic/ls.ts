@@ -21,6 +21,7 @@ import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import type { ChildMounts, LinkView, MountView, StatPath } from '../../../ops/types.ts'
 import {
   LS_TIME_STYLES,
+  STAT_FAILED_KEY,
   type LsColumns,
   formatLsLong,
   lsName,
@@ -29,11 +30,12 @@ import {
   timeOf,
   type BlockSizeRefusal,
 } from '../utils/formatting.ts'
-import { UsageError } from '../../errors.ts'
+import { isEntryError, UsageError } from '../../errors.ts'
 import { argmatchError, argmatchLine, usageHint } from '../../spec/usage.ts'
 import { type ArgmatchKind, argmatch } from '../../spec/argmatch.ts'
 import { identityOf, type Identity } from '../utils/identity.ts'
 import { gnuStrerror, isEacces, isWalkError } from '../../../utils/errors.ts'
+import { failureText } from '../../../errors/classify.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import { CycleError, respellOne } from '../../../utils/path.ts'
 import { formatRecords } from '../utils/output.ts'
@@ -89,6 +91,9 @@ interface WalkOpts {
   // Dispatcher-backed stat, the only way to learn a child mount's real
   // type. See `mountRow`.
   statPath: StatPath | null
+  // Whether the listing prints anything an entry's stat supplies, so an
+  // entry whose stat failed is reported. See `statNeeded`.
+  statNeeded: boolean
 }
 
 // One ls operand once its kind is known. `row` is set when the operand is not
@@ -408,12 +413,28 @@ async function mountRow(
   return new FileStat({ name, type: FileType.DIRECTORY })
 }
 
-// An entry that cannot be stat'd is skipped with its own diagnostic rather
-// than failing the whole directory: GNU keeps listing the siblings and exits
-// 1. One entry at a time, as GNU's lstat loop and find's walk go: on a mount
-// that keeps no listing index each stat is a backend request, and firing a
-// whole directory's worth together is a burst the backend may refuse. Mirrors
-// Python ls `_stat_entries`.
+// The row for an entry the listing named but its stat could not describe.
+// GNU keeps it, since readdir is what named it, and `?` stands for every
+// fact only the stat knows; its type is a directory's when the listing
+// slash-marked it, and unknown otherwise.
+function statFailedRow(entry: string): FileStat {
+  const trimmed = rstripSlash(entry)
+  return new FileStat({
+    name: trimmed.slice(trimmed.lastIndexOf('/') + 1),
+    type: entry.endsWith('/') ? FileType.DIRECTORY : FileType.FILE,
+    extra: { [STAT_FAILED_KEY]: true },
+  })
+}
+
+// An entry whose stat fails keeps its row and never fails the whole
+// directory, whatever the error: a dropped connection on a mount whose stat
+// is a request costs that entry alone, as any failed stat does in GNU's
+// gobble_file. It is reported, and the exit is 1, only when the listing
+// prints something the stat supplies (`statNeeded`). One entry at a time,
+// as GNU's lstat loop and find's walk go: on a mount that keeps no listing
+// index each stat is a backend request, and firing a whole directory's
+// worth together is a burst the backend may refuse. Mirrors Python ls
+// `_stat_entries`.
 async function listDir(
   readdir: Readdir,
   stat: Stat,
@@ -425,6 +446,7 @@ async function listDir(
   stat2: Stat,
   childMounts: ChildMounts | null,
   statPath: StatPath | null,
+  statNeeded: boolean,
 ): Promise<{ stats: FileStat[]; structureOnly: boolean }> {
   let entries: string[]
   let structureOnly = false
@@ -445,10 +467,14 @@ async function listDir(
     try {
       stats.push(await stat(childSpec(entry, prefix)))
     } catch (err) {
-      if (!isWalkError(err)) throw err
+      if (!isEntryError(err)) throw err
+      const row = statFailedRow(entry)
+      stats.push(row)
+      if (!all && row.name.startsWith('.')) continue
+      if (!statNeeded) continue
       // An entry below an operand is never a command-line arg.
       warnings.push({
-        message: `ls: cannot access '${entry}': ${errText(err)}`,
+        message: `ls: cannot access '${rstripSlash(entry)}': ${failureText(err)}`,
         serious: false,
       })
     }
@@ -536,6 +562,7 @@ async function probeOperand(
       stat,
       opts.childMounts,
       opts.statPath,
+      opts.statNeeded,
     )
     stats = listed.stats
     structureOnly = listed.structureOnly
@@ -841,6 +868,26 @@ export function parseFlags(fl: FlagView): LsFlags {
   })
 }
 
+// Whether GNU's ls would stat a listed entry to print this listing, which
+// is when a failed stat reaches stderr: the long format, a time or size
+// sort, -i, -Z and --hyperlink read the stat (GNU's format_needs_stat), and
+// -R, -F and --group-directories-first read the type (format_needs_type),
+// which a mirage listing never carries, as a readdir without d_type does
+// not. A plain listing prints the names readdir gave and nothing else.
+function statNeeded(flags: LsFlags): boolean {
+  return (
+    flags.long ||
+    flags.sortBy === 'time' ||
+    flags.sortBy === 'size' ||
+    flags.columns.inode ||
+    flags.columns.context ||
+    flags.hyperlink ||
+    flags.recursive ||
+    flags.classify ||
+    flags.groupDirsFirst
+  )
+}
+
 function finish(lines: string[], warnings: readonly LsWarning[]): CommandFnResult {
   const out: ByteSource = formatRecords(lines)
   const exitCode = exitStatusFor(warnings)
@@ -947,6 +994,7 @@ export async function lsGeneric(
     childMounts: opts.ns?.childMounts ?? null,
     mounts: opts.ns?.mounts ?? null,
     statPath: opts.statPath ?? null,
+    statNeeded: statNeeded(flags),
   }
   const probed: Operand[] = []
   for (const p of targets) {

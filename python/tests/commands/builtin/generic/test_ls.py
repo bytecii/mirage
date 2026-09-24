@@ -1,4 +1,5 @@
 import asyncio
+import errno
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from functools import partial
@@ -11,7 +12,7 @@ from mirage.commands.builtin.generic.ls import (LS_FAILURE, LS_MINOR_PROBLEM,
                                                 format_simple, ls, parse_flags,
                                                 sort_stats, walk)
 from mirage.commands.builtin.utils.formatting import BlockSize, LsColumns
-from mirage.commands.errors import UsageError
+from mirage.commands.errors import CommandTimeoutError, UsageError
 from mirage.ops.types import LinkView, MountView
 from mirage.types import (LINK_TARGET_KEY, ContentType, FileStat, FileType,
                           LsSortBy, LsTimeKind, PathSpec)
@@ -325,7 +326,7 @@ async def test_ls_missing_operand_under_list_dir_exits_2():
 @pytest.mark.asyncio
 async def test_ls_unstattable_entry_is_a_minor_problem():
     """An entry below the operand is not a command-line arg, so GNU keeps
-    listing its siblings and exits 1.
+    listing its siblings, keeps the entry's own row of ``?``, and exits 1.
     """
     tree = {
         "/dir": _dir("dir"),
@@ -335,10 +336,104 @@ async def test_ls_unstattable_entry_is_a_minor_problem():
     readdir, stat = _make_fs_backend(tree)
 
     denying_stat = partial(_stat_denying, stat=stat, blocked="/dir/locked.txt")
-    output, io = await ls([_spec("/dir")], readdir=readdir, stat=denying_stat)
+    output, io = await ls([_spec("/dir")],
+                          readdir=readdir,
+                          stat=denying_stat,
+                          long=True)
     assert io.exit_code == LS_MINOR_PROBLEM
-    assert output == b"a.txt\n"
+    assert output.decode().endswith("? locked.txt\n")
     assert b"locked.txt" in (io.stderr or b"")
+
+
+def _failing_entry(exc: Exception):
+    """A readdir/stat pair over /dir whose b.txt fails its stat.
+
+    Args:
+        exc (Exception): what b.txt's stat raises.
+    """
+    tree = {
+        "/dir": _dir("dir"),
+        "/dir/a.txt": _file("a.txt", 1, "2026-01-01T00:00:00Z"),
+        "/dir/b.txt": _file("b.txt", 1, "2026-01-01T00:00:00Z"),
+    }
+    readdir, stat = _make_fs_backend(tree)
+
+    async def failing_stat(p: PathSpec, index=None) -> FileStat:
+        if p.virtual == "/dir/b.txt":
+            raise exc
+        return await stat(p, index)
+
+    return readdir, failing_stat
+
+
+# GNU (coreutils 9.7, EIO injected on one entry with strace) lists every
+# name, and only a listing that stats the entry (-l, -F, -t, -i ...)
+# reports it, whatever the errno, and exits 1.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc", [
+    FileNotFoundError("/dir/b.txt"),
+    RuntimeError("upstream 502 Bad Gateway")
+])
+async def test_ls_plain_lists_an_unstattable_entry_without_a_word(exc):
+    readdir, stat = _failing_entry(exc)
+    output, io = await ls([_spec("/dir")], readdir=readdir, stat=stat)
+    assert io.exit_code == LS_OK
+    assert output == b"a.txt\nb.txt\n"
+    assert not io.stderr
+
+
+@pytest.mark.asyncio
+async def test_ls_long_keeps_a_question_row_for_an_unstattable_entry():
+    readdir, stat = _failing_entry(FileNotFoundError("/dir/b.txt"))
+    output, io = await ls([_spec("/dir")],
+                          readdir=readdir,
+                          stat=stat,
+                          long=True)
+    assert io.exit_code == LS_MINOR_PROBLEM
+    assert output.decode().splitlines()[1] == (
+        "?????????? ? ? ? ?            ? b.txt")
+    assert io.stderr == (
+        b"ls: cannot access '/dir/b.txt': No such file or directory\n")
+
+
+@pytest.mark.asyncio
+async def test_ls_reports_an_unstamped_backend_error_in_its_own_words():
+    readdir, stat = _failing_entry(
+        RuntimeError("S3 GET b.txt failed: 403 Forbidden"))
+    output, io = await ls([_spec("/dir")],
+                          readdir=readdir,
+                          stat=stat,
+                          classify=True)
+    assert io.exit_code == LS_MINOR_PROBLEM
+    assert output == b"a.txt\nb.txt\n"
+    assert io.stderr == (b"ls: cannot access '/dir/b.txt': "
+                         b"S3 GET b.txt failed: 403 Forbidden\n")
+
+
+@pytest.mark.asyncio
+async def test_ls_words_an_eio_the_way_gnu_does():
+    readdir, stat = _failing_entry(OSError(errno.EIO, "socket hang up"))
+    _, io = await ls([_spec("/dir")], readdir=readdir, stat=stat, long=True)
+    assert io.stderr == (
+        b"ls: cannot access '/dir/b.txt': Input/output error\n")
+
+
+@pytest.mark.asyncio
+async def test_ls_still_ends_on_a_timeout():
+    readdir, stat = _failing_entry(CommandTimeoutError("stat", 5))
+    with pytest.raises(CommandTimeoutError):
+        await ls([_spec("/dir")], readdir=readdir, stat=stat)
+
+
+@pytest.mark.asyncio
+async def test_ls_still_propagates_the_operands_own_failure():
+    _, stat = _failing_entry(RuntimeError("socket hang up"))
+
+    async def readdir(p: PathSpec, _index=None) -> list[str]:
+        raise RuntimeError("socket hang up")
+
+    with pytest.raises(RuntimeError, match="socket hang up"):
+        await ls([_spec("/dir")], readdir=readdir, stat=stat)
 
 
 @pytest.mark.asyncio

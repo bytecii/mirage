@@ -100,6 +100,32 @@ export class AmbiguousArgumentError extends GitError {
 }
 
 /**
+ * A negated revision (`^<rev>`) that resolves to nothing.
+ *
+ * git words this one differently from a plain unknown revision, and refuses a
+ * negated range (`^A..B`) the same way (pinned against git 2.50).
+ */
+export class BadRevisionError extends GitError {
+  constructor(revision: string) {
+    super(`bad revision '${revision}'`)
+  }
+}
+
+/** `diff A...B` between two histories that share no commit. */
+export class NoMergeBaseError extends GitError {
+  constructor(revision: string) {
+    super(`${revision}: no merge base`)
+  }
+}
+
+/** A boolean config variable whose value git cannot read as one. */
+export class BadConfigValueError extends GitError {
+  constructor(value: string, key: string) {
+    super(`bad boolean config value '${value}' for '${key}'`)
+  }
+}
+
+/**
  * A date flag whose value could not be read.
  *
  * git accepts relative wording (`2 weeks ago`) that mirage does not, so an
@@ -180,6 +206,35 @@ export class RevisionResetError extends GitError {
 export class UnrecognizedArgumentError extends GitError {
   constructor(argument: string) {
     super(`unrecognized argument: ${argument}`)
+  }
+}
+
+/**
+ * `commit -a` given paths as well.
+ *
+ * git refuses the pair before reading anything, naming the first path (pinned
+ * against git 2.50).
+ */
+export class AllWithPathsError extends GitError {
+  constructor(path: string) {
+    super(`paths '${path} ...' with -a does not make sense`)
+  }
+}
+
+/**
+ * `commit` given paths, which this build does not take.
+ *
+ * Real git commits only those paths, from the working tree, and leaves the
+ * rest of the index staged. mirage commits the whole index, and doing that while
+ * the caller named a subset would record changes they never asked to commit, so
+ * the operand is refused instead.
+ */
+export class PartialCommitError extends GitError {
+  constructor(path: string) {
+    super(
+      `cannot commit '${path}' alone: this build commits the whole index; ` +
+        `stage it and commit without paths`,
+    )
   }
 }
 

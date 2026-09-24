@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
+import logging
 import threading
 
 import pytest
@@ -162,24 +163,34 @@ def test_readdir_lifts_names_into_entries():
     assert vfs.stat_calls == ["/data/a.txt", "/data/ghost.txt"]
 
 
-def test_readdir_keeps_the_listing_when_one_stat_fails():
+def test_readdir_keeps_the_listing_when_one_stat_fails(caplog):
     # One record a remote API refuses must not cost the guest the whole
     # directory: the row rides unclassified and the guest's own open of
-    # it reports the failure.
+    # it reports the failure. A missing entry is ordinary and stays
+    # quiet; any other failure warns on the host.
     vfs = ListingVFS(
-        listing=["/data/a.txt", "/data/bad.txt"],
+        listing=["/data/a.txt", "/data/bad.txt", "/data/gone.txt"],
         stats={
             "/data/a.txt": FileStat(name="a.txt", size=4, type=FileType.FILE),
             "/data/bad.txt": RuntimeError("upstream 502 Bad Gateway"),
         },
     )
-    assert vfs.readdir("/data/") == [
-        VFSEntry(path="/data/a.txt",
-                 size=4,
-                 is_dir=False,
-                 mode=FILE_MODE,
-                 mtime_ns=0),
-        VFSEntry(path="/data/bad.txt", size=0, is_dir=False),
+    with caplog.at_level(logging.WARNING, logger="mirage.runtime.vfs"):
+        assert vfs.readdir("/data/") == [
+            VFSEntry(path="/data/a.txt",
+                     size=4,
+                     is_dir=False,
+                     mode=FILE_MODE,
+                     mtime_ns=0),
+            VFSEntry(path="/data/bad.txt", size=0, is_dir=False),
+            VFSEntry(path="/data/gone.txt", size=0, is_dir=False),
+        ]
+    assert [
+        r.getMessage() for r in caplog.records
+        if r.name == "mirage.runtime.vfs"
+    ] == [
+        "runtime vfs: readdir /data/: stat /data/bad.txt: "
+        "upstream 502 Bad Gateway"
     ]
 
 

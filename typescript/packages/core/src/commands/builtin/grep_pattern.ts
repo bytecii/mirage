@@ -68,7 +68,7 @@ export async function resolvePattern(
   // `raw` rather than `asList`, mirroring Python's `flags.raw("f")`: an
   // empty -f list still means "-f was supplied", which is what turns on the
   // NEVER_MATCH sentinel below.
-  const patternFiles = new FlagView(bag).raw('f')
+  const patternFiles = new FlagView(bag).raw(name === 'grep' ? 'file' : 'f')
   if (Array.isArray(patternFiles)) {
     const first = paths[0]
     const prefix =
