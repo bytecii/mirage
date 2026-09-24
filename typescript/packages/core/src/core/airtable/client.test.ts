@@ -28,7 +28,16 @@ import {
   listTables,
   updateRecords,
 } from './client.ts'
-import { DONE_FORMULA, FEATURES, FakeAirtable, OPS, ROADMAP, makeAccessor } from './_test_util.ts'
+import {
+  API,
+  DONE_FORMULA,
+  FEATURES,
+  FakeAirtable,
+  OPS,
+  ROADMAP,
+  TOKEN,
+  makeAccessor,
+} from './_test_util.ts'
 
 const FIRST = 'rec00000000000001'
 
@@ -162,6 +171,21 @@ describe('airtable client writes and comments', () => {
     expect((bodies[0]?.records as unknown[])[0]).toEqual({ fields: { Name: 'New 1' } })
     expect(bodies.every((b) => !('typecast' in b))).toBe(true)
     expect(fake.records[FEATURES]).toHaveLength(30)
+  })
+
+  it('sends its write bodies as JSON', async () => {
+    const fake = new FakeAirtable()
+    const bare = await fake.fetch(`${API}/${ROADMAP}/${FEATURES}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+      body: '{"records": [{"fields": {}}]}',
+    })
+    expect([bare.status, ((await bare.json()) as { error: { type: string } }).error.type]).toEqual([
+      422,
+      'INVALID_REQUEST_BODY',
+    ])
+    await drain(createRecords(makeAccessor(fake), ROADMAP, FEATURES, names(1)))
+    expect(fake.records[FEATURES]).toHaveLength(8)
   })
 
   it('sends typecast as a body key', async () => {

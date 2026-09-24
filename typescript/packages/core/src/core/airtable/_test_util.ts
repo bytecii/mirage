@@ -401,6 +401,12 @@ export class FakeAirtable {
       return Promise.resolve(json({ tables: schema }))
     }
     const raw = typeof init?.body === 'string' ? init.body : undefined
+    const type = new Headers(init?.headers).get('Content-Type') ?? ''
+    if (raw !== undefined && !/application\/json/i.test(type)) {
+      return Promise.resolve(
+        airtableError(422, 'INVALID_REQUEST_BODY', 'Could not parse request body'),
+      )
+    }
     const body = raw === undefined ? undefined : (JSON.parse(raw) as unknown)
     return Promise.resolve(this.route(url, init?.method ?? 'GET', body))
   }

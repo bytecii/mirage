@@ -141,9 +141,11 @@ async function request(
   await accessor.limiter.acquire(paceKey)
   const url = `${accessor.baseUrl}${path}`
   const query = options.query ?? ''
+  const headers: Record<string, string> = { Authorization: `Bearer ${accessor.config.token}` }
+  if (options.json !== undefined) headers['Content-Type'] = 'application/json'
   return apiRequest(method, query === '' ? url : `${url}?${query}`, {
     errorOf: errorOf(`${method} ${path}`),
-    headers: { Authorization: `Bearer ${accessor.config.token}` },
+    headers,
     params: options.params,
     json: options.json,
     retry: options.retry ?? RETRY,
