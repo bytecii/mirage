@@ -74,9 +74,8 @@ describe('handleCli', () => {
     expect(inv?.flags.to).toBe('#eng')
     expect(inv?.flags.verbose).toBe(2)
     expect(inv?.argv).toEqual(['-vv', 'message', 'send', '-t', '#eng', 'hello', 'world'])
-    // $PWD and $PATH are exported, so a CLI subprocess inherits them as
-    // bash's would.
-    expect(inv?.env).toEqual({ EDITOR: 'vi', PWD: '/', PATH: '/usr/bin' })
+    // $PWD is exported, so a CLI subprocess inherits it as bash's would.
+    expect(inv?.env).toEqual({ EDITOR: 'vi', PWD: '/' })
     expect(node.command).toBe('prog -vv message send -t #eng hello world')
   })
 
@@ -433,7 +432,6 @@ describe('handleCli script arm', () => {
     expect(py.seen.pop()?.env).toEqual({
       EDITOR: 'vi',
       PWD: '/',
-      PATH: '/usr/bin',
       MIRAGE_CLI_CONFIG: '{"apiKey":"k1"}',
     })
   })

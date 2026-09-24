@@ -287,12 +287,7 @@ def test_to_dict_carries_the_attributes_beside_the_values():
         "PLAIN": "hello",
         "EXPO": "world"
     }
-    assert data["var_attrs"] == {
-        "PWD": "x",
-        "PATH": "x",
-        "EXPO": "x",
-        "MARKED": "rx"
-    }
+    assert data["var_attrs"] == {"PWD": "x", "EXPO": "x", "MARKED": "rx"}
 
 
 def test_var_attrs_is_written_even_when_empty():
@@ -302,9 +297,8 @@ def test_var_attrs_is_written_even_when_empty():
     # environment, and the reload re-exported everything it held.
     s = SessionState(session_id="s1")
     seed_var(s, "X", "secret")
-    # `export -n` clears the attributes a fresh session carries.
+    # `export -n PWD` clears the one attribute a fresh session carries.
     set_attr(s, "PWD", VarAttr.EXPORT, False)
-    set_attr(s, "PATH", VarAttr.EXPORT, False)
     data = s.to_dict()
     assert data["var_attrs"] == {}
     back = SessionState.from_dict(data)

@@ -48,10 +48,10 @@ describe('SessionState', () => {
       cwd: '/a',
       env: { K: 'V', PWD: '/a', PATH: '/usr/bin' },
       // The attributes ride beside the values rather than being guessed
-      // on the way back in: `varsFromEnv` exports what it seeds, so every
-      // name carries `x` here, and a plain `Y=1` would carry no entry at
-      // all and restore unexported.
-      var_attrs: { K: 'x', PWD: 'x', PATH: 'x' },
+      // on the way back in: `varsFromEnv` exports what it seeds, so both
+      // names carry `x` here, while the seeded PATH, like a plain `Y=1`,
+      // carries no entry at all and restores unexported.
+      var_attrs: { K: 'x', PWD: 'x' },
       created_at: s.createdAt,
       generation: 0,
     })
@@ -282,7 +282,6 @@ describe('a stored session keeps its attributes', () => {
     const s = new SessionState({ sessionId: 's1' })
     seedVar(s, 'X', 'secret')
     setAttr(s, 'PWD', VarAttr.Export, false)
-    setAttr(s, 'PATH', VarAttr.Export, false)
     const json = s.toJSON() as { var_attrs: Record<string, string> }
     expect(json.var_attrs).toEqual({})
     const back = SessionState.fromJSON(json as never)

@@ -177,10 +177,11 @@
       "targets": [
         "ram"
       ],
-      "command": "echo \"$PATH\"",
+      "note": "bash 5.2 on debian:stable-slim, started with an empty environment, sets PATH without exporting it: printenv PATH exits 1 and declare -p shows --, so a child process keeps its own PATH.",
+      "command": "echo \"$PATH\"; printenv PATH || echo not exported; declare -p PATH",
       "expect": {
         "exit": 0,
-        "stdout": "/usr/bin\n",
+        "stdout": "/usr/bin\nnot exported\ndeclare -- PATH=\"/usr/bin\"\n",
         "stderr": ""
       }
     },

@@ -196,7 +196,7 @@ describe('sessionView', () => {
   it('envSnapshot is a copy', () => {
     const session = new SessionState({ sessionId: 's', cwd: '/', vars: varsFromEnv({ A: '1' }) })
     const snap = envSnapshot(session)
-    expect(snap).toEqual({ ...session.env })
+    expect(snap).toEqual({ A: '1', PWD: '/' })
     expect(snap).not.toBe(session.env)
   })
 

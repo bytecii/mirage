@@ -152,7 +152,7 @@ def test_env_snapshot_is_a_copy():
                            cwd="/",
                            vars=vars_from_env({"A": "1"}))
     snap = env_snapshot(session)
-    assert snap == session.env
+    assert snap == {"A": "1", "PWD": "/"}
     assert snap is not session.env
 
 

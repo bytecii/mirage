@@ -42,9 +42,8 @@ async def test_env_prints_environment_in_insertion_order():
     seed_exported(session, "AAA", "2")
     out, io, _ = await handle_env(_unused_execute_fn, [], session)
     assert io.exit_code == 0
-    # `$PWD` and `$PATH` are seeded at construction, so they lead the
-    # insertion order.
-    assert await materialize(out) == b"PWD=/\nPATH=/usr/bin\nZZZ=1\nAAA=2\n"
+    # `$PWD` is seeded at construction, so it leads the insertion order.
+    assert await materialize(out) == b"PWD=/\nZZZ=1\nAAA=2\n"
 
 
 @pytest.mark.asyncio

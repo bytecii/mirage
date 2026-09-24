@@ -540,10 +540,11 @@ export class SessionState {
     // rather than every string.
     if (!Object.hasOwn(this.vars, 'PWD'))
       this.vars.PWD = makeVar(this.cwd, new Set([VarAttr.Export]))
-    // bash starts with a PATH when the environment gives it none; the one
-    // directory here is where every program's file is.
-    if (!Object.hasOwn(this.vars, 'PATH'))
-      this.vars.PATH = makeVar(BIN_PREFIX, new Set([VarAttr.Export]))
+    // bash starts with a PATH when the environment gives it none, and does
+    // not export it: `env` does not list it and a child process, such as a
+    // host interpreter, keeps its own. The one directory here is where
+    // every program's file is.
+    if (!Object.hasOwn(this.vars, 'PATH')) this.vars.PATH = makeVar(BIN_PREFIX, new Set())
   }
 
   /**
