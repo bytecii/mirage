@@ -143,3 +143,36 @@ describe('langfuse readdir dataset sizes', () => {
     expect(lookup.entry?.size).toBe(jsonlBytes([runs[0] as Record<string, unknown>]).byteLength)
   })
 })
+
+// Mirrors python's test_a_bounded_trace_listing_is_not_cached_as_the_directory
+// and test_a_trace_listing_short_of_the_limit_is_the_directory.
+describe('langfuse bounded trace listing', () => {
+  const TRACES = { '/api/public/traces': { data: [{ id: 't1' }, { id: 't2' }] } }
+  const cases: [string, LangfuseAccessorConfig][] = [
+    ['full page', { defaultTraceLimit: 2 }],
+    ['time window', { defaultFromTimestamp: '2026-01-01T00:00:00Z' }],
+  ]
+  for (const [label, config] of cases) {
+    it(`is not cached as the directory (${label})`, async () => {
+      const index = new RAMIndexCacheStore()
+      const out = await readdir(
+        accessor(new RecordingTransport(TRACES), config),
+        spec('/traces'),
+        index,
+      )
+      expect(out).toEqual(['/traces/t1.json', '/traces/t2.json'])
+      expect((await index.listDir('/traces')).entries).toBeUndefined()
+      expect((await index.get('/traces/t1.json')).entry?.id).toBe('t1')
+    })
+  }
+
+  it('short of the limit is the directory', async () => {
+    const index = new RAMIndexCacheStore()
+    await readdir(
+      accessor(new RecordingTransport(TRACES), { defaultTraceLimit: 3 }),
+      spec('/traces'),
+      index,
+    )
+    expect((await index.listDir('/traces')).entries).toHaveLength(2)
+  })
+})
