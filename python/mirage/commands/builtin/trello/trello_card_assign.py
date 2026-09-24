@@ -47,7 +47,10 @@ async def trello_card_assign(
     # A card write is addressed by id, not path, so only the mount-wide
     # grant can admit it (a write-granting carve-out names no card).
     require_mount_writable()
-    card = await card_assign(config, card_id=card_id, member_id=member_id)
+    card = await card_assign(config,
+                             card_id=card_id,
+                             member_id=member_id,
+                             session=accessor.pool)
     return yield_bytes(
         json.dumps(normalize_card(card),
                    ensure_ascii=False,

@@ -66,6 +66,7 @@ async def trello_card_create(
         list_id=list_id,
         name=name,
         desc=desc,
+        session=accessor.pool,
     )
     return yield_bytes(
         json.dumps(normalize_card(card),

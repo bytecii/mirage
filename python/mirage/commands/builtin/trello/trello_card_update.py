@@ -74,6 +74,7 @@ async def trello_card_update(
         desc=desc,
         closed=closed,
         due=due,
+        session=accessor.pool,
     )
     return yield_bytes(
         json.dumps(normalize_card(card),

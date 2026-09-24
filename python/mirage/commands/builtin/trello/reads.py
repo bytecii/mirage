@@ -58,8 +58,10 @@ async def _run_board_list(accessor: TrelloAccessor, texts: list[str],
                           fl: FlagView) -> bytes:
     config = accessor.config
     boards: list[dict[str, JsonValue]] = []
-    for workspace in await list_workspaces(config):
-        for board in await list_workspace_boards(config, workspace["id"]):
+    for workspace in await list_workspaces(config, session=accessor.pool):
+        for board in await list_workspace_boards(config,
+                                                 workspace["id"],
+                                                 session=accessor.pool):
             boards.append(normalize_board(board))
     return to_json_bytes(boards)
 
@@ -75,28 +77,36 @@ async def _run_board_show(accessor: TrelloAccessor, texts: list[str],
 async def _run_board_members(accessor: TrelloAccessor, texts: list[str],
                              fl: FlagView) -> bytes:
     config = accessor.config
-    members = await list_board_members(config, _first(texts, "board id"))
+    members = await list_board_members(config,
+                                       _first(texts, "board id"),
+                                       session=accessor.pool)
     return to_json_bytes([normalize_member(member) for member in members])
 
 
 async def _run_list_list(accessor: TrelloAccessor, texts: list[str],
                          fl: FlagView) -> bytes:
     config = accessor.config
-    lists = await list_board_lists(config, _first(texts, "board id"))
+    lists = await list_board_lists(config,
+                                   _first(texts, "board id"),
+                                   session=accessor.pool)
     return to_json_bytes([normalize_list(lst) for lst in lists])
 
 
 async def _run_label_list(accessor: TrelloAccessor, texts: list[str],
                           fl: FlagView) -> bytes:
     config = accessor.config
-    labels = await list_board_labels(config, _first(texts, "board id"))
+    labels = await list_board_labels(config,
+                                     _first(texts, "board id"),
+                                     session=accessor.pool)
     return to_json_bytes([normalize_label(label) for label in labels])
 
 
 async def _run_card_list(accessor: TrelloAccessor, texts: list[str],
                          fl: FlagView) -> bytes:
     config = accessor.config
-    cards = await list_list_cards(config, _first(texts, "list id"))
+    cards = await list_list_cards(config,
+                                  _first(texts, "list id"),
+                                  session=accessor.pool)
     return to_json_bytes([normalize_card(card) for card in cards])
 
 
@@ -112,7 +122,7 @@ async def _run_card_comments(accessor: TrelloAccessor, texts: list[str],
                              fl: FlagView) -> bytes:
     config = accessor.config
     card_id = _first(texts, "card id")
-    comments = await list_card_comments(config, card_id)
+    comments = await list_card_comments(config, card_id, session=accessor.pool)
     return to_json_bytes(
         [normalize_comment(comment, card_id=card_id) for comment in comments])
 

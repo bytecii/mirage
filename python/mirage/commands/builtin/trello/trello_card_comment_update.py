@@ -61,7 +61,8 @@ async def trello_card_comment_update(
     comment = await comment_update(config,
                                    card_id=card_id,
                                    comment_id=comment_id,
-                                   text=text)
+                                   text=text,
+                                   session=accessor.pool)
     payload = normalize_comment(comment, card_id=card_id)
     return yield_bytes(
         json.dumps(payload, ensure_ascii=False,
