@@ -228,7 +228,8 @@ def test_record_paths_are_virtual(ptype, tmp_path):
 
 # A mount-root key: a site that records the mount-relative "/k2.txt" names a
 # path the root mount owns, so the invariant catches it where the key named
-# like its mount (/m/m/k.txt) cannot. Reads and writes both touch it.
+# like its mount (/m/m/k.txt) cannot. Reads and writes both touch it, and a
+# stdin split, with no operand to name its outputs from, writes beside it.
 SWEEP = SCRIPT + [
     "cat /m/k2.txt",
     "head -c 1 /m/k2.txt",
@@ -241,6 +242,7 @@ SWEEP = SCRIPT + [
     "truncate -s 1 /m/k2.txt",
     "touch /m/k3.txt",
     "gzip -k /m/k2.txt",
+    "cd /m && printf 'a\\nb\\n' | split -l 1",
 ]
 
 

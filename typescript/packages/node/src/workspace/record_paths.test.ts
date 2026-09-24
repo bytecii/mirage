@@ -209,7 +209,8 @@ describe('record paths name the virtual path (node backends)', () => {
   })
 })
 
-// T1a's script plus reads and writes of a mount-root key. A record made with the
+// SCRIPT plus reads and writes of a mount-root key, and a stdin split, which
+// has no operand to name its outputs from. A record made with the
 // mount-relative key `/k2.txt` resolves to `/`, not `/m`, so every record
 // must resolve to the mount whose id it carries.
 const SWEEP = [
@@ -225,6 +226,7 @@ const SWEEP = [
   'truncate -s 1 /m/k2.txt',
   'touch /m/k3.txt',
   'gzip -k /m/k2.txt',
+  "cd /m && printf 'a\\nb\\n' | split -l 1",
 ]
 
 interface Swept {

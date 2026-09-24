@@ -14,8 +14,7 @@
 
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
-import { rstripSlash, stripSlash } from '../../../utils/slash.ts'
-import { mountKey } from '../../../utils/key_prefix.ts'
+import { mountKey, mountSpec } from '../../../utils/key_prefix.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
@@ -77,30 +76,14 @@ function formatSuffix(index: number, digits: number, format: string | null): str
   })
 }
 
-function makePathSpec(virtual: string): PathSpec {
-  return new PathSpec({
-    virtual,
-    directory: virtual,
-    vfsPath: stripSlash(virtual),
-    resolved: true,
-  })
-}
-
-// The output's spec on the executing mount, addressed by its virtual path.
-function outSpec(mountPrefix: string | undefined, filename: string): PathSpec {
-  if (mountPrefix === undefined) return makePathSpec(filename)
-  const key = stripSlash(filename)
-  return PathSpec.fromStrPath(rstripSlash(mountPrefix) + '/' + key, key)
-}
-
 async function writePart(
   write: (p: PathSpec, data: Uint8Array) => Promise<void>,
-  mountPrefix: string | undefined,
+  mountPrefix: string,
   filename: string,
   data: Uint8Array,
   writes: Record<string, Uint8Array>,
 ): Promise<void> {
-  await write(outSpec(mountPrefix, filename), data)
+  await write(mountSpec(mountPrefix, filename), data)
   writes[filename] = data
 }
 
@@ -147,7 +130,7 @@ export async function csplitGeneric(
       if (elideEmpty && part.length === 0) continue
       const filename = prefix + formatSuffix(idx, digits, suffixFormat)
       const data = part.length > 0 ? ENC.encode(part.join('\n') + '\n') : new Uint8Array(0)
-      await writePart(write, opts.mountPrefix, filename, data, writes)
+      await writePart(write, opts.mountPrefix ?? '', filename, data, writes)
       sizes.push(String(data.byteLength))
     }
   } catch (err) {

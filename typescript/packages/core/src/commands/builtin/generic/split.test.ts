@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 import { describe, expect, it } from 'vitest'
 
+import type { PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
 import { UsageError } from '../../errors.ts'
 import { chunkAt, chunkParts, parseChunksValue, splitGeneric } from './split.ts'
@@ -489,5 +490,35 @@ describe('split quotes the suffix start value', () => {
     await expect(runSplit({ hex_suffixes: value, lines: '1' })).rejects.toThrow(
       new UsageError(`split: '${escaped}': invalid start value for hexadecimal suffix${TRY}`, 1),
     )
+  })
+})
+
+// No operand to read a prefix from: the executing mount's prefix names the
+// outputs. Mirrors test_split.py.
+describe('split names stdin outputs on the executing mount', () => {
+  it('addresses each output by its virtual path', async () => {
+    const specs: PathSpec[] = []
+    const opts = {
+      stdin: ENC.encode('a\nb\n'),
+      flags: { lines: '1' },
+      filetypeFns: null,
+      cwd: '/',
+      mountPrefix: '/data',
+    } as CommandOpts
+    await splitGeneric(
+      [],
+      opts,
+      () => {
+        throw new Error('paths are empty; the source is stdin')
+      },
+      (p) => {
+        specs.push(p)
+        return Promise.resolve()
+      },
+    )
+    expect(specs.map((p) => [p.virtual, p.vfsPath])).toEqual([
+      ['/data/xaa', 'xaa'],
+      ['/data/xab', 'xab'],
+    ])
   })
 })

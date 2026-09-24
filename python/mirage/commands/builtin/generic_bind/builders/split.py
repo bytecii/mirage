@@ -73,7 +73,8 @@ async def split(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
         hex_suffix=hex_value is not None,
         suffix_start=suffix_start,
         additional_suffix=fl.as_str("additional_suffix") or "",
-        separator=parse_separator(fl.as_str("separator")))
+        separator=parse_separator(fl.as_str("separator")),
+        mount_prefix=opts.mount_prefix)
 
 
 BUILDER = Builder('split',
