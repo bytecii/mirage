@@ -32,6 +32,7 @@ from mirage.shell.types import NodeType as NT
 from mirage.shell.types import TSNodeLike
 from mirage.utils.fnmatch import fnmatch
 from mirage.utils.glob_walk import escape_glob
+from mirage.workspace.expand.substring import substring_operands
 from mirage.workspace.session import (SessionState, ensure_var_visible,
                                       visible_arrays, visible_env)
 from mirage.workspace.session.elements import assign_element
@@ -706,10 +707,6 @@ class _ArithOperand:
         Raises:
             ExitSignal: the operand does not evaluate.
         """
-        try:
-            return int(text.strip())
-        except ValueError:
-            pass
         env = _PendingEnv(self._pending, visible_env(self.session))
         try:
             result = evaluate_arith(text,
@@ -851,15 +848,6 @@ async def _expand_braces(node: TSNodeLike, session: SessionState,
                          expand_child: ExpandChild, view: SessionView | None,
                          operand: _ArithOperand) -> str:
     p = _parse_braces(node)
-    if any(c.type == "}" and c.is_missing for c in node.children):
-        # tree-sitter-bash cannot parse a $-spelled substring offset
-        # (${v:$o}, ${v:$o:n}): it truncates the expansion with a
-        # zero-width `}` and reparses the tail as stray siblings. bash
-        # accepts the form, so emitting the mis-parse would corrupt the
-        # value silently; fail loudly instead. Spell it ${v:o} or
-        # ${v:$((o))}.
-        msg = f"bash: ${{{p.var_name or ''}}}: bad substitution\n"
-        raise ExitSignal(2, stderr=msg.encode(), contained_code=2)
     env = visible_env(session)
     arrays = visible_arrays(session)
     assocs = visible_assocs(session)
@@ -871,7 +859,9 @@ async def _expand_braces(node: TSNodeLike, session: SessionState,
     # and `${x:-$(cmd)}` runs cmd only when x is unset. Every other
     # operator's words are needed whatever the value, and expand here.
     groups: list[str] = []
-    if p.op not in _LAZY_OPS:
+    if p.op == ":":
+        groups = await substring_operands(node, expand_child)
+    elif p.op not in _LAZY_OPS:
         for gi, group in enumerate(p.groups):
             pattern_mode = gi == 0 and p.op in _PATTERN_OPS
             groups.append(await
@@ -1198,11 +1188,12 @@ async def _expand_array_at(node: TSNodeLike, session: SessionState,
     values = array_values(arr)
     if p.op is None:
         return values
+    if p.op == ":":
+        return _slice_array(arr, await substring_operands(node, expand_child),
+                            operand)
     groups: list[str] = []
     for gi, group in enumerate(p.groups):
         pattern_mode = gi == 0 and p.op in _PATTERN_OPS
         groups.append(await _expand_group(group, expand_child, pattern_mode,
                                           session, call_stack))
-    if p.op == ":":
-        return _slice_array(arr, groups, operand)
     return [_value_op(p.op, el, groups, operand) for el in values]

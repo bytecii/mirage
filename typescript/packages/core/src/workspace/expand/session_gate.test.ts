@@ -50,6 +50,8 @@ const REFUSED: [string, string][] = [
   ['AWS_PROFILE=x', 'AWS_PROFILE'],
   ['echo "${AWS_PROFILE:=x}"', 'AWS_PROFILE'],
   ['echo $((AWS_LIMIT=5))', 'AWS_LIMIT'],
+  ['v=abcdef; echo "${v:$((AWS_LIMIT=1)):2}"', 'AWS_LIMIT'],
+  ['a=(one two); echo "${a[@]:${AWS_LIMIT:=1}}"', 'AWS_LIMIT'],
   ['((AWS_LIMIT=5))', 'AWS_LIMIT'],
   ['printf -v AWS_KEY %s x', 'AWS_KEY'],
   ['for ((AWS_I=0; AWS_I<1; AWS_I++)); do :; done', 'AWS_I'],

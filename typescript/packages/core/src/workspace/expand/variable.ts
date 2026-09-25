@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { substringOperands } from './substring.ts'
+
 import { scanParameter } from '../../shell/parameter.ts'
 import { nextRandom } from '../session/state.ts'
 import { evaluateArith } from '../../shell/arith.ts'
@@ -589,7 +591,6 @@ class ArithOperand {
    * assigned before failing is recorded for the door.
    */
   value(text: string): number {
-    if (/^\s*-?\d+\s*$/.test(text)) return Number.parseInt(text.trim(), 10)
     const env = { ...visibleEnv(this.session), ...this.pending }
     try {
       const result = evaluateArith(
@@ -753,13 +754,13 @@ async function expandArrayAtIn(
   if (p.indirectOp) return arrayIndices(arr).map((i) => String(i))
   const values = arrayValues(arr)
   if (p.op === null) return values
+  if (p.op === ':') return sliceArray(arr, await substringOperands(node, expandChild), operand)
   const op = p.op
   const groups: string[] = []
   for (let gi = 0; gi < p.groups.length; gi++) {
     const patternMode = gi === 0 && PATTERN_OPS.has(op)
     groups.push(await expandGroup(p.groups[gi] ?? [], expandChild, patternMode, session, callStack))
   }
-  if (op === ':') return sliceArray(arr, groups, operand)
   return values.map((el) => valueOp(op, el, groups, operand))
 }
 
@@ -959,20 +960,6 @@ async function expandBracesIn(
   operand: ArithOperand,
 ): Promise<string> {
   const p = parseBraces(node)
-  if (node.children.some((c) => c.type === '}' && c.isMissing)) {
-    // tree-sitter-bash cannot parse a $-spelled substring offset
-    // (${v:$o}, ${v:$o:n}): it truncates the expansion with a
-    // zero-width `}` and reparses the tail as stray siblings. bash
-    // accepts the form, so emitting the mis-parse would corrupt the
-    // value silently; fail loudly instead. Spell it ${v:o} or
-    // ${v:$((o))}.
-    throw new ExitSignal(
-      2,
-      new TextEncoder().encode(`bash: \${${p.varName ?? ''}}: bad substitution\n`),
-      null,
-      2,
-    )
-  }
   const env = visibleEnv(session)
   const arrays = visibleArrays(session)
   operand.ref = (p.varName ?? '') + (p.subscript === null ? '' : `[${p.subscript}]`)
@@ -982,7 +969,9 @@ async function expandBracesIn(
   // `${x:-$(cmd)}` runs cmd only when x is unset. Every other operator's
   // words are needed whatever the value, and expand here.
   const groups: string[] = []
-  if (p.op === null || !LAZY_OPS.has(p.op)) {
+  if (p.op === ':') {
+    groups.push(...(await substringOperands(node, expandChild)))
+  } else if (p.op === null || !LAZY_OPS.has(p.op)) {
     for (let gi = 0; gi < p.groups.length; gi++) {
       const patternMode = gi === 0 && p.op !== null && PATTERN_OPS.has(p.op)
       groups.push(
