@@ -23,6 +23,11 @@ import { repoJson } from './repos.ts'
 
 const TOKEN_RE = /[A-Za-z0-9_]+/g
 
+// Content and metadata filters of the code-search grammar. The fake does not
+// evaluate them, so they are dropped, which only ever widens; matched as words instead, they would demand the literal tokens
+// `language` and `python` and answer almost nothing.
+const WIDENING_QUALIFIERS = new Set(['language', 'extension', 'filename', 'in', 'size', 'fork'])
+
 function starsOf(repo: RepoRow): number {
   const value = metaOf(repo).stargazers_count
   return typeof value === 'number' ? value : 0
@@ -94,37 +99,82 @@ async function searchRepos(ctx: Ctx<C>): Promise<Reply> {
   return { status: 200, body: { total_count: items.length, incomplete_results: false, items } }
 }
 
-// Code search reads only the default branch, which is where the fake builds
-// its term index, and it needs a `repo:` qualifier: the live API refuses a
-// query that names no scope, and answering one over everything would let a
-// caller believe a global index exists.
-async function searchCode(ctx: Ctx<C>): Promise<Reply> {
-  const query = ctx.query.get('q') ?? ''
+interface CodeQuery {
+  repos: string[]
+  owners: string[]
+  terms: string[]
+  pathFilter: string | null
+}
+
+// The scope qualifiers narrow, so they are honoured: several `repo:` OR
+// together, `user:` and `org:` OR together, and the two groups AND, the way
+// the live API reads them. A name is matched exactly and case-sensitively, as
+// the live API does (`REPO:x` is a term there too), so `std::vector` and
+// `-repo:x` fall through to the tokenizer. An empty value is dropped, as in
+// `repoQuery`. `repo:` and `path:` values are kept as written, because both
+// are compared exactly; owners and terms are lowercased.
+function codeQuery(query: string): CodeQuery {
+  const repos: string[] = []
+  const owners: string[] = []
   const terms: string[] = []
-  let target: string | null = null
   let pathFilter: string | null = null
   for (const word of query.split(/\s+/).filter((w) => w !== '')) {
-    if (word.startsWith('repo:')) target = word.slice('repo:'.length)
-    else if (word.startsWith('path:')) pathFilter = word.slice('path:'.length)
-    else terms.push(...(word.toLowerCase().match(TOKEN_RE) ?? []))
+    const at = word.indexOf(':')
+    const name = at >= 0 ? word.slice(0, at) : ''
+    const value = word.slice(at + 1)
+    if (name === 'repo') {
+      if (value !== '' && !repos.includes(value)) repos.push(value)
+    } else if (name === 'user' || name === 'org') {
+      if (value !== '') owners.push(value.toLowerCase())
+    } else if (name === 'path') {
+      pathFilter = value
+    } else if (!WIDENING_QUALIFIERS.has(name)) {
+      terms.push(...(word.toLowerCase().match(TOKEN_RE) ?? []))
+    }
   }
-  if (target === null) {
-    return fail(422, 'Must include at least one user, organization, or repository')
+  return { repos, owners, terms, pathFilter }
+}
+
+// Code search reads only the default branch, which is where the fake builds
+// its term index. A query that names no scope is answered over every
+// repository the tenant holds, because an authenticated caller of the live
+// API is answered over all of GitHub rather than refused; here that is
+// usually `total_count: 0`. A `repo:` group disjoint from the owner group
+// answers empty where live refuses it with a query-parse 422. Live refuses an
+// empty qualifier value the same way; here it is dropped, which widens. A
+// query naming only repositories none of which exists keeps its 404, although
+// live answers it 200 with nothing. An empty `q` is refused as live refuses
+// it, without the `errors` array, which no caller reads.
+async function searchCode(ctx: Ctx<C>): Promise<Reply> {
+  const query = (ctx.query.get('q') ?? '').trim()
+  if (query === '') return fail(422, 'Validation Failed')
+  const { repos, owners, terms, pathFilter } = codeQuery(query)
+  let scope: RepoRow[]
+  if (repos.length > 0) {
+    const named = await Promise.all(repos.map((name) => repoByName(ctx.db, ctx.tenant, name)))
+    scope = named.filter((repo): repo is RepoRow => repo !== null)
+    if (scope.length === 0) return fail(404, 'Not Found')
+  } else {
+    scope = await allRepos(ctx.db, ctx.tenant)
   }
-  const repo = await repoByName(ctx.db, ctx.tenant, target)
-  if (repo === null) return fail(404, 'Not Found')
-  const files = await treeOfBranch(ctx.db, ctx.tenant, repo, repo.defaultBranch)
+  if (owners.length > 0) scope = scope.filter((repo) => owners.includes(repo.owner.toLowerCase()))
+  // Full-name order rather than relevance, which is not modelled, so the
+  // answer is the same on every run.
+  scope.sort((a, b) => (a.fullName < b.fullName ? -1 : a.fullName > b.fullName ? 1 : 0))
   const items: JsonValue[] = []
-  for (const path of searchTree(files, terms, pathFilter)) {
-    const data = files.get(path)
-    if (data === undefined) continue
-    items.push({
-      name: path.slice(path.lastIndexOf('/') + 1),
-      path,
-      sha: blobSha(data),
-      score: 1.0,
-      repository: { name: repo.name, full_name: repo.fullName },
-    })
+  for (const repo of scope) {
+    const files = await treeOfBranch(ctx.db, ctx.tenant, repo, repo.defaultBranch)
+    for (const path of searchTree(files, terms, pathFilter)) {
+      const data = files.get(path)
+      if (data === undefined) continue
+      items.push({
+        name: path.slice(path.lastIndexOf('/') + 1),
+        path,
+        sha: blobSha(data),
+        score: 1.0,
+        repository: { name: repo.name, full_name: repo.fullName },
+      })
+    }
   }
   return { status: 200, body: { total_count: items.length, incomplete_results: false, items } }
 }
