@@ -30,4 +30,4 @@ async def size(accessor: DiskAccessor,
         path_spec (PathSpec): target path.
     """
     return await asyncio.to_thread(size_sync, accessor.root,
-                                   path_spec.mount_path)
+                                   path_spec.mount_path, path_spec)

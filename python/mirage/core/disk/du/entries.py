@@ -35,4 +35,4 @@ async def entries(
         path_spec (PathSpec): target path.
     """
     return await asyncio.to_thread(entries_sync, accessor.root,
-                                   path_spec.mount_path)
+                                   path_spec.mount_path, path_spec)

@@ -21,7 +21,7 @@ import { enoent, enotdir } from '@struktoai/mirage-core/utils/errors'
 import { mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
 import { rstripSlash } from '@struktoai/mirage-core/utils/slash'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
-import { norm, resolveSafe } from './utils.ts'
+import { norm, resolveInside } from './utils.ts'
 
 export async function readdir(
   accessor: DiskAccessor,
@@ -45,10 +45,12 @@ export async function readdir(
       return cached.entries
     }
   }
-  const full = resolveSafe(accessor.root, virtual)
+  const full = await resolveInside(accessor.root, path, virtual)
   let entries: string[]
   try {
-    entries = await fsReaddir(full)
+    // A host symlink is not an entry of the mount (see resolveInside).
+    const listed = await fsReaddir(full, { withFileTypes: true })
+    entries = listed.filter((e) => !e.isSymbolicLink()).map((e) => e.name)
   } catch (err) {
     // The kernel already separates ENOENT (a component does not exist) from
     // ENOTDIR (a component exists but is not a directory); keep that split

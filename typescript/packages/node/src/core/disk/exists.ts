@@ -15,12 +15,11 @@
 import type { DiskAccessor } from '../../accessor/disk.ts'
 import { access } from 'node:fs/promises'
 import type { PathSpec } from '@struktoai/mirage-core/types'
-import { resolveSafe } from './utils.ts'
+import { resolveInside } from './utils.ts'
 
 export async function exists(accessor: DiskAccessor, path: PathSpec): Promise<boolean> {
-  const full = resolveSafe(accessor.root, path.mountPath)
   try {
-    await access(full)
+    await access(await resolveInside(accessor.root, path))
     return true
   } catch {
     return false

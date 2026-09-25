@@ -14,29 +14,18 @@
 
 import asyncio
 import os
+import stat
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 from mirage.accessor.disk import DiskAccessor
+from mirage.core.disk.utils import resolve_inside
 from mirage.core.timeutil import epoch_to_iso
 from mirage.types import PathSpec, WalkEntry
 from mirage.utils.key_prefix import mount_prefix_of
 from mirage.watch.base import DeltaHook
 from mirage.watch.delta import ListingDeltaHook
 from mirage.watch.fingerprint import stat_fingerprint
-
-
-def resolve(root: Path, path: str) -> Path:
-    """Host path for a mount-relative path, refusing an escape.
-
-    Args:
-        root (Path): Mount root on the local filesystem.
-        path (str): Mount-relative path.
-    """
-    relative = path.lstrip("/")
-    resolved = (root / relative).resolve()
-    resolved.relative_to(root)
-    return resolved
 
 
 def reraise(error: OSError) -> None:
@@ -66,10 +55,12 @@ def walk_sync(root: Path,
         root (Path): Mount root on the local filesystem.
         path (str): Mount-relative directory to walk.
     """
-    start = resolve(root, path)
+    start = resolve_inside(root, path, path)
     out: list[tuple[str, bool, str | None, int | None]] = []
     for dirpath, dirnames, filenames in os.walk(start, onerror=reraise):
         current = Path(dirpath)
+        # A host symlink is not an entry of the mount (see resolve_inside).
+        dirnames[:] = [d for d in dirnames if not (current / d).is_symlink()]
         for name in dirnames:
             relative = (current / name).relative_to(root).as_posix()
             out.append(("/" + relative, True, None, None))
@@ -82,6 +73,8 @@ def walk_sync(root: Path,
                 # Same rule one entry down: a file that vanished between
                 # the listing and the stat is a DELETE the next pull
                 # reports, an unreadable one is not.
+                continue
+            if stat.S_ISLNK(info.st_mode):
                 continue
             out.append(("/" + relative, False, epoch_to_iso(info.st_mtime),
                         info.st_size))

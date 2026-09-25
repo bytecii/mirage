@@ -12,28 +12,20 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from pathlib import Path
-
 import aiofiles
 
 from mirage.accessor.disk import DiskAccessor
 from mirage.cache.context import invalidate_after_write
+from mirage.core.disk.utils import resolve_inside
 from mirage.observe.context import record, start_op
 from mirage.types import PathSpec
-
-
-def _resolve(root: Path, path: str) -> Path:
-    relative = path.lstrip("/")
-    resolved = (root / relative).resolve()
-    resolved.relative_to(root)
-    return resolved
 
 
 async def truncate(accessor: DiskAccessor, path_spec: PathSpec,
                    length: int) -> None:
     path = path_spec.mount_path
     timer = start_op()
-    p = _resolve(accessor.root, path)
+    p = resolve_inside(accessor.root, path, path_spec)
     try:
         async with aiofiles.open(p, "rb") as f:
             data = await f.read()

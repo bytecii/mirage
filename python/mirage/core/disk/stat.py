@@ -12,23 +12,15 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from pathlib import Path
-
 import aiofiles.os
 from aiofiles.os import path as aio_path
 
 from mirage.accessor.disk import DiskAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.core.disk.utils import resolve_inside
 from mirage.core.timeutil import epoch_to_iso
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.filetype import content_type_for_path
-
-
-def _resolve(root: Path, path: str) -> Path:
-    relative = path.lstrip("/")
-    resolved = (root / relative).resolve()
-    resolved.relative_to(root)
-    return resolved
 
 
 async def stat(accessor: DiskAccessor,
@@ -37,7 +29,7 @@ async def stat(accessor: DiskAccessor,
     virtual = path_spec.virtual
     path = path_spec.mount_path
     root = accessor.root
-    p = _resolve(root, path)
+    p = resolve_inside(root, path, path_spec)
     if not await aio_path.exists(p):
         raise FileNotFoundError(virtual)
     st = await aiofiles.os.stat(p)

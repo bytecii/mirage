@@ -25,7 +25,7 @@ import type { PredNode } from '@struktoai/mirage-core/commands/builtin/find_eval
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 import { DIR_SIZE } from '@struktoai/mirage-core/utils/stat_view'
-import { norm, resolveSafe } from './utils.ts'
+import { norm, resolveInside } from './utils.ts'
 
 export interface FindOptions {
   name?: string | null
@@ -63,6 +63,7 @@ async function walk(ctx: WalkCtx, full: string, current: string, depth: number):
     return
   }
   for (const e of entries) {
+    if (e.isSymbolicLink()) continue
     const kind: 'f' | 'd' = e.isDirectory() ? 'd' : 'f'
     const entryPath = current === '/' ? `/${e.name}` : `${current}/${e.name}`
     const entryName = e.name
@@ -140,7 +141,14 @@ export async function find(
 ): Promise<string[]> {
   const virtual = norm(p.mountPath)
   const startName = startBasename(p.virtual)
-  const full = resolveSafe(accessor.root, virtual)
+  let full: string
+  try {
+    full = await resolveInside(accessor.root, p, virtual)
+  } catch (err) {
+    // A start reached through a host link finds nothing, as a missing one.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw err
+  }
   const baseDepth = virtual === '/' ? 0 : (virtual.match(/\//g) ?? []).length
   const results: string[] = []
   const tree =

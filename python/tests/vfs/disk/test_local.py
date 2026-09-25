@@ -96,3 +96,12 @@ async def test_get_state_preserves_file_mode(tmp_path):
     dst = DiskVFS(str(tmp_path / "dst"))
     dst.load_state(state)
     assert (tmp_path / "dst" / "f.txt").stat().st_mode & 0o777 == 0o640
+
+
+def test_get_state_leaves_host_symlinks_out(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "f.txt").write_text("hi")
+    (tmp_path / "secret.txt").write_text("host bytes")
+    (root / "link").symlink_to(tmp_path / "secret.txt")
+    assert set(DiskVFS(str(root)).get_state()["files"]) == {"f.txt"}

@@ -15,49 +15,46 @@
 import os
 from pathlib import Path
 
-
-def resolve(root: Path, path: str) -> Path:
-    """Resolve a mount-relative path under the disk root.
-
-    Args:
-        root (Path): the mount root.
-        path (str): mount-relative path.
-    """
-    relative = path.lstrip("/")
-    resolved = (root / relative).resolve()
-    resolved.relative_to(root)
-    return resolved
+from mirage.core.disk.utils import resolve_inside
+from mirage.types import PathSpec
 
 
-def size_sync(root: Path, path: str) -> int:
+def size_sync(root: Path, path: str, spec: PathSpec) -> int:
     """Recursive byte size of a path, run on a worker thread.
 
     Args:
         root (Path): the mount root.
         path (str): mount-relative path.
+        spec (PathSpec): the operand, the path a refusal names.
     """
-    p = resolve(root, path)
+    p = resolve_inside(root, path, spec)
     if p.is_file():
         return p.stat().st_size
     total = 0
     for dirpath, _dirnames, filenames in os.walk(p):
         for f in filenames:
+            full = os.path.join(dirpath, f)
+            # A host symlink is not an entry of the mount (resolve_inside).
+            if os.path.islink(full):
+                continue
             try:
-                total += os.path.getsize(os.path.join(dirpath, f))
+                total += os.path.getsize(full)
             except OSError:
                 # unreadable entry: GNU du skips it and totals the rest
                 pass
     return total
 
 
-def entries_sync(root: Path, path: str) -> tuple[list[tuple[str, int]], int]:
+def entries_sync(root: Path, path: str,
+                 spec: PathSpec) -> tuple[list[tuple[str, int]], int]:
     """Per-file sizes under a path plus their total, on a worker thread.
 
     Args:
         root (Path): the mount root.
         path (str): mount-relative path.
+        spec (PathSpec): the operand, the path a refusal names.
     """
-    p = resolve(root, path)
+    p = resolve_inside(root, path, spec)
     if p.is_file():
         file_size = p.stat().st_size
         return [(("/" + path.strip("/")), file_size)], file_size
@@ -66,6 +63,8 @@ def entries_sync(root: Path, path: str) -> tuple[list[tuple[str, int]], int]:
     for dirpath, _dirnames, filenames in os.walk(p):
         for f in filenames:
             full = os.path.join(dirpath, f)
+            if os.path.islink(full):
+                continue
             try:
                 file_size = os.path.getsize(full)
             except OSError:

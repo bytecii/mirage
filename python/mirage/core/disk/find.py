@@ -22,15 +22,9 @@ from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.find_eval import (FindEntry, PredNode, build_tree,
                                                emit_start_path, keep,
                                                start_basename)
+from mirage.core.disk.utils import resolve_inside
 from mirage.types import PathSpec
 from mirage.utils.stat_view import DIR_SIZE
-
-
-def _resolve(root: Path, path: str) -> Path:
-    relative = path.lstrip("/")
-    resolved = (root / relative).resolve()
-    resolved.relative_to(root)
-    return resolved
 
 
 def _find_sync(
@@ -52,7 +46,12 @@ def _find_sync(
     tree: PredNode | None = None,
     start_name: str = "",
 ) -> list[str]:
-    p = _resolve(root, path)
+    try:
+        p = resolve_inside(root, path, path)
+    except FileNotFoundError:
+        # A start reached through a host link finds nothing, as a missing
+        # one does.
+        return []
     base = "/" + path.strip("/")
     base_depth = 0 if base == "/" else base.count("/")
     results: list[str] = []
@@ -79,6 +78,14 @@ def _find_sync(
                         max_size=max_size)
 
     for dirpath, dirnames, filenames in os.walk(p):
+        # A host symlink is not an entry of the mount (see resolve_inside).
+        dirnames[:] = [
+            d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))
+        ]
+        filenames = [
+            f for f in filenames
+            if not os.path.islink(os.path.join(dirpath, f))
+        ]
         dp = Path(dirpath)
         rel = dp.relative_to(root).as_posix()
         current = "/" + rel if rel != "." else "/"

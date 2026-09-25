@@ -79,7 +79,10 @@ class DiskVFS(BoundVFS):
         files: dict[str, bytes] = {}
         modes: dict[str, int] = {}
         for p in self.root.rglob("*"):
-            if p.is_file():
+            # A host symlink is not an entry of the mount (resolve_inside):
+            # is_file() follows it, so a link out of the root would be
+            # captured with the host's bytes.
+            if p.is_file() and not p.is_symlink():
                 rel = p.relative_to(self.root).as_posix()
                 files[rel] = p.read_bytes()
                 # Capture the real inode mode: it is the base truth for
