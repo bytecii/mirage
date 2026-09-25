@@ -1,18 +1,4 @@
-# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
-
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 
 from mirage.shell.escapes import unescape_unquoted
 from mirage.shell.helpers import get_text
@@ -59,13 +45,14 @@ def _separator(data: bytes, start: int, end: int, atoms: list[TSNodeLike],
 async def substring_operands(
     node: TSNodeLike,
     expand_child: Callable[[TSNodeLike], Awaitable[str]],
-) -> list[str]:
+) -> AsyncIterator[str]:
     """Split offset and length before expanding their nested words.
 
     The separator belongs to source syntax, never to substituted text.
     Colons inside quotes, substitutions, parentheses, subscripts and ternary
     expressions cannot split the operands. Both scalar and array slicing use
-    this path; the arithmetic evaluator owns validation and side effects.
+    this path. Each operand expands only when requested, so the caller can
+    evaluate and apply the offset before requesting the length.
 
     Args:
         node (TSNodeLike): substring expansion parsed with word operands.
@@ -84,7 +71,6 @@ async def substring_operands(
     spans = [(start, separator)]
     if separator < end:
         spans.append((separator + 1, end))
-    values = []
     for begin, stop in spans:
         pieces = []
         cursor = begin
@@ -96,5 +82,4 @@ async def substring_operands(
                 pieces.append(await expand_child(atom))
                 cursor = right
         pieces.append(unescape_unquoted(data[cursor:stop].decode()))
-        values.append("".join(pieces))
-    return values
+        yield "".join(pieces)

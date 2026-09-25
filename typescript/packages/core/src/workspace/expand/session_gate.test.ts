@@ -135,3 +135,18 @@ describe('a session write states itself as a whole variable', () => {
     })
   }
 })
+
+it('does not expand length after a refused offset', async () => {
+  const ws = await guarded()
+  try {
+    const result = await ws.shell('v=abcdef; echo "${v:(AWS_LIMIT=1):${OTHER:=2}}"')
+    expect(result.exitCode).toBe(1)
+    expect(DEC.decode(result.stderr)).toContain('not yours to set')
+    for (const name of ['AWS_LIMIT', 'OTHER']) {
+      const after = await ws.shell(`echo [$${name}]`)
+      expect(DEC.decode(after.stdout).trim()).toBe('[]')
+    }
+  } finally {
+    await ws.close()
+  }
+})

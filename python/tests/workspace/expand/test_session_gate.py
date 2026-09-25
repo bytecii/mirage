@@ -121,3 +121,13 @@ async def test_an_expansion_write_keeps_the_other_elements(
         guarded, line: str, expected: bytes):
     result = await guarded.shell(line)
     assert (result.stdout or b"").strip() == expected
+
+
+@pytest.mark.asyncio
+async def test_refused_offset_does_not_expand_length(guarded):
+    result = await guarded.shell(
+        'v=abcdef; echo "${v:(AWS_LIMIT=1):${OTHER:=2}}"')
+    assert result.exit_code == 1
+    assert b"not yours to set" in (result.stderr or b"")
+    assert await value_of(guarded, "AWS_LIMIT") == b"[]"
+    assert await value_of(guarded, "OTHER") == b"[]"

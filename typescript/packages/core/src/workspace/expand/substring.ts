@@ -1,17 +1,3 @@
-// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
-
 import { unescapeUnquoted } from '../../shell/escapes.ts'
 import { getText } from '../../shell/helpers.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
@@ -73,12 +59,12 @@ function separator(
  * Split offset and length before expanding nested words. Substituted colons
  * are data; quotes, substitutions, subscripts, parentheses and ternaries own
  * their colons. Scalar and array slicing share this path, and arithmetic
- * evaluation owns validation and side effects.
+ * evaluation applies the offset before requesting the next operand.
  */
-export async function substringOperands(
+export async function* substringOperands(
   node: TSNodeLike,
   expandChild: (node: TSNodeLike) => Promise<string>,
-): Promise<string[]> {
+): AsyncGenerator<string> {
   const operator = node.children.find((child) => getText(child) === ':')
   if (operator === undefined) throw new Error('substring operator missing')
   const [base] = span(node)
@@ -92,7 +78,6 @@ export async function substringOperands(
   const split = separator(text, start, end, nodes, base)
   const spans: [number, number][] = [[start, split]]
   if (split < end) spans.push([split + 1, end])
-  const values: string[] = []
   for (const [begin, stop] of spans) {
     const pieces: string[] = []
     let cursor = begin
@@ -107,7 +92,6 @@ export async function substringOperands(
       }
     }
     pieces.push(unescapeUnquoted(text.slice(cursor, stop)))
-    values.push(pieces.join(''))
+    yield pieces.join('')
   }
-  return values
 }
