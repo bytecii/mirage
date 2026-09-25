@@ -451,32 +451,19 @@ def test_parse_to_kwargs_empty():
     assert kw == {}
 
 
-def test_cache_flag_single_path():
-    spec = SPECS["grep"]
-    parsed = parse_command(spec,
-                           ["pattern", "file.txt", "--cache", "file.txt"], "/")
-    assert parsed.cache_paths == ["/file.txt"]
+def test_cache_is_an_unrecognized_option():
+    parsed = parse_command(SPECS["grep"], ["--cache", "/c", "bar", "f.txt"],
+                           "/data", "grep")
+    assert parsed.invalid_options == ["--cache"]
+    assert parsed.args == [("/c", "str"), ("/data/bar", "path"),
+                           ("/data/f.txt", "path")]
+    assert parsed.word_kinds == ["str", "str", "path", "path"]
 
 
-def test_cache_flag_multiple_paths():
-    spec = SPECS["grep"]
-    parsed = parse_command(
-        spec, ["pattern", "f1.txt", "--cache", "f1.txt", "f2.txt"], "/")
-    assert parsed.cache_paths == ["/f1.txt", "/f2.txt"]
-
-
-def test_cache_flag_empty():
-    spec = SPECS["cat"]
-    parsed = parse_command(spec, ["file.txt"], "/")
-    assert parsed.cache_paths == []
-
-
-def test_cache_flag_with_other_flags():
-    spec = SPECS["grep"]
-    parsed = parse_command(
-        spec, ["-i", "pattern", "file.txt", "--cache", "file.txt"], "/")
-    assert parsed.cache_paths == ["/file.txt"]
-    assert parsed.flags.get("-i") is True
+def test_cache_after_end_of_options_is_an_operand():
+    parsed = parse_command(SPECS["cat"], ["--", "--cache"], "/data", "cat")
+    assert parsed.invalid_options == []
+    assert parsed.args == [("/data/--cache", "path")]
 
 
 def test_option_bool_flag():
