@@ -15,8 +15,14 @@
 import type { NotionAccessor } from '../../accessor/notion.ts'
 import type { ScopeMatch } from '../hierarchy/scope.ts'
 import { makeRead } from '../hierarchy/read.ts'
-import { normalizeDataSource, normalizeDatabase, normalizePage, toJsonBytes } from './normalize.ts'
-import { getBlockTree, getDataSource, getDatabase, getPage } from './pages.ts'
+import {
+  normalizeDataSource,
+  normalizeDatabase,
+  normalizePage,
+  normalizeRow,
+  toJsonBytes,
+} from './normalize.ts'
+import { getBlockTree, getDataSource, getDatabase, getPage, queryDataSource } from './pages.ts'
 import { detectScope } from './scope.ts'
 
 async function readPageJson(accessor: NotionAccessor, match: ScopeMatch): Promise<Uint8Array> {
@@ -41,8 +47,19 @@ async function readDataSourceJson(
   return toJsonBytes(normalizeDataSource(dataSource))
 }
 
+async function readRowsJsonl(accessor: NotionAccessor, match: ScopeMatch): Promise<Uint8Array> {
+  const rows = await queryDataSource(accessor.transport, match.slots.data_source_id ?? '')
+  const lines = rows
+    .filter((row) => row.object === 'page')
+    .map((row) => JSON.stringify(normalizeRow(row)))
+  if (lines.length === 0) return new Uint8Array()
+  return new TextEncoder().encode(lines.join('\n') + '\n')
+}
+
 export const read = makeRead<NotionAccessor>(detectScope, {
   page_json: readPageJson,
+  row_json: readPageJson,
   database_json: readDatabaseJson,
   data_source_json: readDataSourceJson,
+  rows_jsonl: readRowsJsonl,
 })

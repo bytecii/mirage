@@ -240,18 +240,33 @@ describe('notion readdir databases', () => {
     expect(out).toEqual([`${dirPath}/database.json`, `${dirPath}/Tasks__${DS_ID}`])
   })
 
-  it('lists row pages under a data source directory', async () => {
+  it('lists the schema and rows.jsonl under a data source, never the rows', async () => {
     const transport = new FakeTransport()
     transport.enqueue('API-retrieve-a-data-source', dataSource())
-    transport.enqueue('API-post-data-source-query', {
-      results: [topPage(TOP1_ID, 'Row A'), { id: 'x', object: 'database' }],
+    const dirPath = `/databases/Tasks__${DB_ID}/Tasks__${DS_ID}`
+    const out = await readdir(makeAccessor(transport), spec(dirPath), undefined)
+    expect(out).toEqual([`${dirPath}/data_source.json`, `${dirPath}/rows.jsonl`])
+    expect(transport.invocations.map((call) => call.name)).toEqual(['API-retrieve-a-data-source'])
+  })
+
+  it('lists a row by its path, as any page', async () => {
+    const transport = new FakeTransport()
+    transport.enqueue('API-retrieve-block-children', {
+      results: [
+        {
+          id: CHILD1_ID,
+          type: 'child_page',
+          child_page: { title: 'Notes' },
+          last_edited_time: '2024-01-05T00:00:00Z',
+        },
+      ],
       has_more: false,
       next_cursor: null,
     })
-    const dirPath = `/databases/Tasks__${DB_ID}/Tasks__${DS_ID}`
+    const dirPath = `/databases/Tasks__${DB_ID}/Tasks__${DS_ID}/Row_A__${TOP1_ID}`
     const out = await readdir(makeAccessor(transport), spec(dirPath), undefined)
-    expect(out).toEqual([`${dirPath}/data_source.json`, `${dirPath}/Row_A__${TOP1_ID}`])
-    expect(transport.invocations[1]?.args).toEqual({ data_source_id: DS_ID, page_size: 100 })
+    expect(out).toEqual([`${dirPath}/page.json`, `${dirPath}/Notes__${CHILD1_ID}`])
+    expect(transport.invocations[0]?.args).toEqual({ block_id: TOP1_ID, page_size: 100 })
   })
 
   it('sizes database.json from the retrieved database', async () => {

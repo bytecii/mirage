@@ -308,7 +308,7 @@
       "command": "ls /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/",
       "expect": {
         "exit": 0,
-        "stdout": "Ship_beta__ffff2222-3333-4444-5555-666677778888\nWrite_spec__ffff1111-2222-3333-4444-555566667777\ndata_source.json\n",
+        "stdout": "data_source.json\nrows.jsonl\n",
         "stderr": ""
       }
     },
@@ -440,6 +440,123 @@
         "exit": 0,
         "stdout": "/notion\n/notion/databases\n/notion/pages\n",
         "stderr": ""
+      }
+    },
+    {
+      "id": "notion_cat_rows_jsonl",
+      "seq": 660040,
+      "targets": [
+        "notion"
+      ],
+      "command": "cat /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl",
+      "expect": {
+        "exit": 0,
+        "stdout": "{\"page_id\":\"ffff1111-2222-3333-4444-555566667777\",\"title\":\"Write spec\",\"path\":\"Write_spec__ffff1111-2222-3333-4444-555566667777/page.json\",\"url\":\"https://notion.example/ffff1111222233334444555566667777\",\"created_time\":\"2026-01-01T00:00:00.000Z\",\"last_edited_time\":\"2026-01-02T00:00:00.000Z\",\"parent_type\":\"data_source_id\",\"parent_id\":\"d5000000-2222-3333-4444-555566667777\",\"archived\":false,\"created_by\":\"user-1\",\"last_edited_by\":\"user-2\",\"properties\":{\"Name\":{\"id\":\"title\",\"type\":\"title\",\"title\":[{\"type\":\"text\",\"plain_text\":\"Write spec\",\"text\":{\"content\":\"Write spec\"}}]},\"Priority\":{\"id\":\"pri\",\"type\":\"number\",\"number\":2},\"Done\":{\"id\":\"dn\",\"type\":\"checkbox\",\"checkbox\":true},\"Stage\":{\"id\":\"st\",\"type\":\"select\",\"select\":{\"id\":\"s2\",\"name\":\"Review\",\"color\":\"blue\"}},\"Tags\":{\"id\":\"tg\",\"type\":\"multi_select\",\"multi_select\":[{\"id\":\"t1\",\"name\":\"infra\",\"color\":\"green\"},{\"id\":\"t2\",\"name\":\"docs\",\"color\":\"yellow\"}]},\"Due\":{\"id\":\"du\",\"type\":\"date\",\"date\":{\"start\":\"2026-02-01\",\"end\":null,\"time_zone\":null}},\"Link\":{\"id\":\"lk\",\"type\":\"url\",\"url\":\"https://example.com/spec\"},\"Notes\":{\"id\":\"nt\",\"type\":\"rich_text\",\"rich_text\":[{\"type\":\"text\",\"plain_text\":\"needs review\",\"text\":{\"content\":\"needs review\"}}]}}}\n{\"page_id\":\"ffff2222-3333-4444-5555-666677778888\",\"title\":\"Ship beta\",\"path\":\"Ship_beta__ffff2222-3333-4444-5555-666677778888/page.json\",\"url\":\"https://notion.example/ffff2222333344445555666677778888\",\"created_time\":\"2026-01-01T00:00:00.000Z\",\"last_edited_time\":\"2026-01-02T00:00:00.000Z\",\"parent_type\":\"data_source_id\",\"parent_id\":\"d5000000-2222-3333-4444-555566667777\",\"archived\":false,\"created_by\":\"user-1\",\"last_edited_by\":\"user-2\",\"properties\":{\"Name\":{\"id\":\"title\",\"type\":\"title\",\"title\":[{\"type\":\"text\",\"plain_text\":\"Ship beta\",\"text\":{\"content\":\"Ship beta\"}}]},\"Priority\":{\"id\":\"pri\",\"type\":\"number\",\"number\":1},\"Done\":{\"id\":\"dn\",\"type\":\"checkbox\",\"checkbox\":false},\"Stage\":{\"id\":\"st\",\"type\":\"select\",\"select\":null},\"Tags\":{\"id\":\"tg\",\"type\":\"multi_select\",\"multi_select\":[]},\"Due\":{\"id\":\"du\",\"type\":\"date\",\"date\":null},\"Link\":{\"id\":\"lk\",\"type\":\"url\",\"url\":null},\"Notes\":{\"id\":\"nt\",\"type\":\"rich_text\",\"rich_text\":[]}}}\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_jq_rows_titles",
+      "seq": 660041,
+      "targets": [
+        "notion"
+      ],
+      "command": "jq -r \".title\" /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl",
+      "expect": {
+        "exit": 0,
+        "stdout": "Write spec\nShip beta\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_jq_rows_paths",
+      "seq": 660042,
+      "targets": [
+        "notion"
+      ],
+      "command": "jq -r \".path\" /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl",
+      "expect": {
+        "exit": 0,
+        "stdout": "Write_spec__ffff1111-2222-3333-4444-555566667777/page.json\nShip_beta__ffff2222-3333-4444-5555-666677778888/page.json\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_grep_rows_recursive",
+      "seq": 660043,
+      "targets": [
+        "notion"
+      ],
+      "command": "grep -rl \"Write spec\" /notion/databases/",
+      "expect": {
+        "exit": 0,
+        "stdout": "/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_find_data_source_dir",
+      "seq": 660044,
+      "targets": [
+        "notion"
+      ],
+      "command": "find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777",
+      "expect": {
+        "exit": 0,
+        "stdout": "/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777\n/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/data_source.json\n/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_ls_row_by_path",
+      "seq": 660045,
+      "targets": [
+        "notion"
+      ],
+      "command": "ls /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Write_spec__ffff1111-2222-3333-4444-555566667777/",
+      "expect": {
+        "exit": 0,
+        "stdout": "page.json\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_stat_row_dir",
+      "seq": 660046,
+      "targets": [
+        "notion"
+      ],
+      "command": "stat -c '%n %F' /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Write_spec__ffff1111-2222-3333-4444-555566667777",
+      "expect": {
+        "exit": 0,
+        "stdout": "/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Write_spec__ffff1111-2222-3333-4444-555566667777 directory\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_stat_row_wrong_title",
+      "seq": 660047,
+      "targets": [
+        "notion"
+      ],
+      "command": "stat /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Wrong_title__ffff1111-2222-3333-4444-555566667777",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "stat: /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Wrong_title__ffff1111-2222-3333-4444-555566667777: No such file or directory\n"
+      }
+    },
+    {
+      "id": "notion_stat_row_unknown_id",
+      "seq": 660048,
+      "targets": [
+        "notion"
+      ],
+      "command": "stat /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Write_spec__ffff9999-2222-3333-4444-555566667777",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "stat: /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Write_spec__ffff9999-2222-3333-4444-555566667777: No such file or directory\n"
       }
     }
   ]

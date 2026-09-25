@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import orjson
+
 from mirage.accessor.notion import NotionAccessor
 from mirage.cache.index import IndexCacheStore
 from mirage.core.api.client import SessionArg
@@ -20,9 +22,9 @@ from mirage.core.hierarchy.scope import ScopeMatch
 from mirage.core.notion.config import NotionConfig
 from mirage.core.notion.normalize import (normalize_data_source,
                                           normalize_database, normalize_page,
-                                          to_json_bytes)
+                                          normalize_row, to_json_bytes)
 from mirage.core.notion.pages import (get_data_source, get_database, get_page,
-                                      list_block_tree)
+                                      list_block_tree, query_data_source)
 from mirage.core.notion.scope import detect_scope
 from mirage.types import PathSpec
 
@@ -60,11 +62,27 @@ async def _read_data_source_json(accessor: NotionAccessor, match: ScopeMatch,
     return to_json_bytes(normalize_data_source(data_source))
 
 
+async def _read_rows_jsonl(accessor: NotionAccessor, match: ScopeMatch,
+                           path: PathSpec, index: IndexCacheStore) -> bytes:
+    rows = await query_data_source(accessor.config,
+                                   match.slots["data_source_id"],
+                                   session=accessor.pool)
+    lines = [
+        orjson.dumps(normalize_row(row)).decode() for row in rows
+        if row.get("object") == "page"
+    ]
+    if not lines:
+        return b""
+    return ("\n".join(lines) + "\n").encode()
+
+
 read = make_read(
     detect_scope,
     readers={
         "page_json": _read_page_json,
+        "row_json": _read_page_json,
         "database_json": _read_database_json,
         "data_source_json": _read_data_source_json,
+        "rows_jsonl": _read_rows_jsonl,
     },
 )
