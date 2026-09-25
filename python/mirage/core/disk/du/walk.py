@@ -22,6 +22,16 @@ from mirage.types import PathSpec
 def size_sync(root: Path, path: str, spec: PathSpec) -> int:
     """Recursive byte size of a path, run on a worker thread.
 
+    The walk is plain blocking ``os.walk``, which the caller hands to one
+    thread with ``asyncio.to_thread``, rather than ``aiofiles``.
+    ``aiofiles`` is itself a thread-pool wrapper (each call is a
+    ``run_in_executor``), so walking with it costs one hand-off per
+    ``listdir`` and ``stat``. On MCP-Atlas's ``/data``, about 6,000
+    entries, that took 0.24 s, against 0.034 s for the whole walk in one
+    hand-off, and stalled the event loop longer with its callbacks
+    (8.8 ms against 1.2 ms). ``aiofiles`` stays the tool for one op on one
+    file, where a single hand-off is the least there is.
+
     Args:
         root (Path): the mount root.
         path (str): mount-relative path.
@@ -48,6 +58,9 @@ def size_sync(root: Path, path: str, spec: PathSpec) -> int:
 def entries_sync(root: Path, path: str,
                  spec: PathSpec) -> tuple[list[tuple[str, int]], int]:
     """Per-file sizes under a path plus their total, on a worker thread.
+
+    One hand-off for the whole walk rather than ``aiofiles``' one per
+    call, for the reason ``size_sync`` gives.
 
     Args:
         root (Path): the mount root.

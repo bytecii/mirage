@@ -47,7 +47,9 @@ def walk_sync(root: Path,
               path: str) -> list[tuple[str, bool, str | None, int | None]]:
     """Collect (mount-relative path, is_dir, mtime, size) under a path.
 
-    Runs in a worker thread; ``os.walk`` and ``stat`` are blocking.
+    Runs in a worker thread; ``os.walk`` and ``stat`` are blocking. One
+    hand-off for the whole walk rather than ``aiofiles``' one per call,
+    for the reason ``mirage.core.disk.du.walk.size_sync`` gives.
     Symlinks are not followed, matching every other disk walk in the
     repo and keeping a link loop from hanging the poll.
 
