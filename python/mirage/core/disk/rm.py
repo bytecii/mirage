@@ -25,8 +25,7 @@ from mirage.types import PathSpec
 
 
 async def rm_r(accessor: DiskAccessor, path_spec: PathSpec) -> None:
-    path = path_spec.mount_path
-    p = resolve_inside(accessor.root, path, path_spec)
+    p = await resolve_inside(accessor.root, path_spec)
     if await aio_path.isdir(p):
         await asyncio.to_thread(shutil.rmtree, p)
     elif await aio_path.exists(p):

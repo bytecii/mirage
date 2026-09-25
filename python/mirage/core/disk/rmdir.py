@@ -24,7 +24,6 @@ from mirage.types import PathSpec
 async def rmdir(accessor: DiskAccessor,
                 path_spec: PathSpec,
                 index: IndexCacheStore = NULL_INDEX) -> None:
-    path = path_spec.mount_path
-    p = resolve_inside(accessor.root, path, path_spec)
+    p = await resolve_inside(accessor.root, path_spec)
     await aiofiles.os.rmdir(p)
     await invalidate_after_unlink(path_spec)

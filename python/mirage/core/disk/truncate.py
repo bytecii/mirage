@@ -23,9 +23,8 @@ from mirage.types import PathSpec
 
 async def truncate(accessor: DiskAccessor, path_spec: PathSpec,
                    length: int) -> None:
-    path = path_spec.mount_path
     timer = start_op()
-    p = resolve_inside(accessor.root, path, path_spec)
+    p = await resolve_inside(accessor.root, path_spec)
     try:
         async with aiofiles.open(p, "rb") as f:
             data = await f.read()

@@ -2240,7 +2240,21 @@ def build_disk(
     async def cleanup() -> None:
         shutil.rmtree(root, ignore_errors=True)
 
-    return DiskVFS(root=root), cleanup
+    mount_root = Path(root)
+    if fixture_name := mount.get("host_fixture"):
+        fixture = json.loads(
+            (Path(__file__).resolve().parents[3] / "fixtures" /
+             (fixture_name + ".json")).read_text())
+        for relative, text in fixture["files"].items():
+            target = mount_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+        for relative in fixture["directories"]:
+            (mount_root / relative).mkdir(parents=True, exist_ok=True)
+        for relative, target in fixture["symlinks"].items():
+            (mount_root / relative).symlink_to(target)
+        mount_root /= "root"
+    return DiskVFS(root=str(mount_root)), cleanup
 
 
 def build_redis(

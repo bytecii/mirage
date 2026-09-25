@@ -13,12 +13,12 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
-import os
 from pathlib import Path
 
 from mirage.accessor.disk import DiskAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
-from mirage.core.disk.utils import resolve_inside
+from mirage.core.disk.errors import disk_error
+from mirage.core.disk.utils import read_entries, resolve_inside
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent, enotdir
 from mirage.utils.key_prefix import mount_prefix_of
@@ -32,8 +32,7 @@ def _entry_names(p: Path) -> list[str]:
     Args:
         p (Path): the host directory.
     """
-    with os.scandir(p) as listing:
-        return [entry.name for entry in listing if not entry.is_symlink()]
+    return [entry.name for entry in read_entries(p)]
 
 
 async def readdir(accessor: DiskAccessor,
@@ -53,7 +52,7 @@ async def readdir(accessor: DiskAccessor,
     listing = await index.list_dir(virtual_key)
     if listing.entries is not None:
         return listing.entries
-    p = resolve_inside(root, path, path_spec)
+    p = await resolve_inside(root, path_spec, path)
     base = "/" + path.strip("/")
     # The kernel already separates ENOENT (a component does not exist) from
     # ENOTDIR (a component exists but is not a directory); let listdir make
@@ -65,6 +64,8 @@ async def readdir(accessor: DiskAccessor,
         raise enoent(path_spec) from exc
     except NotADirectoryError as exc:
         raise enotdir(path_spec) from exc
+    except OSError as exc:
+        raise disk_error(exc, path_spec.virtual) from exc
     entries = sorted(base.rstrip("/") + "/" + name for name in raw)
     virtual_entries = sorted((prefix + e if prefix else e) for e in entries)
     index_entries = [(e.rsplit("/", 1)[-1],

@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { DiskAccessor } from '../../accessor/disk.ts'
-import { readdir, stat } from 'node:fs/promises'
+import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import {
   buildTree,
@@ -25,7 +25,8 @@ import type { PredNode } from '@struktoai/mirage-core/commands/builtin/find_eval
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 import { DIR_SIZE } from '@struktoai/mirage-core/utils/stat_view'
-import { norm, resolveInside } from './utils.ts'
+import { diskError } from './errors.ts'
+import { norm, readEntries, resolveInside } from './utils.ts'
 
 export interface FindOptions {
   name?: string | null
@@ -45,8 +46,6 @@ export interface FindOptions {
 }
 
 interface WalkCtx {
-  accessor: DiskAccessor
-  base: string
   baseDepth: number
   options: FindOptions
   tree: PredNode
@@ -55,8 +54,8 @@ interface WalkCtx {
 
 // Empty as the mount sees it: a host symlink is not an entry (resolveInside).
 async function emptyDir(dir: string): Promise<boolean> {
-  const entries = await readdir(dir, { withFileTypes: true })
-  return entries.every((e) => e.isSymbolicLink())
+  const entries = await readEntries(dir)
+  return entries.length === 0
 }
 
 async function walk(ctx: WalkCtx, full: string, current: string, depth: number): Promise<void> {
@@ -64,12 +63,16 @@ async function walk(ctx: WalkCtx, full: string, current: string, depth: number):
   if (opts.maxDepth !== null && opts.maxDepth !== undefined && depth > opts.maxDepth) return
   let entries
   try {
-    entries = await readdir(full, { withFileTypes: true })
-  } catch {
+    entries = await readEntries(full)
+  } catch (error) {
+    if (
+      (error as NodeJS.ErrnoException).code !== 'ENOENT' &&
+      (error as NodeJS.ErrnoException).code !== 'ENOTDIR'
+    )
+      throw error
     return
   }
   for (const e of entries) {
-    if (e.isSymbolicLink()) continue
     const kind: 'f' | 'd' = e.isDirectory() ? 'd' : 'f'
     const entryPath = current === '/' ? `/${e.name}` : `${current}/${e.name}`
     const entryName = e.name
@@ -87,7 +90,12 @@ async function walk(ctx: WalkCtx, full: string, current: string, depth: number):
           kind === 'f'
             ? (await stat(path.join(full, e.name))).size === 0
             : await emptyDir(path.join(full, e.name))
-      } catch {
+      } catch (error) {
+        if (
+          (error as NodeJS.ErrnoException).code !== 'ENOENT' &&
+          (error as NodeJS.ErrnoException).code !== 'ENOTDIR'
+        )
+          throw error
         isEmpty = null
       }
     }
@@ -127,7 +135,12 @@ async function walk(ctx: WalkCtx, full: string, current: string, depth: number):
           if (opts.mtimeMax !== null && opts.mtimeMax !== undefined && mtime > opts.mtimeMax)
             accept = false
         }
-      } catch {
+      } catch (error) {
+        if (
+          (error as NodeJS.ErrnoException).code !== 'ENOENT' &&
+          (error as NodeJS.ErrnoException).code !== 'ENOTDIR'
+        )
+          throw error
         accept = false
       }
     }
@@ -140,7 +153,7 @@ async function walk(ctx: WalkCtx, full: string, current: string, depth: number):
   }
 }
 
-export async function find(
+async function findInside(
   accessor: DiskAccessor,
   p: PathSpec,
   options: FindOptions = {},
@@ -172,14 +185,24 @@ export async function find(
     let isDir = false
     try {
       isDir = (await stat(full)).isDirectory()
-    } catch {
+    } catch (error) {
+      if (
+        (error as NodeJS.ErrnoException).code !== 'ENOENT' &&
+        (error as NodeJS.ErrnoException).code !== 'ENOTDIR'
+      )
+        throw error
       isDir = false
     }
     let rootEmpty: boolean | null = null
     if (isDir && options.empty === true) {
       try {
         rootEmpty = await emptyDir(full)
-      } catch {
+      } catch (error) {
+        if (
+          (error as NodeJS.ErrnoException).code !== 'ENOENT' &&
+          (error as NodeJS.ErrnoException).code !== 'ENOTDIR'
+        )
+          throw error
         rootEmpty = null
       }
     }
@@ -194,7 +217,19 @@ export async function find(
       maxSize: options.maxSize,
     })
   }
-  await walk({ accessor, base: virtual, baseDepth, options, tree, results }, full, virtual, 0)
+  await walk({ baseDepth, options, tree, results }, full, virtual, 0)
   results.sort(compareCodePoints)
   return results
+}
+
+export async function find(
+  accessor: DiskAccessor,
+  p: PathSpec,
+  options: FindOptions = {},
+): Promise<string[]> {
+  try {
+    return await findInside(accessor, p, options)
+  } catch (error) {
+    throw diskError(error, p)
+  }
 }

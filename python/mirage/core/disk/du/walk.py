@@ -12,78 +12,67 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import os
+import logging
+import stat
+from collections.abc import Iterator
 from pathlib import Path
 
-from mirage.core.disk.utils import resolve_inside
+from mirage.core.disk.utils import resolve_inside_sync, walk_entries
 from mirage.types import PathSpec
 
+logger = logging.getLogger(__name__)
 
-def size_sync(root: Path, path: str, spec: PathSpec) -> int:
-    """Recursive byte size of a path, run on a worker thread.
 
-    The walk is plain blocking ``os.walk``, which the caller hands to one
-    thread with ``asyncio.to_thread``, rather than ``aiofiles``.
-    ``aiofiles`` is itself a thread-pool wrapper (each call is a
-    ``run_in_executor``), so walking with it costs one hand-off per
-    ``listdir`` and ``stat``. On MCP-Atlas's ``/data``, about 6,000
-    entries, that took 0.24 s, against 0.034 s for the whole walk in one
-    hand-off, and stalled the event loop longer with its callbacks
-    (8.8 ms against 1.2 ms). ``aiofiles`` stays the tool for one op on one
-    file, where a single hand-off is the least there is.
+def size_sync(root: Path, spec: PathSpec) -> int:
+    """Total visible file bytes, on the caller's worker thread.
 
     Args:
-        root (Path): the mount root.
-        path (str): mount-relative path.
-        spec (PathSpec): the operand, the path a refusal names.
+        root (Path): mount root.
+        spec (PathSpec): virtual operand.
     """
-    p = resolve_inside(root, path, spec)
-    if p.is_file():
-        return p.stat().st_size
-    total = 0
-    for dirpath, _dirnames, filenames in os.walk(p):
-        for f in filenames:
-            full = os.path.join(dirpath, f)
-            # A host symlink is not an entry of the mount (resolve_inside).
-            if os.path.islink(full):
-                continue
+    return sum(size for _, size in _file_sizes(root, spec))
+
+
+def _file_sizes(root: Path, spec: PathSpec) -> Iterator[tuple[str, int]]:
+    """Collect visible file sizes in one worker handoff.
+
+    Missing operands total zero; unreadable trees fail instead of reporting
+    a partial total. Symlinks are excluded by the shared enumeration policy.
+
+    Args:
+        root (Path): mount root.
+        spec (PathSpec): virtual operand.
+    """
+    p = resolve_inside_sync(root, spec)
+    try:
+        info = p.stat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISREG(info.st_mode):
+        yield spec.mount_path, info.st_size
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        return
+    for directory, _, filenames in walk_entries(p):
+        for name in filenames:
+            full = directory / name
             try:
-                total += os.path.getsize(full)
-            except OSError:
-                # unreadable entry: GNU du skips it and totals the rest
-                pass
-    return total
+                info = full.lstat()
+            except FileNotFoundError:
+                logger.debug("File vanished during disk traversal",
+                             exc_info=True)
+                continue
+            if stat.S_ISREG(info.st_mode):
+                yield "/" + full.relative_to(root).as_posix(), info.st_size
 
 
-def entries_sync(root: Path, path: str,
+def entries_sync(root: Path,
                  spec: PathSpec) -> tuple[list[tuple[str, int]], int]:
-    """Per-file sizes under a path plus their total, on a worker thread.
-
-    One hand-off for the whole walk rather than ``aiofiles``' one per
-    call, for the reason ``size_sync`` gives.
+    """Collect sorted file sizes and their total.
 
     Args:
-        root (Path): the mount root.
-        path (str): mount-relative path.
-        spec (PathSpec): the operand, the path a refusal names.
+        root (Path): mount root.
+        spec (PathSpec): virtual operand.
     """
-    p = resolve_inside(root, path, spec)
-    if p.is_file():
-        file_size = p.stat().st_size
-        return [(("/" + path.strip("/")), file_size)], file_size
-    found: list[tuple[str, int]] = []
-    total = 0
-    for dirpath, _dirnames, filenames in os.walk(p):
-        for f in filenames:
-            full = os.path.join(dirpath, f)
-            if os.path.islink(full):
-                continue
-            try:
-                file_size = os.path.getsize(full)
-            except OSError:
-                continue
-            rel = os.path.relpath(full, root).replace(os.sep, "/")
-            found.append(("/" + rel, file_size))
-            total += file_size
-    found.sort()
-    return found, total
+    found = sorted(_file_sizes(root, spec))
+    return found, sum(size for _, size in found)

@@ -25,10 +25,9 @@ async def read_bytes(accessor: DiskAccessor,
                      path_spec: PathSpec,
                      index: IndexCacheStore = NULL_INDEX) -> bytes:
     virtual = path_spec.virtual
-    path = path_spec.mount_path
     root = accessor.root
     timer = start_op()
-    p = resolve_inside(root, path, path_spec)
+    p = await resolve_inside(root, path_spec)
     try:
         async with aiofiles.open(p, "rb") as f:
             data = await f.read()
@@ -53,10 +52,9 @@ async def read_range(accessor: DiskAccessor,
         size (int | None): how many bytes, or None for the rest.
     """
     virtual = path_spec.virtual
-    path = path_spec.mount_path
     root = accessor.root
     timer = start_op()
-    p = resolve_inside(root, path, path_spec)
+    p = await resolve_inside(root, path_spec)
     try:
         async with aiofiles.open(p, "rb") as f:
             await f.seek(offset)

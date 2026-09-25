@@ -47,7 +47,8 @@ async def mkdir_component_error(root: Path, spec: PathSpec,
     """
     for component in ancestors(key):
         try:
-            st = await aiofiles.os.stat(resolve_inside(root, component, spec))
+            st = await aiofiles.os.stat(await
+                                        resolve_inside(root, spec, component))
         except OSError:
             return None
         # Anything that is not a directory blocks traversal, not just a

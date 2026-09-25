@@ -12,17 +12,19 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from aiofiles.os import path as aio_path
+import aiofiles.os
 
 from mirage.accessor.disk import DiskAccessor
+from mirage.core.disk.errors import disk_errors
 from mirage.core.disk.utils import resolve_inside
 from mirage.types import PathSpec
 
 
 async def exists(accessor: DiskAccessor, path_spec: PathSpec) -> bool:
-    path = path_spec.mount_path
     try:
-        p = resolve_inside(accessor.root, path, path_spec)
-    except FileNotFoundError:
+        p = await resolve_inside(accessor.root, path_spec)
+        with disk_errors(path_spec.virtual):
+            await aiofiles.os.stat(p)
+    except (FileNotFoundError, NotADirectoryError):
         return False
-    return await aio_path.exists(p)
+    return True

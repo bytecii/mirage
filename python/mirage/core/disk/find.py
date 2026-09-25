@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import asyncio
-import os
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,7 +22,9 @@ from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.find_eval import (FindEntry, PredNode, build_tree,
                                                emit_start_path, keep,
                                                start_basename)
-from mirage.core.disk.utils import resolve_inside
+from mirage.core.disk.errors import disk_errors
+from mirage.core.disk.utils import (read_entries, resolve_inside_sync,
+                                    walk_entries)
 from mirage.types import PathSpec
 from mirage.utils.stat_view import DIR_SIZE
 
@@ -35,12 +37,12 @@ def _empty_dir(p: Path) -> bool:
     Args:
         p (Path): the host directory.
     """
-    return all(child.is_symlink() for child in p.iterdir())
+    return not read_entries(p)
 
 
 def _find_sync(
     root: Path,
-    path: str,
+    spec: PathSpec,
     name: str | None = None,
     type: str | None = None,
     min_size: int | None = None,
@@ -57,9 +59,11 @@ def _find_sync(
     tree: PredNode | None = None,
     start_name: str = "",
 ) -> list[str]:
+    path = spec.mount_path
     try:
-        p = resolve_inside(root, path, path)
-    except FileNotFoundError:
+        p = resolve_inside_sync(root, spec)
+        info = p.stat()
+    except (FileNotFoundError, NotADirectoryError):
         # A start reached through a host link finds nothing, as a missing
         # one does.
         return []
@@ -74,29 +78,23 @@ def _find_sync(
                                                     or_names=or_names,
                                                     empty=empty)
 
-    if p.is_dir():
-        root_empty = _empty_dir(p) if empty else None
-        emit_start_path(results,
-                        base,
-                        start_name,
-                        kind="d",
-                        is_empty=root_empty,
-                        exists=True,
-                        tree=tree,
-                        maxdepth=maxdepth,
-                        mindepth=mindepth,
-                        min_size=min_size,
-                        max_size=max_size)
+    if not stat.S_ISDIR(info.st_mode):
+        return []
 
-    for dirpath, dirnames, filenames in os.walk(p):
-        # A host symlink is not an entry of the mount (see resolve_inside).
-        dirnames[:] = [
-            d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))
-        ]
-        filenames = [
-            f for f in filenames
-            if not os.path.islink(os.path.join(dirpath, f))
-        ]
+    root_empty = _empty_dir(p) if empty else None
+    emit_start_path(results,
+                    base,
+                    start_name,
+                    kind="d",
+                    is_empty=root_empty,
+                    exists=True,
+                    tree=tree,
+                    maxdepth=maxdepth,
+                    mindepth=mindepth,
+                    min_size=min_size,
+                    max_size=max_size)
+
+    for dirpath, dirnames, filenames in walk_entries(p):
         dp = Path(dirpath)
         rel = dp.relative_to(root).as_posix()
         current = "/" + rel if rel != "." else "/"
@@ -129,7 +127,7 @@ def _find_sync(
                 try:
                     is_empty = (full.stat().st_size
                                 == 0) if kind == "f" else (_empty_dir(full))
-                except OSError:
+                except (FileNotFoundError, NotADirectoryError):
                     is_empty = None
             entry = FindEntry(key=entry_path,
                               name=entry_name,
@@ -143,7 +141,7 @@ def _find_sync(
                 if kind == "f":
                     try:
                         size = full.stat().st_size
-                    except OSError:
+                    except (FileNotFoundError, NotADirectoryError):
                         continue
                 else:
                     size = DIR_SIZE
@@ -157,7 +155,7 @@ def _find_sync(
                     st = full.stat()
                     mtime = datetime.fromtimestamp(
                         st.st_mtime, tz=timezone.utc).timestamp()
-                except OSError:
+                except (FileNotFoundError, NotADirectoryError):
                     continue
                 if mtime_min is not None and mtime < mtime_min:
                     continue
@@ -189,24 +187,24 @@ async def find(
     index: IndexCacheStore = NULL_INDEX,
 ) -> list[str]:
     start_name = start_basename(path_spec)
-    path = path_spec.mount_path
-    return await asyncio.to_thread(
-        _find_sync,
-        accessor.root,
-        path,
-        name,
-        type,
-        min_size,
-        max_size,
-        maxdepth,
-        name_exclude,
-        or_names,
-        mtime_min,
-        mtime_max,
-        iname,
-        path_pattern,
-        mindepth,
-        empty,
-        tree,
-        start_name,
-    )
+    with disk_errors(path_spec.virtual):
+        return await asyncio.to_thread(
+            _find_sync,
+            accessor.root,
+            path_spec,
+            name,
+            type,
+            min_size,
+            max_size,
+            maxdepth,
+            name_exclude,
+            or_names,
+            mtime_min,
+            mtime_max,
+            iname,
+            path_pattern,
+            mindepth,
+            empty,
+            tree,
+            start_name,
+        )

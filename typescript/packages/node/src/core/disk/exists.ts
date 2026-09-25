@@ -13,15 +13,18 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { DiskAccessor } from '../../accessor/disk.ts'
-import { access } from 'node:fs/promises'
+import { stat } from 'node:fs/promises'
 import type { PathSpec } from '@struktoai/mirage-core/types'
+import { diskError } from './errors.ts'
 import { resolveInside } from './utils.ts'
 
 export async function exists(accessor: DiskAccessor, path: PathSpec): Promise<boolean> {
   try {
-    await access(await resolveInside(accessor.root, path))
+    await stat(await resolveInside(accessor.root, path))
     return true
-  } catch {
-    return false
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return false
+    throw diskError(error, path)
   }
 }

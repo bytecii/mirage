@@ -28,7 +28,7 @@ async def mkdir(accessor: DiskAccessor,
                 parents: bool = False) -> None:
     path = path_spec.mount_path
     root = accessor.root
-    p = resolve_inside(root, path, path_spec)
+    p = await resolve_inside(root, path_spec, path)
     if parents:
         # Not `disk_errors`: that restamps every OSError against the
         # operand, which would undo the component naming below.

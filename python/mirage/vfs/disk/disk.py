@@ -13,15 +13,17 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import os
+import stat
 from pathlib import Path
 from typing import Any
 
 from mirage.accessor.disk import DiskAccessor
 from mirage.commands.builtin.disk import COMMANDS as DISK_COMMANDS
 from mirage.commands.builtin.disk.io import IO
+from mirage.core.disk.utils import resolve_inside_sync, walk_entries
 from mirage.core.disk.watch import build_delta_hook
 from mirage.ops.disk import OPS as DISK_OPS
-from mirage.types import CapacityResult, CapacityState, VFSName
+from mirage.types import CapacityResult, CapacityState, PathSpec, VFSName
 from mirage.vfs.bound import BoundVFS
 from mirage.vfs.disk.prompt import PROMPT
 from mirage.watch.base import DeltaHook
@@ -78,17 +80,14 @@ class DiskVFS(BoundVFS):
     def get_state(self) -> dict[str, Any]:
         files: dict[str, bytes] = {}
         modes: dict[str, int] = {}
-        for p in self.root.rglob("*"):
-            # A host symlink is not an entry of the mount (resolve_inside):
-            # is_file() follows it, so a link out of the root would be
-            # captured with the host's bytes.
-            if p.is_file() and not p.is_symlink():
-                rel = p.relative_to(self.root).as_posix()
-                files[rel] = p.read_bytes()
-                # Capture the real inode mode: it is the base truth for
-                # disk permissions (the sidecar is gone), so restore must
-                # reapply it or a chmod would reset to the host umask.
-                modes[rel] = p.stat().st_mode & 0o7777
+        for directory, _, names in walk_entries(self.root):
+            for name in names:
+                p = directory / name
+                info = p.lstat()
+                if stat.S_ISREG(info.st_mode):
+                    rel = p.relative_to(self.root).as_posix()
+                    files[rel] = p.read_bytes()
+                    modes[rel] = info.st_mode & 0o7777
         return {
             "type": self.name,
             "files": files,
@@ -99,7 +98,10 @@ class DiskVFS(BoundVFS):
         files = state.get("files", {})
         modes = state.get("modes", {})
         for rel, data in files.items():
-            target = self.root / rel
+            if Path(rel).is_absolute():
+                raise ValueError(f"snapshot path must be relative: {rel}")
+            spec = PathSpec.from_str_path("/" + rel)
+            target = resolve_inside_sync(self.root, spec, rel)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
             mode = modes.get(rel)

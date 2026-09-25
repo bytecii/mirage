@@ -24,10 +24,9 @@ from mirage.types import PathSpec
 
 async def write_bytes(accessor: DiskAccessor, path_spec: PathSpec,
                       data: bytes) -> None:
-    path = path_spec.mount_path
     root = accessor.root
     timer = start_op()
-    p = resolve_inside(root, path, path_spec)
+    p = await resolve_inside(root, path_spec)
     with disk_errors(path_spec.virtual):
         async with aiofiles.open(p, "wb") as f:
             await f.write(data)

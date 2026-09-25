@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { chmod, mkdir, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, realpath, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { spec, tmpRoot } from '../../test-utils.ts'
@@ -132,6 +132,18 @@ describe('resolveInside', () => {
     } finally {
       await chmod(join(root, 'locked'), 0o755)
     }
+  })
+  it('accepts infrastructure root aliases but rejects links below them', async () => {
+    const alias = join(outside, 'root-alias')
+    await symlink(root, alias)
+    expect(await resolveInside(alias, spec('/lib/a.txt'))).toBe(join(alias, 'lib/a.txt'))
+    await expect(resolveInside(alias, spec('/lib64/a.txt'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  })
+  it('allows a filesystem root mount', async () => {
+    const canonical = await realpath(root)
+    expect(await resolveInside('/', spec(canonical))).toBe(canonical)
   })
   it('still refuses a .. escape', async () => {
     await expect(resolveInside(root, spec('/../escaped'))).rejects.toThrow(/escapes root/)

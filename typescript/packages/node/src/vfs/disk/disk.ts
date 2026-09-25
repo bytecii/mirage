@@ -17,7 +17,6 @@ import { DISK_IO } from '../../commands/builtin/disk/io.ts'
 import {
   chmod,
   mkdir,
-  readdir,
   readFile,
   stat as fsStat,
   statfs as fsStatfs,
@@ -29,11 +28,12 @@ import type { RegisteredCommand } from '@struktoai/mirage-core/commands/config'
 import type { RegisteredOp } from '@struktoai/mirage-core/ops/registry'
 
 import type { FindOptions, VFS } from '@struktoai/mirage-core/vfs/base'
-import { CapacityState, VFSName } from '@struktoai/mirage-core/types'
-import type { CapacityResult, PathSpec } from '@struktoai/mirage-core/types'
+import { CapacityState, PathSpec, VFSName } from '@struktoai/mirage-core/types'
+import type { CapacityResult } from '@struktoai/mirage-core/types'
 
 import { DISK_COMMANDS } from '../../commands/builtin/disk/index.ts'
 
+import { readEntries, resolveInside } from '../../core/disk/utils.ts'
 import { DiskAccessor } from '../../accessor/disk.ts'
 import { DISK_OPS } from '../../ops/disk/index.ts'
 import { DISK_PROMPT } from './prompt.ts'
@@ -50,12 +50,12 @@ export interface DiskVFSState {
   modes?: Record<string, number>
 }
 
-async function walkFiles(root: string, current: string, out: string[]): Promise<void> {
-  const entries = await readdir(current, { withFileTypes: true })
+async function walkFiles(current: string, out: string[]): Promise<void> {
+  const entries = await readEntries(current)
   for (const e of entries) {
     const child = path.join(current, e.name)
     if (e.isDirectory()) {
-      await walkFiles(root, child, out)
+      await walkFiles(child, out)
     } else if (e.isFile()) {
       out.push(child)
     }
@@ -145,7 +145,7 @@ export class DiskVFS extends BoundVFS<DiskAccessor> implements VFS {
     const files: Record<string, Uint8Array> = {}
     const modes: Record<string, number> = {}
     const fileList: string[] = []
-    await walkFiles(this.root, this.root, fileList)
+    await walkFiles(this.root, fileList)
     for (const full of fileList) {
       const rel = path.relative(this.root, full).split(path.sep).join('/')
       const data = await readFile(full)
@@ -165,7 +165,8 @@ export class DiskVFS extends BoundVFS<DiskAccessor> implements VFS {
   override async loadState(state: DiskVFSState): Promise<void> {
     await mkdir(this.root, { recursive: true })
     for (const [rel, data] of Object.entries(state.files)) {
-      const full = path.join(this.root, rel)
+      if (path.isAbsolute(rel)) throw new Error(`snapshot path must be relative: ${rel}`)
+      const full = await resolveInside(this.root, PathSpec.fromStrPath('/' + rel), rel)
       await mkdir(path.dirname(full), { recursive: true })
       await writeFile(full, data)
       const mode = state.modes?.[rel]

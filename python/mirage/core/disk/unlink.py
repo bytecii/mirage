@@ -21,7 +21,6 @@ from mirage.types import PathSpec
 
 
 async def unlink(accessor: DiskAccessor, path_spec: PathSpec) -> None:
-    path = path_spec.mount_path
-    p = resolve_inside(accessor.root, path, path_spec)
+    p = await resolve_inside(accessor.root, path_spec)
     await aiofiles.os.remove(p)
     await invalidate_after_unlink(path_spec)

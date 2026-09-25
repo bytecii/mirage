@@ -57,7 +57,7 @@ async def set_attrs(
     Returns:
         dict[str, int | str]: requested fields the inode does not hold.
     """
-    p = resolve_inside(accessor.root, path.mount_path, path)
+    p = await resolve_inside(accessor.root, path)
     if not await aiofiles.os.path.exists(p):
         raise FileNotFoundError(path.raw_path)
     residual: dict[str, int | str] = {}

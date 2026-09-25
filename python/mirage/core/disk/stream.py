@@ -28,10 +28,9 @@ async def read_stream(accessor: DiskAccessor,
                       index: IndexCacheStore = NULL_INDEX,
                       chunk_size: int = 8192) -> AsyncIterator[bytes]:
     virtual = path_spec.virtual
-    path = path_spec.mount_path
     root = accessor.root
     rec = record_stream("read", virtual, "disk")
-    p = resolve_inside(root, path, path_spec)
+    p = await resolve_inside(root, path_spec)
     try:
         async with aiofiles.open(p, "rb") as f:
             while True:

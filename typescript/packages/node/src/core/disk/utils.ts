@@ -12,7 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { lstat, realpath } from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
+import { lstat, realpath, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { enoent } from '@struktoai/mirage-core/utils/errors'
@@ -25,7 +26,10 @@ export function resolveSafe(root: string, virtual: string): string {
   const relative = lstripSlash(virtual)
   const resolved = path.resolve(root, relative)
   const rootResolved = path.resolve(root)
-  if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) {
+  if (
+    resolved !== rootResolved &&
+    !resolved.startsWith(rootResolved.endsWith(path.sep) ? rootResolved : rootResolved + path.sep)
+  ) {
     throw new Error(`path escapes root: ${virtual}`)
   }
   return resolved
@@ -93,4 +97,11 @@ export async function resolveInside(
     if (info.isSymbolicLink()) throw enoent(spec)
   }
   return full
+}
+
+/** List visible entries without following host symlinks. All disk walks use this policy. */
+export async function readEntries(directory: string): Promise<Dirent[]> {
+  return (await readdir(directory, { withFileTypes: true })).filter(
+    (entry) => !entry.isSymbolicLink(),
+  )
 }

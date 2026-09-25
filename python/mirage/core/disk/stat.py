@@ -27,9 +27,8 @@ async def stat(accessor: DiskAccessor,
                path_spec: PathSpec,
                index: IndexCacheStore = NULL_INDEX) -> FileStat:
     virtual = path_spec.virtual
-    path = path_spec.mount_path
     root = accessor.root
-    p = resolve_inside(root, path, path_spec)
+    p = await resolve_inside(root, path_spec)
     if not await aio_path.exists(p):
         raise FileNotFoundError(virtual)
     st = await aiofiles.os.stat(p)

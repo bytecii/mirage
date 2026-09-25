@@ -12,51 +12,44 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import asyncio
+import logging
 import os
 import stat
+from collections.abc import Iterator
 from pathlib import Path
 
 from mirage.core.disk.errors import disk_error
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 
+logger = logging.getLogger(__name__)
 
-def resolve_inside(root: Path, path: str, spec: PathSpec | str) -> Path:
-    """The host path for a mount path, refused as absent when a component
-    below the root is a symlink.
 
-    A VFS never stores a symlink, so a host link is not an entry of the
-    mount: following it would let a path the root admits spelled-wise
-    read or write wherever the link points on the host, and ``readdir``
-    leaves it out so every walk agrees. Components past the first absent
-    one are left to the op, which answers its own ENOENT or creates.
-    Mirrors TypeScript's ``resolveInside``.
+def resolve_inside_sync(root: Path,
+                        spec: PathSpec,
+                        path: str | None = None) -> Path:
+    """Resolve an exact host operand without following links below the root.
 
-    It answers for the tree as it stands when called. The mount's own
-    writers cannot make a host link (``ln -s`` lands in the namespace),
-    but another host process that swaps a directory for a link between
-    this check and the op is beyond it: closing that race needs every op
-    to walk by file descriptor with ``O_NOFOLLOW`` (openat2's
-    ``RESOLVE_BENEATH``), which ``node:fs`` cannot express, so neither
-    twin does.
+    Missing components are left to the operation, allowing creates. The root
+    itself may be an infrastructure symlink. This check is not atomic with
+    subsequent I/O: protection against concurrent host replacement requires
+    descriptor-relative operations with O_NOFOLLOW throughout.
 
-    It runs on the caller's thread, the event loop included, as the
-    ``Path.resolve()`` it replaced did, and works on strings rather than
-    ``Path`` objects. The ``lstat`` calls themselves are cheap: on
-    MCP-Atlas's ``/data``, a nine-component path costs about 14 us this
-    way, against 86 us through ``pathlib``. Handing each call to a thread
-    would add about 40 us to every op.
+    Call on a worker thread, or from a synchronous snapshot API. Async
+    operations use resolve_inside, which hands the whole check to one worker.
 
     Args:
-        root (Path): the mount root on the host.
-        path (str): the mount-relative path.
-        spec (PathSpec | str): the operand, the path any refusal names.
+        root (Path): mount root on the host.
+        spec (PathSpec): operand retained for virtual-path errors.
+        path (str | None): alternate mount-relative key, otherwise spec's.
     """
-    base = str(root)
-    full = os.path.normpath(os.path.join(base, path.lstrip("/")))
+    key = spec.mount_path if path is None else path
+    base = os.path.abspath(root)
+    full = os.path.normpath(os.path.join(base, key.lstrip("/")))
     prefix = base if base.endswith(os.sep) else base + os.sep
     if full != base and not full.startswith(prefix):
-        raise ValueError(f"path escapes root: {path}")
+        raise ValueError(f"path escapes root: {spec.virtual}")
     at = base
     for part in full[len(base):].split(os.sep):
         if not part:
@@ -67,8 +60,59 @@ def resolve_inside(root: Path, path: str, spec: PathSpec | str) -> Path:
         except (FileNotFoundError, NotADirectoryError):
             return Path(full)
         except OSError as exc:
-            virtual = spec if isinstance(spec, str) else spec.virtual
-            raise disk_error(exc, virtual) from exc
+            raise disk_error(exc, spec.virtual) from exc
         if stat.S_ISLNK(info.st_mode):
             raise enoent(spec)
     return Path(full)
+
+
+async def resolve_inside(root: Path,
+                         spec: PathSpec,
+                         path: str | None = None) -> Path:
+    """Run the complete path check off the event loop.
+
+    Args:
+        root (Path): mount root on the host.
+        spec (PathSpec): operand retained for virtual-path errors.
+        path (str | None): alternate mount-relative key.
+    """
+    return await asyncio.to_thread(resolve_inside_sync, root, spec, path)
+
+
+def read_entries(directory: Path) -> list[os.DirEntry[str]]:
+    """List visible host entries using metadata that never follows links.
+
+    All disk traversals use this policy. Errors propagate to the caller,
+    which decides whether absence is expected or the traversal is incomplete.
+
+    Args:
+        directory (Path): checked host directory.
+    """
+    with os.scandir(directory) as listing:
+        return [entry for entry in listing if not entry.is_symlink()]
+
+
+def walk_entries(start: Path) -> Iterator[tuple[Path, list[str], list[str]]]:
+    """Walk visible entries, allowing callers to prune the directory list.
+
+    Args:
+        start (Path): checked host directory.
+    """
+    pending = [start]
+    while pending:
+        directory = pending.pop()
+        dirs: list[str] = []
+        files: list[str] = []
+        try:
+            entries = read_entries(directory)
+        except FileNotFoundError:
+            logger.debug("Directory vanished during disk traversal",
+                         exc_info=True)
+            continue
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                dirs.append(entry.name)
+            else:
+                files.append(entry.name)
+        yield directory, dirs, files
+        pending.extend(directory / name for name in reversed(dirs))

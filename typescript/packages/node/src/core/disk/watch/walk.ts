@@ -19,15 +19,15 @@ import {
   ListingDeltaHook,
   statFingerprint,
 } from '@struktoai/mirage-core/watch/index'
-import { lstat, readdir } from 'node:fs/promises'
+import { lstat } from 'node:fs/promises'
 import path from 'node:path'
 import type { DiskAccessor } from '../../../accessor/disk.ts'
-import { resolveInside } from '../utils.ts'
+import { readEntries, resolveInside } from '../utils.ts'
 
 async function* descend(root: string, full: string): AsyncGenerator<WalkEntry> {
   let listing
   try {
-    listing = await readdir(full, { withFileTypes: true })
+    listing = await readEntries(full)
   } catch (error) {
     // Absence is the one error a walk may swallow: the directory went
     // away between the parent listing and this one, and the next pull

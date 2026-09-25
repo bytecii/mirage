@@ -26,15 +26,14 @@ from mirage.types import PathSpec
 
 async def copy(accessor: DiskAccessor, src_spec: PathSpec,
                dst_spec: PathSpec) -> None:
-    src = src_spec.mount_path
-    dst = dst_spec.mount_path
     root = accessor.root
-    s = resolve_inside(root, src, src_spec)
-    d = resolve_inside(root, dst, dst_spec)
+    s = await resolve_inside(root, src_spec)
+    d = await resolve_inside(root, dst_spec)
     try:
-        await asyncio.to_thread(shutil.copy2, s, d)
+        await asyncio.to_thread(shutil.copyfile, s, d)
+        await asyncio.to_thread(shutil.copystat, s, d)
     except OSError as exc:
-        # copy2 reports ENOENT both for a missing source and for a missing
+        # copyfile reports ENOENT both for a missing source and for a missing
         # destination parent, so the operand to blame is only knowable
         # after the failure: probe the source to tell them apart. Either
         # way the host path never reaches the message.
