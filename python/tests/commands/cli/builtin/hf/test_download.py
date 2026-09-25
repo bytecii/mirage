@@ -59,6 +59,45 @@ def test_exclude_drops_matches():
 
 
 @pytest.mark.asyncio
+@patch("mirage.commands.cli.builtin.hf.download.fetch_tree")
+@pytest.mark.parametrize("refusal", [
+    HfHubError("nope", 401),
+    HfHubError("nope", 403),
+    HfHubError("nope", 404, "RepoNotFound"),
+    HfHubError("nope", 404, "RevisionNotFound"),
+])
+async def test_download_still_names_the_absence_when_the_tree_refuses(
+        mock_tree, doors, refusal):
+    # The tree walk raises for a repo it cannot see; download reads that as
+    # nothing listed, so the message upstream prints is unchanged.
+    record, _, _, _ = doors
+    mock_tree.side_effect = refusal
+    with patch("mirage.commands.cli.builtin.hf.download.classify_absence",
+               AsyncMock(return_value=Absence.REPO)):
+        with pytest.raises(HfHubError, match="Repository Not Found"):
+            await download_cmd(
+                inv(texts=("acme/widget", ),
+                    flags={"local_dir": "/work/out"},
+                    doors=record))
+
+
+@pytest.mark.asyncio
+@patch("mirage.commands.cli.builtin.hf.download.fetch_tree")
+async def test_download_lets_a_server_failure_through(mock_tree, doors):
+    record, _, _, _ = doors
+    mock_tree.side_effect = HfHubError("boom", 500)
+    classify = AsyncMock(return_value=Absence.REPO)
+    with patch("mirage.commands.cli.builtin.hf.download.classify_absence",
+               classify):
+        with pytest.raises(HfHubError, match="boom"):
+            await download_cmd(
+                inv(texts=("acme/widget", ),
+                    flags={"local_dir": "/work/out"},
+                    doors=record))
+    classify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @patch("mirage.commands.cli.builtin.hf.download.hub_bytes")
 @patch("mirage.commands.cli.builtin.hf.download.fetch_tree")
 async def test_download_writes_through_the_workspace_door(

@@ -44,9 +44,9 @@ async def test_read_stream_of_a_directory_is_eisdir(mock_stream, loaded):
 
 
 @pytest.mark.asyncio
-@patch("mirage.core.hf_hub.read.hub_bytes")
+@patch("mirage.core.hf_hub.read.hub_bytes_tagged")
 async def test_range_read_is_end_exclusive(mock_bytes, loaded):
-    mock_bytes.return_value = b"abc"
+    mock_bytes.return_value = (b"abc", "")
     await range_read(loaded, ps("a.txt"), 2, 5)
     window = mock_bytes.await_args.args[2]
     assert (window.offset, window.size) == (2, 3)
@@ -65,3 +65,58 @@ async def test_stream_records_the_virtual_path(mock_stream, accessor):
         scope.close()
     assert got == [b"ab", b"cd"]
     assert [r.path for r in scope.records] == ["/m/m/k.txt"]
+
+
+def _answering(etag: str, *payload: bytes):
+    """A hub_stream stand-in that reports its headers the way the real one
+    does: once, before the first chunk."""
+
+    async def fake(_token, _url, _chunk_size, *, session=None,
+                   on_response=None):
+        if on_response is not None:
+            on_response({"etag": etag})
+        for item in payload:
+            yield item
+
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_stream_stamps_the_oid_when_the_etag_names_the_row(
+        accessor, monkeypatch):
+    seed(accessor, file_row("a.txt", 4))
+    monkeypatch.setattr("mirage.core.hf_hub.stream.hub_stream",
+                        _answering('"oid-a.txt"', b"ab", b"cd"))
+    scope = RecordingScope()
+    try:
+        stream = read_stream(accessor, ps("a.txt"))
+        first = await stream.__anext__()
+        # Stamped as soon as the response arrived, so a reader that stops
+        # after one chunk (head -c 1) still leaves a token behind.
+        assert [r.fingerprint for r in scope.records] == ["oid-a.txt"]
+        rest = [c async for c in stream]
+    finally:
+        scope.close()
+    assert [first, *rest] == [b"ab", b"cd"]
+
+
+@pytest.mark.asyncio
+async def test_stream_stamps_nothing_when_the_bytes_are_another_version(
+        accessor, monkeypatch):
+    seed(accessor, file_row("a.txt", 4))
+    monkeypatch.setattr("mirage.core.hf_hub.stream.hub_stream",
+                        _answering('"another-version"', b"newr"))
+    scope = RecordingScope()
+    try:
+        [c async for c in read_stream(accessor, ps("a.txt"))]
+    finally:
+        scope.close()
+    assert [r.fingerprint for r in scope.records] == [None]
+
+
+@pytest.mark.asyncio
+async def test_stream_with_no_recorder_still_reads(accessor, monkeypatch):
+    seed(accessor, file_row("a.txt", 4))
+    monkeypatch.setattr("mirage.core.hf_hub.stream.hub_stream",
+                        _answering('"oid-a.txt"', b"ab"))
+    assert [c async for c in read_stream(accessor, ps("a.txt"))] == [b"ab"]
