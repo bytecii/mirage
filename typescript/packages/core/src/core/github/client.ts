@@ -16,6 +16,7 @@ import { Octokit } from '@octokit/core'
 import { RequestError } from '@octokit/request-error'
 import { retry } from '@octokit/plugin-retry'
 import { throttling } from '@octokit/plugin-throttling'
+import { SEARCH_PAGE_SIZE } from './constants.ts'
 
 export const GITHUB_API_BASE = 'https://api.github.com'
 export const GITHUB_API_VERSION = '2022-11-28'
@@ -245,17 +246,48 @@ export interface GitHubCodeSearchResult {
   sha: string
 }
 
+export interface GitHubCodeSearch {
+  results: GitHubCodeSearchResult[]
+  truncated: boolean
+}
+
+// The literal is sent verbatim, so the answer has to vouch for itself: an
+// item is kept only when its repository.full_name names this repository
+// (compared case-insensitively, as GitHub resolves `repo:`), and the answer is
+// complete only when incomplete_results is false and total_count is an
+// integer no larger than the rows returned. A missing or malformed field
+// counts against it, which costs a full scan and never a missed file.
 export async function searchCode(
   transport: GitHubTransport,
   owner: string,
   repo: string,
   query: string,
   pathFilter?: string,
-): Promise<GitHubCodeSearchResult[]> {
+): Promise<GitHubCodeSearch> {
   let q = `${query} repo:${owner}/${repo}`
   if (pathFilter !== undefined && pathFilter !== '') q += ` path:${pathFilter}`
-  const data = (await transport.get(`/search/code`, { q })) as {
-    items?: { path: string; sha: string }[]
+  const data = (await transport.get(`/search/code`, {
+    q,
+    per_page: String(SEARCH_PAGE_SIZE),
+  })) as {
+    total_count?: unknown
+    incomplete_results?: unknown
+    items?: { path: string; sha: string; repository?: { full_name?: unknown } | null }[] | null
   }
-  return (data.items ?? []).map((it) => ({ path: it.path, sha: it.sha }))
+  const items = data.items ?? []
+  const total = data.total_count
+  const complete =
+    data.incomplete_results === false &&
+    typeof total === 'number' &&
+    Number.isInteger(total) &&
+    total <= items.length
+  const want = `${owner}/${repo}`.toLowerCase()
+  const results: GitHubCodeSearchResult[] = []
+  for (const it of items) {
+    const name = it.repository?.full_name
+    if (typeof name === 'string' && name.toLowerCase() === want) {
+      results.push({ path: it.path, sha: it.sha })
+    }
+  }
+  return { results, truncated: !complete }
 }
