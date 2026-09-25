@@ -21,6 +21,17 @@ from mirage.types import PathSpec, Producer, Refusal
 
 ByteSource = bytes | AsyncIterator[bytes]
 
+
+class DeviceInput(bytes):
+    """Standard input redirected from a character device (``< /dev/null``).
+
+    It reads as the bytes it holds, like any other stdin, and tells a
+    command that asks whether a file, FIFO or socket is attached that none
+    is: ripgrep asks before it searches stdin rather than the working
+    directory (grep_cli::is_readable_stdin).
+    """
+
+
 # The shape every command returns: a live stdout stream (None when
 # buffered into the result) and the command's outcome.
 CommandOutput = tuple["ByteSource | None", "IOResult"]

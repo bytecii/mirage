@@ -175,6 +175,30 @@ export async function listingError(
   return readdirError(path, key, isFile, isDir)
 }
 
+/**
+ * Why `gzip -d` cannot decompress one input, in gzip's words.
+ *
+ * `fatal` is gzip 1.13's split: an input with no gzip header is reported and
+ * the run moves on to the next operand, while a truncated or corrupt one ends
+ * the run. The gzip front ends render the reason under their own name, where
+ * GNU's (shell scripts over gzip) say `gzip:` and put a blank line before the
+ * diagnostic. Mirrors Python's GzipDataError.
+ */
+export class GzipDataError extends Error {
+  readonly fatal: boolean
+
+  constructor(
+    reason: string,
+    fatal: boolean,
+    options?: ErrorOptions,
+    readonly exitCode = 1,
+  ) {
+    super(reason, options)
+    this.name = 'GzipDataError'
+    this.fatal = fatal
+  }
+}
+
 // The registry's refusal for a path that falls outside every mount. Mirrors
 // Python's `ValueError("no mount matches path: ...")`; the stamp exists so
 // the exists-family probes can recognize it without sniffing message text,

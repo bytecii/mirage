@@ -13,9 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it, vi } from 'vitest'
-import { IOResult } from '../../io/types.ts'
+import { DeviceInput, IOResult } from '../../io/types.ts'
 import { Redirect, RedirectKind } from '../../shell/types.ts'
-import { PathSpec } from '../../types.ts'
+import { FileStat, FileType, PathSpec } from '../../types.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import { makeIntegrationWS, run, runExit, runResult } from '../fixtures/integration_fixture.ts'
 import { SessionState } from '../session/session.ts'
@@ -114,6 +114,53 @@ describe('handleRedirect < (stdin)', () => {
     )
     expect(receivedStdin).not.toBeNull()
     expect(decode(receivedStdin)).toBe('file-contents')
+  })
+})
+
+describe('handleRedirect < from a character device', () => {
+  // ripgrep searches stdin only when a file, FIFO or socket is attached, so
+  // the command is told when `<` names a device; it still reads as empty.
+  async function stdinFor(read: Uint8Array, type: FileType): Promise<[unknown, string[]]> {
+    const ops: string[] = []
+    const dispatch = vi.fn<DispatchFn>((op) => {
+      ops.push(op)
+      if (op === 'read') return Promise.resolve<[unknown, IOResult]>([read, new IOResult()])
+      return Promise.resolve<[unknown, IOResult]>([
+        new FileStat({ name: 'n', type }),
+        new IOResult(),
+      ])
+    })
+    let received: unknown = null
+    const execute: ExecuteNodeFn = async (_n, _s, stdin) => {
+      received = stdin
+      return Promise.resolve([null, new IOResult(), new ExecutionNode()])
+    }
+    const redirects = [new Redirect({ fd: 0, target: '/dev/null', kind: RedirectKind.STDIN })]
+    await handleRedirect(
+      execute,
+      dispatch,
+      STUB_NODE,
+      redirects,
+      new SessionState({ sessionId: 't' }),
+    )
+    return [received, ops]
+  }
+
+  it('marks a device as a DeviceInput that reads as empty', async () => {
+    const [stdin] = await stdinFor(new Uint8Array(0), FileType.CHAR_DEVICE)
+    expect(stdin).toBeInstanceOf(DeviceInput)
+    expect((stdin as Uint8Array).length).toBe(0)
+  })
+
+  it('leaves an empty regular file plain', async () => {
+    const [stdin] = await stdinFor(new Uint8Array(0), FileType.FILE)
+    expect(stdin).toBeInstanceOf(Uint8Array)
+    expect(stdin).not.toBeInstanceOf(DeviceInput)
+  })
+
+  it('stats nothing when the read holds content', async () => {
+    const [, ops] = await stdinFor(encode('x'), FileType.CHAR_DEVICE)
+    expect(ops).toEqual(['read'])
   })
 })
 
@@ -812,5 +859,21 @@ describe('handleRedirect trailing slash', () => {
     expect(await runExit(ws, 'test -e /data/nodir')).toBe(1)
     expect(await runExit(ws, 'test -e /data/missing')).toBe(1)
     expect(await run(ws, 'cat /data/reg')).toBe('y')
+  })
+})
+
+describe('stdin from a character device end-to-end', () => {
+  it('leaves rg the cwd, while an empty file is still stdin', async () => {
+    // ripgrep 14.1.1 searches stdin only when a file, FIFO or socket is
+    // attached: /dev/null is neither, so rg searches the cwd.
+    const { ws } = await makeIntegrationWS()
+    try {
+      await ws.shell("printf 'hit\\n' > /data/x.txt && printf '' > /data/e")
+      expect(await run(ws, 'cd /data && rg hit < /dev/null')).toBe('x.txt:hit\n')
+      expect(await runResult(ws, 'cd /data && rg hit < /data/e')).toEqual([1, '', ''])
+      expect(await run(ws, 'cat < /dev/null')).toBe('')
+    } finally {
+      await ws.close()
+    }
   })
 })

@@ -21,7 +21,15 @@ import { type FileStat, FileType } from '../../types.ts'
 import { getExtension } from '../resolve.ts'
 import { BINARY_EXTENSIONS } from './constants.ts'
 import { grepContextStream } from './grep_context.ts'
-import { decodeLine, encodeLine, lineOffsets, MatchOffsets, prefixOf } from './grep_offsets.ts'
+import {
+  decodeLine,
+  encodeLine,
+  lineOffsets,
+  MatchOffsets,
+  prefixOf,
+  rgPieces,
+  rustMatches,
+} from './grep_offsets.ts'
 import { compilePattern } from './grep_pattern.ts'
 import { NO_FILTERS, type WalkFilters, dirAdmitted, fileAdmitted } from './grep_select.ts'
 import { splitLines } from './utils/lines.ts'
@@ -48,6 +56,8 @@ export interface GrepLinesOptions {
   // caller deriving the status from an empty list reports 1 where GNU says 0.
   // Mirrors the `io` parameter of python's `grep_lines`.
   io?: IOResult
+  // ripgrep's -o; see GrepStreamOptions.
+  pieces?: boolean
 }
 
 export function grepLines(
@@ -69,6 +79,9 @@ export function grepLines(
   }
   const results: string[] = []
   let count = 0
+  const rgOnly = opts.onlyMatching && opts.pieces === true
+  // ripgrep's -o -c counts matches, not the lines that hold them.
+  let matches = 0
   const byteOffsets = opts.byteOffsets === true
   const offsets = byteOffsets ? lineOffsets(data) : []
   const reGlobal = opts.onlyMatching
@@ -85,8 +98,15 @@ export function grepLines(
     if (!matched) continue
     count += 1
     if (opts.io !== undefined) opts.io.exitCode = 0
+    if (opts.countOnly && rgOnly) matches += rustMatches(compiled, line).length
     if (!opts.countOnly && !opts.filesOnly) {
-      if (opts.onlyMatching) {
+      if (rgOnly) {
+        const pieceOffsets = byteOffsets ? new MatchOffsets(start, line) : null
+        for (const [at, text] of rgPieces(compiled, line)) {
+          const fields = prefixOf(opts.lineNumbers ? i + 1 : null, pieceOffsets?.at(at) ?? null)
+          results.push(fields + text)
+        }
+      } else if (opts.onlyMatching) {
         // GNU -o prints every match on the line, one per line, and prints
         // nothing at all for an empty match nor for an inverted selection,
         // which has no match to print (`grep -ov abc` is zero bytes and exit
@@ -118,7 +138,7 @@ export function grepLines(
     }
     if (opts.maxCount !== null && count >= opts.maxCount) break
   }
-  if (opts.countOnly) return [String(count)]
+  if (opts.countOnly) return [String(rgOnly ? matches : count)]
   if (opts.filesOnly) return count > 0 ? [path] : []
   return results
 }
@@ -128,14 +148,17 @@ export function countRecordsHaveMatches(results: readonly string[]): boolean {
   return results.some((r) => Number.parseInt(r.slice(r.lastIndexOf(':') + 1), 10) > 0)
 }
 
-// Drop zero-count chunks for the `rg -c` fallback stream. Unlike grep -c
-// (which prints "0" and exits 1), ripgrep omits files with no matches.
-// Mirrors Python's nonzero_count_stream.
-export async function* nonzeroCountStream(
+// An `rg -c` count, dropped when the input selected no line: ripgrep lists
+// nothing for it, where grep -c prints 0. Selection decides rather than the
+// count, because -o -c counts matches and an inverted selection holds none,
+// printing 0. `source` sets `io` as it selects. Mirrors Python's
+// selected_count_stream.
+export async function* selectedCountStream(
   source: AsyncIterable<Uint8Array>,
+  io: IOResult,
 ): AsyncIterable<Uint8Array> {
   for await (const chunk of source) {
-    if (Number.parseInt(DEC.decode(chunk).trim() || '0', 10) > 0) yield chunk
+    if (io.exitCode === 0) yield chunk
   }
 }
 
@@ -177,6 +200,10 @@ export interface GrepStreamOptions {
   // context; see ContextRenderer.
   contextLabel?: string | null
   trailingMatches?: boolean
+  // ripgrep's -o, which prints a line with no match whole (an inverted
+  // selection, a context line), prints empty matches, and counts matches
+  // under -c; see rgPieces.
+  pieces?: boolean
 }
 
 export async function* grepStream(
@@ -195,7 +222,8 @@ export async function* grepStream(
     return
   }
   const hasContext = opts.afterContext > 0 || opts.beforeContext > 0
-  if (hasContext && !opts.countOnly && !opts.onlyMatching) {
+  const rgOnly = opts.onlyMatching && opts.pieces === true
+  if (hasContext && !opts.countOnly && (rgOnly || !opts.onlyMatching)) {
     if (opts.io !== undefined) opts.io.exitCode = 1
     // Context only ever accompanies a selected line, so the first chunk is
     // the selection.
@@ -210,6 +238,7 @@ export async function* grepStream(
       opts.byteOffsets === true,
       opts.contextLabel ?? null,
       opts.trailingMatches === true,
+      rgOnly,
     )) {
       if (opts.io !== undefined) opts.io.exitCode = 0
       yield chunk
@@ -219,6 +248,8 @@ export async function* grepStream(
   if (opts.io !== undefined) opts.io.exitCode = 1
   const budget = new YieldBudget(opts.signal)
   let matchCount = 0
+  // ripgrep's -o -c counts matches, not the lines that hold them.
+  let matches = 0
   let lineNum = 0
   const byteOffsets = opts.byteOffsets === true
   // GNU counts bytes from the start of the input, the terminator the iterator
@@ -243,8 +274,17 @@ export async function* grepStream(
       // selects the line even though -o prints nothing for it. -m counts
       // selected lines for the same reason.
       matchCount += 1
+      if (opts.countOnly && rgOnly) matches += rustMatches(pat, line).length
       if (!opts.countOnly) {
-        if (opts.onlyMatching) {
+        if (rgOnly) {
+          const pieceOffsets = byteOffsets ? new MatchOffsets(lineStart, line) : null
+          for (const [at, text] of rgPieces(pat, line)) {
+            const pending = budget.run()
+            if (pending !== undefined) await pending
+            const fields = prefixOf(opts.lineNumbers ? lineNum : null, pieceOffsets?.at(at) ?? null)
+            yield encodeLine(fields + text + '\n')
+          }
+        } else if (opts.onlyMatching) {
           // GNU -o prints every match on the line, one per line, and prints
           // nothing at all for an empty match nor for an inverted selection,
           // which has no match to print (`grep -ov abc` is zero bytes where
@@ -282,7 +322,7 @@ export async function* grepStream(
         }
       }
       if (opts.maxCount !== null && matchCount >= opts.maxCount) {
-        if (opts.countOnly) yield enc.encode(String(matchCount) + '\n')
+        if (opts.countOnly) yield enc.encode(String(rgOnly ? matches : matchCount) + '\n')
         return
       }
     }
@@ -290,7 +330,7 @@ export async function* grepStream(
     await discardStreams(source)
     throw error
   }
-  if (opts.countOnly) yield enc.encode(String(matchCount) + '\n')
+  if (opts.countOnly) yield enc.encode(String(rgOnly ? matches : matchCount) + '\n')
 }
 
 export interface GrepFilesOnlyOptions {

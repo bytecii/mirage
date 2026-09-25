@@ -2,7 +2,8 @@ import zlib
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
-from mirage.commands.builtin.utils.stream import resolve_source
+from mirage.commands.builtin.generic.decompress import decompress_inputs
+from mirage.commands.builtin.utils.stream import resolve_source, stdin_bytes
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.constants import flag_kwarg_name
@@ -10,7 +11,7 @@ from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.utils.compress import gzip_compress_stream, gzip_decompress_stream
+from mirage.utils.compress import gzip_compress_stream
 from mirage.utils.key_prefix import mounted_path
 
 
@@ -44,43 +45,35 @@ async def gzip(
     to_stdout: bool = False,
     level: int = zlib.Z_DEFAULT_COMPRESSION,
 ) -> tuple[ByteSource | None, IOResult]:
+    if decompress:
+        return await decompress_inputs(paths,
+                                       command="gzip",
+                                       read=read_bytes,
+                                       write=write_bytes,
+                                       unlink=unlink,
+                                       stdin=stdin,
+                                       keep=keep,
+                                       to_stdout=to_stdout)
     if not paths:
-        if decompress:
-            source = resolve_source(stdin,
-                                    "gzip: (stdin): unexpected end of file")
-            return gzip_decompress_stream(source), IOResult()
-        source = resolve_source(stdin)
-        return gzip_compress_stream(source, level=level), IOResult()
-
-    if to_stdout:
-        chunks: list[bytes] = []
-        for p in paths:
-            raw = await read_bytes(p)
-            if decompress:
-                chunks.append(zlib.decompress(raw, zlib.MAX_WBITS | 16))
-            else:
-                chunks.append(
-                    zlib.compress(raw, level=level, wbits=zlib.MAX_WBITS | 16))
-        return b"".join(chunks), IOResult()
-
+        return gzip_compress_stream(resolve_source(stdin),
+                                    level=level), IOResult()
+    read = stdin_bytes(read_bytes, stdin)
     writes: dict[str, ByteSource] = {}
+    stdout: list[bytes] = []
     for p in paths:
-        raw = await read_bytes(p)
+        in_place = not (to_stdout or p.raw_path == "-")
+        raw = await (read_bytes(p) if in_place else read(p))
+        data = zlib.compress(raw, level=level, wbits=zlib.MAX_WBITS | 16)
+        if not in_place:
+            stdout.append(data)
+            continue
         stripped = p.mount_path
-        if decompress:
-            out_path = stripped.removesuffix(".gz") if stripped.endswith(
-                ".gz") else stripped + ".out"
-            out_data = zlib.decompress(raw, zlib.MAX_WBITS | 16)
-        else:
-            out_path = stripped + ".gz"
-            out_data = zlib.compress(raw,
-                                     level=level,
-                                     wbits=zlib.MAX_WBITS | 16)
-        await write_bytes(mounted_path(p, out_path), out_data)
-        writes[out_path] = out_data
+        out_path = stripped + ".gz"
+        await write_bytes(mounted_path(p, out_path), data)
+        writes[out_path] = data
         if not keep:
             await unlink(p)
-    return None, IOResult(writes=writes)
+    return b"".join(stdout) or None, IOResult(writes=writes)
 
 
 __all__ = ["gzip", "extract_level"]
@@ -107,15 +100,16 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> GzipFlags:
 
 
 def gzip_writes(flags: Mapping[str, FlagValue], paths: list[PathSpec]) -> bool:
-    """Whether a gzip invocation writes: each operand is replaced by its
-    archive unless ``-c`` sends the result to stdout, and with no operand
-    gzip filters stdin to stdout.
+    """Whether a gzip invocation writes: each file operand is replaced by
+    its archive unless ``-c`` sends the result to stdout, while a ``-``
+    operand, like no operand, filters stdin to stdout.
 
     Args:
         flags (Mapping[str, FlagValue]): the parsed flag bag.
         paths (list[PathSpec]): the operands the mount received.
     """
-    return bool(paths) and not parse_flags(flags).to_stdout
+    replaces = any(p.raw_path != "-" for p in paths)
+    return replaces and not parse_flags(flags).to_stdout
 
 
 async def gzip_generic(

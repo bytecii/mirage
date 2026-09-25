@@ -15,7 +15,9 @@
 import pytest
 
 from mirage.commands.builtin.generic.csplit import csplit
-from mirage.types import PathSpec
+from mirage.types import MountMode, PathSpec
+from mirage.vfs.ram import RAMVFS
+from mirage.workspace import Workspace
 
 
 async def _no_read(path: PathSpec) -> bytes:
@@ -61,3 +63,26 @@ async def test_a_prefix_path_is_named_on_the_executing_mount():
                          mount_prefix="/data")
     assert [p.virtual for p in specs] == ["/data/sub/cs00", "/data/sub/cs01"]
     assert list(io.writes) == ["/sub/cs00", "/sub/cs01"]
+
+
+@pytest.mark.asyncio
+async def test_a_dash_input_reads_stdin():
+    ws = Workspace({"/data": (RAMVFS(), MountMode.WRITE)},
+                   mode=MountMode.WRITE)
+    r = await ws.shell("cd /data && csplit - 2 && cat xx01",
+                       stdin=b"a\nb\nc\n")
+    assert await r.materialize_stdout() == b"2\n4\nb\nc\n"
+
+
+@pytest.mark.asyncio
+async def test_dev_stdin_stays_a_path_so_no_piece_lands_in_dev():
+    # /dev/stdin runs csplit on the /dev mount, where its pieces would be
+    # written, so it is refused as a missing path rather than read.
+    ws = Workspace({"/data": (RAMVFS(), MountMode.WRITE)},
+                   mode=MountMode.WRITE)
+    r = await ws.shell("cd /data && csplit /dev/stdin 2", stdin=b"a\nb\nc\n")
+    assert r.exit_code == 1
+    assert await r.materialize_stderr() == (
+        b"csplit: /dev/stdin: No such file or directory\n")
+    listing = await ws.shell("ls /dev")
+    assert b"xx00" not in (await listing.materialize_stdout() or b"")

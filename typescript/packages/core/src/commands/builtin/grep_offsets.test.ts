@@ -20,6 +20,8 @@ import {
   matchOffset,
   MatchOffsets,
   prefixOf,
+  rgPieces,
+  rustMatches,
 } from './grep_offsets.ts'
 
 describe('lineOffsets', () => {
@@ -142,4 +144,91 @@ it('decodes a large malformed line with bounded native decoder calls', () => {
   } finally {
     decode.mockRestore()
   }
+})
+
+describe('rustMatches', () => {
+  it('resumes one character after an empty match', () => {
+    // `rg -o 'x*'` over `abc` prints four empty lines on ripgrep 14.1.1.
+    expect(rustMatches(/x*/, 'abc')).toEqual([
+      [0, ''],
+      [1, ''],
+      [2, ''],
+      [3, ''],
+    ])
+  })
+
+  it('skips an empty match where a match ended', () => {
+    // `rg -o 'b*'` over `abc` is an empty line, `b`, an empty line.
+    expect(rustMatches(/b*/, 'abc')).toEqual([
+      [0, ''],
+      [1, 'b'],
+      [3, ''],
+    ])
+  })
+
+  it('skips it after every non-empty match', () => {
+    // `rg -o '[0-9]*'` over `1a22b` prints `1`, `22` and an empty line.
+    expect(rustMatches(/[0-9]*/, '1a22b')).toEqual([
+      [0, '1'],
+      [2, '22'],
+      [5, ''],
+    ])
+  })
+
+  it('takes the first alternative that matches', () => {
+    // `rg -o 'o|'` over `foo` is an empty line, `o`, `o`.
+    expect(rustMatches(/o|/, 'foo')).toEqual([
+      [0, ''],
+      [1, 'o'],
+      [2, 'o'],
+    ])
+  })
+
+  it('sees the text before where it resumes', () => {
+    // `rg -o '\b'` over `ab` is two empty lines: no boundary inside `ab`.
+    expect(rustMatches(/\b/, 'ab')).toEqual([
+      [0, ''],
+      [2, ''],
+    ])
+  })
+
+  it('anchors only at the line start', () => {
+    // `rg -o '^'` over `ab` is one empty line.
+    expect(rustMatches(/^/, 'ab')).toEqual([[0, '']])
+  })
+
+  it('steps over a surrogate pair as one character', () => {
+    expect(rustMatches(/x*/, 'é😀')).toEqual([
+      [0, ''],
+      [1, ''],
+      [3, ''],
+    ])
+  })
+
+  it('ignores the global and sticky state of the pattern it is given', () => {
+    const pat = /a/gy
+    pat.lastIndex = 2
+    expect(rustMatches(pat, 'aba')).toEqual([
+      [0, 'a'],
+      [2, 'a'],
+    ])
+  })
+
+  it('is empty for no match', () => {
+    expect(rustMatches(/y/, 'x')).toEqual([])
+  })
+})
+
+describe('rgPieces', () => {
+  it('is the matches when there are any', () => {
+    expect(rgPieces(/[0-9]/, 'a1b2c')).toEqual([
+      [1, '1'],
+      [3, '2'],
+    ])
+  })
+
+  it('prints a line without a match whole', () => {
+    // `rg -ov y` over `x` prints `x`, as a context line under -o prints.
+    expect(rgPieces(/y/, 'x')).toEqual([[0, 'x']])
+  })
 })

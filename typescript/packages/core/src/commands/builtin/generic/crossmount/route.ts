@@ -54,7 +54,7 @@ export async function handleCrossMount(
   runSingle = (name, paths, texts, flags, options) =>
     native(name, paths, texts, flags, {
       ...options,
-      stdin: paths.some(isStdin) ? input : (options?.stdin ?? null),
+      stdin: paths.some((p) => isStdin(p)) ? input : (options?.stdin ?? null),
     })
   try {
     // isCrossMount gated on CROSS_MOUNT_COMMANDS membership, so the name is
@@ -68,6 +68,7 @@ export async function handleCrossMount(
         textArgs,
         flagKwargs,
         dispatch,
+        runSingle,
         storageKey,
         ns,
         sessionView,

@@ -985,6 +985,129 @@
         "stdout": "<stdin>\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "rg_dev_null_stdin_searches_the_cwd",
+      "seq": 612133,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgdn && printf 'hit\\n' > /data/rgdn/x.txt && (cd /data/rgdn && rg hit < /dev/null)",
+      "expect": {
+        "exit": 0,
+        "stdout": "x.txt:hit\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "rg_dev_null_stdin_counts_the_cwd",
+      "seq": 612134,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgdn && printf 'hit\\n' > /data/rgdn/x.txt && (cd /data/rgdn && rg -c hit < /dev/null)",
+      "expect": {
+        "exit": 0,
+        "stdout": "x.txt:1\n",
+        "stderr": ""
+      },
+      "flags": [
+        "c"
+      ]
+    },
+    {
+      "id": "rg_empty_file_stdin_is_searched",
+      "seq": 612135,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "printf '' > /data/rgdn-empty.txt && mkdir -p /data/rgdn && printf 'hit\\n' > /data/rgdn/x.txt && (cd /data/rgdn && rg hit < /data/rgdn-empty.txt)",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "rg_dev_null_stdin_replaces_a_pipe",
+      "seq": 612136,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgdn && printf 'hit\\n' > /data/rgdn/x.txt && (cd /data/rgdn; printf 'miss\\n' | rg hit < /dev/null)",
+      "expect": {
+        "exit": 0,
+        "stdout": "x.txt:hit\n",
+        "stderr": ""
+      }
     }
   ]
 }

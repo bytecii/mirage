@@ -132,7 +132,7 @@ describe('read', () => {
           vfsPath: mountKey('/pg/public/tables/users/rows.jsonl', '/pg'),
         }),
       ),
-    ).rejects.toThrow(/too large to read entirely/)
+    ).rejects.toMatchObject({ code: 'EFBIG', virtualPath: '/pg/public/tables/users/rows.jsonl' })
   })
 
   it('returns JSONL bytes when row count under threshold', async () => {
@@ -254,7 +254,7 @@ describe('read', () => {
           vfsPath: mountKey('/pg/public/tables/users/rows.jsonl', '/pg'),
         }),
       ),
-    ).rejects.toThrow(/more than 10 rows/)
+    ).rejects.toMatchObject({ code: 'EFBIG', virtualPath: '/pg/public/tables/users/rows.jsonl' })
     expect(vi.mocked(client.fetchBoundedRows).mock.calls[0]?.[3]).toEqual({
       limit: 11,
       maxBytes: 10 * 1024 * 1024,
@@ -272,7 +272,7 @@ describe('whole-read byte budget', () => {
         makeAccessor({ dsn: 'postgres://h/db', maxReadBytes: 100 }),
         PathSpec.fromStrPath('/public/tables/users/rows.jsonl'),
       ),
-    ).rejects.toThrow('more than 100 bytes')
+    ).rejects.toMatchObject({ code: 'EFBIG', virtualPath: '/public/tables/users/rows.jsonl' })
     expect(client.fetchRows).not.toHaveBeenCalled()
   })
 
@@ -283,7 +283,7 @@ describe('whole-read byte budget', () => {
       makeAccessor({ dsn: 'postgres://h/db', maxReadBytes }),
       PathSpec.fromStrPath('/public/tables/users/rows.jsonl'),
     )
-    if (maxReadBytes === 10) await expect(result).rejects.toThrow('more than 10 bytes')
+    if (maxReadBytes === 10) await expect(result).rejects.toMatchObject({ code: 'EFBIG' })
     else expect(decode(await result)).toBe('{"x":"é"}\n')
   })
 })

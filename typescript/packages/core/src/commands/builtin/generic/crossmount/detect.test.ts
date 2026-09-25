@@ -34,13 +34,13 @@ describe('strategyFor — mirrors tests/commands/builtin/generic/crossmount/test
   })
 
   it('fans out the per-operand commands', () => {
-    for (const name of [Cmd.GREP, Cmd.WC, Cmd.SHA256SUM, Cmd.RM, Cmd.TEE]) {
+    for (const name of [Cmd.GREP, Cmd.SHA256SUM, Cmd.RM, Cmd.TEE]) {
       expect(strategyFor(name, {})).toBe(Strategy.FANOUT)
     }
   })
 
   it('relays the commands whose operands must colocate', () => {
-    for (const name of [Cmd.CP, Cmd.MV, Cmd.DIFF, Cmd.CMP, Cmd.SORT]) {
+    for (const name of [Cmd.CP, Cmd.MV, Cmd.DIFF, Cmd.CMP, Cmd.SORT, Cmd.WC]) {
       expect(strategyFor(name, {})).toBe(Strategy.RELAY)
     }
   })

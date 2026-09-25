@@ -57,7 +57,7 @@ export function operandExitCode(cmdName: string): number {
  * code; that is the safe side, and it is what the executor already did
  * before the tables existed.
  */
-const READ_FAIL_CODES: ReadonlySet<string> = new Set(['ENOENT', 'EISDIR', 'ENOTDIR'])
+const READ_FAIL_CODES: ReadonlySet<string> = new Set(['ENOENT', 'EISDIR', 'ENOTDIR', 'EFBIG'])
 
 function readFailCode(cmdName: string, isDir: boolean): number {
   if (isDir) {
@@ -436,5 +436,20 @@ export function extraOperandError(cmdName: string, operand: string): UsageError 
     cmdName === (CommandName.MKTEMP as string)
       ? 'mktemp: too many templates'
       : `${cmdName}: extra operand '${operand}'`
+  return new UsageError(`${line}\n${usageHint(cmdName)}`, usageExitCode(cmdName))
+}
+
+/**
+ * GNU-shaped usage error for an operand short of a command's arity.
+ *
+ * Shapes pinned against real GNU: `<cmd>: missing operand after '<arg>'`
+ * names the last operand given. With none given, coreutils says a bare
+ * `missing operand` while diffutils names the program itself
+ * (`cmp: missing operand after 'cmp'`).
+ */
+export function missingOperandError(cmdName: string, last: string | null): UsageError {
+  const after = last ?? (USAGE_HINT_PREFIX.has(cmdName) ? cmdName : null)
+  const line =
+    after === null ? `${cmdName}: missing operand` : `${cmdName}: missing operand after '${after}'`
   return new UsageError(`${line}\n${usageHint(cmdName)}`, usageExitCode(cmdName))
 }

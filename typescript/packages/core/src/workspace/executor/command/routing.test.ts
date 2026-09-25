@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { cliSpecFor } from '../../../commands/cli/specs.ts'
+import { DeviceInput } from '../../../io/types.ts'
 import { OpsRegistry } from '../../../ops/registry.ts'
 import { RAMVFS } from '../../../vfs/ram/ram.ts'
 import { MountMode, PathSpec } from '../../../types.ts'
@@ -85,6 +86,21 @@ describe('defaultCwdOperand', () => {
       const file = new PathSpec({ virtual: '/ram/p', directory: '/ram/', vfsPath: '' })
       expect(defaultCwdOperand(['rg', '-f', file], 'rg', reg, '/ram', stdin)).toBeNull()
       expect(defaultCwdOperand(['rg', 'a'], 'rg', reg, '/ram', stdin)).toBeNull()
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('searches the cwd when rg stdin is a device', async () => {
+    // ripgrep 14.1.1 searches stdin only when a file, FIFO or socket is
+    // attached (grep_cli::is_readable_stdin): `rg a < /dev/null` searches the
+    // cwd, while an empty file or pipe is still searched.
+    const ws = new Workspace({ '/ram': new RAMVFS() }, { mode: MountMode.WRITE })
+    try {
+      const reg = ws.registry
+      const device = new DeviceInput(0)
+      expect(defaultCwdOperand(['rg', 'a'], 'rg', reg, '/ram', device)?.rawPath).toBe('')
+      expect(defaultCwdOperand(['rg', 'a'], 'rg', reg, '/ram', new Uint8Array(0))).toBeNull()
     } finally {
       await ws.close()
     }

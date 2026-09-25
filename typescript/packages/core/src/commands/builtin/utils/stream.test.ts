@@ -13,8 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { PathSpec } from '../../../types.ts'
-import { isStdin, operandLabel } from './stream.ts'
+import { FileStat, FileType, PathSpec } from '../../../types.ts'
+import { materialize } from '../../../io/types.ts'
+import { isStdin, operandLabel, stdinStat, stdinStream } from './stream.ts'
 
 function operand(raw: string, virtual: string): PathSpec {
   return new PathSpec({
@@ -36,5 +37,40 @@ describe('operandLabel', () => {
     expect(operandLabel(dash, '(standard input)')).toBe('(standard input)')
     expect(operandLabel(dev, '(standard input)')).toBe('/dev/stdin')
     expect(operandLabel(operand('a.txt', '/data/a.txt'), '-')).toBe('a.txt')
+  })
+})
+
+describe('dash', () => {
+  it('keeps a dash a file and /dev/stdin stdin when false', () => {
+    // util-linux rev and binutils strings open `-` as a path; only
+    // /dev/stdin reads stdin for them.
+    const dash = operand('-', '/-')
+    const dev = operand('/dev/stdin', '/dev/stdin')
+    expect([isStdin(dash, false), isStdin(dev, false)]).toEqual([false, true])
+  })
+
+  it('is honored by stdinStat and stdinStream', async () => {
+    const backendHits: string[] = []
+    const stat = (p: PathSpec): Promise<FileStat> => {
+      backendHits.push(p.virtual)
+      return Promise.resolve(new FileStat({ name: '-', type: FileType.FILE }))
+    }
+    const read = (p: PathSpec): AsyncIterable<Uint8Array> => {
+      backendHits.push(p.virtual)
+      return (async function* gen() {
+        await Promise.resolve()
+        yield new TextEncoder().encode('backend')
+      })()
+    }
+    const dash = operand('-', '/-')
+    const dev = operand('/dev/stdin', '/dev/stdin')
+    const probe = stdinStat(stat, false)
+    expect((await probe(dev)).type).toBe(FileType.FIFO)
+    expect((await probe(dash)).type).toBe(FileType.FILE)
+    const stream = stdinStream(read, new TextEncoder().encode('piped'), false, false)
+    const DEC = new TextDecoder()
+    expect(DEC.decode(await materialize(stream(dev)))).toBe('piped')
+    expect(DEC.decode(await materialize(stream(dash)))).toBe('backend')
+    expect(backendHits).toEqual(['/-', '/-'])
   })
 })

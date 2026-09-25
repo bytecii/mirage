@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 from mirage.accessor.base import Accessor
@@ -30,7 +31,10 @@ from mirage.commands.spec.flag_view import FlagView
 from mirage.context import hidden_paths_intersect, path_rules_active
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
+from mirage.utils.errors import FileTooLargeError
 from mirage.vfs.types import SearchQuery
+
+logger = logging.getLogger(__name__)
 
 _GENERICS = {"grep": generic_grep, "rg": generic_rg}
 
@@ -113,7 +117,16 @@ async def run_search(
                                     name == "grep" and not fl.as_bool("E"),
                                 }
                             })
-        lines = await capability.search(accessor, operand, query, opts.index)
+        try:
+            lines = await capability.search(accessor, operand, query,
+                                            opts.index)
+        except FileTooLargeError as exc:
+            # A push-down whose answer is past the mount's read cap cannot
+            # print it; the scan reads each operand, and reports the same
+            # refusal against the operand as typed.
+            logger.debug("%s push-down refused %s: %s", name, operand.virtual,
+                         exc)
+            lines = None
         if lines is not None:
             if not lines:
                 return b"", IOResult(exit_code=1)

@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ambiguousOptionError,
   extraOperandError,
+  missingOperandError,
   invalidFloatError,
   invalidIntError,
   argmatchError,
@@ -295,6 +296,9 @@ describe('readFailExitCode', () => {
     expect(readFailExitCode('sort', fsErr('ENOENT'))).toBe(2)
     expect(readFailExitCode('sort', fsErr('EISDIR'))).toBe(2)
     expect(readFailExitCode('unzip', fsErr('ENOENT'))).toBe(9)
+    // A read the mount refuses to render whole (EFBIG) is a failed read too.
+    expect(readFailExitCode('rg', fsErr('EFBIG'))).toBe(2)
+    expect(readFailExitCode('cat', fsErr('EFBIG'))).toBe(1)
   })
 
   it('splits by errno for the four commands that do', () => {
@@ -463,5 +467,34 @@ describe('unknownOptionError leaves the token unescaped', () => {
   ])('keeps %s’s token as typed', (cmd, token) => {
     const [msg] = unknownOptionError(cmd, token)
     expect(td.decode(msg).startsWith(`${cmd}: unrecognized option '${token}'\n`)).toBe(true)
+  })
+})
+
+describe('missingOperandError', () => {
+  // coreutils says a bare `missing operand` with no operand at all; diffutils
+  // names the program itself (coreutils 9.7, diffutils 3.10).
+  it.each([
+    ['comm', null, "comm: missing operand\nTry 'comm --help' for more information.", 1],
+    [
+      'join',
+      'a.txt',
+      "join: missing operand after 'a.txt'\nTry 'join --help' for more information.",
+      1,
+    ],
+    [
+      'cmp',
+      null,
+      "cmp: missing operand after 'cmp'\ncmp: Try 'cmp --help' for more information.",
+      2,
+    ],
+    [
+      'diff',
+      'a.txt',
+      "diff: missing operand after 'a.txt'\ndiff: Try 'diff --help' for more information.",
+      2,
+    ],
+  ] as const)('matches GNU for %s', (cmd, last, message, code) => {
+    const err = missingOperandError(cmd, last)
+    expect([err.message, err.exitCode]).toEqual([message, code])
   })
 })

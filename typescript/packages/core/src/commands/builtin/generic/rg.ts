@@ -18,7 +18,7 @@ import { mountParentReaddir, mountParentStat } from '../utils/operands.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import { FileStat, FileType, PathSpec } from '../../../types.ts'
 import { fsStrerror, isFsError, isWalkError } from '../../../utils/errors.ts'
-import { respellRaw } from '../../../utils/path.ts'
+import { respellOne, respellRaw } from '../../../utils/path.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
@@ -26,12 +26,13 @@ import { compilePattern, resolvePattern } from '../grep_pattern.ts'
 import {
   exitCodeFor,
   grepStream,
-  nonzeroCountStream,
   prefixLines,
+  selectedCountStream,
   type GrepStreamOptions,
 } from '../grep_scan.ts'
 import { rgFull } from '../rg_scan.ts'
 import { decodeLine } from '../grep_offsets.ts'
+import { STDIN_OPERAND } from '../utils/constants.ts'
 import { splitLines } from '../utils/lines.ts'
 import { isStdin, stdinStream } from '../utils/stream.ts'
 import { formatRecords } from '../utils/output.ts'
@@ -41,8 +42,6 @@ const ENC = new TextEncoder()
 export const RG_NO_PATTERN = 'rg: ripgrep requires at least one pattern to execute a search'
 // ripgrep's name for stdin wherever it names the file a line came from.
 const STDIN_NAME = '<stdin>'
-// The operand ripgrep searches when a line names none and stdin is piped.
-const IMPLICIT_STDIN = new PathSpec({ virtual: '-', directory: '-', vfsPath: '-' })
 const DEC = new TextDecoder()
 
 type Stat = (p: PathSpec) => Promise<FileStat>
@@ -105,22 +104,21 @@ export function parseFlags(fl: FlagView): RgFlags {
 }
 
 // Whether the output shows -A/-B/-C context. Only printed lines carry it: -c,
-// -l and --files-without-match answer per file, and -o drops it (ripgrep
-// prints -o's context its own way).
+// -l and --files-without-match answer per file. -o keeps it, each line printed
+// as its matches.
 export function printsContext(flags: RgFlags): boolean {
   return (
     (flags.beforeContext > 0 || flags.afterContext > 0) &&
     !flags.countOnly &&
     !flags.filesOnly &&
-    !flags.filesWithoutMatch &&
-    !flags.onlyMatching
+    !flags.filesWithoutMatch
   )
 }
 
 // The stream reports selection on `io` rather than the caller reading it off
-// an empty output: under -o a line whose only match is empty prints nothing
-// and is still selected, so it exits 0 (GNU grep 3.11). A line past -m in
-// the trailing context prints as ripgrep prints it.
+// the output, which under -o -c is a 0 for an inverted selection that holds no
+// match. A line past -m in the trailing context prints as ripgrep prints it,
+// and -o prints ripgrep's pieces.
 function streamOptionsOf(flags: RgFlags, io: IOResult, signal?: AbortSignal): GrepStreamOptions {
   return {
     invert: flags.invert,
@@ -132,6 +130,7 @@ function streamOptionsOf(flags: RgFlags, io: IOResult, signal?: AbortSignal): Gr
     afterContext: flags.afterContext,
     beforeContext: flags.beforeContext,
     trailingMatches: true,
+    pieces: true,
     io,
     signal,
   }
@@ -208,9 +207,9 @@ async function operandRecords(
   const hits = splitLines(decodeLine(await materialize(scan)))
   if (scanned.exitCode === 0) io.exitCode = 0
   if (flags.countOnly) {
-    // grepStream prints a zero count; ripgrep lists nothing for it.
+    // ripgrep lists nothing for an input that selected no line.
     const [count] = hits
-    if (count === undefined || count === '0') return []
+    if (count === undefined || scanned.exitCode !== 0) return []
     return [label ? `${name}:${count}` : count]
   }
   // The context renderer leads each line with the label itself.
@@ -242,7 +241,7 @@ export async function rgGeneric(
   // A line that names no path searches a piped stdin as an implicit `-`
   // operand, so -l, -H, -c and context answer as they do for a typed one
   // (ripgrep's Paths::from_low_args, 14.1.1).
-  const [first = IMPLICIT_STDIN] = paths
+  const [first = STDIN_OPERAND] = paths
   if (paths.length === 0) {
     if (opts.stdin === null) {
       return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(`${RG_NO_PATTERN}\n`) })]
@@ -314,32 +313,43 @@ export async function rgGeneric(
       noFilename: flags.noFilename,
     }
     const results: string[] = []
-    // Status comes from selection, not from the printed lines: under -o a
-    // zero-width match selects the line and prints nothing, so an empty
-    // `results` is not "nothing matched". `grep -r` reads its status the
-    // same way.
+    // Status comes from selection, not from the printed lines, the way
+    // `grep -r` reads its status.
     const fullIO = new IOResult({ exitCode: 1 })
     // ripgrep puts `--` between one operand's context and the next one's,
     // labelled or not.
     const context = printsContext(flags)
     for (const p of paths) {
-      const records = isStdin(p)
-        ? await operandRecords(stream(p), operandName(p), pat, flags, label, fullIO, opts.signal)
-        : respellRaw(
-            await rgFull(
-              readdirFn,
-              statFn,
-              readBytesFn,
-              p.virtual,
-              exprText,
-              fullOpts,
-              warnings,
-              label ? p.rawPath : null,
-              fullIO,
-            ),
-            p.virtual,
-            p.rawPath,
-          )
+      let records: string[]
+      if (isStdin(p)) {
+        records = await operandRecords(
+          stream(p),
+          operandName(p),
+          pat,
+          flags,
+          label,
+          fullIO,
+          opts.signal,
+        )
+      } else {
+        const unread: [string, string][] = []
+        const hits = await rgFull(
+          readdirFn,
+          statFn,
+          readBytesFn,
+          p.virtual,
+          exprText,
+          fullOpts,
+          unread,
+          label ? p.rawPath : null,
+          fullIO,
+        )
+        records = respellRaw(hits, p.virtual, p.rawPath)
+        // ripgrep names an unreadable path as typed, the way it spells a hit.
+        for (const [path, err] of unread) {
+          warnings.push(`rg: ${respellOne(path, p.virtual, p.rawPath)}: ${err}`)
+        }
+      }
       if (context && results.length > 0 && records.length > 0) results.push('--')
       results.push(...records)
     }
@@ -379,6 +389,7 @@ export async function rgGeneric(
       countOnly: true,
       afterContext: 0,
       beforeContext: 0,
+      pieces: true,
       signal: opts.signal,
     }
     if (paths.length > 1 || flags.withFilename) {
@@ -386,16 +397,19 @@ export async function rgGeneric(
       const warnings: string[] = []
       for (const p of paths) {
         let counted: Uint8Array
+        const fileIO = new IOResult({ exitCode: 1 })
         try {
-          counted = await materialize(grepStream(stream(p), pat, streamOpts))
+          counted = await materialize(grepStream(stream(p), pat, { ...streamOpts, io: fileIO }))
         } catch (err) {
           if (!isFsError(err)) throw err
           // ripgrep reports the failed operand and keeps searching the rest.
           warnings.push(`rg: ${p.rawPath}: ${String(fsStrerror(err))}`)
           continue
         }
-        const n = Number.parseInt(DEC.decode(counted).trim() || '0', 10)
-        if (n > 0) results.push(label ? `${operandName(p)}:${String(n)}` : String(n))
+        // Selection decides, not the count: -o -c counts matches, and an
+        // inverted selection holds none.
+        const n = DEC.decode(counted).trim() || '0'
+        if (fileIO.exitCode === 0) results.push(label ? `${operandName(p)}:${n}` : n)
       }
       const stderr = warnings.length > 0 ? ENC.encode(warnings.join('\n') + '\n') : undefined
       const code = exitCodeFor(results.length > 0, warnings.length > 0, false)
@@ -413,7 +427,7 @@ export async function rgGeneric(
       ]
     }
     const io = new IOResult({ exitCode: 1 })
-    const counted = nonzeroCountStream(grepStream(stream(first), pat, { ...streamOpts, io }))
+    const counted = selectedCountStream(grepStream(stream(first), pat, { ...streamOpts, io }), io)
     return [counted, io]
   }
 

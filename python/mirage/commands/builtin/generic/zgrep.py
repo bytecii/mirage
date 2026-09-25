@@ -1,4 +1,3 @@
-import gzip as gziplib
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -8,14 +7,17 @@ from mirage.commands.builtin.grep_offsets import (decode_line, line_offsets,
                                                   match_offset, prefix_of)
 from mirage.commands.builtin.grep_pattern import (build_pattern_str,
                                                   resolve_pattern)
+from mirage.commands.builtin.utils.constants import STDIN_OPERAND
 from mirage.commands.builtin.utils.lines import split_lines
 from mirage.commands.builtin.utils.output import format_records
-from mirage.commands.builtin.utils.stream import read_stdin_async
+from mirage.commands.builtin.utils.stream import operand_label, stdin_bytes
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
+from mirage.utils.compress import GZIP_MAGIC, gunzip_checked
+from mirage.utils.errors import GzipDataError
 
 
 async def _read_plain(
@@ -177,60 +179,49 @@ async def zgrep(
     show_filename = f.force_filename or (multi and not f.suppress_filename)
     any_match = False
     all_results: list[str] = []
+    read = stdin_bytes(read_bytes, stdin)
 
-    if paths:
-        for p in paths:
-            raw = await read_bytes(p)
-            data = gziplib.decompress(raw)
-            fname = p.raw_path if show_filename else None
-            if f.files_only or f.files_without_match:
-                # -m0 selects no line at all, so -l lists nothing and -L
-                # lists every archive, exit 1 (zgrep 3.11).
-                matched = f.max_count != 0 and _files_only_match(
-                    data, compiled, f.ignore_case, f.invert)
-                # -L lists the files that selected nothing; the status
-                # still follows the matching, as GNU grep's does.
-                if matched == f.files_only:
-                    all_results.append(p.raw_path)
-                any_match = any_match or matched
-            else:
-                result, had_match = _zgrep_search(data, compiled,
-                                                  f.ignore_case, f.invert,
-                                                  f.count, f.line_numbers,
-                                                  fname, f.only_matching,
-                                                  f.max_count, f.byte_offsets)
-                if had_match:
-                    any_match = True
-                all_results.extend(result)
-    else:
-        stdin_raw = await read_stdin_async(stdin)
-        data = gziplib.decompress(stdin_raw) if stdin_raw else b""
+    errors: list[str] = []
+    for p in paths or [STDIN_OPERAND]:
+        raw = await read(p)
+        # zgrep decompresses with `gzip -cdfq`, which passes an input with
+        # no gzip header through as it is; a bad archive is an error.
+        try:
+            data = gunzip_checked(raw) if raw.startswith(GZIP_MAGIC) else raw
+        except GzipDataError as exc:
+            errors.append(f"zgrep: {operand_label(p, 'stdin')}: {exc}\n")
+            continue
+        # zgrep hands grep a stdin operand as `-`, so -l and -L list it
+        # as `-` while its lines are labelled `(standard input)` (gzip
+        # 1.13); /dev/stdin is named as typed either way.
+        fname = operand_label(p, "(standard input)") if show_filename else None
         if f.files_only or f.files_without_match:
+            # -m0 selects no line at all, so -l lists nothing and -L
+            # lists every archive, exit 1 (zgrep 3.11).
             matched = f.max_count != 0 and _files_only_match(
                 data, compiled, f.ignore_case, f.invert)
+            # -L lists the files that selected nothing; the status
+            # still follows the matching, as GNU grep's does.
             if matched == f.files_only:
-                # zgrep lists stdin by the name it hands grep, `-`, while
-                # -H labels its lines `(standard input)` (gzip 1.13).
-                all_results.append("-")
+                all_results.append(p.raw_path)
             any_match = any_match or matched
         else:
-            # GNU zgrep labels stdin "(standard input)" under -H.
-            stdin_name = "(standard input)" if f.force_filename else None
             result, had_match = _zgrep_search(data, compiled, f.ignore_case,
                                               f.invert, f.count,
-                                              f.line_numbers, stdin_name,
+                                              f.line_numbers, fname,
                                               f.only_matching, f.max_count,
                                               f.byte_offsets)
             if had_match:
                 any_match = True
             all_results.extend(result)
 
-    if f.quiet:
-        return None, IOResult(exit_code=0 if any_match else 1)
-    exit_code = 0 if any_match else 1
-    if not all_results:
-        return None, IOResult(exit_code=exit_code)
-    return format_records(all_results), IOResult(exit_code=exit_code)
+    # A bad archive is exit 2 even beside a match, -q included (zgrep 3.11).
+    exit_code = 2 if errors else 0 if any_match else 1
+    stderr = "".join(errors).encode() or None
+    if f.quiet or not all_results:
+        return None, IOResult(exit_code=exit_code, stderr=stderr)
+    return format_records(all_results), IOResult(exit_code=exit_code,
+                                                 stderr=stderr)
 
 
 __all__ = ["zgrep"]

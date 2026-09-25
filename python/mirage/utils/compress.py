@@ -13,7 +13,15 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import zlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+
+from mirage.utils.errors import GzipDataError
+
+GZIP_MAGIC = b"\x1f\x8b"
+# gzip 1.13's words for the inputs ``gzip -d`` refuses.
+GZIP_NOT_GZIP = "not in gzip format"
+GZIP_EOF = "unexpected end of file"
+GZIP_CORRUPT = "invalid compressed data--format violated"
 
 
 async def gzip_compress_stream(
@@ -39,21 +47,88 @@ async def gzip_compress_stream(
         yield tail
 
 
-async def gzip_decompress_stream(
-        source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
-    """Ungzip a byte stream chunk by chunk.
+GZIP_TRAILING = "decompression OK, trailing garbage ignored"
+GZIP_CHUNK_SIZE = 65536
+
+
+class GzipDecoder:
+    """Incremental member decoder with bounded decompressed chunks."""
+
+    def __init__(self) -> None:
+        self._decoder = zlib.decompressobj(31)
+        self._between = True
+        self._seen = False
+        self._prefix = b""
+        self._padding = False
+
+    def feed(self, data: bytes) -> Iterator[bytes]:
+        """Decode one input chunk without collecting its expansion.
+
+        Args:
+            data (bytes): The next compressed chunk.
+        """
+        while data:
+            if self._between:
+                data = self._prefix + data
+                self._prefix = b""
+                if self._seen and (self._padding or data[0] == 0):
+                    self._padding = True
+                    if any(data):
+                        raise GzipDataError(GZIP_TRAILING, False, 2)
+                    return
+                if len(data) < 2:
+                    self._prefix = data
+                    return
+                if not data.startswith(GZIP_MAGIC):
+                    raise GzipDataError(
+                        GZIP_TRAILING if self._seen else GZIP_NOT_GZIP, False,
+                        2 if self._seen else 1)
+                self._decoder = zlib.decompressobj(31)
+                self._between = False
+            try:
+                out = self._decoder.decompress(data, GZIP_CHUNK_SIZE)
+            except zlib.error as exc:
+                raise GzipDataError(GZIP_CORRUPT, True) from exc
+            decoder = self._decoder
+            data = (decoder.unused_data
+                    if decoder.eof else decoder.unconsumed_tail)
+            if out:
+                yield out
+            if self._decoder.eof:
+                self._seen = True
+                self._between = True
+
+    def finish(self) -> None:
+        """Reject an absent header or an unfinished member at EOF.
+
+        GNU gzip 1.13 also treats exactly one trailing nonzero byte as
+        fatal EOF, even when it cannot start a member. Two junk bytes
+        instead trigger the nonfatal trailing-garbage warning in feed.
+        """
+        if not self._seen or not self._between or self._prefix:
+            raise GzipDataError(GZIP_EOF, True)
+
+
+async def gunzip_stream(source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Decode concatenated members, yielding before reading more input.
 
     Args:
-        source (AsyncIterator[bytes]): gzip member chunks.
-
-    Yields:
-        bytes: the decompressed bytes.
+        source (AsyncIterator[bytes]): Compressed input chunks.
     """
-    decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
+    decoder = GzipDecoder()
     async for chunk in source:
-        decompressed = decompressor.decompress(chunk)
-        if decompressed:
-            yield decompressed
-    tail = decompressor.flush()
-    if tail:
-        yield tail
+        for out in decoder.feed(chunk):
+            yield out
+    decoder.finish()
+
+
+def gunzip_checked(data: bytes) -> bytes:
+    """Materialize a checked archive for consumers that need all its bytes.
+
+    Args:
+        data (bytes): Compressed input, with no trailing garbage.
+    """
+    decoder = GzipDecoder()
+    parts = list(decoder.feed(data))
+    decoder.finish()
+    return b"".join(parts)

@@ -17,8 +17,9 @@ import re
 
 from mirage.commands.builtin.constants import BINARY_EXTENSIONS
 from mirage.commands.builtin.grep_context import grep_context_lines
-from mirage.commands.builtin.grep_offsets import (decode_line, line_offsets,
-                                                  match_offset, prefix_of)
+from mirage.commands.builtin.grep_offsets import (MatchOffsets, decode_line,
+                                                  line_offsets, prefix_of,
+                                                  rg_pieces)
 from mirage.commands.builtin.grep_pattern import compile_pattern
 from mirage.commands.builtin.utils.lines import split_lines
 from mirage.commands.builtin.utils.types import (AsyncReadBytes, AsyncReaddir,
@@ -171,7 +172,8 @@ def search_file(
                                       context_before,
                                       byte_offsets,
                                       prefix_path,
-                                      trailing_matches=True)
+                                      trailing_matches=True,
+                                      pieces=only_matching)
         if rendered and io is not None:
             io.exit_code = 0
         # `decode_line` because the renderer puts a smuggled byte back as
@@ -179,6 +181,8 @@ def search_file(
         return [decode_line(b).rstrip("\n") for b in rendered]
     results: list[str] = []
     count = 0
+    # -o -c counts matches, not the lines that hold them (ripgrep 14.1.1).
+    matches = 0
     offsets = line_offsets(data) if byte_offsets else []
     for i_ln, line in enumerate(data, 1):
         start = offsets[i_ln - 1] if byte_offsets else 0
@@ -193,23 +197,18 @@ def search_file(
         if without_match:
             return []
         if only_matching:
-            # GNU -o prints every match on the line, one per line, and
-            # prints nothing at all for an empty match nor for an
-            # inverted selection, which has no match to print -- but the
-            # line is still selected, so `count` is already incremented
-            # above and -c, -l and the exit status see it. Mirrors
-            # `searchFile` in rg_scan.ts and `grep_lines` in grep_scan.py.
+            # ripgrep's -o prints each match, an empty one included, and a
+            # line with none (an inverted selection) whole; see rg_pieces.
+            pieces = rg_pieces(compiled, line)
             if not invert:
-                for found in compiled.finditer(line):
-                    text = found.group(0)
-                    if not text:
-                        continue
-                    one = prefix_of(
-                        i_ln if line_numbers else None,
-                        match_offset(start, line, found.start())
-                        if byte_offsets else None) + text
-                    results.append(f"{prefix_path}:{one}"
-                                   if prefix_path is not None else one)
+                matches += len(pieces)
+            piece_offsets = MatchOffsets(start, line) if byte_offsets else None
+            for at, text in pieces:
+                one = prefix_of(
+                    i_ln if line_numbers else None,
+                    piece_offsets.at(at) if piece_offsets else None) + text
+                results.append(
+                    f"{prefix_path}:{one}" if prefix_path is not None else one)
         else:
             one = (prefix_of(i_ln if line_numbers else None,
                              start if byte_offsets else None) + line)
@@ -222,8 +221,9 @@ def search_file(
     if count_only:
         if count == 0:
             return []
+        shown = matches if only_matching else count
         return [
-            f"{prefix_path}:{count}" if prefix_path is not None else str(count)
+            f"{prefix_path}:{shown}" if prefix_path is not None else str(shown)
         ]
     if without_match:
         return [path]
@@ -250,7 +250,7 @@ async def rg_full(
     file_type: str | None,
     glob_pattern: str | None,
     hidden: bool,
-    warnings: list[str] | None,
+    warnings: list[tuple[str, str]] | None,
     file_prefix: str | None = None,
     no_filename: bool = False,
     byte_offsets: bool = False,
@@ -279,7 +279,9 @@ async def rg_full(
         file_type (str | None): --type, restrict by extension set.
         glob_pattern (str | None): --glob, restrict by basename glob.
         hidden (bool): --hidden, walk dot-entries too.
-        warnings (list[str] | None): collects per-operand errors.
+        warnings (list[tuple[str, str]] | None): collects ``(path, error)``
+            for each path that could not be read, the path as walked, for
+            the caller to respell and name.
         file_prefix (str | None): the label a single-file run carries.
         no_filename (bool): -I, drop per-file labels in a walk.
         byte_offsets (bool): -b, prefix each line with the byte offset of
@@ -288,19 +290,15 @@ async def rg_full(
             paths that selected NO line. ``-c`` outranks it, as it does
             in ripgrep (``rg --files-without-match -c`` prints counts).
         io (IOResult | None): when given, receives exit status 0 as soon
-            as a line is selected. Selection cannot be read off the
-            returned list: under -o a zero-width match selects the line
-            and prints nothing, so a caller deriving the status from an
-            empty list reports 1 where GNU says 0. The twin of the
-            channel ``grep_lines`` and ``grep_stream`` already take, and
-            `grep -r` is the reference.
+            as a line is selected, so no caller reads the status off the
+            returned list. The twin of the channel ``grep_lines`` and
+            ``grep_stream`` already take, and `grep -r` is the reference.
     """
     compiled = compile_pattern(pattern, ignore_case, fixed_string, whole_word)
     # Only printed lines carry context: -c, -l and --files-without-match
-    # answer per file, and -o drops it (ripgrep prints -o's context its
-    # own way).
-    context = bool(context_before or context_after) and not (
-        count_only or files_only or files_without_match or only_matching)
+    # answer per file. -o keeps it, each line printed as its matches.
+    per_file = count_only or files_only or files_without_match
+    context = bool(context_before or context_after) and not per_file
 
     is_dir = False
     try:
@@ -323,7 +321,7 @@ async def rg_full(
             data = split_lines(decode_line(await read_bytes_fn(path)))
         except WALK_ERRORS as exc:
             if warnings is not None:
-                warnings.append(f"rg: {path}: {fs_strerror(exc) or exc}")
+                warnings.append((path, fs_strerror(exc) or str(exc)))
             return []
         return search_file(path, data, compiled, invert, line_numbers,
                            count_only, files_only, only_matching, max_count,
@@ -335,7 +333,7 @@ async def rg_full(
         entries = await readdir_fn(path)
     except WALK_ERRORS as exc:
         if warnings is not None:
-            warnings.append(f"rg: {path}: {fs_strerror(exc) or exc}")
+            warnings.append((path, fs_strerror(exc) or str(exc)))
         return results
 
     for entry in entries:
@@ -343,7 +341,7 @@ async def rg_full(
             s = await stat_fn(entry)
         except WALK_ERRORS as exc:
             if warnings is not None:
-                warnings.append(f"rg: {entry}: {fs_strerror(exc) or exc}")
+                warnings.append((entry, fs_strerror(exc) or str(exc)))
             continue
 
         if s.type == FileType.DIRECTORY:
@@ -385,7 +383,7 @@ async def rg_full(
                 data = split_lines(decode_line(await read_bytes_fn(entry)))
             except WALK_ERRORS as exc:
                 if warnings is not None:
-                    warnings.append(f"rg: {entry}: {fs_strerror(exc) or exc}")
+                    warnings.append((entry, fs_strerror(exc) or str(exc)))
                 continue
             # ripgrep -I drops per-file labels in directory walks; -l
             # keeps paths (they are the output).

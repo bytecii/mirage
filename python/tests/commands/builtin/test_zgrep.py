@@ -137,3 +137,37 @@ def test_zgrep_lists_stdin_as_dash():
     assert (_bytes(stdout), io.exit_code) == (b"-\n", 0)
     stdout, io = _run_raw(ws, "zgrep -L zzz", stdin=compressed)
     assert (_bytes(stdout), io.exit_code) == (b"-\n", 1)
+
+
+def test_zgrep_names_stdin_operands_like_gnu():
+    # zgrep hands grep a stdin operand as `-`: -l lists it as `-` while
+    # its lines are labelled `(standard input)`; /dev/stdin is as typed.
+    ws, _ = _ws()
+    data = gzip.compress(b"hello\n")
+    for cmd, want in (("zgrep -H hello -", b"(standard input):hello\n"),
+                      ("zgrep -H hello /dev/stdin",
+                       b"/dev/stdin:hello\n"), ("zgrep -l hello -", b"-\n"),
+                      ("zgrep -l hello /dev/stdin", b"/dev/stdin\n")):
+        stdout, io = _run_raw(ws, cmd, stdin=data)
+        assert (_bytes(stdout), io.exit_code) == (want, 0), cmd
+
+
+def test_zgrep_searches_a_plain_input_as_it_is():
+    # zgrep decompresses with `gzip -cdfq`, which passes a plain file.
+    ws, _ = _ws()
+    _run_raw(ws, "tee /data/plain.txt", stdin=b"hello\nworld\n")
+    stdout, io = _run_raw(ws, "zgrep -c o /data/plain.txt")
+    assert (_bytes(stdout), io.exit_code) == (b"2\n", 0)
+    stdout, io = _run_raw(ws, "zgrep hello", stdin=b"hello\n")
+    assert (_bytes(stdout), io.exit_code) == (b"hello\n", 0)
+
+
+def test_zgrep_reports_a_bad_archive_and_exits_2_beside_a_match():
+    ws, _ = _ws()
+    _run_raw(ws, "tee /data/cut.gz", stdin=gzip.compress(b"hello\n")[:10])
+    _run_raw(ws, "tee /data/h.gz", stdin=gzip.compress(b"hello\n"))
+    stdout, io = _run_raw(ws, "zgrep hello /data/cut.gz /data/h.gz")
+    assert _bytes(stdout) == b"/data/h.gz:hello\n"
+    assert _bytes(
+        io.stderr) == b"zgrep: /data/cut.gz: unexpected end of file\n"
+    assert io.exit_code == 2

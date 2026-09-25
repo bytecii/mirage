@@ -62,7 +62,7 @@ async def handle_cross_mount(
         flag_kwargs (dict): Flags parsed from the shared command spec.
         dispatch (DispatchFn): Workspace operation dispatcher (RELAY).
         run_single (RunSingle): Executor-injected single-mount runner
-            (STREAM and FANOUT).
+            (STREAM, FANOUT and RELAY's wc).
         stdin (ByteSource | None): Original stdin (tee re-feeds it per
             operand).
         storage_key (Callable | None): Maps an operand to its storage
@@ -87,8 +87,8 @@ async def handle_cross_mount(
         strategy = strategy_for(cmd_name, flag_kwargs)
         if strategy is Strategy.RELAY:
             return await run_relay(cmd_name, scopes, text_args, flag_kwargs,
-                                   dispatch, storage_key, ns, session_view,
-                                   stdin)
+                                   dispatch, run_single, storage_key, ns,
+                                   session_view, stdin)
         if strategy is Strategy.STREAM:
             return await run_stream(cmd_name, scopes, text_args, flag_kwargs,
                                     run_single)

@@ -18,7 +18,7 @@ import { IOResult, materialize } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import { decodeBase64, encodeBase64 } from '../../../utils/base64.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { resolveSource } from '../utils/stream.ts'
+import { isStdin, resolveSource, stdinStream } from '../utils/stream.ts'
 import { extraOperandError } from '../../spec/usage.ts'
 import { CommandName } from '../../spec/types.ts'
 
@@ -60,6 +60,7 @@ export async function base64Generic(
   opts: CommandOpts,
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
 ): Promise<CommandFnResult> {
+  stream = stdinStream(stream, opts.stdin)
   const fl = new FlagView(opts.flags, specOf('base64'))
   if (paths.length > 1) throw extraOperandError(CommandName.BASE64, paths[1]?.rawPath ?? '')
   const decode = fl.asBool('D') || fl.asBool('decode')
@@ -72,7 +73,7 @@ export async function base64Generic(
     const first = paths[0]
     if (first === undefined) return [null, new IOResult()]
     source = stream(first)
-    cache.push(first.virtual)
+    if (!isStdin(first)) cache.push(first.virtual)
   } else {
     source = resolveSource(opts.stdin)
   }

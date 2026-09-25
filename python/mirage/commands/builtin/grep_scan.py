@@ -19,7 +19,8 @@ from mirage.commands.builtin.constants import BINARY_EXTENSIONS
 from mirage.commands.builtin.grep_context import grep_context_stream
 from mirage.commands.builtin.grep_offsets import (MatchOffsets, decode_line,
                                                   encode_line, line_offsets,
-                                                  prefix_of)
+                                                  prefix_of, rg_pieces,
+                                                  rust_matches)
 from mirage.commands.builtin.grep_pattern import compile_pattern
 from mirage.commands.builtin.grep_select import (NO_FILTERS, WalkFilters,
                                                  dir_admitted, file_admitted)
@@ -47,6 +48,7 @@ def grep_lines(
     max_count: int | None,
     io: IOResult | None = None,
     byte_offsets: bool = False,
+    pieces: bool = False,
 ) -> list[str]:
     """Grep one already-read input, returning the lines to print.
 
@@ -76,6 +78,7 @@ def grep_lines(
             The offsets are derived from the lines because this scan is
             handed text rather than bytes, which is exact only for text
             that came through ``decode_line``.
+        pieces (bool): ripgrep's -o, see ``grep_stream``.
 
     Returns:
         list[str]: the lines to print, the count under -c, or the path
@@ -93,6 +96,9 @@ def grep_lines(
         return []
     results: list[str] = []
     count = 0
+    rg_only = only_matching and pieces
+    # ripgrep's -o -c counts matches, not the lines that hold them.
+    matches = 0
     offsets = line_offsets(data) if byte_offsets else []
     for i, line in enumerate(data, 1):
         start = offsets[i - 1] if byte_offsets else 0
@@ -103,8 +109,19 @@ def grep_lines(
         count += 1
         if io is not None:
             io.exit_code = 0
+        if count_only and rg_only:
+            matches += len(rust_matches(compiled, line))
         if not count_only and not files_only:
-            if only_matching:
+            if rg_only:
+                piece_offsets = MatchOffsets(start,
+                                             line) if byte_offsets else None
+                for at, text in rg_pieces(compiled, line):
+                    results.append(
+                        prefix_of(
+                            i if line_numbers else None,
+                            piece_offsets.at(at) if piece_offsets else None) +
+                        text)
+            elif only_matching:
                 # GNU -o prints every match on the line, one per line, and
                 # prints nothing at all for an empty match nor for an
                 # inverted selection, which has no match to print
@@ -131,36 +148,10 @@ def grep_lines(
         if max_count is not None and count >= max_count:
             break
     if count_only:
-        return [str(count)]
+        return [str(matches if rg_only else count)]
     if files_only:
         return [path] if count > 0 else []
     return results
-
-
-def _grep_count_value(results: list[str]) -> int:
-    """Return the numeric value from count-only grep results.
-
-    Args:
-        results (list[str]): `grep_lines(..., count_only=True)` output.
-
-    Returns:
-        int: The parsed match count, or zero when the result is empty.
-    """
-    if not results:
-        return 0
-    return int(results[0])
-
-
-def grep_count_has_matches(results: list[str]) -> bool:
-    """Return whether count-only grep results contain any matches.
-
-    Args:
-        results (list[str]): `grep_lines(..., count_only=True)` output.
-
-    Returns:
-        bool: True when the parsed count is greater than zero.
-    """
-    return _grep_count_value(results) > 0
 
 
 async def prefix_lines(source: AsyncIterator[bytes],
@@ -177,19 +168,24 @@ async def prefix_lines(source: AsyncIterator[bytes],
         yield encoded + chunk
 
 
-async def nonzero_count_stream(
-        source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
-    """Drop zero-count chunks for `rg -c` fallback streams.
+async def selected_count_stream(source: AsyncIterator[bytes],
+                                io: IOResult) -> AsyncIterator[bytes]:
+    """An `rg -c` count, dropped when the input selected no line.
+
+    ripgrep lists nothing for an input that selected nothing. Selection
+    decides rather than the count, because -o -c counts matches: an
+    inverted selection holds none and prints 0.
 
     Args:
-        source (AsyncIterator[bytes]): Count-only grep stream.
+        source (AsyncIterator[bytes]): Count-only grep stream, which sets
+            ``io`` as it selects.
+        io (IOResult): the stream's selection status.
 
     Yields:
-        bytes: Count chunks whose parsed value is greater than zero.
+        bytes: the count, when a line was selected.
     """
     async for chunk in source:
-        count = int(chunk.decode(errors="replace").strip() or "0")
-        if count > 0:
+        if io.exit_code == 0:
             yield chunk
 
 
@@ -244,6 +240,7 @@ async def grep_stream(
     byte_offsets: bool = False,
     context_label: str | None = None,
     trailing_matches: bool = False,
+    pieces: bool = False,
 ) -> AsyncIterator[bytes]:
     """Stream grep's output for one input.
 
@@ -270,6 +267,9 @@ async def grep_stream(
             each line with, see ``ContextRenderer``.
         trailing_matches (bool): ripgrep's -m under context, see
             ``ContextRenderer``.
+        pieces (bool): ripgrep's -o, which prints a line with no match
+            whole (an inverted selection, a context line), prints empty
+            matches, and counts matches under -c; see ``rg_pieces``.
     """
     if max_count == 0:
         # GNU selects no line at all, context and all, and prints nothing
@@ -280,20 +280,23 @@ async def grep_stream(
         # early return.
         return
     has_context = after_context > 0 or before_context > 0
-    if has_context and not count_only and not only_matching:
+    rg_only = only_matching and pieces
+    if has_context and not count_only and (rg_only or not only_matching):
         # Context only ever accompanies a selected line, so the first chunk
         # is the selection.
         async for chunk in grep_context_stream(source, pat, invert,
                                                line_numbers, max_count,
                                                after_context, before_context,
                                                byte_offsets, context_label,
-                                               trailing_matches):
+                                               trailing_matches, rg_only):
             if io is not None:
                 io.exit_code = 0
             yield chunk
         return
     budget = YieldBudget()
     match_count = 0
+    # ripgrep's -o -c counts matches, not the lines that hold them.
+    matches = 0
     line_num = 0
     # GNU counts bytes from the start of the input, the terminator the
     # iterator strips included; the byte past a final unterminated line is
@@ -317,8 +320,19 @@ async def grep_stream(
             match_count += 1
             if io is not None:
                 io.exit_code = 0
+            if count_only and rg_only:
+                matches += len(rust_matches(pat, line))
             if not count_only:
-                if only_matching:
+                if rg_only:
+                    piece_offsets = MatchOffsets(
+                        line_start, line) if byte_offsets else None
+                    for at, text in rg_pieces(pat, line):
+                        await budget.run()
+                        fields = prefix_of(
+                            line_num if line_numbers else None,
+                            piece_offsets.at(at) if piece_offsets else None)
+                        yield encode_line(f"{fields}{text}\n")
+                elif only_matching:
                     # Nothing is printed for an inverted selection, which has
                     # no match to print: `grep -ov abc` is zero bytes where
                     # GNU's own -c still says 1.
@@ -343,14 +357,15 @@ async def grep_stream(
                     yield raw_line + b"\n"
             if max_count is not None and match_count >= max_count:
                 if count_only:
-                    yield str(match_count).encode() + b"\n"
+                    yield str(
+                        matches if rg_only else match_count).encode() + b"\n"
                 return
     except BaseException as exc:
         if not isinstance(exc, GeneratorExit):
             await discard_streams(source)
         raise
     if count_only:
-        yield str(match_count).encode() + b"\n"
+        yield str(matches if rg_only else match_count).encode() + b"\n"
 
 
 async def grep_recursive(

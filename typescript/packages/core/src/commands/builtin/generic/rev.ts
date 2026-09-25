@@ -16,7 +16,7 @@ import { AsyncLineIterator } from '../../../io/async_line_iterator.ts'
 import { IOResult } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { resolveSource } from '../utils/stream.ts'
+import { resolveSource, stdinStream } from '../utils/stream.ts'
 import { operandsIo, readOperands, singleChunk } from '../utils/operands.ts'
 
 const ENC = new TextEncoder()
@@ -44,6 +44,8 @@ export async function revGeneric(
   opts: CommandOpts,
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
 ): Promise<CommandFnResult> {
+  // util-linux rev opens `-` as a file; only /dev/stdin is stdin.
+  stream = stdinStream(stream, opts.stdin, false, false)
   if (paths.length > 0) {
     // Operands read eagerly so a missing one is reported up front and the
     // remaining operands still print (GNU rev).

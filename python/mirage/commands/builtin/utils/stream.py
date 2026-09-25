@@ -89,8 +89,16 @@ async def resolve_text_input(
     raise ValueError(error_message)
 
 
-def is_stdin(path: PathSpec) -> bool:
-    return path.raw_path == "-" or path.virtual == "/dev/stdin"
+def is_stdin(path: PathSpec, dash: bool = True) -> bool:
+    """Whether an operand reads stdin.
+
+    Args:
+        path (PathSpec): the operand.
+        dash (bool): a literal ``-`` names stdin, as it does for most
+            GNU tools; util-linux ``rev`` and binutils ``strings`` open it
+            as a file, so only ``/dev/stdin`` is stdin to them.
+    """
+    return (dash and path.raw_path == "-") or path.virtual == "/dev/stdin"
 
 
 def operand_label(path: PathSpec, stdin_name: str) -> str:
@@ -110,6 +118,7 @@ def stdin_stream(
     read: PolymorphicReadFn,
     stdin: ByteSource | None,
     sole: bool = False,
+    dash: bool = True,
 ) -> Callable[[PathSpec], AsyncIterator[bytes]]:
     """Read each operand from its backend, or from stdin for a stdin one.
 
@@ -122,6 +131,7 @@ def stdin_stream(
         stdin (ByteSource | None): the invocation's input.
         sole (bool): stdin has exactly one reader, which takes the input
             itself, so a scan that stops early closes it.
+        dash (bool): a literal ``-`` names stdin (see ``is_stdin``).
     """
     backend = normalized_read(read)
     source = resolve_source(stdin)
@@ -133,7 +143,7 @@ def stdin_stream(
     def stream(path: PathSpec) -> AsyncIterator[bytes]:
         # Bind the backend stream while its mount cache context is active.
         # Byte consumption stays lazy; only stdin needs a shared cursor.
-        if not is_stdin(path):
+        if not is_stdin(path, dash):
             return backend(path)
         return source if sole else input_stream()
 
@@ -152,11 +162,18 @@ def stdin_bytes(
 
 
 def stdin_stat(
-    stat: Callable[..., Awaitable[FileStat]]
+    stat: Callable[..., Awaitable[FileStat]],
+    dash: bool = True,
 ) -> Callable[[PathSpec], Awaitable[FileStat]]:
+    """Stat each operand on its backend, or as a stream for a stdin one.
+
+    Args:
+        stat (Callable): the backend stat.
+        dash (bool): a literal ``-`` names stdin (see ``is_stdin``).
+    """
 
     async def probe(path: PathSpec) -> FileStat:
-        if is_stdin(path):
+        if is_stdin(path, dash):
             return FileStat(name="-", type=FileType.FIFO)
         return await stat(path)
 

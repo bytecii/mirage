@@ -21,7 +21,7 @@ from mirage.commands.spec.constants import (OLD_OPTION_EXIT, OPERAND_EXIT,
                                             READ_FAIL_EXIT_ISDIR, USAGE_EXIT,
                                             USAGE_HINT_PREFIX)
 from mirage.commands.spec.types import CommandName
-from mirage.utils.errors import fs_strerror
+from mirage.utils.errors import FileTooLargeError, fs_strerror
 
 
 def usage_exit_code(cmd_name: str) -> int:
@@ -53,7 +53,8 @@ def operand_exit_code(cmd_name: str) -> int:
 # one case this leaves at 1 where GNU would answer the command's code;
 # that is the safe side to err on, and it is what the executor already
 # did before the tables existed.
-_READ_FAIL_ERRORS = (FileNotFoundError, IsADirectoryError, NotADirectoryError)
+_READ_FAIL_ERRORS = (FileNotFoundError, IsADirectoryError, NotADirectoryError,
+                     FileTooLargeError)
 
 
 def _read_fail_code(cmd_name: str, is_dir: bool) -> int:
@@ -519,5 +520,26 @@ def extra_operand_error(cmd_name: str, operand: str) -> UsageError:
         line = "mktemp: too many templates"
     else:
         line = f"{cmd_name}: extra operand '{operand}'"
+    return UsageError(f"{line}\n{usage_hint(cmd_name)}",
+                      usage_exit_code(cmd_name))
+
+
+def missing_operand_error(cmd_name: str, last: str | None) -> UsageError:
+    """GNU-shaped usage error for an operand short of a command's arity.
+
+    Shapes pinned against real GNU: ``<cmd>: missing operand after
+    '<arg>'`` names the last operand given. With none given, coreutils
+    says a bare ``missing operand`` while diffutils names the program
+    itself (``cmp: missing operand after 'cmp'``).
+
+    Args:
+        cmd_name (str): command name for the message and exit code.
+        last (str | None): the last operand as typed, or None when the
+            line has none.
+    """
+    after = last if last is not None else (
+        cmd_name if cmd_name in USAGE_HINT_PREFIX else None)
+    line = (f"{cmd_name}: missing operand" if after is None else
+            f"{cmd_name}: missing operand after '{after}'")
     return UsageError(f"{line}\n{usage_hint(cmd_name)}",
                       usage_exit_code(cmd_name))

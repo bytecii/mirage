@@ -4,7 +4,8 @@ from mirage.commands.builtin.utils.lines import split_lines
 from mirage.commands.builtin.utils.operands import (materialized_read,
                                                     merge_split_errors,
                                                     split_readable)
-from mirage.commands.builtin.utils.stream import read_stdin_async
+from mirage.commands.builtin.utils.stream import (read_stdin_async, stdin_stat,
+                                                  stdin_stream)
 from mirage.commands.config import CommandOpts
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec, PolymorphicReadFn, StatFn
@@ -51,6 +52,9 @@ async def rev_generic(
         stream (PolymorphicReadFn): Bound reader called as
             ``stream(path)``.
     """
+    # util-linux rev opens `-` as a file; only /dev/stdin is stdin.
+    stat = stdin_stat(stat, dash=False)
+    stream = stdin_stream(stream, opts.stdin, dash=False)
     readable, err = await split_readable(paths, stat, "rev")
     if err and not readable:
         return None, IOResult(exit_code=1, stderr=err)

@@ -1,4 +1,6 @@
 import asyncio
+import errno
+import os
 
 import pytest
 
@@ -1131,6 +1133,139 @@ async def test_rg_m_prints_a_selected_trailing_line_as_selected(paths, stdin):
         "A": "1"
     }, stdin, {"/a.txt": A_TXT})
     assert (out, io.exit_code) == (b"1:hello\n2:world\n", 0)
+
+
+OCTX = b"/octx/x.txt-1-a\n/octx/x.txt:2:b\n/octx/x.txt-3-c\n"
+O_FILES = {
+    "/ov/x.txt": b"x\ny\nzz\n",
+    "/oc/x.txt": b"b1\nb22\n",
+    "/ovc/abc.txt": b"abc\n",
+    "/ovc/def.txt": b"def\n",
+    "/octx/x.txt": b"a\nb\nc\n",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths, stdin, want", [
+    ([], b"x\ny\nzz\n", b"1:x\n3:zz\n"),
+    (["/ov/x.txt"], None, b"1:x\n3:zz\n"),
+    (["/ov"], None, b"/ov/x.txt:1:x\n/ov/x.txt:3:zz\n"),
+])
+async def test_rg_o_v_prints_the_unmatched_lines_whole(paths, stdin, want):
+    # `rg -v -o -n y` over x\ny\nzz\n on ripgrep 14.1.1, where GNU grep
+    # prints nothing: a selected line with no match prints whole.
+    out, io = await _run([_spec(p) for p in paths], ["y"], {
+        "o": True,
+        "v": True,
+        "n": True
+    }, stdin, O_FILES)
+    assert (out, io.exit_code) == (want, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths, stdin, want", [
+    ([], b"b1\nb22\n", b"3\n"),
+    (["/oc/x.txt"], None, b"3\n"),
+    (["/oc/x.txt", "/oc/x.txt"], None, b"/oc/x.txt:3\n/oc/x.txt:3\n"),
+    (["/oc"], None, b"/oc/x.txt:3\n"),
+])
+async def test_rg_o_c_counts_matches_not_lines(paths, stdin, want):
+    # `rg -o -c '[0-9]'` over b1\nb22\n is 3 on ripgrep 14.1.1.
+    out, io = await _run([_spec(p) for p in paths], ["[0-9]"], {
+        "o": True,
+        "c": True
+    }, stdin, O_FILES)
+    assert (out, io.exit_code) == (want, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths, stdin, want, code", [
+    ([], b"abc\ndef\n", b"0\n", 0),
+    ([], b"abc\n", b"", 1),
+    (["/ovc/abc.txt", "/ovc/def.txt"], None, b"/ovc/def.txt:0\n", 0),
+    (["/ovc"], None, b"/ovc/def.txt:0\n", 0),
+])
+async def test_rg_o_v_c_lists_an_input_that_selected_with_no_match(
+        paths, stdin, want, code):
+    # ripgrep 14.1.1 counts the matches an inverted selection holds, none,
+    # and still lists every input that selected a line.
+    out, io = await _run([_spec(p) for p in paths], ["abc"], {
+        "o": True,
+        "v": True,
+        "c": True
+    }, stdin, O_FILES)
+    assert (out, io.exit_code) == (want, code)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths, stdin, want", [
+    ([], b"a\nb\nc\n", b"1-a\n2:b\n3-c\n"),
+    (["/octx"], None, OCTX),
+    (["/octx/x.txt", "/octx/x.txt"], None, OCTX + b"--\n" + OCTX),
+])
+async def test_rg_o_prints_context_lines_whole(paths, stdin, want):
+    # `rg -o -n -C1 b` on ripgrep 14.1.1; GNU grep -o prints no context.
+    out, io = await _run([_spec(p) for p in paths], ["b"], {
+        "o": True,
+        "n": True,
+        "C": "1"
+    }, stdin, O_FILES)
+    assert (out, io.exit_code) == (want, 0)
+
+
+def _typed(virtual: str, raw: str) -> PathSpec:
+    return PathSpec(vfs_path=virtual.strip("/"),
+                    virtual=virtual,
+                    directory=virtual,
+                    resolved=True,
+                    raw_path=raw)
+
+
+async def _run_locked(paths: list[PathSpec], flags: dict):
+    files = {"/d/sub/locked.txt": b"hit\n", "/d/sub/ok.txt": b"hit\n"}
+    readdir, stat, rb, rs = _make_backend(files)
+
+    async def read_bytes(path):
+        virtual = path.virtual if isinstance(path, PathSpec) else path
+        if virtual == "/d/sub/locked.txt":
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES),
+                                  virtual)
+        return await rb(path)
+
+    output, io = await rg(paths, ["hit"],
+                          CommandOpts(flags=flags),
+                          readdir=readdir,
+                          stat=stat,
+                          read_bytes=read_bytes,
+                          read_stream=rs)
+    return await _drain_async(output), await _drain_async(io.stderr), io
+
+
+TYPE_TXT = {"type": "txt"}
+LISTING = {"args_l": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths, flags, want", [
+    ([("/d/sub", "sub"), ("/d/nope", "nope")], {}, b"sub/ok.txt:hit\n"),
+    ([("/d/nope", "nope")], TYPE_TXT, b""),
+    ([("/d/nope", "nope"), ("/d/sub", "sub")], LISTING, b"sub/ok.txt\n"),
+])
+async def test_rg_walk_names_a_missing_operand_as_typed(paths, flags, want):
+    # ripgrep 14.1.1: `cd /data && rg hit sub nope` reports `nope`, spelled
+    # as the line spelled it, the way it prints `sub/ok.txt:hit`.
+    out, err, io = await _run_locked([_typed(v, r) for v, r in paths], flags)
+    assert out == want
+    assert b"rg: nope: No such file or directory\n" in err
+    assert io.exit_code == 2
+
+
+@pytest.mark.asyncio
+async def test_rg_walk_names_a_file_it_could_not_read_as_typed():
+    out, err, io = await _run_locked([_typed("/d/sub", "sub")], {})
+    assert out == b"sub/ok.txt:hit\n"
+    assert err == b"rg: sub/locked.txt: Permission denied\n"
+    assert io.exit_code == 2
 
 
 def test_labelled_asks_for_the_filename_a_walk_would_have_printed():

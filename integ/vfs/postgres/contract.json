@@ -270,7 +270,85 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "public/tables/books/rows.jsonl too large to read entirely: ~5 rows / ~130 bytes (thresholds: 3 rows / 10485760 bytes); use head, tail, wc, grep, or pass limit/offset\n"
+        "stderr": "cat: /pg-limited/public/tables/books/rows.jsonl: File too large\n"
+      }
+    },
+    {
+      "id": "postgres_whole_read_refusal_wc_goes_on",
+      "seq": 611202,
+      "targets": [
+        "postgres"
+      ],
+      "command": "wc /pg-limited/public/tables/books/rows.jsonl /pg-limited/public/tables/authors/rows.jsonl",
+      "expect": {
+        "exit": 1,
+        "stdout": " 3  3 97 /pg-limited/public/tables/authors/rows.jsonl\n 3  3 97 total\n",
+        "stderr": "wc: /pg-limited/public/tables/books/rows.jsonl: File too large\n"
+      }
+    },
+    {
+      "id": "postgres_whole_read_refusal_cat_goes_on",
+      "seq": 611203,
+      "targets": [
+        "postgres"
+      ],
+      "command": "cat /pg-limited/public/tables/books/rows.jsonl /pg-limited/public/tables/authors/rows.jsonl",
+      "expect": {
+        "exit": 1,
+        "stdout": "{\"id\":1,\"name\":\"ada\",\"books\":2}\n{\"id\":2,\"name\":\"ben\",\"books\":2}\n{\"id\":3,\"name\":\"cara\",\"books\":1}\n",
+        "stderr": "cat: /pg-limited/public/tables/books/rows.jsonl: File too large\n"
+      }
+    },
+    {
+      "id": "postgres_whole_read_refusal_grep_goes_on",
+      "seq": 611204,
+      "targets": [
+        "postgres"
+      ],
+      "command": "grep -c Dune /pg-limited/public/tables/books/rows.jsonl /pg-limited/public/tables/authors/rows.jsonl",
+      "expect": {
+        "exit": 2,
+        "stdout": "/pg-limited/public/tables/authors/rows.jsonl:0\n",
+        "stderr": "grep: /pg-limited/public/tables/books/rows.jsonl: File too large\n"
+      }
+    },
+    {
+      "id": "postgres_whole_read_refusal_grep_pushdown",
+      "seq": 611205,
+      "targets": [
+        "postgres"
+      ],
+      "command": "grep -F Dune /pg-limited/public/tables/books/rows.jsonl",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "grep: /pg-limited/public/tables/books/rows.jsonl: File too large\n"
+      }
+    },
+    {
+      "id": "postgres_whole_read_refusal_rg_pushdown",
+      "seq": 611206,
+      "targets": [
+        "postgres"
+      ],
+      "command": "rg -F Dune /pg-limited/public/tables/books/rows.jsonl",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "rg: /pg-limited/public/tables/books/rows.jsonl: File too large\n"
+      }
+    },
+    {
+      "id": "postgres_whole_read_refusal_is_not_empty",
+      "seq": 611207,
+      "targets": [
+        "postgres"
+      ],
+      "command": "test -s /pg-limited/public/tables/books/rows.jsonl && echo nonempty",
+      "expect": {
+        "exit": 0,
+        "stdout": "nonempty\n",
+        "stderr": ""
       }
     },
     {
@@ -283,7 +361,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "byte_budget/tables/wide/rows.jsonl too large to read entirely: more than 64 bytes (thresholds: 200 rows / 64 bytes); use head, tail, wc, grep, or pass limit/offset\n"
+        "stderr": "cat: /pg-bytes/byte_budget/tables/wide/rows.jsonl: File too large\n"
       }
     },
     {
@@ -320,9 +398,9 @@
       ],
       "command": "grep -F é /pg-bytes/byte_budget/tables/wide/rows.jsonl",
       "expect": {
-        "exit": 1,
+        "exit": 2,
         "stdout": "",
-        "stderr": "grep: byte_budget/tables/wide/rows.jsonl: more than 64 bytes match (max_read_bytes); narrow the pattern\n"
+        "stderr": "grep: /pg-bytes/byte_budget/tables/wide/rows.jsonl: File too large\n"
       }
     },
     {
@@ -333,9 +411,9 @@
       ],
       "command": "rg -F é /pg-bytes/byte_budget/tables/wide/rows.jsonl",
       "expect": {
-        "exit": 1,
+        "exit": 2,
         "stdout": "",
-        "stderr": "rg: byte_budget/tables/wide/rows.jsonl: more than 64 bytes match (max_read_bytes); narrow the pattern\n"
+        "stderr": "rg: /pg-bytes/byte_budget/tables/wide/rows.jsonl: File too large\n"
       }
     }
   ]

@@ -31,6 +31,7 @@ interface Opts {
   byteOffsets?: boolean
   label?: string
   trailingMatches?: boolean
+  pieces?: boolean
 }
 
 function render(lines: readonly string[], o: Opts = {}): number[][] {
@@ -45,6 +46,7 @@ function render(lines: readonly string[], o: Opts = {}): number[][] {
     o.byteOffsets ?? false,
     o.label ?? null,
     o.trailingMatches ?? false,
+    o.pieces ?? false,
   ).map((chunk) => [...chunk])
 }
 
@@ -280,6 +282,57 @@ describe('trailing matches', () => {
     // `rg -n -m1 -A1 o` stops after one trailing line, selected or not.
     expect(render(WORDS, { ...o, afterContext: 1, trailingMatches: true })).toEqual(
       bytes('1:hello\n', '2:world\n'),
+    )
+  })
+})
+
+// ripgrep's -o prints context too, each line as its matches. Measured on
+// ripgrep 14.1.1: a line with no match prints whole, which is how both a
+// context line and an inverted selection print.
+describe('pieces', () => {
+  it('print a context line without a match whole', () => {
+    // `rg -o -n -C1 b` over a\nb\nc\n.
+    expect(
+      render(['a', 'b', 'c'], {
+        pat: /b/,
+        lineNumbers: true,
+        afterContext: 1,
+        beforeContext: 1,
+        pieces: true,
+      }),
+    ).toEqual(bytes('1-a\n', '2:b\n', '3-c\n'))
+  })
+
+  it('print a context line as its matches', () => {
+    // `rg -o -v -C1 'a|y'` over xay\nb\n.
+    expect(
+      render(['xay', 'b'], { pat: /a|y/, invert: true, beforeContext: 1, pieces: true }),
+    ).toEqual(bytes('a\ny\n', 'b\n'))
+  })
+
+  it('carry their own byte offsets', () => {
+    // `rg -o -b -v -C1 'a|y'` over xay\nb\n.
+    expect(
+      render(['xay', 'b'], {
+        pat: /a|y/,
+        invert: true,
+        beforeContext: 1,
+        byteOffsets: true,
+        pieces: true,
+      }),
+    ).toEqual(bytes('1-a\n2-y\n', '4:b\n'))
+  })
+
+  it('each lead with the label', () => {
+    // `rg -o -H -C1 a` over aa\nb\n in /data/rgo8.txt.
+    expect(
+      render(['aa', 'b'], { pat: /a/, afterContext: 1, label: '/data/rgo8.txt', pieces: true }),
+    ).toEqual(bytes('/data/rgo8.txt:a\n/data/rgo8.txt:a\n', '/data/rgo8.txt-b\n'))
+  })
+
+  it('stay off for GNU, which prints the line whole', () => {
+    expect(render(['xay', 'b'], { pat: /a|y/, invert: true, beforeContext: 1 })).toEqual(
+      bytes('xay\n', 'b\n'),
     )
   })
 })

@@ -17,7 +17,7 @@ import { walk } from '../../../commands/cli/walk.ts'
 import { SPECS } from '../../../commands/spec/index.ts'
 import { FlagView } from '../../../commands/spec/flag_view.ts'
 import { parseCommand, parseToKwargs } from '../../../commands/spec/parser.ts'
-import type { ByteSource } from '../../../io/types.ts'
+import { DeviceInput, type ByteSource } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import { type MountRegistry } from '../../mount/registry.ts'
 import { classifyBarePath } from '../../expand/classify/index.ts'
@@ -70,10 +70,13 @@ export function defaultCwdOperand(
   } else if (
     cmdName === 'rg' &&
     stdin !== null &&
+    !(stdin instanceof DeviceInput) &&
     !new FlagView(parseToKwargs(parsed), spec).asList('f').includes('-')
   ) {
     // `-f -` reads the attached stdin for patterns first, which leaves
-    // ripgrep nothing to search there but the cwd.
+    // ripgrep nothing to search there but the cwd. A stdin that is no file,
+    // FIFO or socket (`< /dev/null`) is not searched either
+    // (grep_cli::is_readable_stdin, ripgrep 14.1.1).
     return null
   }
   const operand = classifyBarePath('.', registry, cwd)

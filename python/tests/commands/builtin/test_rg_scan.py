@@ -397,12 +397,16 @@ class TestWarnings:
 
     @pytest.mark.anyio
     async def test_warnings_on_missing_file(self, backend):
+        # The path as walked, for the caller to respell the way the
+        # operand was typed.
         warnings = []
         result = await rg(backend,
                           "/tmp/nonexistent.txt",
                           "foo",
                           warnings=warnings)
         assert result == []
+        assert warnings == [("/tmp/nonexistent.txt",
+                             "No such file or directory")]
 
     @pytest.mark.anyio
     async def test_warnings_none_does_not_error(self, backend):
@@ -417,16 +421,16 @@ class TestWarnings:
         warnings = []
         result = await rg(backend, "/tmp/nodir", "foo", warnings=warnings)
         assert result == []
+        assert warnings == [("/tmp/nodir", "No such file or directory")]
 
 
 class TestOnlyMatchingDirectoryWalk:
-    """GNU's -o rule holds on the directory branch, not just single files.
+    """ripgrep's -o rule holds on the directory branch, not just one file.
 
-    Every non-empty match prints on its own line and an empty match
-    prints nothing at all, while the line still counts as selected. The
-    directory branch words only the per-file label differently (-I drops
-    it), so it had drifted to printing just the first match and, for an
-    empty match, a label with nothing after it.
+    Every match prints on its own line, an empty one included, found the
+    way Rust's regex iterates (an empty match where the last one ended is
+    skipped), and -c counts the matches (ripgrep 14.1.1). The directory
+    branch words only the per-file label differently (-I drops it).
     """
 
     @pytest.mark.anyio
@@ -452,7 +456,7 @@ class TestOnlyMatchingDirectoryWalk:
         assert result == ["/tmp/d/x.txt:1:1", "/tmp/d/x.txt:1:2"]
 
     @pytest.mark.anyio
-    async def test_empty_match_prints_no_bare_label(self, backend):
+    async def test_empty_matches_print_under_the_label(self, backend):
         await _mkdir(backend, "/tmp/d")
         await _write(backend, "/tmp/d/y.txt", "ab\n")
         result = await rg(backend,
@@ -460,10 +464,11 @@ class TestOnlyMatchingDirectoryWalk:
                           "[0-9]*",
                           only_matching=True,
                           line_numbers=False)
-        assert result == []
+        assert result == ["/tmp/d/y.txt:"] * 3
 
     @pytest.mark.anyio
-    async def test_empty_matches_dropped_around_a_real_one(self, backend):
+    async def test_an_empty_match_right_after_a_match_is_skipped(
+            self, backend):
         await _mkdir(backend, "/tmp/d")
         await _write(backend, "/tmp/d/z.txt", "1a22b\n")
         result = await rg(backend,
@@ -471,10 +476,10 @@ class TestOnlyMatchingDirectoryWalk:
                           "[0-9]*",
                           only_matching=True,
                           line_numbers=False)
-        assert result == ["/tmp/d/z.txt:1", "/tmp/d/z.txt:22"]
+        assert result == ["/tmp/d/z.txt:1", "/tmp/d/z.txt:22", "/tmp/d/z.txt:"]
 
     @pytest.mark.anyio
-    async def test_count_still_counts_the_selected_line(self, backend):
+    async def test_count_counts_every_match(self, backend):
         await _mkdir(backend, "/tmp/d")
         await _write(backend, "/tmp/d/y.txt", "ab\n")
         result = await rg(backend,
@@ -482,7 +487,7 @@ class TestOnlyMatchingDirectoryWalk:
                           "[0-9]*",
                           only_matching=True,
                           count_only=True)
-        assert result == ["/tmp/d/y.txt:1"]
+        assert result == ["/tmp/d/y.txt:3"]
 
 
 class TestRgByteOffsets:
@@ -554,12 +559,11 @@ class TestRgByteOffsets:
 
 
 class TestRgFullReportsSelection:
-    """Selection cannot be read off the printed lines under -o.
+    """The status rides ``io``, not the printed lines.
 
-    A directory whose only matches are zero-width prints nothing and GNU
-    still exits 0; ``rg_full`` returns only the printed lines, so the
-    status rides the same ``io`` channel ``grep_lines`` and
-    ``grep_stream`` already take.
+    ``rg_full`` returns only the printed lines, so the status rides the
+    same ``io`` channel ``grep_lines`` and ``grep_stream`` already take;
+    a zero-width match selects its line and prints an empty piece.
     """
 
     @pytest.mark.anyio
@@ -573,7 +577,7 @@ class TestRgFullReportsSelection:
                           only_matching=True,
                           line_numbers=False,
                           io=io)
-        assert (result, io.exit_code) == ([], 0)
+        assert (result, io.exit_code) == (["/tmp/d/y.txt:"] * 3, 0)
 
     @pytest.mark.anyio
     async def test_directory_with_no_match_leaves_the_status_alone(
@@ -600,7 +604,7 @@ class TestRgFullReportsSelection:
                           only_matching=True,
                           line_numbers=False,
                           io=io)
-        assert (result, io.exit_code) == ([], 0)
+        assert (result, io.exit_code) == ([""] * 3, 0)
 
 
 async def _write_bytes(backend, path, content):
@@ -697,16 +701,16 @@ class TestRgMaxCountZeroSelectsNothing:
         assert result == []
 
 
-class TestRgOnlyMatchingWithInvertPrintsNothing:
-    """`-o -v` prints nothing: an unselected pattern has no match to print.
+class TestRgOnlyMatchingWithInvertPrintsLinesWhole:
+    """`rg -o -v` prints each selected line whole: it holds no match.
 
-    GNU grep 3.11 over `abc\\ndef\\n` answers zero bytes and exit 0 for
-    `grep -ov abc`, and `1` for `grep -ovc`. ripgrep prints the whole line,
-    and GNU is the reference this family already follows for -o.
+    ripgrep 14.1.1 over `abc\\ndef\\n` answers `def` for `rg -ov abc` and
+    `0` for `rg -ovc abc`, counting matches, where GNU grep prints nothing
+    and counts the line. rg follows ripgrep.
     """
 
     @pytest.mark.anyio
-    async def test_single_file_prints_nothing(self, backend):
+    async def test_single_file_prints_the_line_whole(self, backend):
         await _write(backend, "/tmp/ov.txt", "abc\ndef\n")
         io = IOResult(exit_code=1)
         result = await rg(backend,
@@ -715,10 +719,10 @@ class TestRgOnlyMatchingWithInvertPrintsNothing:
                           only_matching=True,
                           invert=True,
                           io=io)
-        assert (result, io.exit_code) == ([], 0)
+        assert (result, io.exit_code) == (["2:def"], 0)
 
     @pytest.mark.anyio
-    async def test_single_file_still_counts_the_selected_line(self, backend):
+    async def test_single_file_counts_no_matches(self, backend):
         await _write(backend, "/tmp/ov.txt", "abc\ndef\n")
         result = await rg(backend,
                           "/tmp/ov.txt",
@@ -726,10 +730,10 @@ class TestRgOnlyMatchingWithInvertPrintsNothing:
                           only_matching=True,
                           invert=True,
                           count_only=True)
-        assert result == ["1"]
+        assert result == ["0"]
 
     @pytest.mark.anyio
-    async def test_a_walk_prints_nothing(self, backend):
+    async def test_a_walk_prints_the_line_whole(self, backend):
         await _mkdir(backend, "/tmp/ovd")
         await _write(backend, "/tmp/ovd/x.txt", "abc\ndef\n")
         result = await rg(backend,
@@ -737,7 +741,7 @@ class TestRgOnlyMatchingWithInvertPrintsNothing:
                           "abc",
                           only_matching=True,
                           invert=True)
-        assert result == []
+        assert result == ["/tmp/ovd/x.txt:2:def"]
 
 
 class TestRgOffsetsOverSmuggledBytes:

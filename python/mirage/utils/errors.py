@@ -57,6 +57,27 @@ class NoMountError(ValueError):
     """
 
 
+class GzipDataError(ValueError):
+    """Why ``gzip -d`` cannot decompress one input, in gzip's words.
+
+    ``fatal`` is gzip 1.13's split: an input with no gzip header is
+    reported and the run moves on to the next operand, while a truncated
+    or corrupt one ends the run. The gzip front ends render the reason
+    under their own name, where GNU's (shell scripts over gzip) say
+    ``gzip:`` and put a blank line before the diagnostic.
+
+    Args:
+        reason (str): gzip's description of the input.
+        fatal (bool): whether gzip stops at this input.
+        exit_code (int): One for an error, two for a trailing-data warning.
+    """
+
+    def __init__(self, reason: str, fatal: bool, exit_code: int = 1) -> None:
+        super().__init__(reason)
+        self.fatal = fatal
+        self.exit_code = exit_code
+
+
 class FileTooLargeError(OSError):
     """EFBIG: a read the backend refuses to render whole.
 

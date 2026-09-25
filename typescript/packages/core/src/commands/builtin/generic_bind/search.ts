@@ -18,6 +18,7 @@ import type { IndexCacheStore } from '../../../cache/index/store.ts'
 
 import type { SearchQuery } from '../../../vfs/types.ts'
 import { IOResult } from '../../../io/types.ts'
+import { isEfbig } from '../../../utils/errors.ts'
 import type { FileStat, PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
@@ -118,7 +119,16 @@ export async function runSearch<A extends Accessor>(
         },
       },
     }
-    const lines = await capability.search(accessor, operand, query, opts.index ?? undefined)
+    let lines: string[] | null
+    try {
+      lines = await capability.search(accessor, operand, query, opts.index ?? undefined)
+    } catch (err) {
+      // A push-down whose answer is past the mount's read cap cannot print
+      // it; the scan reads each operand, and reports the same refusal against
+      // the operand as typed.
+      if (!isEfbig(err)) throw err
+      lines = null
+    }
     if (lines !== null) {
       if (lines.length === 0) return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
       if (name !== 'grep' || textSearchResults(lines)) return [formatRecords(lines), new IOResult()]

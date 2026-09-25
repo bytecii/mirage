@@ -1,3 +1,4 @@
+import { decompressInputs } from './decompress.ts'
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,11 +18,9 @@ import { FlagView } from '../../spec/flag_view.ts'
 import { mountedPath } from '../../../utils/key_prefix.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
-import { gzip, gunzip } from '../../../utils/compress.ts'
+import { gzip } from '../../../utils/compress.ts'
 import type { CommandFnResult, CommandOpts, WritesFn } from '../../config.ts'
-import { resolveSource } from '../utils/stream.ts'
-
-const ENC = new TextEncoder()
+import { resolveSource, stdinStream } from '../utils/stream.ts'
 
 function concat(chunks: Uint8Array[]): Uint8Array {
   let total = 0
@@ -35,11 +34,11 @@ function concat(chunks: Uint8Array[]): Uint8Array {
   return out
 }
 
-// Whether a gzip invocation writes: each operand is replaced by its archive
-// unless -c sends the result to stdout, and with no operand gzip filters
-// stdin to stdout. Mirrors Python's gzip_writes.
+// Whether a gzip invocation writes: each file operand is replaced by its
+// archive unless -c sends the result to stdout, while a `-` operand, like no
+// operand, filters stdin to stdout. Mirrors Python's gzip_writes.
 export const gzipWrites: WritesFn = (flags, paths) =>
-  paths.length > 0 && !new FlagView(flags, specOf('gzip')).asBool('c')
+  paths.some((p) => p.rawPath !== '-') && !new FlagView(flags, specOf('gzip')).asBool('c')
 
 export async function gzipGeneric(
   paths: PathSpec[],
@@ -53,48 +52,35 @@ export async function gzipGeneric(
   const keep = fl.asBool('k')
   const stdoutMode = fl.asBool('c')
 
+  if (decompress)
+    return decompressInputs(paths, stream, {
+      command: 'gzip',
+      stdin: opts.stdin,
+      keep,
+      toStdout: stdoutMode,
+      write,
+      unlink,
+    })
   if (paths.length === 0) {
-    let source: AsyncIterable<Uint8Array>
-    try {
-      source = decompress
-        ? resolveSource(opts.stdin, 'gzip: (stdin): unexpected end of file')
-        : resolveSource(opts.stdin)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
-    const data = await materialize(source)
-    const out = decompress ? await gunzip(data) : await gzip(data)
-    const result: ByteSource = out
+    const result: ByteSource = await gzip(await materialize(resolveSource(opts.stdin)))
     return [result, new IOResult()]
   }
-
-  if (stdoutMode) {
-    const chunks: Uint8Array[] = []
-    for (const p of paths) {
-      const raw = await materialize(stream(p))
-      const out = decompress ? await gunzip(raw) : await gzip(raw)
-      chunks.push(out)
-    }
-    return [concat(chunks), new IOResult()]
-  }
-
+  const read = stdinStream(stream, opts.stdin)
   const writes: Record<string, Uint8Array> = {}
+  const stdout: Uint8Array[] = []
   for (const p of paths) {
-    const raw = await materialize(stream(p))
-    const pStripped = p.mountPath
-    let outPath: string
-    let outData: Uint8Array
-    if (decompress) {
-      outPath = pStripped.endsWith('.gz') ? pStripped.slice(0, -3) : pStripped + '.out'
-      outData = await gunzip(raw)
-    } else {
-      outPath = pStripped + '.gz'
-      outData = await gzip(raw)
+    const inPlace = !(stdoutMode || p.rawPath === '-')
+    const raw = await materialize(inPlace ? stream(p) : read(p))
+    const data = await gzip(raw)
+    if (!inPlace) {
+      stdout.push(data)
+      continue
     }
-    await write(mountedPath(p, outPath), outData)
-    writes[outPath] = outData
+    const pStripped = p.mountPath
+    const outPath = pStripped + '.gz'
+    await write(mountedPath(p, outPath), data)
+    writes[outPath] = data
     if (!keep) await unlink(p)
   }
-  return [null, new IOResult({ writes })]
+  return [stdout.length > 0 ? concat(stdout) : null, new IOResult({ writes })]
 }

@@ -422,9 +422,11 @@ def test_glob_operand_commands_see_mount_and_link():
     # pins the row count rather than the naming.
     assert len(_out(ws, "stat /base/*").splitlines()) == 4
     # wc follows the link and reports the target's bytes under the link's
-    # name, and names each directory operand on stderr, like GNU.
+    # name, and gives each directory operand a row of zeros beside its
+    # stderr line, like GNU.
     assert _out(ws, "wc -c /base/*").split() == [
-        "3", "/base/f1", "7", "/base/link", "10", "total"
+        "3", "/base/f1", "0", "/base/inner", "7", "/base/link", "0",
+        "/base/sub", "10", "total"
     ]
 
 

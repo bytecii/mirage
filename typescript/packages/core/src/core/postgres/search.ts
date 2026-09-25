@@ -32,6 +32,7 @@ import { readRows, rowLine } from './read.ts'
 import { buildEntitySemanticJson } from './semantic.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import { jsonText } from '../render/json.ts'
+import { efbig } from '../../utils/errors.ts'
 
 // Column types whose `::text` is the value exactly as a rows.jsonl line spells
 // it, so a LIKE over the cast finds every row whose line holds the pattern
@@ -104,8 +105,8 @@ function answerable(columns: readonly [string, string][], query: SearchQuery): b
  * through the same read and its size guard, so a table too large to read is
  * refused rather than answered short. There is no result cap: the push-down
  * used to stop at `defaultSearchLimit` rows and print those as grep's whole
- * answer; past `maxReadRows` candidates it now refuses, as a whole read of
- * that many rows is refused. Mirrors `search_entity` in
+ * answer; past `maxReadRows` candidates it now refuses with EFBIG, as a whole
+ * read of that many rows is refused. Mirrors `search_entity` in
  * `mirage/core/postgres/search.py`.
  */
 export async function searchEntity(
@@ -116,6 +117,7 @@ export async function searchEntity(
   query: SearchQuery,
 ): Promise<string[]> {
   const cap = accessor.config.maxReadRows
+  const rowsPath = `${schema}/${kind}/${entity}/rows.jsonl`
   const matcher = queryMatcher(query)
   const columns = (await fetchColumns(accessor, schema, entity)).map((c): [string, string] => [
     c.name,
@@ -138,26 +140,19 @@ export async function searchEntity(
       new Set(columns.map(([name]) => name)),
       maxBytes,
     )
-    const byteError = `${schema}/${kind}/${entity}/rows.jsonl: more than ${String(maxBytes)} bytes match (max_read_bytes); narrow the pattern`
-    if (rows === null) throw new Error(byteError)
-    if (rows.length > cap) {
-      throw new Error(
-        `${schema}/${kind}/${entity}/rows.jsonl: more than ${String(cap)} rows match ` +
-          `(max_read_rows); narrow the pattern`,
-      )
-    }
+    if (rows === null || rows.length > cap) throw efbig(rowsPath)
     const lines: string[] = []
     const encoder = new TextEncoder()
     let renderedBytes = 0
     for (const row of rows) {
       const line = rowLine(row)
       renderedBytes += encoder.encode(line).length + 1
-      if (renderedBytes > maxBytes) throw new Error(byteError)
+      if (renderedBytes > maxBytes) throw efbig(rowsPath)
       if (matcher.test(line)) lines.push(line)
     }
     return lines
   }
-  const text = new TextDecoder().decode(await readRows(accessor, schema, kind, entity))
+  const text = new TextDecoder().decode(await readRows(accessor, schema, entity, rowsPath))
   return splitLines(text).filter((line) => matcher.test(line))
 }
 

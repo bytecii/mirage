@@ -19,7 +19,7 @@ from mirage.commands.spec.usage import read_fail_exit
 from mirage.context import reset_redirect_paths, set_redirect_paths
 from mirage.io import IOResult
 from mirage.io.stream import materialize
-from mirage.io.types import ByteSource
+from mirage.io.types import ByteSource, DeviceInput
 from mirage.runtime.types import DispatchFn
 from mirage.shell.barrier import BarrierPolicy, apply_barrier
 from mirage.shell.bytes import encode_text
@@ -30,7 +30,7 @@ from mirage.shell.descriptors import (bad_descriptor_line, unreadable_stdin,
                                       unsupported_descriptor)
 from mirage.shell.helpers import get_text
 from mirage.shell.types import Redirect, RedirectKind, TSNodeLike
-from mirage.types import FileType, PathSpec
+from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import FS_ERRORS, format_fs_error, fs_strerror
 from mirage.workspace.executor.builtins import _to_scope
 from mirage.workspace.executor.builtins.exec.constants import (
@@ -226,6 +226,10 @@ async def handle_redirect(
                 file_data, _ = await dispatch("read", scope)
             except FS_ERRORS as exc:
                 return _redirect_failure(scope, exc)
+            # Only an empty read is probed: the device worth telling apart
+            # (/dev/null) reads empty, so a file with content costs no stat.
+            if file_data == b"" and await _is_device(dispatch, scope):
+                file_data = DeviceInput()
             inputs[r.fd] = file_data
         elif r.kind == RedirectKind.HEREDOC:
             inputs[r.fd] = encode_text(r.target) if isinstance(
@@ -478,6 +482,22 @@ def _shell_failure(line: bytes) -> tuple[None, IOResult, ExecutionNode]:
     """
     io = IOResult(exit_code=1, stderr=line)
     return None, io, ExecutionNode(command="redirect", exit_code=1)
+
+
+async def _is_device(dispatch: DispatchFn, scope: PathSpec) -> bool:
+    """Whether a redirect target is a character device (``/dev/null``).
+
+    Args:
+        dispatch (DispatchFn): VFS op dispatcher.
+        scope (PathSpec): the redirect target.
+    """
+    try:
+        stat, _ = await dispatch("stat", scope)
+    except FS_ERRORS as exc:
+        logger.debug("stdin device probe failed at %s: %s", scope.raw_path,
+                     exc)
+        return False
+    return isinstance(stat, FileStat) and stat.type == FileType.CHAR_DEVICE
 
 
 async def _open_refusal(

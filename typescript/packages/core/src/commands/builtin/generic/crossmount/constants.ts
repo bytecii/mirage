@@ -27,7 +27,6 @@ const FANOUT_COMMANDS: ReadonlySet<string> = new Set([
   Cmd.RG,
   Cmd.HEAD,
   Cmd.TAIL,
-  Cmd.WC,
   Cmd.DU,
   Cmd.FILE,
   Cmd.MD5,
@@ -60,6 +59,7 @@ export const RELAY_COMMANDS: ReadonlySet<string> = new Set([
   Cmd.ZIP,
   Cmd.LS,
   Cmd.SORT,
+  Cmd.WC,
 ])
 export const CROSS_MOUNT_COMMANDS: ReadonlySet<string> = new Set([
   ...STREAM_COMMANDS,

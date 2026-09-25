@@ -696,7 +696,7 @@
       "command": "wc /data/rfdir",
       "expect": {
         "exit": 1,
-        "stdout": "",
+        "stdout": "      0       0       0 /data/rfdir\n",
         "stderr": "wc: /data/rfdir: Is a directory\n"
       }
     },

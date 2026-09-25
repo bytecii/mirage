@@ -20,7 +20,7 @@ import pytest
 from mirage.commands.builtin.generic.gzip import extract_level, gzip_writes
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
-from mirage.types import MountMode
+from mirage.types import MountMode, PathSpec
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
 from mirage.workspace.executor.command.flags import parse_flags
@@ -82,3 +82,44 @@ def test_a_read_only_mount_runs_gzip_where_it_writes_nothing():
     assert in_place.exit_code == 1
     assert in_place.stderr == b"gzip: read-only mount at /ro/\n"
     assert sorted(vfs._store.files) == ["/f.txt"]
+
+
+@pytest.mark.asyncio
+async def test_a_dash_goes_to_stdout_while_files_compress_in_place():
+    ws = Workspace({"/data": (RAMVFS(), MountMode.WRITE)},
+                   mode=MountMode.WRITE)
+    await ws.shell("tee /data/a.txt > /dev/null", stdin=b"file\n")
+    r = await ws.shell("cd /data && gzip - a.txt | gzip -dc; ls",
+                       stdin=b"hi\n")
+    assert await r.materialize_stdout() == b"hi\na.txt.gz\n"
+
+
+def _operand(raw: str) -> PathSpec:
+    return PathSpec(virtual=f"/data/{raw}",
+                    directory="/data/",
+                    vfs_path=raw,
+                    resolved=True,
+                    raw_path=raw)
+
+
+def test_gzip_writes_nothing_for_a_dash_operand():
+    # A `-` has no file to replace: gzip compresses stdin to stdout.
+    flags = parse_flags([], SPECS["gzip"], "gzip", "/data").flag_kwargs
+    assert gzip_writes(flags, [_operand("-")]) is False
+    assert gzip_writes(flags, [_operand("-"), _operand("f.txt")]) is True
+
+
+def test_a_read_only_mount_runs_gzip_and_gunzip_on_a_dash():
+    ws = Workspace({"/ro/": (RAMVFS(), MountMode.READ)})
+    io = asyncio.run(ws.shell("cd /ro && printf 'x\\n' | gzip - | gunzip -"))
+    assert (io.exit_code, io.stdout, io.stderr) == (0, b"x\n", None)
+
+
+@pytest.mark.asyncio
+async def test_d_calls_a_truncated_stdin_an_unexpected_end():
+    ws = Workspace({"/data": (RAMVFS(), MountMode.WRITE)},
+                   mode=MountMode.WRITE)
+    r = await ws.shell("gzip -dc", stdin=zlib.compress(b"hi\n", wbits=31)[:10])
+    assert r.exit_code == 1
+    assert await r.materialize_stderr() == (
+        b"gzip: stdin: unexpected end of file\n")

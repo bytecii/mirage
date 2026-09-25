@@ -201,7 +201,9 @@ describe('PostgresVFS mount integration', () => {
     largeWidth = 100
     const r = await ws.shell('cat /pg/public/tables/users/rows.jsonl')
     expect(r.exitCode).toBe(1)
-    expect(new TextDecoder().decode(r.stderr)).toContain('too large to read entirely')
+    expect(new TextDecoder().decode(r.stderr)).toBe(
+      'cat: /pg/public/tables/users/rows.jsonl: File too large\n',
+    )
   })
 
   it('head -n 2 pushes down to fetchRows and bypasses guard', async () => {

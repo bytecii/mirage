@@ -16,10 +16,12 @@ import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
-import { gunzip } from '../../../utils/compress.ts'
+import { gunzipChecked, hasGzipMagic } from '../../../utils/compress.ts'
+import { GzipDataError } from '../../../utils/errors.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { compilePattern, resolvePattern } from '../grep_pattern.ts'
-import { readStdinAsync } from '../utils/stream.ts'
+import { STDIN_OPERAND } from '../utils/constants.ts'
+import { operandLabel, stdinStream } from '../utils/stream.ts'
 import { decodeLine, lineOffsets, matchOffset, prefixOf } from '../grep_offsets.ts'
 import { formatRecords } from '../utils/output.ts'
 import { splitLines } from '../utils/lines.ts'
@@ -156,64 +158,48 @@ export async function zgrepGeneric(
   let anyMatch = false
   const allResults: string[] = []
 
-  if (paths.length > 0) {
-    for (const p of paths) {
-      const compressed = await materialize(stream(p))
-      const data = await gunzip(compressed)
-      const fname = showFilename ? p.rawPath : null
-      if (filesOnly || filesWithoutMatch) {
-        // -L lists the files that selected nothing; the status still
-        // follows the matching, as GNU grep's does. -m0 selects no line at
-        // all, so -l lists nothing and -L lists every archive, exit 1
-        // (zgrep 3.11).
-        const matched = maxCount !== 0 && anyLineSelected(data, pattern, invert)
-        if (matched === filesOnly) allResults.push(p.rawPath)
-        anyMatch ||= matched
-      } else {
-        const [result, hadMatch] = zgrepSearch(
-          data,
-          pattern,
-          {
-            ignoreCase,
-            invert,
-            count: countOnly,
-            lineNumbers,
-            onlyMatching,
-            maxCount,
-            byteOffsets,
-          },
-          fname,
-        )
-        if (hadMatch) anyMatch = true
-        for (const r of result) allResults.push(r)
-      }
+  const read = stdinStream(stream, opts.stdin)
+  let errors = ''
+  for (const p of paths.length > 0 ? paths : [STDIN_OPERAND]) {
+    const raw = await materialize(read(p))
+    // zgrep decompresses with `gzip -cdfq`, which passes an input with no
+    // gzip header through as it is; a bad archive is an error.
+    let data: Uint8Array
+    try {
+      data = hasGzipMagic(raw) ? await gunzipChecked(raw) : raw
+    } catch (err) {
+      if (!(err instanceof GzipDataError)) throw err
+      errors += `zgrep: ${operandLabel(p, 'stdin')}: ${err.message}\n`
+      continue
     }
-  } else {
-    const stdinData = await readStdinAsync(opts.stdin)
-    const data =
-      stdinData === null || stdinData.byteLength === 0 ? new Uint8Array(0) : await gunzip(stdinData)
+    // zgrep hands grep a stdin operand as `-`, so -l and -L list it as `-`
+    // while its lines are labelled `(standard input)` (gzip 1.13);
+    // /dev/stdin is named as typed either way.
+    const fname = showFilename ? operandLabel(p, '(standard input)') : null
     if (filesOnly || filesWithoutMatch) {
+      // -L lists the files that selected nothing; the status still
+      // follows the matching, as GNU grep's does. -m0 selects no line at
+      // all, so -l lists nothing and -L lists every archive, exit 1
+      // (zgrep 3.11).
       const matched = maxCount !== 0 && anyLineSelected(data, pattern, invert)
-      // zgrep lists stdin by the name it hands grep, `-`, while -H labels its
-      // lines `(standard input)` (gzip 1.13).
-      if (matched === filesOnly) allResults.push('-')
+      if (matched === filesOnly) allResults.push(p.rawPath)
       anyMatch ||= matched
     } else {
-      // GNU zgrep labels stdin "(standard input)" under -H.
       const [result, hadMatch] = zgrepSearch(
         data,
         pattern,
         { ignoreCase, invert, count: countOnly, lineNumbers, onlyMatching, maxCount, byteOffsets },
-        forceH ? '(standard input)' : null,
+        fname,
       )
       if (hadMatch) anyMatch = true
       for (const r of result) allResults.push(r)
     }
   }
 
-  if (quiet) return [null, new IOResult({ exitCode: anyMatch ? 0 : 1 })]
-  const exitCode = anyMatch ? 0 : 1
-  if (allResults.length === 0) return [null, new IOResult({ exitCode })]
+  // A bad archive is exit 2 even beside a match, -q included (zgrep 3.11).
+  const exitCode = errors !== '' ? 2 : anyMatch ? 0 : 1
+  const stderr = errors === '' ? null : ENC.encode(errors)
+  if (quiet || allResults.length === 0) return [null, new IOResult({ exitCode, stderr })]
   const result: ByteSource = formatRecords(allResults)
-  return [result, new IOResult({ exitCode })]
+  return [result, new IOResult({ exitCode, stderr })]
 }

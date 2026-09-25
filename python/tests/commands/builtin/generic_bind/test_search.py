@@ -27,7 +27,7 @@ from mirage.core.hierarchy.scope import ScopeMatch
 from mirage.core.hierarchy.search import make_search_op
 from mirage.io.types import ByteSource
 from mirage.types import ContentType, FileStat, FileType, PathSpec
-from mirage.utils.errors import enoent
+from mirage.utils.errors import efbig, enoent
 from mirage.vfs.types import SearchOps, SearchQuery
 from tests.core.hierarchy.conftest import FakeAccessor, detect_scope, spec
 
@@ -195,6 +195,32 @@ def test_stream_failure_after_data_propagates():
             search(FakeAccessor(), [spec("/rooms/red/a.json")], ["ada"],
                    CommandOpts()))
         asyncio.run(_drain(out))
+
+
+def test_refused_pushdown_falls_back_to_the_scan():
+    # A push-down past the mount's read cap cannot print its answer; the
+    # scan reads the operand, which refuses the same way, and reports it
+    # against the operand as typed, then moves on as grep does.
+    async def _refusing_searcher(accessor: FakeAccessor, match: ScopeMatch,
+                                 query: SearchQuery) -> list[str]:
+        raise efbig(f"rooms/{match.slots['room']}/{match.slots['note']}")
+
+    async def _refused_read(accessor: FakeAccessor,
+                            path: PathSpec,
+                            index=NULL_INDEX) -> bytes:
+        raise efbig(path)
+
+    io = replace(IO,
+                 read_bytes=_refused_read,
+                 read_stream=partial(stream_from_bytes, _refused_read))
+    search = _search_command({'note': _refusing_searcher}, io)
+    out, result = asyncio.run(
+        search(FakeAccessor(), [spec("/rooms/red/a.json")], ["ada"],
+               CommandOpts()))
+    assert asyncio.run(_drain(out)) == b""
+    assert result.exit_code == 2
+    assert asyncio.run(
+        result.stderr_str()) == ("grep: /h/rooms/red/a.json: File too large\n")
 
 
 def test_query_carries_the_honored_flags():

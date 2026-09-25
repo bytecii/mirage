@@ -27,7 +27,7 @@ from mirage.core.postgres.scope import detect_scope
 from mirage.core.postgres.semantic import build_entity_semantic_json
 from mirage.core.postgres.stat import stat
 from mirage.types import PathSpec
-from mirage.vfs.postgres.config import PostgresConfig
+from mirage.utils.errors import efbig
 
 
 def _entity_kind(match: ScopeMatch) -> str:
@@ -63,18 +63,9 @@ async def _read_entity_rows(accessor: PostgresAccessor, match: ScopeMatch,
     return await read_rows(accessor,
                            match.slots["schema"],
                            match.slots["entity"],
-                           kind=match.slots["kind"],
+                           path=path,
                            limit=limit,
                            offset=offset)
-
-
-def _too_large(cfg: PostgresConfig, schema: str, kind: str, entity: str,
-               size: str) -> ValueError:
-    return ValueError(f"{schema}/{kind}/{entity}/rows.jsonl too large to "
-                      f"read entirely: {size} (thresholds: "
-                      f"{cfg.max_read_rows} rows / {cfg.max_read_bytes} "
-                      "bytes); use head, tail, wc, grep, or pass "
-                      "limit/offset")
 
 
 def row_line(row: dict[str, Any]) -> str:
@@ -90,19 +81,21 @@ async def read_rows(accessor: PostgresAccessor,
                     schema: str,
                     entity: str,
                     *,
-                    kind: str,
+                    path: str | PathSpec,
                     limit: int | None = None,
                     offset: int | None = None) -> bytes:
     """Render a relation's rows.jsonl, or the window ``limit``/``offset`` pick.
 
-    The whole file when neither is given, under the size guard: refused
-    past ``max_read_rows`` rows or ``max_read_bytes`` bytes.
+    The whole file when neither is given, under the size guard: past
+    ``max_read_rows`` rows or ``max_read_bytes`` bytes it raises EFBIG,
+    which a command reports as ``<cmd>: <path>: File too large`` before
+    moving on to its next operand, as for an Airtable table past its cap.
 
     Args:
         accessor (PostgresAccessor): backend handle.
         schema (str): the owning schema.
         entity (str): the table or view.
-        kind (str): "tables" or "views", for the refusal's path.
+        path (str | PathSpec): the rows.jsonl the refusal names.
         limit (int | None): the window's row count.
         offset (int | None): the window's first row.
     """
@@ -114,8 +107,7 @@ async def read_rows(accessor: PostgresAccessor,
             rows, width = await client.estimate_size(conn, schema, entity)
         if (rows > cfg.max_read_rows
                 or rows * max(width, 1) > cfg.max_read_bytes):
-            raise _too_large(cfg, schema, kind, entity,
-                             f"~{rows} rows / ~{rows * max(width, 1)} bytes")
+            raise efbig(path)
         # The estimate only refuses; it never limits. It is planner
         # statistics, which lag the table (a bulk load before the next
         # ANALYZE), so taking it as the LIMIT returned fewer rows than
@@ -143,20 +135,15 @@ async def read_rows(accessor: PostgresAccessor,
                                            entity,
                                            limit=effective_limit,
                                            offset=effective_offset)
-    if data is None:
-        raise _too_large(cfg, schema, kind, entity,
-                         f"more than {cfg.max_read_bytes} bytes")
-    if whole and len(data) > cfg.max_read_rows:
-        raise _too_large(cfg, schema, kind, entity,
-                         f"more than {cfg.max_read_rows} rows")
+    if data is None or whole and len(data) > cfg.max_read_rows:
+        raise efbig(path)
     if not data:
         return b""
     body = bytearray()
     for row in data:
         line = (row_line(row) + "\n").encode()
         if whole and len(body) + len(line) > cfg.max_read_bytes:
-            raise _too_large(cfg, schema, kind, entity,
-                             f"more than {cfg.max_read_bytes} bytes")
+            raise efbig(path)
         body.extend(line)
     return bytes(body)
 

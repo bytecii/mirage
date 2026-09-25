@@ -14,33 +14,18 @@
 
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
-import { mountedPath } from '../../../utils/key_prefix.ts'
-import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
-import { gunzip } from '../../../utils/compress.ts'
 import type { CommandFnResult, CommandOpts, WritesFn } from '../../config.ts'
-import { resolveSource } from '../utils/stream.ts'
+import { decompressInputs } from './decompress.ts'
 
-const ENC = new TextEncoder()
-
-function concat(chunks: Uint8Array[]): Uint8Array {
-  let total = 0
-  for (const c of chunks) total += c.byteLength
-  const out = new Uint8Array(total)
-  let offset = 0
-  for (const c of chunks) {
-    out.set(c, offset)
-    offset += c.byteLength
-  }
-  return out
-}
-
-// Whether a gunzip invocation writes: each operand is replaced by its
-// content unless -c sends it to stdout or -t only tests it, and with no
-// operand gunzip filters stdin to stdout. Mirrors Python's gunzip_writes.
+// Whether a gunzip invocation writes: each file operand is replaced by its
+// content unless -c sends it to stdout or -t only tests it, while a `-`
+// operand, like no operand, filters stdin to stdout. Mirrors Python's
+// gunzip_writes.
 export const gunzipWrites: WritesFn = (flags, paths) => {
   const fl = new FlagView(flags, specOf('gunzip'))
-  return paths.length > 0 && !(fl.asBool('c') || fl.asBool('t'))
+  const replaces = paths.some((p) => p.rawPath !== '-')
+  return replaces && !(fl.asBool('c') || fl.asBool('t'))
 }
 
 export async function gunzipGeneric(
@@ -54,47 +39,13 @@ export async function gunzipGeneric(
   const keep = fl.asBool('k')
   const stdoutMode = fl.asBool('c')
   const testMode = fl.asBool('t')
-
-  if (paths.length === 0) {
-    let source: AsyncIterable<Uint8Array>
-    try {
-      source = resolveSource(opts.stdin, 'gunzip: (stdin): unexpected end of file')
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
-    const data = await materialize(source)
-    const out = await gunzip(data)
-    const result: ByteSource = out
-    return [result, new IOResult()]
-  }
-
-  if (testMode) {
-    for (const p of paths) {
-      const raw = await materialize(stream(p))
-      await gunzip(raw)
-    }
-    return [null, new IOResult()]
-  }
-
-  if (stdoutMode) {
-    const chunks: Uint8Array[] = []
-    for (const p of paths) {
-      const raw = await materialize(stream(p))
-      chunks.push(await gunzip(raw))
-    }
-    return [concat(chunks), new IOResult()]
-  }
-
-  const writes: Record<string, Uint8Array> = {}
-  for (const p of paths) {
-    const raw = await materialize(stream(p))
-    const pStripped = p.mountPath
-    const outPath = pStripped.endsWith('.gz') ? pStripped.slice(0, -3) : pStripped + '.out'
-    const outData = await gunzip(raw)
-    await write(mountedPath(p, outPath), outData)
-    writes[outPath] = outData
-    if (!keep) await unlink(p)
-  }
-  return [null, new IOResult({ writes })]
+  return decompressInputs(paths, stream, {
+    command: 'gunzip',
+    stdin: opts.stdin,
+    keep,
+    toStdout: stdoutMode,
+    testOnly: testMode,
+    write,
+    unlink,
+  })
 }

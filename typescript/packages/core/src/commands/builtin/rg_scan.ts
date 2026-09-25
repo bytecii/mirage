@@ -21,7 +21,7 @@ import { getExtension } from '../resolve.ts'
 import { BINARY_EXTENSIONS } from './constants.ts'
 import { compilePattern } from './grep_pattern.ts'
 import { grepContextLines } from './grep_context.ts'
-import { decodeLine, lineOffsets, matchOffset, prefixOf } from './grep_offsets.ts'
+import { decodeLine, lineOffsets, MatchOffsets, prefixOf, rgPieces } from './grep_offsets.ts'
 import type { IOResult } from '../../io/types.ts'
 import { fnmatch } from '../../utils/fnmatch.ts'
 import { splitLines } from './utils/lines.ts'
@@ -126,23 +126,21 @@ export interface RgFullOptions {
 }
 
 // Whether the output shows -A/-B/-C context. Only printed lines carry it: -c,
-// -l and --files-without-match answer per file, and -o drops it (ripgrep
-// prints -o's context its own way).
+// -l and --files-without-match answer per file. -o keeps it, each line printed
+// as its matches.
 function printsContext(opts: RgFullOptions): boolean {
   return (
     (opts.contextBefore > 0 || opts.contextAfter > 0) &&
     !opts.countOnly &&
     !opts.filesOnly &&
-    opts.filesWithoutMatch !== true &&
-    !opts.onlyMatching
+    opts.filesWithoutMatch !== true
   )
 }
 
 /**
  * Search one already-read file. `io`, when given, receives exit status 0 as
- * soon as a line is selected: under -o a zero-width match selects the line and
- * prints nothing, so a caller deriving the status from an empty list reports 1
- * where GNU says 0.
+ * soon as a line is selected, so no caller reads the status off the returned
+ * list.
  */
 function searchFile(
   path: string,
@@ -177,6 +175,7 @@ function searchFile(
       byteOffsets,
       prefixPath,
       true,
+      opts.onlyMatching,
     )
     if (rendered.length > 0 && io !== null) io.exitCode = 0
     // `decodeLine` because the renderer puts a smuggled byte back as itself,
@@ -184,18 +183,14 @@ function searchFile(
     return rendered.map((chunk) => decodeLine(chunk).replace(/\n$/, ''))
   }
   const offsets = byteOffsets ? lineOffsets(data) : []
-  const globalRe = opts.onlyMatching
-    ? new RegExp(
-        compiled.source,
-        compiled.flags.includes('g') ? compiled.flags : compiled.flags + 'g',
-      )
-    : compiled
+  // -o -c counts matches, not the lines that hold them (ripgrep 14.1.1).
+  let matches = 0
   const results: string[] = []
   for (let i = 0; i < data.length; i++) {
     const line = data[i] ?? ''
-    const m = globalRe.exec(line)
-    globalRe.lastIndex = 0
-    const matched = Boolean(m) !== opts.invert
+    const found = compiled.test(line)
+    compiled.lastIndex = 0
+    const matched = found !== opts.invert
     if (!matched) continue
     count.n += 1
     if (io !== null) io.exitCode = 0
@@ -208,29 +203,14 @@ function searchFile(
     if (withoutMatch) return []
     const lineNo = i + 1
     if (opts.onlyMatching) {
-      // GNU -o prints every match on the line, one per line, and prints
-      // nothing at all for an empty match nor for an inverted selection,
-      // which has no match to print; the line still counts as selected,
-      // which is what -c, -l and the exit status read.
-      if (!opts.invert && m !== null) {
-        globalRe.lastIndex = 0
-        for (;;) {
-          const hit = globalRe.exec(line)
-          if (hit === null) break
-          // A global regex that matched the empty string leaves lastIndex
-          // where it was, so exec would keep returning it.
-          if (hit[0] === '') {
-            globalRe.lastIndex += 1
-            continue
-          }
-          const only =
-            prefixOf(
-              opts.lineNumbers ? lineNo : null,
-              byteOffsets ? matchOffset(start, line, hit.index) : null,
-            ) + hit[0]
-          results.push(prefixPath !== null ? `${prefixPath}:${only}` : only)
-        }
-        globalRe.lastIndex = 0
+      // ripgrep's -o prints each match, an empty one included, and a line
+      // with none (an inverted selection) whole; see rgPieces.
+      const pieces = rgPieces(compiled, line)
+      if (!opts.invert) matches += pieces.length
+      const pieceOffsets = byteOffsets ? new MatchOffsets(start, line) : null
+      for (const [at, text] of pieces) {
+        const only = prefixOf(opts.lineNumbers ? lineNo : null, pieceOffsets?.at(at) ?? null) + text
+        results.push(prefixPath !== null ? `${prefixPath}:${only}` : only)
       }
     } else {
       const out = prefixOf(opts.lineNumbers ? lineNo : null, byteOffsets ? start : null) + line
@@ -240,12 +220,18 @@ function searchFile(
   }
   if (opts.countOnly) {
     if (count.n === 0) return []
-    return prefixPath !== null ? [`${prefixPath}:${String(count.n)}`] : [String(count.n)]
+    const shown = String(opts.onlyMatching ? matches : count.n)
+    return prefixPath !== null ? [`${prefixPath}:${shown}`] : [shown]
   }
   if (withoutMatch) return [path]
   return results
 }
 
+/**
+ * Search one operand, returning the lines ripgrep would print. `warnings`
+ * collects `[path, error]` for each path that could not be read, the path as
+ * walked, for the caller to respell and name. Mirrors Python's rg_full.
+ */
 export async function rgFull(
   readdirFn: AsyncReaddirFn,
   statFn: AsyncStatFn,
@@ -253,7 +239,7 @@ export async function rgFull(
   path: string,
   pattern: string,
   opts: RgFullOptions,
-  warnings: string[] | null,
+  warnings: [string, string][] | null,
   filePrefix: string | null = null,
   io: IOResult | null = null,
 ): Promise<string[]> {
@@ -283,7 +269,7 @@ export async function rgFull(
     try {
       data = splitLines(decodeLine(await readBytesFn(path)))
     } catch (err) {
-      if (warnings !== null) warnings.push(`rg: ${path}: ${fsStrerror(err) ?? String(err)}`)
+      if (warnings !== null) warnings.push([path, fsStrerror(err) ?? String(err)])
       return []
     }
     return searchFile(path, data, compiled, opts, filePrefix, io)
@@ -297,7 +283,7 @@ export async function rgFull(
   try {
     entries = await readdirFn(path)
   } catch (err) {
-    if (warnings !== null) warnings.push(`rg: ${path}: ${fsStrerror(err) ?? String(err)}`)
+    if (warnings !== null) warnings.push([path, fsStrerror(err) ?? String(err)])
     return results
   }
 
@@ -306,7 +292,7 @@ export async function rgFull(
     try {
       s = await statFn(entry)
     } catch (err) {
-      if (warnings !== null) warnings.push(`rg: ${entry}: ${fsStrerror(err) ?? String(err)}`)
+      if (warnings !== null) warnings.push([entry, fsStrerror(err) ?? String(err)])
       continue
     }
 
@@ -340,7 +326,7 @@ export async function rgFull(
     try {
       data = splitLines(decodeLine(await readBytesFn(entry)))
     } catch (err) {
-      if (warnings !== null) warnings.push(`rg: ${entry}: ${fsStrerror(err) ?? String(err)}`)
+      if (warnings !== null) warnings.push([entry, fsStrerror(err) ?? String(err)])
       continue
     }
     // ripgrep -I drops per-file labels in directory walks; -l keeps

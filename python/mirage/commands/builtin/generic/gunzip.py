@@ -1,16 +1,13 @@
-import zlib
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
-from mirage.commands.builtin.utils.stream import resolve_source
+from mirage.commands.builtin.generic.decompress import decompress_inputs
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.utils.compress import gzip_decompress_stream
-from mirage.utils.key_prefix import mounted_path
 
 
 async def gunzip(
@@ -25,36 +22,15 @@ async def gunzip(
     to_stdout: bool = False,
     test_only: bool = False,
 ) -> tuple[ByteSource | None, IOResult]:
-    if not paths:
-        source = resolve_source(stdin,
-                                "gunzip: (stdin): unexpected end of file")
-        return gzip_decompress_stream(source), IOResult()
-
-    if test_only:
-        for p in paths:
-            raw = await read_bytes(p)
-            zlib.decompress(raw, zlib.MAX_WBITS | 16)
-        return None, IOResult()
-
-    if to_stdout:
-        chunks: list[bytes] = []
-        for p in paths:
-            raw = await read_bytes(p)
-            chunks.append(zlib.decompress(raw, zlib.MAX_WBITS | 16))
-        return b"".join(chunks), IOResult()
-
-    writes: dict[str, ByteSource] = {}
-    for p in paths:
-        raw = await read_bytes(p)
-        stripped = p.mount_path
-        out_path = stripped.removesuffix(".gz") if stripped.endswith(
-            ".gz") else stripped + ".out"
-        out_data = zlib.decompress(raw, zlib.MAX_WBITS | 16)
-        await write_bytes(mounted_path(p, out_path), out_data)
-        writes[out_path] = out_data
-        if not keep:
-            await unlink(p)
-    return None, IOResult(writes=writes)
+    return await decompress_inputs(paths,
+                                   command="gunzip",
+                                   read=read_bytes,
+                                   write=write_bytes,
+                                   unlink=unlink,
+                                   stdin=stdin,
+                                   keep=keep,
+                                   to_stdout=to_stdout,
+                                   test_only=test_only)
 
 
 __all__ = ["gunzip"]
@@ -80,16 +56,17 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> GunzipFlags:
 
 def gunzip_writes(flags: Mapping[str, FlagValue],
                   paths: list[PathSpec]) -> bool:
-    """Whether a gunzip invocation writes: each operand is replaced by
-    its content unless ``-c`` sends it to stdout or ``-t`` only tests it,
-    and with no operand gunzip filters stdin to stdout.
+    """Whether a gunzip invocation writes: each file operand is replaced
+    by its content unless ``-c`` sends it to stdout or ``-t`` only tests
+    it, while a ``-`` operand, like no operand, filters stdin to stdout.
 
     Args:
         flags (Mapping[str, FlagValue]): the parsed flag bag.
         paths (list[PathSpec]): the operands the mount received.
     """
     parsed = parse_flags(flags)
-    return bool(paths) and not (parsed.to_stdout or parsed.test_only)
+    replaces = any(p.raw_path != "-" for p in paths)
+    return replaces and not (parsed.to_stdout or parsed.test_only)
 
 
 async def gunzip_generic(

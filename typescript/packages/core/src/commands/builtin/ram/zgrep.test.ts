@@ -16,7 +16,9 @@ import { RAM_COMMANDS } from './index.ts'
 import { describe, expect, it } from 'vitest'
 import { materialize } from '../../../io/types.ts'
 import { RAMVFS } from '../../../vfs/ram/ram.ts'
-import { PathSpec } from '../../../types.ts'
+import { MountMode, PathSpec } from '../../../types.ts'
+import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
+import { Workspace } from '../../../workspace/workspace/workspace.ts'
 import { gzip } from '../../../utils/compress.ts'
 const RAM_ZGREP = RAM_COMMANDS.filter((c) => c.name === 'zgrep' && c.filetype == null)
 
@@ -100,5 +102,70 @@ describe('zgrep', () => {
     expect([listed.out, listed.exitCode]).toEqual(['-\n', 0])
     const unlisted = await runZgrep(vfs, [], ['zzz'], { files_without_match: true }, compressed)
     expect([unlisted.out, unlisted.exitCode]).toEqual(['-\n', 1])
+  })
+})
+
+describe('zgrep with stdin operands', () => {
+  // zgrep hands grep a stdin operand as `-`: -l lists it as `-` while its
+  // lines are labelled `(standard input)`; /dev/stdin is as typed.
+  const DASH = new PathSpec({ virtual: '/-', directory: '/', vfsPath: '-', rawPath: '-' })
+  const DEV = new PathSpec({ virtual: '/dev/stdin', directory: '/dev', vfsPath: 'stdin' })
+  it.each([
+    [DASH, { H: true }, '(standard input):hello\n'],
+    [DEV, { H: true }, '/dev/stdin:hello\n'],
+    [DASH, { args_l: true }, '-\n'],
+    [DEV, { args_l: true }, '/dev/stdin\n'],
+  ] as const)('names %s like GNU', async (operand, flags, want) => {
+    const r = await runZgrep(
+      new RAMVFS(),
+      [operand],
+      ['hello'],
+      flags,
+      await gzip(ENC.encode('hello\n')),
+    )
+    expect(r).toEqual({ out: want, exitCode: 0 })
+  })
+})
+
+async function shell(
+  line: string,
+  stdin: Uint8Array | null = null,
+  seed: Record<string, Uint8Array> = {},
+): Promise<[string, string, number]> {
+  const ws = new Workspace(
+    { '/data/': new RAMVFS() },
+    { mode: MountMode.WRITE, shellParser: await getTestParser() },
+  )
+  try {
+    for (const [path, body] of Object.entries(seed)) {
+      await ws.shell(`tee ${path} > /dev/null`, { stdin: body })
+    }
+    const io = await ws.shell(line, { stdin })
+    const dec = new TextDecoder()
+    return [dec.decode(io.stdout), dec.decode(io.stderr), io.exitCode]
+  } finally {
+    await ws.close()
+  }
+}
+
+describe('zgrep on inputs gzip passes or refuses', () => {
+  // zgrep decompresses with `gzip -cdfq`, which passes a plain file.
+  it('searches a plain input as it is', async () => {
+    const plain = ENC.encode('hello\nworld\n')
+    expect(await shell('zgrep -c o /data/plain.txt', null, { '/data/plain.txt': plain })).toEqual([
+      '2\n',
+      '',
+      0,
+    ])
+    expect(await shell('zgrep hello', ENC.encode('hello\n'))).toEqual(['hello\n', '', 0])
+  })
+
+  it('reports a bad archive and exits 2 beside a match', async () => {
+    const hello = await gzip(ENC.encode('hello\n'))
+    const r = await shell('zgrep hello /data/cut.gz /data/h.gz', null, {
+      '/data/cut.gz': hello.subarray(0, 10),
+      '/data/h.gz': hello,
+    })
+    expect(r).toEqual(['/data/h.gz:hello\n', 'zgrep: /data/cut.gz: unexpected end of file\n', 2])
   })
 })

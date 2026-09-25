@@ -19,7 +19,7 @@ from mirage.commands.builtin.find_parse import find_expr_tail
 from mirage.commands.cli.walk import walk
 from mirage.commands.spec import SPECS, parse_command, parse_to_kwargs
 from mirage.commands.spec.flag_view import FlagView
-from mirage.io.types import ByteSource
+from mirage.io.types import ByteSource, DeviceInput
 from mirage.types import PathSpec
 from mirage.workspace.expand.classify.path import classify_bare_path
 from mirage.workspace.mount import MountRegistry
@@ -76,10 +76,13 @@ def default_cwd_operand(parts: list[str | PathSpec], cmd_name: str,
         kwargs = parse_to_kwargs(parsed)
         if kwargs.get("r") is not True and kwargs.get("R") is not True:
             return None
-    elif cmd_name == "rg" and stdin is not None and "-" not in FlagView(
-            parse_to_kwargs(parsed), spec=spec).as_list("f"):
+    elif (cmd_name == "rg" and stdin is not None
+          and not isinstance(stdin, DeviceInput) and "-" not in FlagView(
+              parse_to_kwargs(parsed), spec=spec).as_list("f")):
         # `-f -` reads the attached stdin for patterns first, which
-        # leaves ripgrep nothing to search there but the cwd.
+        # leaves ripgrep nothing to search there but the cwd. A stdin
+        # that is no file, FIFO or socket (`< /dev/null`) is not searched
+        # either (grep_cli::is_readable_stdin, ripgrep 14.1.1).
         return None
     operand = classify_bare_path(".", registry, cwd)
     if not isinstance(operand, PathSpec):

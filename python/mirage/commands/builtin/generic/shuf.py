@@ -6,7 +6,7 @@ from enum import Enum
 
 from mirage.commands.builtin.constants import C_SPACE
 from mirage.commands.builtin.utils.lines import split_lines
-from mirage.commands.builtin.utils.stream import read_stdin_async
+from mirage.commands.builtin.utils.stream import read_stdin_async, stdin_bytes
 from mirage.commands.quote import quote_text
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
@@ -445,9 +445,10 @@ async def shuf(
         result = _sample(items, count, with_replacement)
         rendered = _render(result, sep)
     elif paths:
+        read = stdin_bytes(read_bytes, stdin)
         all_lines: list[str] = []
         for p in paths:
-            data = (await read_bytes(p)).decode(errors="replace")
+            data = (await read(p)).decode(errors="replace")
             if zero_terminated:
                 all_lines.extend(data.split("\x00"))
             else:

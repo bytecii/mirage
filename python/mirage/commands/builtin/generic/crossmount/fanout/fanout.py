@@ -15,17 +15,15 @@
 from mirage.commands.builtin.generic.crossmount.fanout.du import du_total
 from mirage.commands.builtin.generic.crossmount.fanout.exit import \
     combined_exit
-from mirage.commands.builtin.generic.crossmount.fanout.wc import combine_wc
 from mirage.commands.builtin.generic.crossmount.types import (Cmd, CrossResult,
                                                               RunSingle)
 from mirage.commands.builtin.generic.crossmount.utils import (
     context_separated, merge_operand_ios, run_operands)
-from mirage.commands.builtin.generic.wc import parse_flags as parse_wc_flags
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.io.stream import materialize
-from mirage.io.types import ByteSource, IOResult
+from mirage.io.types import ByteSource
 from mirage.types import PathSpec
 
 
@@ -41,7 +39,7 @@ async def run_fanout(cmd_name: str,
     mount (globs expand inside that native run), and the outputs combine
     in operand order. Filename-keyed commands stay correct because every
     native run is forced to name its files (grep ``-H``, head/tail ``-v``);
-    wc and ``du -c`` re-total across runs.
+    ``du -c`` re-totals across runs.
 
     Args:
         cmd_name (str): One of the FANOUT_COMMANDS (or ``sed -i``).
@@ -69,18 +67,6 @@ async def run_fanout(cmd_name: str,
     if cmd_name in (Cmd.HEAD, Cmd.TAIL) and not FlagView(
             flags, spec=SPECS[cmd_name]).as_bool(quiet_key):
         flags[verbose_key] = True
-    # Both re-totalling combines below need raw per-file rows from every
-    # run: wc must not see a per-run total row it would have to guess at,
-    # and du must not sum sizes that were already rounded for -h.
-    if cmd_name == Cmd.WC:
-        # The override would mask an invalid --total from every native run,
-        # so the user's value is diagnosed here first, as one mount would.
-        try:
-            parse_wc_flags(flag_kwargs)
-        except ValueError as exc:
-            return None, IOResult(exit_code=1,
-                                  stderr=(str(exc) + "\n").encode())
-        flags["total"] = "never"
     du_c = cmd_name == Cmd.DU and FlagView(flag_kwargs,
                                            spec=SPECS[Cmd.DU]).as_bool("c")
     du_human = du_c and FlagView(flag_kwargs, spec=SPECS[Cmd.DU]).as_bool("h")
@@ -101,9 +87,7 @@ async def run_fanout(cmd_name: str,
     exit_code = combined_exit(cmd_name, [r.io.exit_code for r in results],
                               errored, quiet)
 
-    if cmd_name == Cmd.WC:
-        body = combine_wc(results, flag_kwargs)
-    elif du_c:
+    if du_c:
         body = du_total(results, du_human)
     elif cmd_name == Cmd.TEE:
         body = stdin_bytes or b""
