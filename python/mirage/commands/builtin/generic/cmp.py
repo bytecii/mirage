@@ -3,14 +3,17 @@ from dataclasses import dataclass
 
 from mirage.commands.builtin.constants import (CMP_SIZE_UNITS, INTMAX,
                                                XSTRTOUMAX_PATTERN)
+from mirage.commands.builtin.utils.constants import STDIN_OPERAND
 from mirage.commands.builtin.utils.output import format_records
 from mirage.commands.builtin.utils.size_suffix import parse_base0
+from mirage.commands.builtin.utils.stream import is_stdin, stdin_bytes
 from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import CommandName, FlagValue
-from mirage.commands.spec.usage import extra_operand_error, usage_hint
+from mirage.commands.spec.usage import (extra_operand_error,
+                                        missing_operand_error, usage_hint)
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.errors import FS_ERRORS, format_fs_error
@@ -93,10 +96,28 @@ def visible(byte: int) -> str:
     return chr(byte)
 
 
+def offset_width(sizes: list[int], limit: int | None) -> int:
+    """The width GNU ``cmp -l`` pads its offset column to.
+
+    GNU sizes the column for the largest offset it could print: the
+    ``-n`` limit, cut to the bytes left in each regular file after its
+    skip. A stream has no size to cut by, so a line comparing two of
+    them pads to the width of the largest file offset.
+
+    Args:
+        sizes (list[int]): bytes left after the skip in each regular
+            operand; a stream contributes none.
+        limit (int | None): the ``-n`` count, if given.
+    """
+    most = min([limit if limit is not None else INTMAX, *sizes])
+    return len(str(max(most, 0)))
+
+
 async def cmp_cmd(
         paths: list[PathSpec],
         *,
         read_bytes: Callable[..., Awaitable[bytes]],
+        stdin: ByteSource | None = None,
         silent: bool = False,
         verbose: bool = False,
         limit: int | None = None,
@@ -106,17 +127,27 @@ async def cmp_cmd(
     if len(paths) > 2:
         raise extra_operand_error(CommandName.CMP, paths[2].raw_path
                                   or paths[2].virtual)
-    if len(paths) < 2:
-        raise UsageError("cmp: requires two paths")
-    p0, p1 = paths[0], paths[1]
+    if not paths:
+        raise missing_operand_error(CommandName.CMP, None)
+    # A lone FILE1 is compared with stdin, which GNU names `-`.
+    p0, p1 = paths[0], paths[1] if len(paths) > 1 else STDIN_OPERAND
+    if is_stdin(p0) and is_stdin(p1):
+        # Both name the one stdin: GNU sees the same file at the same
+        # offset and answers equal without reading, whatever the skips.
+        return None, IOResult()
+    names = (p0.raw_path or p0.virtual, p1.raw_path or p1.virtual)
+    read = stdin_bytes(read_bytes, stdin)
     try:
-        data1 = await read_bytes(p0)
-        data2 = await read_bytes(p1)
+        data1 = await read(p0)
+        data2 = await read(p1)
     except FS_ERRORS as exc:
         # GNU cmp reserves exit 1 for "files differ"; trouble (a missing
         # or unreadable operand) is exit 2.
         return None, IOResult(exit_code=2,
                               stderr=format_fs_error("cmp", exc, paths))
+    sizes = [len(data1) - skip[0]] if not is_stdin(p0) else []
+    if not is_stdin(p1):
+        sizes.append(len(data2) - skip[1])
     data1 = data1[skip[0]:]
     data2 = data2[skip[1]:]
     if limit is not None:
@@ -128,10 +159,11 @@ async def cmp_cmd(
         return None, IOResult(exit_code=1)
     common = min(len(data1), len(data2))
     if verbose:
+        width = offset_width(sizes, limit)
         out_lines: list[str] = []
         for idx in range(common):
             if data1[idx] != data2[idx]:
-                row = f"{idx + 1} {data1[idx]:>3o}"
+                row = f"{idx + 1:>{width}} {data1[idx]:>3o}"
                 if print_bytes:
                     row += f" {visible(data1[idx]):<4}"
                 row += f" {data2[idx]:>3o}"
@@ -140,7 +172,7 @@ async def cmp_cmd(
                 out_lines.append(row)
         io = IOResult(exit_code=1)
         if len(data1) != len(data2):
-            io.stderr = _eof_error(paths, data1, data2, verbose)
+            io.stderr = _eof_error(names, data1, data2, verbose)
         return format_records(out_lines), io
     for idx in range(common):
         if data1[idx] != data2[idx]:
@@ -148,18 +180,18 @@ async def cmp_cmd(
             # GNU counts in `byte` under -b and in `char` otherwise, on
             # the same offset -- the word tracks the flag, not a unit.
             unit = "byte" if print_bytes else "char"
-            msg = (f"{p0.virtual} {p1.virtual}"
+            msg = (f"{names[0]} {names[1]}"
                    f" differ: {unit} {idx + 1}, line {line}")
             if print_bytes:
                 msg += (f" is {data1[idx]:>3o} {visible(data1[idx])}"
                         f" {data2[idx]:>3o} {visible(data2[idx])}")
             return format_records([msg]), IOResult(exit_code=1)
     return None, IOResult(exit_code=1,
-                          stderr=_eof_error(paths, data1, data2, verbose))
+                          stderr=_eof_error(names, data1, data2, verbose))
 
 
 def _eof_error(
-    paths: list[PathSpec],
+    names: tuple[str, str],
     data1: bytes,
     data2: bytes,
     verbose: bool,
@@ -167,20 +199,26 @@ def _eof_error(
     """GNU's ``EOF on FILE`` diagnostic for a common-prefix difference.
 
     It is a diagnostic, not output: GNU writes it to stderr and still
-    exits 1. ``-l`` reports the byte only, every other mode adds the
-    line the count lands in.
+    exits 1. A shorter file with no bytes to compare is ``which is
+    empty``. Otherwise ``-l`` reports the byte only, and every other mode
+    adds the line: ``line N`` when the file ends on a newline, ``in line
+    N`` when it ends inside line N.
 
     Args:
-        paths (list[PathSpec]): the two operands, in order.
+        names (tuple[str, str]): the two operands as typed, in order.
         data1 (bytes): the first file's compared bytes.
         data2 (bytes): the second file's compared bytes.
         verbose (bool): whether ``-l`` is in effect.
     """
-    shorter = paths[0] if len(data1) < len(data2) else paths[1]
+    shorter = names[0] if len(data1) < len(data2) else names[1]
     held = data1 if len(data1) < len(data2) else data2
-    msg = f"cmp: EOF on {shorter.virtual} after byte {len(held)}"
+    if not held:
+        return f"cmp: EOF on {shorter} which is empty\n".encode()
+    msg = f"cmp: EOF on {shorter} after byte {len(held)}"
     if not verbose:
-        msg += f", in line {1 + held.count(_NEWLINE)}"
+        lines = held.count(_NEWLINE)
+        msg += (f", line {lines}"
+                if held[-1] == _NEWLINE else f", in line {lines + 1}")
     return (msg + "\n").encode()
 
 
@@ -218,6 +256,7 @@ async def cmp_generic(
     parsed = parse_flags(opts.flags)
     return await cmp_cmd(paths,
                          read_bytes=read_bytes,
+                         stdin=opts.stdin,
                          silent=parsed.silent,
                          verbose=parsed.verbose,
                          limit=parsed.limit,

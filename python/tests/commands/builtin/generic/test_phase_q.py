@@ -151,7 +151,7 @@ async def test_join_basic_inner_join():
 @pytest.mark.asyncio
 async def test_join_requires_two_paths():
     rb, _, _, _ = _make_backend({"/a.txt": b"x"})
-    with pytest.raises(ValueError, match="two paths"):
+    with pytest.raises(ValueError, match="^join: missing operand after "):
         await join_cmd([_spec("/a.txt")], read_bytes=rb)
 
 

@@ -2,7 +2,7 @@ import zlib
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
-from mirage.commands.builtin.utils.stream import resolve_source
+from mirage.commands.builtin.utils.stream import resolve_source, stdin_bytes
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.constants import flag_kwarg_name
@@ -52,10 +52,11 @@ async def gzip(
         source = resolve_source(stdin)
         return gzip_compress_stream(source, level=level), IOResult()
 
+    read = stdin_bytes(read_bytes, stdin)
     if to_stdout:
         chunks: list[bytes] = []
         for p in paths:
-            raw = await read_bytes(p)
+            raw = await read(p)
             if decompress:
                 chunks.append(zlib.decompress(raw, zlib.MAX_WBITS | 16))
             else:
@@ -64,7 +65,18 @@ async def gzip(
         return b"".join(chunks), IOResult()
 
     writes: dict[str, ByteSource] = {}
+    # A `-` has no file to replace, so it goes to stdout; gzip refuses to
+    # follow /dev/stdin in place, so only `-` does this.
+    stdout: list[bytes] = []
     for p in paths:
+        if p.raw_path == "-":
+            raw = await read(p)
+            if decompress:
+                stdout.append(zlib.decompress(raw, zlib.MAX_WBITS | 16))
+            else:
+                stdout.append(
+                    zlib.compress(raw, level=level, wbits=zlib.MAX_WBITS | 16))
+            continue
         raw = await read_bytes(p)
         stripped = p.mount_path
         if decompress:
@@ -80,7 +92,7 @@ async def gzip(
         writes[out_path] = out_data
         if not keep:
             await unlink(p)
-    return None, IOResult(writes=writes)
+    return b"".join(stdout) or None, IOResult(writes=writes)
 
 
 __all__ = ["gzip", "extract_level"]
@@ -107,15 +119,16 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> GzipFlags:
 
 
 def gzip_writes(flags: Mapping[str, FlagValue], paths: list[PathSpec]) -> bool:
-    """Whether a gzip invocation writes: each operand is replaced by its
-    archive unless ``-c`` sends the result to stdout, and with no operand
-    gzip filters stdin to stdout.
+    """Whether a gzip invocation writes: each file operand is replaced by
+    its archive unless ``-c`` sends the result to stdout, while a ``-``
+    operand, like no operand, filters stdin to stdout.
 
     Args:
         flags (Mapping[str, FlagValue]): the parsed flag bag.
         paths (list[PathSpec]): the operands the mount received.
     """
-    return bool(paths) and not parse_flags(flags).to_stdout
+    replaces = any(p.raw_path != "-" for p in paths)
+    return replaces and not parse_flags(flags).to_stdout
 
 
 async def gzip_generic(

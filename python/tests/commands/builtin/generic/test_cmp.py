@@ -21,6 +21,8 @@ from mirage.types import PathSpec
 
 P1 = PathSpec.from_str_path("/F/one", "")
 P2 = PathSpec.from_str_path("/F/two", "")
+DASH = PathSpec(virtual="/F/-", directory="/F/", vfs_path="-", raw_path="-")
+DEV_STDIN = PathSpec.from_str_path("/dev/stdin", "")
 
 
 def _reader(first: bytes, second: bytes):
@@ -216,3 +218,104 @@ def test_parse_count_leaves_the_value_unescaped(value):
         parse_count(value, "--bytes")
     assert str(exc.value) == (f"cmp: invalid --bytes value '{value}'\n"
                               "cmp: Try 'cmp --help' for more information.")
+
+
+async def _run_with_stdin(paths: list[PathSpec], stdin: bytes, second: bytes,
+                          **kwargs):
+
+    async def read_bytes(path: PathSpec) -> bytes:
+        assert path.virtual == P2.virtual, path
+        return second
+
+    src, io = await cmp_cmd(paths,
+                            read_bytes=read_bytes,
+                            stdin=stdin,
+                            **kwargs)
+    out = b"" if src is None else await materialize(src)
+    return out.decode(), (io.stderr or b"").decode(), io.exit_code
+
+
+@pytest.mark.asyncio
+async def test_a_dash_operand_reads_stdin_and_is_named_dash():
+    assert await _run_with_stdin(
+        [DASH, P2], b"one\n",
+        b"two\n") == ("- /F/two differ: char 1, line 1\n", "", 1)
+
+
+@pytest.mark.asyncio
+async def test_dev_stdin_reads_stdin_and_is_named_as_typed():
+    assert await _run_with_stdin(
+        [DEV_STDIN, P2], b"one\n",
+        b"two\n") == ("/dev/stdin /F/two differ: char 1, line 1\n", "", 1)
+
+
+@pytest.mark.asyncio
+async def test_a_lone_operand_is_compared_with_stdin():
+    out, err, code = await _run_with_stdin([P2], b"ab", b"abc")
+    assert (out, code) == ("", 1)
+    assert err == "cmp: EOF on - after byte 2, in line 1\n"
+
+
+@pytest.mark.asyncio
+async def test_no_operand_is_gnus_missing_operand_usage_error():
+    with pytest.raises(UsageError) as exc:
+        await cmp_cmd([], read_bytes=_reader(b"", b""))
+    assert str(exc.value) == ("cmp: missing operand after 'cmp'\n"
+                              "cmp: Try 'cmp --help' for more information.")
+    assert exc.value.exit_code == 2
+
+
+@pytest.mark.asyncio
+async def test_two_stdin_operands_are_one_file_whatever_the_skips():
+
+    async def unread(path: PathSpec) -> bytes:
+        raise AssertionError(f"read {path.virtual}")
+
+    src, io = await cmp_cmd([DASH, DEV_STDIN],
+                            read_bytes=unread,
+                            stdin=b"abc",
+                            skip=(0, 1))
+    assert (src, io.exit_code, io.stderr) == (None, 0, None)
+
+
+@pytest.mark.asyncio
+async def test_eof_on_a_line_boundary_names_the_line_it_closed():
+    _, err, _ = await _run(b"ab\n", b"ab\ncd")
+    assert err == "cmp: EOF on /F/one after byte 3, line 1\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verbose", [False, True])
+async def test_eof_on_an_empty_file_says_which_is_empty(verbose):
+    _, err, code = await _run(b"", b"x", verbose=verbose)
+    assert (err, code) == ("cmp: EOF on /F/one which is empty\n", 1)
+
+
+@pytest.mark.asyncio
+async def test_verbose_pads_offsets_to_the_smaller_regular_file():
+    out, _, _ = await _run(b"a" * 11, b"b" + b"a" * 12, verbose=True)
+    assert out == " 1 141 142\n"
+
+
+@pytest.mark.asyncio
+async def test_verbose_sizes_the_offsets_by_the_file_not_the_stream():
+    out, err, _ = await _run_with_stdin([DASH, P2],
+                                        b"hello\nx\n",
+                                        b"hello\nworld\nfoo\nbar\nbaz\n",
+                                        verbose=True)
+    assert out == " 7 170 167\n 8  12 157\n"
+    assert err == "cmp: EOF on - after byte 8\n"
+
+
+@pytest.mark.asyncio
+async def test_operands_are_named_as_typed():
+    one = PathSpec(virtual="/F/one",
+                   directory="/F/",
+                   vfs_path="one",
+                   raw_path="one")
+    two = PathSpec(virtual="/F/two",
+                   directory="/F/",
+                   vfs_path="two",
+                   raw_path="two")
+    src, _ = await cmp_cmd([one, two], read_bytes=_reader(b"a", b"b"))
+    assert await materialize(src) == b"one two differ: char 1, line 1\n"

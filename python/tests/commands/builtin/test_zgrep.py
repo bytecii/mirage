@@ -137,3 +137,16 @@ def test_zgrep_lists_stdin_as_dash():
     assert (_bytes(stdout), io.exit_code) == (b"-\n", 0)
     stdout, io = _run_raw(ws, "zgrep -L zzz", stdin=compressed)
     assert (_bytes(stdout), io.exit_code) == (b"-\n", 1)
+
+
+def test_zgrep_names_stdin_operands_like_gnu():
+    # zgrep hands grep a stdin operand as `-`: -l lists it as `-` while
+    # its lines are labelled `(standard input)`; /dev/stdin is as typed.
+    ws, _ = _ws()
+    data = gzip.compress(b"hello\n")
+    for cmd, want in (("zgrep -H hello -", b"(standard input):hello\n"),
+                      ("zgrep -H hello /dev/stdin",
+                       b"/dev/stdin:hello\n"), ("zgrep -l hello -", b"-\n"),
+                      ("zgrep -l hello /dev/stdin", b"/dev/stdin\n")):
+        stdout, io = _run_raw(ws, cmd, stdin=data)
+        assert (_bytes(stdout), io.exit_code) == (want, 0), cmd

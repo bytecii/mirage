@@ -19,7 +19,7 @@ import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import { gunzip } from '../../../utils/compress.ts'
 import type { CommandFnResult, CommandOpts, WritesFn } from '../../config.ts'
-import { resolveSource } from '../utils/stream.ts'
+import { resolveSource, stdinStream } from '../utils/stream.ts'
 
 const ENC = new TextEncoder()
 
@@ -35,12 +35,14 @@ function concat(chunks: Uint8Array[]): Uint8Array {
   return out
 }
 
-// Whether a gunzip invocation writes: each operand is replaced by its
-// content unless -c sends it to stdout or -t only tests it, and with no
-// operand gunzip filters stdin to stdout. Mirrors Python's gunzip_writes.
+// Whether a gunzip invocation writes: each file operand is replaced by its
+// content unless -c sends it to stdout or -t only tests it, while a `-`
+// operand, like no operand, filters stdin to stdout. Mirrors Python's
+// gunzip_writes.
 export const gunzipWrites: WritesFn = (flags, paths) => {
   const fl = new FlagView(flags, specOf('gunzip'))
-  return paths.length > 0 && !(fl.asBool('c') || fl.asBool('t'))
+  const replaces = paths.some((p) => p.rawPath !== '-')
+  return replaces && !(fl.asBool('c') || fl.asBool('t'))
 }
 
 export async function gunzipGeneric(
@@ -69,9 +71,10 @@ export async function gunzipGeneric(
     return [result, new IOResult()]
   }
 
+  const read = stdinStream(stream, opts.stdin)
   if (testMode) {
     for (const p of paths) {
-      const raw = await materialize(stream(p))
+      const raw = await materialize(read(p))
       await gunzip(raw)
     }
     return [null, new IOResult()]
@@ -80,14 +83,21 @@ export async function gunzipGeneric(
   if (stdoutMode) {
     const chunks: Uint8Array[] = []
     for (const p of paths) {
-      const raw = await materialize(stream(p))
+      const raw = await materialize(read(p))
       chunks.push(await gunzip(raw))
     }
     return [concat(chunks), new IOResult()]
   }
 
   const writes: Record<string, Uint8Array> = {}
+  // A `-` has no file to replace, so it decompresses to stdout; gzip refuses
+  // to follow /dev/stdin in place, so only `-` does this.
+  const stdout: Uint8Array[] = []
   for (const p of paths) {
+    if (p.rawPath === '-') {
+      stdout.push(await gunzip(await materialize(read(p))))
+      continue
+    }
     const raw = await materialize(stream(p))
     const pStripped = p.mountPath
     const outPath = pStripped.endsWith('.gz') ? pStripped.slice(0, -3) : pStripped + '.out'
@@ -96,5 +106,5 @@ export async function gunzipGeneric(
     writes[outPath] = outData
     if (!keep) await unlink(p)
   }
-  return [null, new IOResult({ writes })]
+  return [stdout.length > 0 ? concat(stdout) : null, new IOResult({ writes })]
 }

@@ -488,8 +488,10 @@ export async function splitGeneric(
   )
 
   let source: AsyncIterable<Uint8Array>
+  // `-` is stdin. /dev/stdin would run split on the /dev mount, which is
+  // where its pieces would land, so it stays a path.
   const first = paths[0]
-  if (first !== undefined) {
+  if (first !== undefined && first.rawPath !== '-') {
     source = stream(first)
   } else {
     source = resolveSource(opts.stdin)

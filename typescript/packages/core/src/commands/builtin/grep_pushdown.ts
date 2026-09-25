@@ -252,7 +252,7 @@ export function searchPushdownOk(bag: Record<string, FlagValue>, pattern: string
 // holds: asked about `<mount>/-`, the search answered "no match" and the pipe
 // was never read.
 export function loneOperand(paths: PathSpec[]): PathSpec | null {
-  if (paths.length !== 1 || hasUnresolvedGlob(paths) || paths.some(isStdin)) return null
+  if (paths.length !== 1 || hasUnresolvedGlob(paths) || paths.some((p) => isStdin(p))) return null
   return paths[0] ?? null
 }
 

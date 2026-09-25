@@ -72,17 +72,17 @@ async def run_relay(cmd_name: str,
     if cmd_name == Cmd.MV:
         return await run_mv(scopes, flag_kwargs, dispatch, storage_key)
     if cmd_name == Cmd.DIFF:
-        return await run_diff(scopes, flag_kwargs, dispatch)
+        return await run_diff(scopes, flag_kwargs, dispatch, stdin)
     if cmd_name == Cmd.PASTE:
         return await run_paste(scopes, flag_kwargs, dispatch, stdin)
     if cmd_name == Cmd.COMM:
-        return await run_comm(scopes, flag_kwargs, dispatch)
+        return await run_comm(scopes, flag_kwargs, dispatch, stdin)
     if cmd_name == Cmd.JOIN:
-        return await run_join(scopes, flag_kwargs, dispatch)
+        return await run_join(scopes, flag_kwargs, dispatch, stdin)
     if cmd_name == Cmd.TAR:
         return await run_tar(scopes, text_args, flag_kwargs, dispatch, ns)
     if cmd_name == Cmd.UNZIP:
         return await run_unzip(scopes, text_args, flag_kwargs, dispatch)
     if cmd_name == Cmd.ZIP:
         return await run_zip(scopes, flag_kwargs, dispatch, ns)
-    return await run_cmp(scopes, flag_kwargs, dispatch)
+    return await run_cmp(scopes, flag_kwargs, dispatch, stdin)

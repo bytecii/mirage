@@ -4,7 +4,8 @@ from collections.abc import Awaitable, Callable
 from mirage.commands.builtin.utils.operands import (materialized_read,
                                                     merge_split_errors,
                                                     split_readable_coded)
-from mirage.commands.builtin.utils.stream import read_stdin_async
+from mirage.commands.builtin.utils.stream import (read_stdin_async, stdin_stat,
+                                                  stdin_stream)
 from mirage.commands.config import CommandOpts
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec, PolymorphicReadFn, StatFn
@@ -49,6 +50,8 @@ async def zcat_generic(
     # zcat is gzip's front end, so its exit code is gzip's: a directory
     # is a warning (2) and a missing file is an error (1), which no other
     # member of this family distinguishes. Hence the coded split.
+    stat = stdin_stat(stat)
+    stream = stdin_stream(stream, opts.stdin)
     readable, err, code = await split_readable_coded(paths, stat, "zcat")
     if err and not readable:
         return None, IOResult(exit_code=code, stderr=err)

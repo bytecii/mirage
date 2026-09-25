@@ -13,6 +13,7 @@ from mirage.commands.builtin.grep_scan import (exit_code_for,
                                                grep_lines, grep_stream,
                                                nonzero_count_stream)
 from mirage.commands.builtin.rg_scan import rg_full
+from mirage.commands.builtin.utils.constants import STDIN_OPERAND
 from mirage.commands.builtin.utils.lines import split_lines
 from mirage.commands.builtin.utils.output import (format_optional_records,
                                                   format_records)
@@ -35,8 +36,6 @@ from mirage.utils.path import respell_raw
 RG_NO_PATTERN = "rg: ripgrep requires at least one pattern to execute a search"
 # ripgrep's name for stdin wherever it names the file a line came from.
 STDIN_NAME = "<stdin>"
-# The operand ripgrep searches when a line names none and stdin is piped.
-IMPLICIT_STDIN = PathSpec(virtual="-", directory="-", vfs_path="-")
 
 
 def operand_name(p: PathSpec) -> str:
@@ -306,7 +305,7 @@ async def rg(
         # do for a typed one (ripgrep's Paths::from_low_args, 14.1.1).
         if stdin is None:
             raise UsageError(RG_NO_PATTERN)
-        paths = [IMPLICIT_STDIN]
+        paths = [STDIN_OPERAND]
 
     mounts = opts.ns.mounts if opts.ns is not None else None
     mount_prefix = mount_prefix_of(paths[0].virtual, paths[0].vfs_path)

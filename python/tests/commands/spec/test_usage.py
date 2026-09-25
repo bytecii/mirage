@@ -1,10 +1,13 @@
+import pytest
+
 from mirage.commands.spec.argmatch import ArgmatchRefusal, argmatch
 from mirage.commands.spec.usage import (  # yapf: disable
     ambiguous_option_error, argmatch_error, argmatch_line,
     argmatch_valid_block, extra_operand_error, invalid_argument_error,
-    invalid_float_error, invalid_int_error, missing_required_error,
-    missing_value_error, old_option_error, read_fail_exit, read_fail_exit_line,
-    unexpected_value_error, unknown_option_error, usage_exit_code)
+    invalid_float_error, invalid_int_error, missing_operand_error,
+    missing_required_error, missing_value_error, old_option_error,
+    read_fail_exit, read_fail_exit_line, unexpected_value_error,
+    unknown_option_error, usage_exit_code)
 
 
 def test_exit_codes_match_gnu():
@@ -407,3 +410,20 @@ def test_argmatch_error_carries_the_block_and_the_given_code():
     # calls `usage (EXIT_FAILURE)`, so this one is 1.
     assert err.exit_code == 1
     assert usage_exit_code("sort") == 2
+
+
+@pytest.mark.parametrize("cmd,last,message,code", [
+    ("comm", None, "comm: missing operand\n"
+     "Try 'comm --help' for more information.", 1),
+    ("join", "a.txt", "join: missing operand after 'a.txt'\n"
+     "Try 'join --help' for more information.", 1),
+    ("cmp", None, "cmp: missing operand after 'cmp'\n"
+     "cmp: Try 'cmp --help' for more information.", 2),
+    ("diff", "a.txt", "diff: missing operand after 'a.txt'\n"
+     "diff: Try 'diff --help' for more information.", 2),
+])
+def test_missing_operand_error_matches_gnu(cmd, last, message, code):
+    # coreutils says a bare `missing operand` with no operand at all;
+    # diffutils names the program itself (coreutils 9.7, diffutils 3.10).
+    err = missing_operand_error(cmd, last)
+    assert (str(err), err.exit_code) == (message, code)

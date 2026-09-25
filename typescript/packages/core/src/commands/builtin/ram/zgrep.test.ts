@@ -102,3 +102,25 @@ describe('zgrep', () => {
     expect([unlisted.out, unlisted.exitCode]).toEqual(['-\n', 1])
   })
 })
+
+describe('zgrep with stdin operands', () => {
+  // zgrep hands grep a stdin operand as `-`: -l lists it as `-` while its
+  // lines are labelled `(standard input)`; /dev/stdin is as typed.
+  const DASH = new PathSpec({ virtual: '/-', directory: '/', vfsPath: '-', rawPath: '-' })
+  const DEV = new PathSpec({ virtual: '/dev/stdin', directory: '/dev', vfsPath: 'stdin' })
+  it.each([
+    [DASH, { H: true }, '(standard input):hello\n'],
+    [DEV, { H: true }, '/dev/stdin:hello\n'],
+    [DASH, { args_l: true }, '-\n'],
+    [DEV, { args_l: true }, '/dev/stdin\n'],
+  ] as const)('names %s like GNU', async (operand, flags, want) => {
+    const r = await runZgrep(
+      new RAMVFS(),
+      [operand],
+      ['hello'],
+      flags,
+      await gzip(ENC.encode('hello\n')),
+    )
+    expect(r).toEqual({ out: want, exitCode: 0 })
+  })
+})

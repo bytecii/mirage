@@ -55,7 +55,9 @@ async def csplit(
     else:
         prefix = "/" + prefix.lstrip("/")
     suffix_fmt = suffix_format if suffix_format else f"%0{digits}d"
-    if paths:
+    # `-` is stdin. /dev/stdin would run csplit on the /dev mount, which
+    # is where its pieces would land, so it stays a path.
+    if paths and paths[0].raw_path != "-":
         raw = await read_bytes(paths[0])
     else:
         stdin_raw = await read_stdin_async(stdin)

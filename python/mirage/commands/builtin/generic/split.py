@@ -451,7 +451,9 @@ async def split(
         width=suffix_len,
         start=suffix_start)
 
-    if paths:
+    # `-` is stdin. /dev/stdin would run split on the /dev mount, which
+    # is where its pieces would land, so it stays a path.
+    if paths and paths[0].raw_path != "-":
         source: AsyncIterator[bytes] = read_stream(paths[0])
     else:
         source = resolve_source(stdin)

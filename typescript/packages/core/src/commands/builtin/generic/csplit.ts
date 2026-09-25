@@ -111,9 +111,10 @@ export async function csplitGeneric(
   const suppressMatched = fl.asBool('suppress_matched')
   const elideEmpty = fl.asBool('elide_empty_files')
   let raw: Uint8Array
-  if (paths.length > 0) {
-    const first = paths[0]
-    if (first === undefined) return [null, new IOResult()]
+  // `-` is stdin. /dev/stdin would run csplit on the /dev mount, which is
+  // where its pieces would land, so it stays a path.
+  const first = paths[0]
+  if (first !== undefined && first.rawPath !== '-') {
     raw = await materialize(stream(first))
   } else {
     const stdinData = await readStdinAsync(opts.stdin)

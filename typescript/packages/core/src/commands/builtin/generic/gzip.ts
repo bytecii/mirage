@@ -19,7 +19,7 @@ import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import { gzip, gunzip } from '../../../utils/compress.ts'
 import type { CommandFnResult, CommandOpts, WritesFn } from '../../config.ts'
-import { resolveSource } from '../utils/stream.ts'
+import { resolveSource, stdinStream } from '../utils/stream.ts'
 
 const ENC = new TextEncoder()
 
@@ -35,11 +35,11 @@ function concat(chunks: Uint8Array[]): Uint8Array {
   return out
 }
 
-// Whether a gzip invocation writes: each operand is replaced by its archive
-// unless -c sends the result to stdout, and with no operand gzip filters
-// stdin to stdout. Mirrors Python's gzip_writes.
+// Whether a gzip invocation writes: each file operand is replaced by its
+// archive unless -c sends the result to stdout, while a `-` operand, like no
+// operand, filters stdin to stdout. Mirrors Python's gzip_writes.
 export const gzipWrites: WritesFn = (flags, paths) =>
-  paths.length > 0 && !new FlagView(flags, specOf('gzip')).asBool('c')
+  paths.some((p) => p.rawPath !== '-') && !new FlagView(flags, specOf('gzip')).asBool('c')
 
 export async function gzipGeneric(
   paths: PathSpec[],
@@ -69,10 +69,11 @@ export async function gzipGeneric(
     return [result, new IOResult()]
   }
 
+  const read = stdinStream(stream, opts.stdin)
   if (stdoutMode) {
     const chunks: Uint8Array[] = []
     for (const p of paths) {
-      const raw = await materialize(stream(p))
+      const raw = await materialize(read(p))
       const out = decompress ? await gunzip(raw) : await gzip(raw)
       chunks.push(out)
     }
@@ -80,7 +81,15 @@ export async function gzipGeneric(
   }
 
   const writes: Record<string, Uint8Array> = {}
+  // A `-` has no file to replace, so it goes to stdout; gzip refuses to
+  // follow /dev/stdin in place, so only `-` does this.
+  const stdout: Uint8Array[] = []
   for (const p of paths) {
+    if (p.rawPath === '-') {
+      const raw = await materialize(read(p))
+      stdout.push(decompress ? await gunzip(raw) : await gzip(raw))
+      continue
+    }
     const raw = await materialize(stream(p))
     const pStripped = p.mountPath
     let outPath: string
@@ -96,5 +105,5 @@ export async function gzipGeneric(
     writes[outPath] = outData
     if (!keep) await unlink(p)
   }
-  return [null, new IOResult({ writes })]
+  return [stdout.length > 0 ? concat(stdout) : null, new IOResult({ writes })]
 }

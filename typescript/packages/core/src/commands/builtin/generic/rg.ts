@@ -32,6 +32,7 @@ import {
 } from '../grep_scan.ts'
 import { rgFull } from '../rg_scan.ts'
 import { decodeLine } from '../grep_offsets.ts'
+import { STDIN_OPERAND } from '../utils/constants.ts'
 import { splitLines } from '../utils/lines.ts'
 import { isStdin, stdinStream } from '../utils/stream.ts'
 import { formatRecords } from '../utils/output.ts'
@@ -41,8 +42,6 @@ const ENC = new TextEncoder()
 export const RG_NO_PATTERN = 'rg: ripgrep requires at least one pattern to execute a search'
 // ripgrep's name for stdin wherever it names the file a line came from.
 const STDIN_NAME = '<stdin>'
-// The operand ripgrep searches when a line names none and stdin is piped.
-const IMPLICIT_STDIN = new PathSpec({ virtual: '-', directory: '-', vfsPath: '-' })
 const DEC = new TextDecoder()
 
 type Stat = (p: PathSpec) => Promise<FileStat>
@@ -242,7 +241,7 @@ export async function rgGeneric(
   // A line that names no path searches a piped stdin as an implicit `-`
   // operand, so -l, -H, -c and context answer as they do for a typed one
   // (ripgrep's Paths::from_low_args, 14.1.1).
-  const [first = IMPLICIT_STDIN] = paths
+  const [first = STDIN_OPERAND] = paths
   if (paths.length === 0) {
     if (opts.stdin === null) {
       return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(`${RG_NO_PATTERN}\n`) })]

@@ -19,9 +19,11 @@ import type { PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
 import { formatFsError, isFsError } from '../../../utils/errors.ts'
 import { CMP_SIZE_UNITS, INTMAX, XSTRTOUMAX_PATTERN } from '../constants.ts'
+import { STDIN_OPERAND } from '../utils/constants.ts'
 import { formatRecords } from '../utils/output.ts'
+import { isStdin, stdinStream } from '../utils/stream.ts'
 import { parseBase0 } from '../utils/size_suffix.ts'
-import { extraOperandError, usageHint } from '../../spec/usage.ts'
+import { extraOperandError, missingOperandError, usageHint } from '../../spec/usage.ts'
 import { CommandName } from '../../spec/types.ts'
 import { UsageError } from '../../errors.ts'
 
@@ -129,25 +131,45 @@ function arraysEqual(a: Uint8Array, b: Uint8Array): boolean {
  * GNU's `EOF on FILE` diagnostic for a common-prefix difference.
  *
  * It is a diagnostic, not output: GNU writes it to stderr and still
- * exits 1. `-l` reports the byte only, every other mode adds the line
- * the count lands in.
+ * exits 1. A shorter file with no bytes to compare is `which is empty`.
+ * Otherwise `-l` reports the byte only, and every other mode adds the
+ * line: `line N` when the file ends on a newline, `in line N` when it
+ * ends inside line N.
  */
 function eofError(
-  paths: PathSpec[],
+  names: readonly [string, string],
   data1: Uint8Array,
   data2: Uint8Array,
   verbose: boolean,
 ): Uint8Array {
   const firstShorter = data1.byteLength < data2.byteLength
-  const shorter = firstShorter ? paths[0] : paths[1]
+  const shorter = firstShorter ? names[0] : names[1]
   const held = firstShorter ? data1 : data2
-  let msg = `cmp: EOF on ${shorter?.virtual ?? ''} after byte ${String(held.byteLength)}`
+  if (held.byteLength === 0) return ENC.encode(`cmp: EOF on ${shorter} which is empty\n`)
+  let msg = `cmp: EOF on ${shorter} after byte ${String(held.byteLength)}`
   if (!verbose) {
-    let lines = 1
+    let lines = 0
     for (const byte of held) if (byte === NEWLINE) lines += 1
-    msg += `, in line ${String(lines)}`
+    msg +=
+      held[held.byteLength - 1] === NEWLINE
+        ? `, line ${String(lines)}`
+        : `, in line ${String(lines + 1)}`
   }
   return ENC.encode(`${msg}\n`)
+}
+
+/**
+ * The width GNU `cmp -l` pads its offset column to.
+ *
+ * GNU sizes the column for the largest offset it could print: the `-n`
+ * limit, cut to the bytes left in each regular file after its skip. A
+ * stream has no size to cut by, so a line comparing two of them pads to
+ * the width of the largest file offset.
+ */
+function offsetWidth(sizes: readonly number[], limit: number | null): number {
+  let most = limit !== null ? BigInt(limit) : INTMAX
+  for (const size of sizes) if (BigInt(size) < most) most = BigInt(size)
+  return String(most > 0n ? most : 0n).length
 }
 
 export async function cmpGeneric(
@@ -157,23 +179,29 @@ export async function cmpGeneric(
 ): Promise<[ByteSource | null, IOResult]> {
   const parsed = parseFlags(new FlagView(opts.flags, specOf('cmp')))
   if (paths.length > 2) throw extraOperandError(CommandName.CMP, paths[2]?.rawPath ?? '')
-  if (paths.length < 2) {
-    return [null, new IOResult({ exitCode: 2, stderr: ENC.encode('cmp: requires two paths\n') })]
-  }
   const p0 = paths[0]
-  const p1 = paths[1]
-  if (p0 === undefined || p1 === undefined) return [null, new IOResult()]
+  if (p0 === undefined) throw missingOperandError(CommandName.CMP, null)
+  // A lone FILE1 is compared with stdin, which GNU names `-`.
+  const p1 = paths[1] ?? STDIN_OPERAND
+  // Both name the one stdin: GNU sees the same file at the same offset
+  // and answers equal without reading, whatever the skips.
+  if (isStdin(p0) && isStdin(p1)) return [null, new IOResult()]
+  const names = [p0.rawPath, p1.rawPath] as const
+  const read = stdinStream(stream, opts.stdin)
   let data1: Uint8Array
   let data2: Uint8Array
   try {
-    data1 = await materialize(stream(p0))
-    data2 = await materialize(stream(p1))
+    data1 = await materialize(read(p0))
+    data2 = await materialize(read(p1))
   } catch (err) {
     if (!isFsError(err)) throw err
     // GNU cmp reserves exit 1 for "files differ"; trouble (a missing or
     // unreadable operand) is exit 2.
     return [null, new IOResult({ exitCode: 2, stderr: formatFsError('cmp', err, paths) })]
   }
+  const sizes: number[] = []
+  if (!isStdin(p0)) sizes.push(data1.byteLength - parsed.skip[0])
+  if (!isStdin(p1)) sizes.push(data2.byteLength - parsed.skip[1])
   data1 = data1.slice(parsed.skip[0])
   data2 = data2.slice(parsed.skip[1])
   if (parsed.limit !== null) {
@@ -184,12 +212,13 @@ export async function cmpGeneric(
   if (parsed.silent) return [null, new IOResult({ exitCode: 1 })]
   const common = Math.min(data1.byteLength, data2.byteLength)
   if (parsed.verbose) {
+    const width = offsetWidth(sizes, parsed.limit)
     const outLines: string[] = []
     for (let idx = 0; idx < common; idx++) {
       const a = data1[idx] ?? 0
       const b = data2[idx] ?? 0
       if (a === b) continue
-      let row = `${String(idx + 1)} ${octal(a, 3)}`
+      let row = `${String(idx + 1).padStart(width)} ${octal(a, 3)}`
       if (parsed.printBytes) row += ` ${visible(a).padEnd(4)}`
       row += ` ${octal(b, 3)}`
       if (parsed.printBytes) row += ` ${visible(b)}`
@@ -198,7 +227,7 @@ export async function cmpGeneric(
     const io =
       data1.byteLength === data2.byteLength
         ? new IOResult({ exitCode: 1 })
-        : new IOResult({ exitCode: 1, stderr: eofError(paths, data1, data2, true) })
+        : new IOResult({ exitCode: 1, stderr: eofError(names, data1, data2, true) })
     return [formatRecords(outLines), io]
   }
   for (let idx = 0; idx < common; idx++) {
@@ -210,7 +239,7 @@ export async function cmpGeneric(
     // GNU counts in `byte` under -b and in `char` otherwise, on the
     // same offset -- the word tracks the flag, not a unit.
     const unit = parsed.printBytes ? 'byte' : 'char'
-    let msg = `${p0.virtual} ${p1.virtual} differ: ${unit} ${String(idx + 1)}, line ${String(line)}`
+    let msg = `${names[0]} ${names[1]} differ: ${unit} ${String(idx + 1)}, line ${String(line)}`
     if (parsed.printBytes) {
       msg += ` is ${octal(a, 3)} ${visible(a)} ${octal(b, 3)} ${visible(b)}`
     }
@@ -218,6 +247,6 @@ export async function cmpGeneric(
   }
   return [
     null,
-    new IOResult({ exitCode: 1, stderr: eofError(paths, data1, data2, parsed.verbose) }),
+    new IOResult({ exitCode: 1, stderr: eofError(names, data1, data2, parsed.verbose) }),
   ]
 }

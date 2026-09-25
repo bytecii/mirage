@@ -18,7 +18,9 @@ import pytest
 
 from mirage.commands.builtin.generic import split as split_generic
 from mirage.commands.errors import UsageError
-from mirage.types import PathSpec
+from mirage.types import MountMode, PathSpec
+from mirage.vfs.ram import RAMVFS
+from mirage.workspace import Workspace
 
 from mirage.commands.builtin.generic.split import (  # isort: skip
     ChunkKind, ChunkSpec, chunk_at, chunk_parts, parse_bytes_value,
@@ -519,3 +521,12 @@ async def test_stdin_outputs_are_named_on_the_executing_mount():
         ("/data/xab", "xab"),
     ]
     assert list(io.writes) == ["/xaa", "/xab"]
+
+
+@pytest.mark.asyncio
+async def test_a_dash_input_reads_stdin():
+    ws = Workspace({"/data": (RAMVFS(), MountMode.WRITE)},
+                   mode=MountMode.WRITE)
+    r = await ws.shell("cd /data && split -l 1 - sp_ && cat sp_aa sp_ab",
+                       stdin=b"a\nb\n")
+    assert await r.materialize_stdout() == b"a\nb\n"

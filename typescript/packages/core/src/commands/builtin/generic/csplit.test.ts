@@ -15,8 +15,11 @@
 import { describe, expect, it } from 'vitest'
 
 import type { IOResult } from '../../../io/types.ts'
-import type { PathSpec } from '../../../types.ts'
+import { MountMode, type PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
+import { RAMVFS } from '../../../vfs/ram/ram.ts'
+import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
+import { Workspace } from '../../../workspace/workspace/workspace.ts'
 import { csplitGeneric } from './csplit.ts'
 
 const ENC = new TextEncoder()
@@ -62,5 +65,47 @@ describe('csplit names outputs on the executing mount', () => {
     const [specs, io] = await runCsplit({ prefix: '/data/sub/cs' })
     expect(specs.map((p) => p.virtual)).toEqual(['/data/sub/cs00', '/data/sub/cs01'])
     expect(Object.keys(io.writes)).toEqual(['/sub/cs00', '/sub/cs01'])
+  })
+})
+
+async function shell(
+  line: string,
+  stdin: Uint8Array | null = null,
+  seed: Record<string, string> = {},
+): Promise<[string, string, number]> {
+  const ws = new Workspace(
+    { '/data/': new RAMVFS() },
+    { mode: MountMode.WRITE, shellParser: await getTestParser() },
+  )
+  try {
+    for (const [path, body] of Object.entries(seed)) {
+      await ws.shell(`tee ${path} > /dev/null`, { stdin: new TextEncoder().encode(body) })
+    }
+    const io = await ws.shell(line, { stdin })
+    const dec = new TextDecoder()
+    return [dec.decode(io.stdout), dec.decode(io.stderr), io.exitCode]
+  } finally {
+    await ws.close()
+  }
+}
+
+describe('csplit with stdin', () => {
+  it('reads a dash input from stdin', async () => {
+    const r = await shell(
+      'cd /data && csplit - 2 && cat xx01',
+      new TextEncoder().encode('a\nb\nc\n'),
+    )
+    expect(r).toEqual(['2\n4\nb\nc\n', '', 0])
+  })
+
+  it('keeps /dev/stdin a path so no piece lands in /dev', async () => {
+    // /dev/stdin runs csplit on the /dev mount, where its pieces would be
+    // written, so it is refused as a missing path rather than read.
+    const r = await shell(
+      'cd /data && csplit /dev/stdin 2; ls /dev',
+      new TextEncoder().encode('a\nb\nc\n'),
+    )
+    expect(r[1]).toBe('csplit: /dev/stdin: No such file or directory\n')
+    expect(r[0]).not.toContain('xx00')
   })
 })

@@ -16,7 +16,7 @@ import { IOResult, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import { gunzip } from '../../../utils/compress.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { readStdinAsync } from '../utils/stream.ts'
+import { readStdinAsync, stdinStream } from '../utils/stream.ts'
 import { operandsIo, readOperandsCoded } from '../utils/operands.ts'
 
 const ENC = new TextEncoder()
@@ -26,6 +26,7 @@ export async function zcatGeneric(
   opts: CommandOpts,
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
 ): Promise<CommandFnResult> {
+  stream = stdinStream(stream, opts.stdin)
   // Each operand decompresses independently and the outputs concatenate
   // in operand order, like GNU zcat.
   if (paths.length > 0) {

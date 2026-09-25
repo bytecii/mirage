@@ -26,6 +26,8 @@ const DEC = new TextDecoder()
 const ENC = new TextEncoder()
 const P1 = new PathSpec({ virtual: '/F/one', directory: '/F', vfsPath: 'one' })
 const P2 = new PathSpec({ virtual: '/F/two', directory: '/F', vfsPath: 'two' })
+const DASH = new PathSpec({ virtual: '/F/-', directory: '/F', vfsPath: '-', rawPath: '-' })
+const DEV_STDIN = new PathSpec({ virtual: '/dev/stdin', directory: '/dev', vfsPath: 'stdin' })
 
 function bytes(...values: number[]): Uint8Array {
   return new Uint8Array(values)
@@ -43,7 +45,8 @@ async function run(
       yield held
     })()
   }
-  const [src, io] = await cmpGeneric([P1, P2], { flags } as unknown as CommandOpts, stream)
+  const opts = { flags, stdin: null } as unknown as CommandOpts
+  const [src, io] = await cmpGeneric([P1, P2], opts, stream)
   return {
     out: DEC.decode(await materialize(src)),
     err: DEC.decode(await materialize(io.stderr)),
@@ -213,6 +216,105 @@ describe('cmpGeneric', () => {
   it('reports no difference for a limit inside the common prefix', async () => {
     const r = await run(ENC.encode('abcdef'), ENC.encode('abcXef'), { n: '2' })
     expect(r).toEqual({ out: '', err: '', code: 0 })
+  })
+})
+
+async function runWithStdin(
+  paths: PathSpec[],
+  stdin: string,
+  second: string,
+  flags: Record<string, unknown> = {},
+): Promise<{ out: string; err: string; code: number }> {
+  const stream = (p: PathSpec): AsyncIterable<Uint8Array> => {
+    expect(p.virtual).toBe(P2.virtual)
+    return (async function* gen() {
+      await Promise.resolve()
+      yield ENC.encode(second)
+    })()
+  }
+  const opts = { flags, stdin: ENC.encode(stdin) } as unknown as CommandOpts
+  const [src, io] = await cmpGeneric(paths, opts, stream)
+  return {
+    out: DEC.decode(await materialize(src)),
+    err: DEC.decode(await materialize(io.stderr)),
+    code: io.exitCode,
+  }
+}
+
+describe('cmpGeneric with stdin', () => {
+  it('reads a dash operand from stdin and names it dash', async () => {
+    const r = await runWithStdin([DASH, P2], 'one\n', 'two\n')
+    expect(r).toEqual({ out: '- /F/two differ: char 1, line 1\n', err: '', code: 1 })
+  })
+
+  it('reads /dev/stdin from stdin and names it as typed', async () => {
+    const r = await runWithStdin([DEV_STDIN, P2], 'one\n', 'two\n')
+    expect(r).toEqual({ out: '/dev/stdin /F/two differ: char 1, line 1\n', err: '', code: 1 })
+  })
+
+  it('compares a lone operand with stdin', async () => {
+    const r = await runWithStdin([P2], 'ab', 'abc')
+    expect(r).toEqual({ out: '', err: 'cmp: EOF on - after byte 2, in line 1\n', code: 1 })
+  })
+
+  it("refuses no operand with GNU's missing operand usage error", async () => {
+    const stream = (p: PathSpec): AsyncIterable<Uint8Array> => {
+      throw new Error(`read ${p.virtual}`)
+    }
+    const call = cmpGeneric([], { flags: {}, stdin: null } as unknown as CommandOpts, stream)
+    await expect(call).rejects.toThrow(
+      new UsageError(
+        "cmp: missing operand after 'cmp'\ncmp: Try 'cmp --help' for more information.",
+      ),
+    )
+    await expect(call).rejects.toMatchObject({ exitCode: 2 })
+  })
+
+  it('takes two stdin operands as one file whatever the skips', async () => {
+    const stream = (p: PathSpec): AsyncIterable<Uint8Array> => {
+      throw new Error(`read ${p.virtual}`)
+    }
+    const opts = { flags: { i: '0:1' }, stdin: ENC.encode('abc') } as unknown as CommandOpts
+    const [src, io] = await cmpGeneric([DASH, DEV_STDIN], opts, stream)
+    expect([src, io.exitCode, io.stderr]).toEqual([null, 0, null])
+  })
+
+  it('names the line an EOF on a line boundary closed', async () => {
+    const r = await run(ENC.encode('ab\n'), ENC.encode('ab\ncd'))
+    expect(r.err).toBe('cmp: EOF on /F/one after byte 3, line 1\n')
+  })
+
+  it.each([false, true])('says which is empty for an empty file (-l %s)', async (verbose) => {
+    const r = await run(new Uint8Array(0), ENC.encode('x'), verbose ? { args_l: true } : {})
+    expect([r.err, r.code]).toEqual(['cmp: EOF on /F/one which is empty\n', 1])
+  })
+
+  it('pads -l offsets to the smaller regular file', async () => {
+    const r = await run(ENC.encode('a'.repeat(11)), ENC.encode('b' + 'a'.repeat(12)), {
+      args_l: true,
+    })
+    expect(r.out).toBe(' 1 141 142\n')
+  })
+
+  it('sizes -l offsets by the file, not the stream', async () => {
+    const r = await runWithStdin([DASH, P2], 'hello\nx\n', 'hello\nworld\nfoo\nbar\nbaz\n', {
+      args_l: true,
+    })
+    expect(r.out).toBe(' 7 170 167\n 8  12 157\n')
+    expect(r.err).toBe('cmp: EOF on - after byte 8\n')
+  })
+
+  it('names the operands as typed', async () => {
+    const one = new PathSpec({ virtual: '/F/one', directory: '/F', vfsPath: 'one', rawPath: 'one' })
+    const two = new PathSpec({ virtual: '/F/two', directory: '/F', vfsPath: 'two', rawPath: 'two' })
+    const stream = (p: PathSpec): AsyncIterable<Uint8Array> =>
+      (async function* gen() {
+        await Promise.resolve()
+        yield ENC.encode(p.virtual === one.virtual ? 'a' : 'b')
+      })()
+    const opts = { flags: {}, stdin: null } as unknown as CommandOpts
+    const [src] = await cmpGeneric([one, two], opts, stream)
+    expect(DEC.decode(await materialize(src))).toBe('one two differ: char 1, line 1\n')
   })
 })
 

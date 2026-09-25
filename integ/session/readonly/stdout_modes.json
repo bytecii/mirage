@@ -341,6 +341,25 @@
         "stdout": "",
         "stderr": ""
       }
+    },
+    {
+      "id": "sro_gzip_and_gunzip_filter_a_dash_in_a_read_only_cwd",
+      "seq": 1231036,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "session": "narrowed",
+      "command": "(cd /res && printf 'x\\n' | gzip - | gunzip -)",
+      "expect": {
+        "exit": 0,
+        "stdout": "x\n",
+        "stderr": ""
+      }
     }
   ]
 }

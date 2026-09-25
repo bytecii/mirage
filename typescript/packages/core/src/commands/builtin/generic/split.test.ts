@@ -14,8 +14,11 @@
 import { describe, expect, it } from 'vitest'
 
 import type { IOResult } from '../../../io/types.ts'
-import type { PathSpec } from '../../../types.ts'
+import { MountMode, type PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
+import { RAMVFS } from '../../../vfs/ram/ram.ts'
+import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
+import { Workspace } from '../../../workspace/workspace/workspace.ts'
 import { UsageError } from '../../errors.ts'
 import { chunkAt, chunkParts, parseChunksValue, splitGeneric } from './split.ts'
 
@@ -524,5 +527,33 @@ describe('split names stdin outputs on the executing mount', () => {
     ])
     const [, io] = result as [unknown, IOResult]
     expect(Object.keys(io.writes)).toEqual(['/xaa', '/xab'])
+  })
+})
+
+async function shell(
+  line: string,
+  stdin: Uint8Array | null = null,
+  seed: Record<string, string> = {},
+): Promise<[string, string, number]> {
+  const ws = new Workspace(
+    { '/data/': new RAMVFS() },
+    { mode: MountMode.WRITE, shellParser: await getTestParser() },
+  )
+  try {
+    for (const [path, body] of Object.entries(seed)) {
+      await ws.shell(`tee ${path} > /dev/null`, { stdin: new TextEncoder().encode(body) })
+    }
+    const io = await ws.shell(line, { stdin })
+    const dec = new TextDecoder()
+    return [dec.decode(io.stdout), dec.decode(io.stderr), io.exitCode]
+  } finally {
+    await ws.close()
+  }
+}
+
+describe('split with stdin', () => {
+  it('reads a dash input from stdin', async () => {
+    const r = await shell('cd /data && split -l 1 - sp_ && cat sp_aa sp_ab', ENC.encode('a\nb\n'))
+    expect(r).toEqual(['a\nb\n', '', 0])
   })
 })
