@@ -119,6 +119,12 @@ export function scalar(
   depth: number,
 ): FValue {
   if (v === undefined || v === null) return null
+  // A date reads as its midnight-UTC instant, compared and joined alike:
+  // `{Due} = "2021-02-02T00:00:00.000Z"` and `{Due} & ""` match a 2021-02-02
+  // cell as that text, and `{Due} = "2021-02-02"` does not (MCP-Atlas's
+  // recorded search_records, replayed by integ/airtable_atlas.ts, and live
+  // Airtable on 2026-09-25).
+  if (field.type === 'date' && typeof v === 'string') return `${v}T00:00:00.000Z`
   if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return v
   if (!Array.isArray(v)) return objectText(v)
   const linkedTable =
