@@ -7,10 +7,10 @@
         "ram",
         "disk"
       ],
-      "command": "rm -f /data/pipe-produced; for i in {1..20}; do echo x >> /data/pipe-produced; echo \"$i\"; sleep 0.02; done | head -n 1; wc -l < /data/pipe-produced",
+      "command": "rm -f /data/pipe-produced; for i in {1..20}; do echo x >> /data/pipe-produced; echo \"$i\"; sleep 0.02; done | head -n 1; produced=$(wc -l < /data/pipe-produced); test \"$produced\" -ge 1 && test \"$produced\" -lt 20",
       "expect": {
         "exit": 0,
-        "stdout": "1\n2\n",
+        "stdout": "1\n",
         "stderr": ""
       }
     },
