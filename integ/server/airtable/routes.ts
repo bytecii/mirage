@@ -91,10 +91,16 @@ const listBases = guard(async (ctx: Ctx<C>): Promise<Reply> => {
   return ok(body)
 })
 
+// In live Airtable's key order, `type` and `options` ahead of the id and name
+// (MCP-Atlas's recorded list_tables, replayed by integ/airtable_atlas.ts, and
+// live Airtable on 2026-09-25). No live field read had a description, so
+// where one goes is the fake's own choice.
 function fieldJson(field: FieldRow): JsonObject {
-  const out: JsonObject = { id: field.id, name: field.name, type: field.type }
-  if (field.description !== null) out.description = field.description
+  const out: JsonObject = { type: field.type }
   if (field.options !== null) out.options = field.options
+  out.id = field.id
+  out.name = field.name
+  if (field.description !== null) out.description = field.description
   return out
 }
 
@@ -108,9 +114,12 @@ function viewJson(table: TableRow, view: ViewRow, withVisible: boolean): JsonObj
   return out
 }
 
+// In live Airtable's key order, a description between the name and the
+// primary field's id.
 function tableJson(table: TableRow, withVisible: boolean): JsonObject {
-  const out: JsonObject = { id: table.id, name: table.name, primaryFieldId: table.primaryFieldId }
+  const out: JsonObject = { id: table.id, name: table.name }
   if (table.description !== null) out.description = table.description
+  out.primaryFieldId = table.primaryFieldId
   out.fields = table.fields.map(fieldJson)
   out.views = table.views.map((v) => viewJson(table, v, withVisible))
   return out
