@@ -982,7 +982,7 @@
       "command": "wc /data/pr/one.txt /data/pr",
       "expect": {
         "exit": 1,
-        "stdout": "2 2 4 /data/pr/one.txt\n2 2 4 total\n",
+        "stdout": "      2       2       4 /data/pr/one.txt\n      0       0       0 /data/pr\n      2       2       4 total\n",
         "stderr": "wc: /data/pr: Is a directory\n"
       }
     },

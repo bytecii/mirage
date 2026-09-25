@@ -13,50 +13,63 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { ByteSource } from '../../../../../io/types.ts'
-import { formatCountRows, parseFlags, type WcRow } from '../../wc.ts'
+import { formatCountRows, numberWidth, parseFlags, shownCounts, type WcRow } from '../../wc.ts'
 import type { OperandRun } from '../types.ts'
 import type { FlagValue } from '../../../../spec/types.ts'
 
 const DEC = new TextDecoder('utf-8', { fatal: false })
 
-function parseWcRow(line: string, columns: number): WcRow {
-  const parts = line.trim().split(/\s+/)
-  const values = parts.slice(0, columns).map((v) => parseInt(v, 10))
-  const label = parts.slice(columns).join(' ')
-  return { values, label: label === '' ? null : label }
-}
+// GNU prints a row's counts in this order whichever flags ask for them.
+const COLUMNS = ['lines', 'words', 'chars', 'bytes', 'maxLineLength'] as const
+type Column = (typeof COLUMNS)[number]
 
 // Re-total per-operand wc rows with one shared column width. Each native run
-// right-aligns its own rows against its own widest count, so the runs cannot
+// right-aligns its own rows against its own operands, so the runs cannot
 // simply concatenate: rows are re-parsed and the whole report is reformatted
 // by the same formatter the single-mount command uses, which is also what
-// applies `--total`. `runFanout` forces the native runs to `--total=never`,
-// so every line read here is a file row and the grand total below is the only
-// one the report can carry.
+// applies --total. runFanout forces the native runs to --total=never and to
+// count bytes, so every line read here is a file row that carries its file's
+// size, which is what GNU sizes the columns by; a byte column nobody asked for
+// is not shown. Mirrors Python's combine_wc.
 export function combineWc(
   results: OperandRun[],
   flagKwargs: Record<string, FlagValue>,
 ): ByteSource | null {
   const parsed = parseFlags(flagKwargs)
   if (typeof parsed === 'string') return null
-  const single =
-    parsed.lines || parsed.words || parsed.bytes || parsed.chars || parsed.maxLineLength
-  const columns = single ? 1 : 3
+  const asked = parsed.lines || parsed.words || parsed.bytes || parsed.chars || parsed.maxLineLength
+  const shown: Record<Column, boolean> = {
+    lines: parsed.lines || !asked,
+    words: parsed.words || !asked,
+    chars: parsed.chars,
+    bytes: parsed.bytes || !asked,
+    maxLineLength: parsed.maxLineLength,
+  }
+  const read = COLUMNS.filter((c) => shown[c] || c === 'bytes')
   const rows: WcRow[] = []
-  const total: number[] = new Array<number>(columns).fill(0)
+  const sizes: (number | null)[] = []
+  const total = new Map<Column, number>(read.map((c) => [c, 0]))
   for (const run of results) {
     for (const line of DEC.decode(run.data).split('\n')) {
       if (line === '') continue
-      const row = parseWcRow(line, columns)
-      rows.push(row)
-      for (let i = 0; i < columns; i++) {
-        const v = row.values[i] ?? 0
-        total[i] = parsed.maxLineLength ? Math.max(total[i] ?? 0, v) : (total[i] ?? 0) + v
+      const parts = line.trim().split(/\s+/)
+      const values = new Map<Column, number>(read.map((c, i) => [c, parseInt(parts[i] ?? '0', 10)]))
+      const labelText = parts.slice(read.length).join(' ')
+      const label = labelText === '' ? null : labelText
+      rows.push({ values: COLUMNS.filter((c) => shown[c]).map((c) => values.get(c) ?? 0), label })
+      sizes.push(label === '-' || label === '/dev/stdin' ? null : (values.get('bytes') ?? 0))
+      for (const c of read) {
+        const v = values.get(c) ?? 0
+        const t = total.get(c) ?? 0
+        total.set(c, c === 'maxLineLength' ? Math.max(t, v) : t + v)
       }
     }
   }
   // GNU decides the auto total on the operands *given*, not on the rows that
   // resolved, so a missing operand still gets a total row. There are always at
   // least two scopes here, and a glob operand can expand to more.
-  return formatCountRows(rows, total, Math.max(rows.length, results.length), parsed.total)
+  const operands = Math.max(rows.length, results.length)
+  const width = numberWidth(sizes, operands, shownCounts(parsed))
+  const totalValues = COLUMNS.filter((c) => shown[c]).map((c) => total.get(c) ?? 0)
+  return formatCountRows(rows, totalValues, operands, parsed.total, width)
 }

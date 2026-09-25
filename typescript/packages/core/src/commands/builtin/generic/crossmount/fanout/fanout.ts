@@ -93,7 +93,8 @@ export async function runFanout(
   }
   // Both re-totalling combines below need raw per-file rows from every run:
   // wc must not see a per-run total row it would have to guess at, and du
-  // must not sum sizes that were already rounded for -h.
+  // must not sum sizes that were already rounded for -h. wc also needs each
+  // file's size for GNU's column width, so every run counts bytes.
   if (cmdName === Cmd.WC) {
     // The override would mask an invalid --total from every native run, so
     // the user's value is diagnosed here first, as one mount would.
@@ -102,6 +103,11 @@ export async function runFanout(
       return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(checked) })]
     }
     flags.total = 'never'
+    const asked =
+      checked.lines || checked.words || checked.bytes || checked.chars || checked.maxLineLength
+    // Asking for bytes alone would drop the default columns.
+    if (!asked) Object.assign(flags, { lines: true, words: true })
+    flags.bytes = true
   }
   const duC = cmdName === Cmd.DU && new FlagView(flagKwargs, specOf(Cmd.DU)).asBool('c')
   const duHuman = duC && new FlagView(flagKwargs, specOf(Cmd.DU)).asBool('h')

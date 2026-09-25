@@ -51,15 +51,20 @@ describe('combineWc', () => {
 
   it('keeps every row of a glob operand', async () => {
     // runFanout forces --total=never, so a glob operand's run is all file
-    // rows; the combine must not treat the last one as a per-run total.
+    // rows; the combine must not treat the last one as a per-run total. It
+    // also forces -c, so each row carries its file's size.
     const out = await text(
-      combineWc([op('2 /a/one.txt\n1 /a/two.txt\n'), op('1 /b/three.txt\n')], { lines: true }),
+      combineWc([op('2 4 /a/one.txt\n1 2 /a/two.txt\n'), op('1 2 /b/three.txt\n')], {
+        lines: true,
+      }),
     )
     expect(out).toBe('2 /a/one.txt\n1 /a/two.txt\n1 /b/three.txt\n4 total\n')
   })
 
   it('maxes max-line-length instead of summing it', async () => {
-    const out = await text(combineWc([op('9 /a/x\n'), op('4 /b/y\n')], { max_line_length: true }))
+    const out = await text(
+      combineWc([op('1 9 /a/x\n'), op('1 4 /b/y\n')], { max_line_length: true }),
+    )
     expect(out.endsWith('9 total\n')).toBe(true)
   })
 
@@ -90,7 +95,7 @@ describe('combineWc', () => {
   it('still totals when one of two operands failed', async () => {
     // Two operands were given, so GNU prints the total even though only one
     // of them resolved into a row.
-    const out = await text(combineWc([op('1 /a/f.txt\n'), op('', 1)], { lines: true }))
+    const out = await text(combineWc([op('1 2 /a/f.txt\n'), op('', 1)], { lines: true }))
     expect(out).toBe('1 /a/f.txt\n1 total\n')
   })
 
@@ -100,5 +105,26 @@ describe('combineWc', () => {
 
   it('zeroes the grand total under --total=only when every operand failed', async () => {
     expect(await text(combineWc([op('', 1)], { total: 'only' }))).toBe('0 0 0\n')
+  })
+
+  it('sizes the columns by the files, not the counts', async () => {
+    // GNU pads to the digits of the files' total size (30 bytes), not the
+    // widest count shown.
+    const out = await text(combineWc([op('5 24 /a/x\n'), op('3 6 /b/y\n')], { lines: true }))
+    expect(out).toBe(' 5 /a/x\n 3 /b/y\n 8 total\n')
+  })
+
+  it('pads to seven beside a stdin row', async () => {
+    const out = await text(combineWc([op('5 5 24 -\n'), op('5 5 24 /b/a.txt\n')], {}))
+    expect(out).toBe(
+      '      5       5      24 -\n      5       5      24 /b/a.txt\n     10      10      48 total\n',
+    )
+  })
+
+  it('reads every shown count and drops the forced bytes', async () => {
+    const out = await text(
+      combineWc([op('5 5 24 /a/x\n'), op('3 3 6 /b/y\n')], { lines: true, words: true }),
+    )
+    expect(out).toBe(' 5  5 /a/x\n 3  3 /b/y\n 8  8 total\n')
   })
 })

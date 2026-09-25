@@ -43,9 +43,10 @@ def testcombine_wc_uses_one_global_width():
 def testcombine_wc_keeps_every_row_of_a_glob_operand():
     # run_fanout forces --total=never, so a glob operand's run is all file
     # rows; the combine must not treat the last one as a per-run total.
+    # It also forces -c, so each row carries its file's size.
     runs = [
-        _op(b"2 /a/one.txt\n1 /a/two.txt\n"),
-        _op(b"1 /b/three.txt\n"),
+        _op(b"2 4 /a/one.txt\n1 2 /a/two.txt\n"),
+        _op(b"1 2 /b/three.txt\n"),
     ]
     out = combine_wc(runs, {"lines": True}).decode()
     assert out == ("2 /a/one.txt\n"
@@ -55,7 +56,7 @@ def testcombine_wc_keeps_every_row_of_a_glob_operand():
 
 
 def testcombine_wc_max_line_length_maxes_instead_of_summing():
-    runs = [_op(b"9 /a/x\n"), _op(b"4 /b/y\n")]
+    runs = [_op(b"1 9 /a/x\n"), _op(b"1 4 /b/y\n")]
     out = combine_wc(runs, {"max_line_length": True}).decode()
     assert out.endswith("9 total\n")
 
@@ -86,7 +87,7 @@ def testcombine_wc_auto_omits_the_total_for_one_row():
 def testcombine_wc_failed_operand_still_gets_a_total_row():
     # Two operands were given, so GNU prints the total even though only one
     # of them resolved into a row.
-    runs = [_op(b"1 /a/f.txt\n"), _op(b"", exit_code=1)]
+    runs = [_op(b"1 2 /a/f.txt\n"), _op(b"", exit_code=1)]
     out = combine_wc(runs, {"lines": True}).decode()
     assert out == "1 /a/f.txt\n1 total\n"
 
@@ -98,3 +99,25 @@ def testcombine_wc_all_operands_failed_prints_nothing():
 def testcombine_wc_total_only_zeroes_when_every_operand_failed():
     out = combine_wc([_op(b"", exit_code=1)], {"total": "only"}).decode()
     assert out == "0 0 0\n"
+
+
+def testcombine_wc_sizes_the_columns_by_the_files_not_the_counts():
+    # GNU pads to the digits of the files' total size (30 bytes), not the
+    # widest count shown.
+    runs = [_op(b"5 24 /a/x\n"), _op(b"3 6 /b/y\n")]
+    out = combine_wc(runs, {"lines": True}).decode()
+    assert out == " 5 /a/x\n 3 /b/y\n 8 total\n"
+
+
+def testcombine_wc_pads_to_seven_beside_a_stdin_row():
+    runs = [_op(b"5 5 24 -\n"), _op(b"5 5 24 /b/a.txt\n")]
+    out = combine_wc(runs, {}).decode()
+    assert out == ("      5       5      24 -\n"
+                   "      5       5      24 /b/a.txt\n"
+                   "     10      10      48 total\n")
+
+
+def testcombine_wc_reads_every_shown_count_and_drops_forced_bytes():
+    runs = [_op(b"5 5 24 /a/x\n"), _op(b"3 3 6 /b/y\n")]
+    out = combine_wc(runs, {"lines": True, "words": True}).decode()
+    assert out == " 5  5 /a/x\n 3  3 /b/y\n 8  8 total\n"

@@ -71,16 +71,23 @@ async def run_fanout(cmd_name: str,
         flags[verbose_key] = True
     # Both re-totalling combines below need raw per-file rows from every
     # run: wc must not see a per-run total row it would have to guess at,
-    # and du must not sum sizes that were already rounded for -h.
+    # and du must not sum sizes that were already rounded for -h. wc also
+    # needs each file's size for GNU's column width, so every run counts
+    # bytes.
     if cmd_name == Cmd.WC:
         # The override would mask an invalid --total from every native run,
         # so the user's value is diagnosed here first, as one mount would.
         try:
-            parse_wc_flags(flag_kwargs)
+            wc_flags = parse_wc_flags(flag_kwargs)
         except ValueError as exc:
             return None, IOResult(exit_code=1,
                                   stderr=(str(exc) + "\n").encode())
         flags["total"] = "never"
+        if not (wc_flags.lines or wc_flags.words or wc_flags.bytes_
+                or wc_flags.chars or wc_flags.max_line_length):
+            # Asking for bytes alone would drop the default columns.
+            flags.update(lines=True, words=True)
+        flags["bytes"] = True
     du_c = cmd_name == Cmd.DU and FlagView(flag_kwargs,
                                            spec=SPECS[Cmd.DU]).as_bool("c")
     du_human = du_c and FlagView(flag_kwargs, spec=SPECS[Cmd.DU]).as_bool("h")
