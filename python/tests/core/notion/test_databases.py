@@ -381,12 +381,20 @@ async def test_stat_row_page_json_without_fetching_blocks(
 
 
 @pytest.mark.asyncio
-async def test_rows_jsonl_accepts_large_integer_cells(accessor, monkeypatch):
+@pytest.mark.parametrize("number,spelling", [
+    (100000000000000000000, "100000000000000000000"),
+    (1e-5, "0.00001"),
+    (1e-7, "1e-7"),
+    (1.0, "1"),
+    (-0.0, "0"),
+])
+async def test_rows_jsonl_spells_numeric_cells(accessor, monkeypatch, number,
+                                               spelling):
     row = _row()
-    row["properties"]["Priority"]["number"] = 100000000000000000000
+    row["properties"]["Priority"]["number"] = number
     monkeypatch.setattr(notion_read, "query_data_source",
                         AsyncMock(return_value=[row]))
     data = await read(accessor,
                       PathSpec.from_str_path(f"{SOURCE_DIR}/rows.jsonl"))
-    assert json.loads(
-        data)["properties"]["Priority"]["number"] == 100000000000000000000
+    assert json.loads(data)["properties"]["Priority"]["number"] == number
+    assert f'"number":{spelling}}}'.encode() in data

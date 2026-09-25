@@ -597,6 +597,19 @@
         "stdout": "",
         "stderr": "ls: cannot access '/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Wrong_title__ffff1111-2222-3333-4444-555566667777': No such file or directory\n"
       }
+    },
+    {
+      "id": "notion_stat_missing_row_child",
+      "seq": 9901208,
+      "targets": [
+        "notion"
+      ],
+      "command": "stat /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Write_spec__ffff1111-2222-3333-4444-555566667777/Fabricated__ffff9999-2222-3333-4444-555566667777",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "stat: /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Write_spec__ffff1111-2222-3333-4444-555566667777/Fabricated__ffff9999-2222-3333-4444-555566667777: No such file or directory\n"
+      }
     }
   ]
 }

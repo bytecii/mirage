@@ -70,3 +70,25 @@ it('keeps the containing row identity when reading a child', async () => {
   await read(accessor, path, undefined)
   expect(pages).toEqual(['row', 'child'])
 })
+
+it('rejects a missing child beneath a valid row', async () => {
+  const listed: unknown[] = []
+  const accessor = {
+    transport: {
+      callTool: (name: string, args: Record<string, unknown>) => {
+        if (name === 'API-retrieve-block-children') {
+          listed.push(args.block_id)
+          return Promise.resolve({ results: [], has_more: false, next_cursor: null })
+        }
+        return Promise.resolve({
+          id: 'row',
+          parent: { data_source_id: 'ds' },
+          properties: { Name: { type: 'title', title: [{ plain_text: 'Row' }] } },
+        })
+      },
+    },
+  }
+  const path = PathSpec.fromStrPath('/databases/DB__db/DS__ds/Row__row/Fabricated__missing')
+  await expect(stat(accessor, path)).rejects.toMatchObject({ code: 'ENOENT' })
+  expect(listed).toEqual(['row'])
+})

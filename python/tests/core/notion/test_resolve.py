@@ -87,3 +87,33 @@ async def test_read_child_keeps_the_containing_row_identity(monkeypatch):
     await read(accessor, path)
     assert fetch_row.await_args.args[1] == "row"
     assert fetch_child.await_args.args[1] == "child"
+
+
+@pytest.mark.asyncio
+async def test_stat_rejects_a_missing_child_beneath_a_valid_row(monkeypatch):
+    row = {
+        "id": "row",
+        "parent": {
+            "data_source_id": "ds"
+        },
+        "properties": {
+            "Name": {
+                "type": "title",
+                "title": [{
+                    "plain_text": "Row"
+                }]
+            }
+        },
+    }
+    monkeypatch.setattr(notion_resolve, "get_page",
+                        AsyncMock(return_value=row))
+    listing = AsyncMock(return_value=[])
+    monkeypatch.setattr("mirage.core.notion.readdir.list_block_children",
+                        listing)
+    accessor = NotionAccessor(NotionConfig(api_key="test"))
+    path = PathSpec.from_str_path(
+        "/databases/DB__db/DS__ds/Row__row/Fabricated__missing")
+    with pytest.raises(FileNotFoundError):
+        await stat(accessor, path)
+    listing.assert_awaited_once()
+    assert listing.await_args.args[1] == "row"

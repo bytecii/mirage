@@ -309,13 +309,19 @@ describe('notion read', () => {
   })
 })
 
-it('renders a row with an integer cell beyond the 64-bit range', async () => {
+it.each([
+  [100000000000000000000, '100000000000000000000'],
+  [1e-5, '0.00001'],
+  [1e-7, '1e-7'],
+  [1.0, '1'],
+  [-0.0, '0'],
+] as const)('spells numeric cells as %s -> %s', async (number, spelling) => {
   const transport = new FakeTransport()
   transport.enqueue('API-post-data-source-query', {
     results: [
       {
         ...pageBody(PAGE_ID_DASHED, 'Row A'),
-        properties: { Amount: { type: 'number', number: 100000000000000000000 } },
+        properties: { Amount: { type: 'number', number } },
       },
     ],
     has_more: false,
@@ -329,5 +335,6 @@ it('renders a row with an integer cell beyond the 64-bit range', async () => {
   const row = JSON.parse(new TextDecoder().decode(data)) as {
     properties: { Amount: { number: number } }
   }
-  expect(row.properties.Amount.number).toBe(100000000000000000000)
+  expect(row.properties.Amount.number === number).toBe(true)
+  expect(new TextDecoder().decode(data)).toContain(`"number":${spelling}}`)
 })
