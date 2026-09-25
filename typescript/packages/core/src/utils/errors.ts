@@ -179,7 +179,12 @@ export async function listingError(
 export class GzipDataError extends Error {
   readonly fatal: boolean
 
-  constructor(reason: string, fatal: boolean, options?: ErrorOptions) {
+  constructor(
+    reason: string,
+    fatal: boolean,
+    options?: ErrorOptions,
+    readonly exitCode = 1,
+  ) {
     super(reason, options)
     this.name = 'GzipDataError'
     this.fatal = fatal

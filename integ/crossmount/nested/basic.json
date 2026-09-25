@@ -584,7 +584,7 @@
       "command": "wc -l /ghost",
       "expect": {
         "exit": 1,
-        "stdout": "",
+        "stdout": "0 /ghost\n",
         "stderr": "wc: /ghost: Is a directory\n"
       }
     },

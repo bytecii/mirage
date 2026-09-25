@@ -69,11 +69,13 @@ class GzipDataError(ValueError):
     Args:
         reason (str): gzip's description of the input.
         fatal (bool): whether gzip stops at this input.
+        exit_code (int): One for an error, two for a trailing-data warning.
     """
 
-    def __init__(self, reason: str, fatal: bool) -> None:
+    def __init__(self, reason: str, fatal: bool, exit_code: int = 1) -> None:
         super().__init__(reason)
         self.fatal = fatal
+        self.exit_code = exit_code
 
 
 class FileTooLargeError(OSError):

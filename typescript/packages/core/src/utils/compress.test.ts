@@ -14,7 +14,9 @@
 // Mirrors python/tests/utils/test_compress.py.
 
 import { describe, expect, it } from 'vitest'
-import { gunzipChecked, gzip } from './compress.ts'
+import { materialize } from '../io/types.ts'
+import { yieldBytes } from '../io/stream.ts'
+import { GZIP_CHUNK_SIZE, gunzipStream, gunzipChecked, gzip } from './compress.ts'
 import { GzipDataError } from './errors.ts'
 
 const ENC = new TextEncoder()
@@ -52,4 +54,49 @@ describe('gunzipChecked', () => {
       fatal: true,
     })
   })
+})
+
+describe('gunzipStream', () => {
+  it.each([1, 7, 65536])(
+    'handles member boundaries and padding at chunk width %i',
+    async (width) => {
+      const hello = await gzip(ENC.encode('hello\n'))
+      const data = new Uint8Array([...hello, ...hello, 0, 0])
+      async function* source(): AsyncIterable<Uint8Array> {
+        for (let offset = 0; offset < data.length; offset += width)
+          yield* yieldBytes(data.subarray(offset, offset + width))
+      }
+      expect(DEC.decode(await materialize(gunzipStream(source())))).toBe('hello\nhello\n')
+    },
+  )
+
+  it('yields bounded expansion before reading more input', async () => {
+    const archive = await gzip(ENC.encode('x'.repeat(GZIP_CHUNK_SIZE * 20)))
+    const reads: number[] = []
+    async function* source(): AsyncIterable<Uint8Array> {
+      reads.push(1)
+      yield* yieldBytes(archive)
+      reads.push(2)
+      yield* yieldBytes(archive)
+    }
+    const decoded = gunzipStream(source())[Symbol.asyncIterator]()
+    expect((await decoded.next()).value).toEqual(ENC.encode('x'.repeat(GZIP_CHUNK_SIZE)))
+    expect(reads).toEqual([1])
+    await decoded.return?.()
+    expect(reads).toEqual([1])
+  })
+
+  it('reports trailing garbage after yielding valid output', async () => {
+    const archive = await gzip(ENC.encode('hello\n'))
+    const decoded = gunzipStream(yieldBytes(new Uint8Array([...archive, ...ENC.encode('junk')])))[
+      Symbol.asyncIterator
+    ]()
+    expect((await decoded.next()).value).toEqual(ENC.encode('hello\n'))
+    await expect(decoded.next()).rejects.toMatchObject({ exitCode: 2, fatal: false })
+  })
+})
+
+it('preserves buffered output in a large member', async () => {
+  const data = ENC.encode('x'.repeat(GZIP_CHUNK_SIZE * 20 + 13))
+  expect(await gunzipChecked(await gzip(data))).toEqual(data)
 })

@@ -24,6 +24,7 @@ import { runMv } from './mv.ts'
 import { runPaste } from './paste.ts'
 import { runTar } from './tar.ts'
 import { runUnzip } from './unzip.ts'
+import { runWc } from './wc.ts'
 import { runZip } from './zip_cmd.ts'
 import { Cmd, type CrossResult, type DispatchFn } from '../types.ts'
 import type { FlagValue } from '../../../../spec/types.ts'
@@ -52,6 +53,7 @@ export async function runRelay(
   sessionView?: SessionView,
   stdin: ByteSource | null = null,
 ): Promise<CrossResult> {
+  if (cmdName === Cmd.WC) return runWc(scopes, flagKwargs, dispatch, stdin)
   if (cmdName === Cmd.LS) return runLs(scopes, flagKwargs, dispatch, ns, sessionView)
   if (cmdName === Cmd.CP) return runCp(scopes, flagKwargs, dispatch, storageKey)
   if (cmdName === Cmd.MV) return runMv(scopes, flagKwargs, dispatch, storageKey)

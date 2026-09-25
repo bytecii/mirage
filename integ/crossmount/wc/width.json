@@ -67,6 +67,34 @@
         "stdout": " 5 /data/a.txt\n 5 /data2/xm.txt\n 5 total\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "xm_wc_directory_retains_stream_width",
+      "seq": 917212,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "wc -l /data /data2/xm.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "      0 /data\n      1 /data2/xm.txt\n      1 total\n",
+        "stderr": "wc: /data: Is a directory\n"
+      }
+    },
+    {
+      "id": "xm_wc_stdin_uses_one_cursor",
+      "seq": 917213,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "printf 'a\\nb\\n' | wc -l /data/a.txt - /data2/xm.txt -",
+      "expect": {
+        "exit": 0,
+        "stdout": "      5 /data/a.txt\n      2 -\n      1 /data2/xm.txt\n      0 -\n      8 total\n",
+        "stderr": ""
+      }
     }
   ]
 }

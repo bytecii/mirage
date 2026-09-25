@@ -56,40 +56,6 @@ async function text(body: ByteSource | null): Promise<string> {
   return DEC.decode(await materialize(body))
 }
 
-describe('runFanout wc', () => {
-  it('forces --total=never on the native runs', async () => {
-    const { fn, calls } = fakeRunSingle({
-      '/a/x': '1 1 1 /a/x\n',
-      '/b/y': '2 2 2 /b/y\n',
-    })
-    await runFanout(Cmd.WC, [scope('/a/x'), scope('/b/y')], [], {}, fn)
-    expect(calls.map((c) => c.flags.total)).toEqual(['never', 'never'])
-  })
-
-  it('rejects an invalid --total before running any operand', async () => {
-    // The forced override would otherwise hide the bad value from every
-    // native run, leaving exit 0 and no diagnostic.
-    const { fn, calls } = fakeRunSingle({ '/a/x': '', '/b/y': '' })
-    const [body, io] = await runFanout(
-      Cmd.WC,
-      [scope('/a/x'), scope('/b/y')],
-      [],
-      { total: 'bogus' },
-      fn,
-    )
-    expect(await text(body)).toBe('')
-    expect(io.exitCode).toBe(1)
-    // GNU's whole ARGMATCH refusal, candidate list and hint included
-    // (measured: `wc --total=bogus f`, coreutils 9.4, exit 1).
-    expect(await text(io.stderr)).toBe(
-      "wc: invalid argument 'bogus' for '--total'\n" +
-        "Valid arguments are:\n  - 'auto'\n  - 'always'\n  - 'only'\n  - 'never'\n" +
-        "Try 'wc --help' for more information.\n",
-    )
-    expect(calls).toEqual([])
-  })
-})
-
 // GNU grep 3.11 and ripgrep 14.1.1 put `--` between one file's context and the
 // next file's, so runs on different mounts join the same way; a run that
 // printed nothing adds no separator.

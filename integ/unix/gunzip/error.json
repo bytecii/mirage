@@ -95,6 +95,48 @@
         "stdout": "",
         "stderr": "gunzip: stdin: not in gzip format\n"
       }
+    },
+    {
+      "id": "gunzip_trailing_garbage_retains_output",
+      "seq": 845,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "(printf hello | gzip; printf junk) | gunzip",
+      "expect": {
+        "exit": 2,
+        "stdout": "hello",
+        "stderr": "gunzip: stdin: decompression OK, trailing garbage ignored\n"
+      }
+    },
+    {
+      "id": "gzip_trailing_garbage_retains_output",
+      "seq": 846,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "(printf hello | gzip; printf junk) | gzip -d",
+      "expect": {
+        "exit": 2,
+        "stdout": "hello",
+        "stderr": "gzip: stdin: decompression OK, trailing garbage ignored\n"
+      }
+    },
+    {
+      "id": "zcat_trailing_garbage_retains_output",
+      "seq": 847,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "(printf hello | gzip; printf junk) | zcat",
+      "expect": {
+        "exit": 2,
+        "stdout": "hello",
+        "stderr": "zcat: stdin: decompression OK, trailing garbage ignored\n"
+      }
     }
   ]
 }

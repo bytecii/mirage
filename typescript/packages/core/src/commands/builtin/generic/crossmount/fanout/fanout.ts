@@ -12,12 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { IOResult, materialize, type ByteSource } from '../../../../../io/types.ts'
+import { materialize, type ByteSource } from '../../../../../io/types.ts'
 import type { PathSpec } from '../../../../../types.ts'
-import { parseFlags as parseWcFlags } from '../../wc.ts'
 import { combinedExit } from './exit.ts'
 import { duTotal } from './du.ts'
-import { combineWc } from './wc.ts'
 import { Cmd, type CrossResult, type OperandRun, type RunSingle } from '../types.ts'
 import { contextSeparated, mergeOperandIos, runOperands } from '../utils.ts'
 import { FlagView } from '../../../../spec/flag_view.ts'
@@ -60,7 +58,7 @@ function joinRuns(results: OperandRun[], separator: string): Uint8Array {
 // natively once per operand on the operand's owning mount (globs expand
 // inside that native run), and the outputs combine in operand order.
 // Filename-keyed commands stay correct because every native run is forced to
-// name its files (grep `-H`, head/tail `-v`); wc and `du -c` re-total across
+// name its files (grep `-H`, head/tail `-v`); `du -c` re-totals across
 // runs.
 export async function runFanout(
   cmdName: Cmd,
@@ -91,24 +89,6 @@ export async function runFanout(
   ) {
     flags[verboseKey] = true
   }
-  // Both re-totalling combines below need raw per-file rows from every run:
-  // wc must not see a per-run total row it would have to guess at, and du
-  // must not sum sizes that were already rounded for -h. wc also needs each
-  // file's size for GNU's column width, so every run counts bytes.
-  if (cmdName === Cmd.WC) {
-    // The override would mask an invalid --total from every native run, so
-    // the user's value is diagnosed here first, as one mount would.
-    const checked = parseWcFlags(flagKwargs)
-    if (typeof checked === 'string') {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(checked) })]
-    }
-    flags.total = 'never'
-    const asked =
-      checked.lines || checked.words || checked.bytes || checked.chars || checked.maxLineLength
-    // Asking for bytes alone would drop the default columns.
-    if (!asked) Object.assign(flags, { lines: true, words: true })
-    flags.bytes = true
-  }
   const duC = cmdName === Cmd.DU && new FlagView(flagKwargs, specOf(Cmd.DU)).asBool('c')
   const duHuman = duC && new FlagView(flagKwargs, specOf(Cmd.DU)).asBool('h')
   if (duHuman) {
@@ -126,9 +106,7 @@ export async function runFanout(
   )
 
   let body: ByteSource | null
-  if (cmdName === Cmd.WC) {
-    body = combineWc(results, flagKwargs)
-  } else if (duC) {
+  if (duC) {
     body = duTotal(results, duHuman)
   } else if (cmdName === Cmd.TEE) {
     body = stdinBytes ?? new Uint8Array()

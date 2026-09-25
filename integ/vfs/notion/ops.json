@@ -139,7 +139,7 @@
       "command": "wc -l /notion/pages/Project_Roadmap__aaaa1111-2222-3333-4444-555566667777/page.json /notion/pages/Notes__bbbb2222-3333-4444-5555-666677778888/page.json",
       "expect": {
         "exit": 0,
-        "stdout": "140 /notion/pages/Project_Roadmap__aaaa1111-2222-3333-4444-555566667777/page.json\n 66 /notion/pages/Notes__bbbb2222-3333-4444-5555-666677778888/page.json\n206 total\n",
+        "stdout": " 140 /notion/pages/Project_Roadmap__aaaa1111-2222-3333-4444-555566667777/page.json\n  66 /notion/pages/Notes__bbbb2222-3333-4444-5555-666677778888/page.json\n 206 total\n",
         "stderr": ""
       }
     },

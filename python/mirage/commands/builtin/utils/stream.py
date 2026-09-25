@@ -114,19 +114,6 @@ def operand_label(path: PathSpec, stdin_name: str) -> str:
     return stdin_name if path.raw_path == "-" else path.raw_path
 
 
-def operand_label(path: PathSpec, stdin_name: str) -> str:
-    """The name a command's output gives an operand.
-
-    Only a literal ``-`` is stdin by name: ``/dev/stdin`` reads the same
-    bytes, but GNU grep, head and tail name it as the path it is.
-
-    Args:
-        path (PathSpec): the operand.
-        stdin_name (str): the command's name for ``-``.
-    """
-    return stdin_name if path.raw_path == "-" else path.raw_path
-
-
 def stdin_stream(
     read: PolymorphicReadFn,
     stdin: ByteSource | None,

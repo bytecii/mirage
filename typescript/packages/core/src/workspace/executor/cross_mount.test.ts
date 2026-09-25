@@ -410,16 +410,21 @@ describe('handleCrossMount — stream/fanout via runSingle', () => {
     expect(decode(await materialize(io.stderr))).toBe('grep: /ram/a: No such file or directory\n')
   })
 
-  it('wc re-totals per-operand rows with one shared width', async () => {
-    const calls: Record<string, unknown>[] = []
-    const rs = runSingleFrom(
-      { '/ram/a': ['2 3 8 /ram/a\n', 0], '/disk/b': ['1 1 2 /disk/b\n', 0] },
-      calls,
+  it('wc counts operands through dispatch with one shared width', async () => {
+    const dispatch = vi.fn(
+      (op: string, path: PathSpec): Promise<[unknown, IOResult]> =>
+        Promise.resolve([
+          op === 'stat'
+            ? fileStat(path.virtual)
+            : new TextEncoder().encode(path.virtual === '/ram/a' ? 'a b\ncde\n' : 'f\n'),
+          new IOResult(),
+        ]),
     )
     const paths = [PathSpec.fromStrPath('/ram/a'), PathSpec.fromStrPath('/disk/b')]
-    const [out] = await handleCrossMount('wc', paths, [], {}, noDispatch, rs, null, 'wc')
-    const text = decode(await materialize(out))
-    expect(text).toBe(' 2  3  8 /ram/a\n 1  1  2 /disk/b\n 3  4 10 total\n')
+    const [out] = await handleCrossMount('wc', paths, [], {}, dispatch, runSingleNoop, null, 'wc')
+    expect(decode(await materialize(out))).toBe(
+      ' 2  3  8 /ram/a\n 1  1  2 /disk/b\n 3  4 10 total\n',
+    )
   })
 
   it('sha256sum concatenates per-operand lines and fails on any failure', async () => {

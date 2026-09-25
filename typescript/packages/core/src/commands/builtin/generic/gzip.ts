@@ -1,3 +1,4 @@
+import { decompressInputs } from './decompress.ts'
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,13 +18,9 @@ import { FlagView } from '../../spec/flag_view.ts'
 import { mountedPath } from '../../../utils/key_prefix.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
-import { gunzipChecked, gzip } from '../../../utils/compress.ts'
-import { GzipDataError } from '../../../utils/errors.ts'
+import { gzip } from '../../../utils/compress.ts'
 import type { CommandFnResult, CommandOpts, WritesFn } from '../../config.ts'
-import { STDIN_OPERAND } from '../utils/constants.ts'
-import { operandLabel, resolveSource, stdinStream } from '../utils/stream.ts'
-
-const ENC = new TextEncoder()
+import { resolveSource, stdinStream } from '../utils/stream.ts'
 
 function concat(chunks: Uint8Array[]): Uint8Array {
   let total = 0
@@ -55,55 +52,35 @@ export async function gzipGeneric(
   const keep = fl.asBool('k')
   const stdoutMode = fl.asBool('c')
 
-  if (paths.length === 0 && !decompress) {
+  if (decompress)
+    return decompressInputs(paths, stream, {
+      command: 'gzip',
+      stdin: opts.stdin,
+      keep,
+      toStdout: stdoutMode,
+      write,
+      unlink,
+    })
+  if (paths.length === 0) {
     const result: ByteSource = await gzip(await materialize(resolveSource(opts.stdin)))
     return [result, new IOResult()]
   }
   const read = stdinStream(stream, opts.stdin)
   const writes: Record<string, Uint8Array> = {}
   const stdout: Uint8Array[] = []
-  let errors = ''
-  // With no operand gzip -d reads stdin. A `-` has no file to replace, so it
-  // goes to stdout; gzip refuses to follow /dev/stdin in place, so only `-`
-  // does this. An input with no gzip header is reported and skipped; a
-  // truncated or corrupt one ends the run.
-  for (const p of paths.length > 0 ? paths : [STDIN_OPERAND]) {
+  for (const p of paths) {
     const inPlace = !(stdoutMode || p.rawPath === '-')
     const raw = await materialize(inPlace ? stream(p) : read(p))
-    let data: Uint8Array
-    if (decompress) {
-      try {
-        data = await gunzipChecked(raw)
-      } catch (err) {
-        if (!(err instanceof GzipDataError)) throw err
-        errors += `gzip: ${operandLabel(p, 'stdin')}: ${err.message}\n`
-        if (err.fatal) break
-        continue
-      }
-    } else {
-      data = await gzip(raw)
-    }
+    const data = await gzip(raw)
     if (!inPlace) {
       stdout.push(data)
       continue
     }
     const pStripped = p.mountPath
-    let outPath: string
-    if (decompress) {
-      outPath = pStripped.endsWith('.gz') ? pStripped.slice(0, -3) : pStripped + '.out'
-    } else {
-      outPath = pStripped + '.gz'
-    }
+    const outPath = pStripped + '.gz'
     await write(mountedPath(p, outPath), data)
     writes[outPath] = data
     if (!keep) await unlink(p)
   }
-  return [
-    stdout.length > 0 ? concat(stdout) : null,
-    new IOResult({
-      writes,
-      exitCode: errors === '' ? 0 : 1,
-      stderr: errors === '' ? null : ENC.encode(errors),
-    }),
-  ]
+  return [stdout.length > 0 ? concat(stdout) : null, new IOResult({ writes })]
 }

@@ -12,9 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import gzip
 import zlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 from mirage.utils.errors import GzipDataError
 
@@ -48,28 +47,83 @@ async def gzip_compress_stream(
         yield tail
 
 
-def gunzip_checked(data: bytes) -> bytes:
-    """Decompress one gzip input, judged the way ``gzip -d`` judges it.
+GZIP_TRAILING = "decompression OK, trailing garbage ignored"
+GZIP_CHUNK_SIZE = 65536
 
-    Every member decompresses, so concatenated files read whole. Bytes
-    after the last member are refused as corrupt, where gzip keeps the
-    output and warns; zero padding is dropped as gzip drops it, which
-    Node's DecompressionStream refuses, so there the twins differ.
+
+class GzipDecoder:
+    """Incremental member decoder with bounded decompressed chunks."""
+
+    def __init__(self) -> None:
+        self._decoder = zlib.decompressobj(31)
+        self._between = True
+        self._seen = False
+        self._prefix = b""
+        self._padding = False
+
+    def feed(self, data: bytes) -> Iterator[bytes]:
+        """Decode one input chunk without collecting its expansion.
+
+        Args:
+            data (bytes): The next compressed chunk.
+        """
+        while data:
+            if self._between:
+                data = self._prefix + data
+                self._prefix = b""
+                if self._seen and (self._padding or data[0] == 0):
+                    self._padding = True
+                    if any(data):
+                        raise GzipDataError(GZIP_TRAILING, False, 2)
+                    return
+                if len(data) < 2:
+                    self._prefix = data
+                    return
+                if not data.startswith(GZIP_MAGIC):
+                    raise GzipDataError(
+                        GZIP_TRAILING if self._seen else GZIP_NOT_GZIP, False,
+                        2 if self._seen else 1)
+                self._decoder = zlib.decompressobj(31)
+                self._between = False
+            try:
+                out = self._decoder.decompress(data, GZIP_CHUNK_SIZE)
+            except zlib.error as exc:
+                raise GzipDataError(GZIP_CORRUPT, True) from exc
+            decoder = self._decoder
+            data = (decoder.unused_data
+                    if decoder.eof else decoder.unconsumed_tail)
+            if out:
+                yield out
+            if self._decoder.eof:
+                self._seen = True
+                self._between = True
+
+    def finish(self) -> None:
+        """Reject an absent header or an unfinished member at EOF."""
+        if not self._seen or not self._between or self._prefix:
+            raise GzipDataError(GZIP_EOF, True)
+
+
+async def gunzip_stream(source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Decode concatenated members, yielding before reading more input.
 
     Args:
-        data (bytes): the whole input.
-
-    Raises:
-        GzipDataError: the input is too short to hold a header, holds no
-            gzip header, or is truncated or corrupt.
+        source (AsyncIterator[bytes]): Compressed input chunks.
     """
-    if len(data) < len(GZIP_MAGIC):
-        raise GzipDataError(GZIP_EOF, fatal=True)
-    if not data.startswith(GZIP_MAGIC):
-        raise GzipDataError(GZIP_NOT_GZIP, fatal=False)
-    try:
-        return gzip.decompress(data)
-    except EOFError as exc:
-        raise GzipDataError(GZIP_EOF, fatal=True) from exc
-    except (OSError, zlib.error) as exc:
-        raise GzipDataError(GZIP_CORRUPT, fatal=True) from exc
+    decoder = GzipDecoder()
+    async for chunk in source:
+        for out in decoder.feed(chunk):
+            yield out
+    decoder.finish()
+
+
+def gunzip_checked(data: bytes) -> bytes:
+    """Materialize a checked archive for consumers that need all its bytes.
+
+    Args:
+        data (bytes): Compressed input, with no trailing garbage.
+    """
+    decoder = GzipDecoder()
+    parts = list(decoder.feed(data))
+    decoder.finish()
+    return b"".join(parts)
