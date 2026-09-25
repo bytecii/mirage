@@ -16,9 +16,9 @@ from mirage.accessor.dropbox import DropboxAccessor
 from mirage.commands.builtin.dropbox.pushdown import narrow_scope
 from mirage.commands.builtin.generic.rg import labelled
 from mirage.commands.builtin.generic.rg import rg as generic_rg
-from mirage.commands.builtin.generic.rg import visible_candidates
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_pattern import pattern_arg
+from mirage.commands.builtin.rg_scan import walk_candidates
 from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
@@ -55,8 +55,8 @@ async def rg(accessor: DropboxAccessor, paths: list[PathSpec],
                             or fl.as_str("glob") is not None),
         )
         if used_search:
-            narrowed = visible_candidates(narrowed, paths,
-                                          fl.as_bool("hidden"))
+            narrowed = walk_candidates(narrowed, paths, fl.as_str("type"),
+                                       fl.as_str("glob"), fl.as_bool("hidden"))
             if not narrowed:
                 return b"", IOResult(exit_code=1)
             run_opts = labelled(opts)

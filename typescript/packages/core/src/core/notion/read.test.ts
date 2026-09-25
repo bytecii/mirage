@@ -121,6 +121,82 @@ describe('notion read', () => {
     expect(decoded.properties).toEqual({ Name: { type: 'title' } })
   })
 
+  it('renders rows.jsonl as one line per row: the page.json fields but the body, and its path', async () => {
+    const transport = new FakeTransport()
+    const dbId = 'bbbb1111222233334444555566667777'
+    const dsId = 'cccc1111222233334444555566667777'
+    const row = {
+      ...pageBody(PAGE_ID_DASHED, 'Row A'),
+      parent: { type: 'data_source_id', data_source_id: 'cccc1111-2222-3333-4444-555566667777' },
+      properties: {
+        Name: { type: 'title', title: [{ plain_text: 'Row A' }] },
+        Priority: { type: 'number', number: 2 },
+      },
+    }
+    transport.enqueue('API-post-data-source-query', {
+      results: [row, { id: 'x', object: 'database' }],
+      has_more: false,
+      next_cursor: null,
+    })
+    const path = `/databases/Tasks__${dbId}/Tasks__${dsId}/rows.jsonl`
+    const bytes = await read(makeAccessor(transport), spec(path), undefined)
+    const lines = new TextDecoder().decode(bytes).split('\n')
+    expect(lines).toHaveLength(2)
+    expect(lines[1]).toBe('')
+    const decoded = JSON.parse(lines[0] ?? '') as Record<string, unknown>
+    expect(Object.keys(decoded)).toEqual([
+      'page_id',
+      'title',
+      'path',
+      'url',
+      'created_time',
+      'last_edited_time',
+      'parent_type',
+      'parent_id',
+      'archived',
+      'created_by',
+      'last_edited_by',
+      'properties',
+    ])
+    expect(decoded.path).toBe(`Row_A__${PAGE_ID_DASHED}/page.json`)
+    expect(decoded.parent_id).toBe('cccc1111-2222-3333-4444-555566667777')
+    expect(decoded.properties).toEqual(row.properties)
+    expect(transport.invocations).toEqual([
+      { name: 'API-post-data-source-query', args: { data_source_id: dsId, page_size: 100 } },
+    ])
+  })
+
+  it('renders a data source with no rows as an empty rows.jsonl', async () => {
+    const transport = new FakeTransport()
+    transport.enqueue('API-post-data-source-query', {
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const path = `/databases/Tasks__bbbb1111222233334444555566667777/Tasks__cccc1111222233334444555566667777/rows.jsonl`
+    const bytes = await read(makeAccessor(transport), spec(path), undefined)
+    expect(bytes.byteLength).toBe(0)
+  })
+
+  it('reads a row page.json as any page', async () => {
+    const transport = new FakeTransport()
+    transport.enqueue('API-retrieve-a-page', {
+      ...pageBody(PAGE_ID_DASHED, 'Row A'),
+      parent: { data_source_id: 'cccc1111222233334444555566667777' },
+    })
+    transport.enqueue('API-retrieve-block-children', {
+      results: [],
+      has_more: false,
+      next_cursor: null,
+    })
+    const path = `/databases/Tasks__bbbb1111222233334444555566667777/Tasks__cccc1111222233334444555566667777/Row_A__${PAGE_ID_DASHED}/page.json`
+    const decoded = decodeJson(
+      await read(makeAccessor(transport), spec(path), undefined),
+    ) as Record<string, unknown>
+    expect(decoded.page_id).toBe(PAGE_ID_DASHED)
+    expect(decoded.markdown).toBe('')
+  })
+
   it('returns JSON bytes containing the normalized page and its blocks', async () => {
     const transport = new FakeTransport()
     transport.enqueue('API-retrieve-a-page', pageBody(PAGE_ID_DASHED, 'My Page'))
@@ -231,4 +307,34 @@ describe('notion read', () => {
     expect((captured as { code?: string }).code).toBe('ENOENT')
     expect(transport.invocations).toHaveLength(0)
   })
+})
+
+it.each([
+  [100000000000000000000, '100000000000000000000'],
+  [1e-5, '0.00001'],
+  [1e-7, '1e-7'],
+  [1.0, '1'],
+  [-0.0, '0'],
+] as const)('spells numeric cells as %s -> %s', async (number, spelling) => {
+  const transport = new FakeTransport()
+  transport.enqueue('API-post-data-source-query', {
+    results: [
+      {
+        ...pageBody(PAGE_ID_DASHED, 'Row A'),
+        properties: { Amount: { type: 'number', number } },
+      },
+    ],
+    has_more: false,
+    next_cursor: null,
+  })
+  const data = await read(
+    makeAccessor(transport),
+    spec('/databases/DB__db/DS__ds/rows.jsonl'),
+    undefined,
+  )
+  const row = JSON.parse(new TextDecoder().decode(data)) as {
+    properties: { Amount: { number: number } }
+  }
+  expect(row.properties.Amount.number === number).toBe(true)
+  expect(new TextDecoder().decode(data)).toContain(`"number":${spelling}}`)
 })

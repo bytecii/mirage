@@ -168,9 +168,11 @@ export async function hubPost(
   body: unknown,
   params?: Record<string, string>,
 ): Promise<unknown> {
+  // fetch labels an untyped string body text/plain, and the Hub answers a
+  // paths-info body without a JSON type with 400; python's aiohttp sets it.
   return apiRequest('POST', url, {
     errorOf,
-    headers: hubHeaders(token),
+    headers: { ...hubHeaders(token), 'Content-Type': 'application/json' },
     params,
     json: body,
     retry: RETRY,
@@ -232,17 +234,56 @@ export async function hubBytes(
 }
 
 /**
+ * Fetch file content together with the ETag the bytes came with.
+ *
+ * The ETag is the final response's, after the redirect to the CDN: the first
+ * hop answers for the LFS object, the last one for the bytes actually served,
+ * which is the only one that can vouch for them. The ETag is `''` when none.
+ */
+export async function hubBytesTagged(
+  token: string | undefined,
+  url: string,
+  window?: ByteWindow,
+): Promise<[Uint8Array, string]> {
+  const response = (await apiRequest('GET', url, {
+    errorOf,
+    headers: hubHeaders(token),
+    retry: RETRY,
+    read: 'bytes_response',
+    window,
+  })) as ApiResponse
+  return [response.data as Uint8Array, response.headers.etag ?? '']
+}
+
+/** An ETag header's value, without the weak marker or the quotes. */
+export function etagValue(raw: string): string {
+  let value = raw.trim()
+  if (value.startsWith('W/')) value = value.slice(2)
+  return value.replace(/^"+|"+$/g, '')
+}
+
+/**
  * Stream file content without holding it whole in memory.
  *
  * Not routed through `apiRequest`: that reads the body to completion before
- * returning, which is the opposite of what a stream is for.
+ * returning, which is the opposite of what a stream is for. `onResponse` is
+ * told the final response's headers, lower-cased, once and before the first
+ * chunk, so an empty file reports them too.
  */
 export async function* hubStream(
   token: string | undefined,
   url: string,
+  onResponse?: (headers: Record<string, string>) => void,
 ): AsyncIterable<Uint8Array> {
   const response = await fetch(url, { headers: hubHeaders(token) })
   if (response.status >= 400) throw errorOf(response, await response.text())
+  if (onResponse !== undefined) {
+    const headers: Record<string, string> = {}
+    response.headers.forEach((value, name) => {
+      headers[name.toLowerCase()] = value
+    })
+    onResponse(headers)
+  }
   const body = response.body
   if (body === null) return
   const reader = body.getReader()

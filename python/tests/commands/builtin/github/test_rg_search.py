@@ -241,3 +241,32 @@ async def test_all_hidden_narrowed_set_exits_one(github_env, seam):
     assert stdout == b""
     assert io.exit_code == 1
     generic.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("file_type, want", [("py", ("/src/main.py:3\n", 0)),
+                                             ("md", ("", 1))])
+async def test_rg_narrowed_candidates_pass_the_walk_filters(
+        mock_github_api, github_env, monkeypatch, file_type, want):
+    # The candidates stand in for a walk, which --type filters, while a
+    # file named on the line is never filtered, so the wrapper filters
+    # them itself; none left is no match, not a stdin run.
+    accessor, index = github_env
+    narrowed = [
+        PathSpec(vfs_path="src/main.py",
+                 virtual="/src/main.py",
+                 directory="",
+                 resolved=True)
+    ]
+    monkeypatch.setitem(_NGLOBALS, "SCOPE_WARN", 1)
+    monkeypatch.setitem(_NGLOBALS, "narrow_paths",
+                        AsyncMock(return_value=narrowed))
+    stdout, io = await rg(
+        accessor, [_root()], ['import'],
+        CommandOpts(index=index,
+                    flags={
+                        'c': True,
+                        'w': True,
+                        'type': file_type
+                    }))
+    assert ((await materialize(stdout)).decode(), io.exit_code) == want

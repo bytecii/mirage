@@ -53,3 +53,59 @@ describe('hf_hub stream record path', () => {
     expect(records.map((r) => r.path)).toEqual(['/m/m/k.txt'])
   })
 })
+
+function answering(etag: string, ...payload: string[]) {
+  // Reports its headers the way the real hubStream does: once, before the
+  // first chunk.
+  return async function* (
+    _token: string | undefined,
+    _url: string,
+    onResponse?: (headers: Record<string, string>) => void,
+  ): AsyncIterable<Uint8Array> {
+    await Promise.resolve()
+    onResponse?.({ etag })
+    for (const item of payload) yield new TextEncoder().encode(item)
+  }
+}
+
+describe('hf_hub stream stamp', () => {
+  it('stamps the oid when the etag names the row', async () => {
+    vi.spyOn(client, 'hubStream').mockImplementation(answering('"oid-k"', 'ab', 'cd'))
+    // Only the first chunk is pulled: stamped as soon as the response
+    // arrived, so a reader that stops after one chunk (head -c 1) still
+    // leaves a token behind.
+    const [, records] = await runWithRecording(async () => {
+      await stream(loaded(), PATH)[Symbol.asyncIterator]().next()
+    })
+    expect(records.map((r) => r.fingerprint)).toEqual(['oid-k'])
+  })
+
+  it('stamps nothing when the bytes are another version', async () => {
+    vi.spyOn(client, 'hubStream').mockImplementation(answering('"another-version"', 'newr'))
+    const [, records] = await runWithRecording(async () => {
+      for await (const chunk of stream(loaded(), PATH)) void chunk
+    })
+    expect(records.map((r) => r.fingerprint)).toEqual([null])
+  })
+
+  it('reads with no recorder bound', async () => {
+    vi.spyOn(client, 'hubStream').mockImplementation(answering('"oid-k"', 'ab'))
+    const parts: string[] = []
+    for await (const chunk of stream(loaded(), PATH)) parts.push(new TextDecoder().decode(chunk))
+    expect(parts).toEqual(['ab'])
+  })
+})
+
+describe('a stream the Hub refuses', () => {
+  it('is permission denied', async () => {
+    vi.spyOn(client, 'hubStream').mockImplementation(async function* () {
+      await Promise.resolve()
+      throw new client.HfHubError('gated', 403)
+      yield new Uint8Array()
+    })
+    const err = await (async () => {
+      for await (const chunk of stream(loaded(), PATH)) void chunk
+    })().catch((e: unknown) => e)
+    expect((err as { code?: string }).code).toBe('EACCES')
+  })
+})

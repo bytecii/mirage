@@ -29,6 +29,8 @@ interface Opts {
   afterContext?: number
   beforeContext?: number
   byteOffsets?: boolean
+  label?: string
+  trailingMatches?: boolean
 }
 
 function render(lines: readonly string[], o: Opts = {}): number[][] {
@@ -41,6 +43,8 @@ function render(lines: readonly string[], o: Opts = {}): number[][] {
     o.afterContext ?? 0,
     o.beforeContext ?? 0,
     o.byteOffsets ?? false,
+    o.label ?? null,
+    o.trailingMatches ?? false,
   ).map((chunk) => [...chunk])
 }
 
@@ -194,6 +198,8 @@ async function stream(source: AsyncIterable<Uint8Array>, o: Opts = {}): Promise<
     o.afterContext ?? 0,
     o.beforeContext ?? 0,
     o.byteOffsets ?? false,
+    o.label ?? null,
+    o.trailingMatches ?? false,
   )) {
     out.push([...chunk])
   }
@@ -206,6 +212,8 @@ describe('grepContextStream', () => {
     [{ beforeContext: 1, byteOffsets: true }],
     [{ afterContext: 2, maxCount: 1 }],
     [{ afterContext: 1, invert: true }],
+    [{ afterContext: 1, lineNumbers: true, label: 'f' }],
+    [{ afterContext: 3, maxCount: 1, trailingMatches: true }],
   ])('renders what the lines render: %j', async (o: Opts) => {
     const data = ENC.encode(LINES.join('\n') + '\n')
     expect((await stream(chunks(data, 3), o)).flat()).toEqual(render(LINES, o).flat())
@@ -217,6 +225,61 @@ describe('grepContextStream', () => {
     const source = thenFail(ENC.encode('one\ntwo abc\nthree\n'))
     expect(await stream(source, { maxCount: 1, afterContext: 1 })).toEqual(
       bytes('two abc\n', 'three\n'),
+    )
+  })
+})
+
+// A labelled line leads with its file's name: `name:` on a selected line and
+// `name-` on a context line, the `--` between groups carrying no name (`rg -n
+// -A1 abc f` and `grep -H -n -A1 abc f` agree on this).
+describe('labelled lines', () => {
+  it('lead with the name on selected and context lines alike', () => {
+    expect(
+      render(LINES, { lineNumbers: true, afterContext: 1, beforeContext: 1, label: 'f' }),
+    ).toEqual(
+      bytes(
+        'f-1-one\n',
+        'f:2:two abc\n',
+        'f-3-three\n',
+        'f-4-four\n',
+        'f:5:five abc\n',
+        'f-6-six\n',
+      ),
+    )
+  })
+
+  it('leave the separator without a name', () => {
+    expect(render(LINES, { lineNumbers: true, afterContext: 1, label: 'f' })).toEqual(
+      bytes('f:2:two abc\n', 'f-3-three\n', '--\n', 'f:5:five abc\n', 'f-6-six\n'),
+    )
+  })
+})
+
+// A line past -m that would be selected, inside the trailing context. ripgrep
+// 14.1.1 prints it as selected and still counts it as context: `rg -n -m1 -A3
+// o` over hello/world/foo/bar prints `1:hello`, `2:world`, `3:foo`, `4-bar`.
+// GNU grep 3.11 prints it as context: `grep -n -m1 -A2 o` prints `1:hello`,
+// `2-world`, `3-foo`.
+describe('trailing matches', () => {
+  const WORDS = ['hello', 'world', 'foo', 'bar', 'baz']
+  const o = { pat: /o/, lineNumbers: true, maxCount: 1 }
+
+  it('print as selected the way ripgrep prints them', () => {
+    expect(render(WORDS, { ...o, afterContext: 3, trailingMatches: true })).toEqual(
+      bytes('1:hello\n', '2:world\n', '3:foo\n', '4-bar\n'),
+    )
+  })
+
+  it('print as context the way GNU prints them', () => {
+    expect(render(WORDS, { ...o, afterContext: 2 })).toEqual(
+      bytes('1:hello\n', '2-world\n', '3-foo\n'),
+    )
+  })
+
+  it('still count as context', () => {
+    // `rg -n -m1 -A1 o` stops after one trailing line, selected or not.
+    expect(render(WORDS, { ...o, afterContext: 1, trailingMatches: true })).toEqual(
+      bytes('1:hello\n', '2:world\n'),
     )
   })
 })

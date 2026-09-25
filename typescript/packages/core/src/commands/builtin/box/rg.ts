@@ -21,7 +21,8 @@ import { type FileStat, VFSName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { patternArg } from '../grep_pattern.ts'
-import { labelled, rgGeneric, visibleCandidates } from '../generic/rg.ts'
+import { labelled, rgGeneric } from '../generic/rg.ts'
+import { walkCandidates } from '../rg_scan.ts'
 import { narrowScope } from './pushdown.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 
@@ -48,7 +49,13 @@ async function rgCommand(
       ...(opts.index !== null ? { index: opts.index } : {}),
     })
     if (narrowed.usedSearch) {
-      const visible = visibleCandidates(narrowed.resolved, paths, fl.asBool('hidden'))
+      const visible = walkCandidates(
+        narrowed.resolved,
+        paths,
+        fl.asStr('type') ?? null,
+        fl.asStr('glob') ?? null,
+        fl.asBool('hidden'),
+      )
       if (visible.length === 0) return [new Uint8Array(), new IOResult({ exitCode: 1 })]
       resolved = visible
       runOpts = labelled(opts)

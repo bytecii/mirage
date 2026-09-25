@@ -20,6 +20,10 @@ import type { CommandOpts } from '../../../config.ts'
 import type { DispatchFn, OperandRun, RunSingle } from './types.ts'
 import type { FlagValue } from '../../../spec/types.ts'
 import { readFailExitCode } from '../../../spec/usage.ts'
+import { FlagView } from '../../../spec/flag_view.ts'
+import { specOf } from '../../../spec/builtins.ts'
+import { parseFlags as parseGrepFlags, printsContext as grepPrintsContext } from '../grep.ts'
+import { parseFlags as parseRgFlags, printsContext as rgPrintsContext } from '../rg.ts'
 
 const ENC = new TextEncoder()
 
@@ -27,6 +31,21 @@ const ENC = new TextEncoder()
 // operand executes on its owning mount through `runSingle` (which also
 // expands the operand's glob natively). Output is materialized and the lazy
 // exit code synced, so combiners see final values.
+/**
+ * Whether one run's grep or rg output is set off from the next by `--`. Both
+ * print the separator between one file's context and the next file's, so the
+ * runs a line splits into join the way one run would.
+ */
+export function contextSeparated(cmdName: string, flagKwargs: Record<string, FlagValue>): boolean {
+  if (cmdName === 'rg') {
+    return rgPrintsContext(parseRgFlags(new FlagView(flagKwargs, specOf('rg'))))
+  }
+  if (cmdName === 'grep') {
+    return grepPrintsContext(parseGrepFlags(new FlagView(flagKwargs, specOf('grep'))))
+  }
+  return false
+}
+
 export async function runOperands(
   runSingle: RunSingle,
   cmdName: string,

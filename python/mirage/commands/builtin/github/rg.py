@@ -15,10 +15,10 @@
 from mirage.accessor.github import GitHubAccessor
 from mirage.commands.builtin.generic.rg import RG_NO_PATTERN, labelled
 from mirage.commands.builtin.generic.rg import rg as generic_rg
-from mirage.commands.builtin.generic.rg import visible_candidates
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.github.pushdown import narrow_scope, scope_refusal
 from mirage.commands.builtin.grep_pattern import pattern_arg
+from mirage.commands.builtin.rg_scan import walk_candidates
 from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
@@ -59,8 +59,8 @@ async def rg(accessor: GitHubAccessor, paths: list[PathSpec], texts: list[str],
         if used_search:
             # The walk a narrowing stands in for prunes hidden entries and
             # labels every file it finds.
-            narrowed = visible_candidates(narrowed, paths,
-                                          fl.as_bool("hidden"))
+            narrowed = walk_candidates(narrowed, paths, fl.as_str("type"),
+                                       fl.as_str("glob"), fl.as_bool("hidden"))
             if not narrowed:
                 return b"", IOResult(exit_code=1)
             run_opts = labelled(opts)

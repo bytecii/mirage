@@ -31,6 +31,12 @@ const SEPARATOR = new TextEncoder().encode('--\n')
  * separator carries no fields at all. The rendered line is put back with
  * `encodeLine`, so a byte that is not valid UTF-8 prints as GNU prints it
  * rather than as U+FFFD.
+ *
+ * `label` is the file name every line leads with, followed by `:` on a
+ * selected line and `-` on a context line; the `--` separator carries none.
+ * `trailingMatches` is ripgrep's -m: once -m has selected its last line, a
+ * line in that line's trailing context that would be selected prints as
+ * selected, still counted as context; GNU prints it as context.
  */
 export class ContextRenderer {
   // GNU selects no line at all under -m0, context and all, so there is
@@ -51,6 +57,8 @@ export class ContextRenderer {
     private readonly afterContext: number,
     private readonly beforeContext: number,
     private readonly byteOffsets = false,
+    private readonly label: string | null = null,
+    private readonly trailingMatches = false,
   ) {
     this.finished = maxCount === 0
   }
@@ -64,9 +72,9 @@ export class ContextRenderer {
     this.position += width + 1
     const out: Uint8Array[] = []
     const selecting = this.maxCount === null || this.selected < this.maxCount
-    const found = selecting && this.pat.test(line)
+    const hit = this.pat.test(line) !== this.invert
     this.pat.lastIndex = 0
-    if (selecting && found !== this.invert) {
+    if (selecting && hit) {
       this.selected += 1
       const first = this.held[0]?.[0] ?? this.index
       if (this.lastPrinted >= 0 && first > this.lastPrinted + 1) out.push(SEPARATOR)
@@ -76,7 +84,7 @@ export class ContextRenderer {
       this.lastPrinted = this.index
       this.afterLeft = this.afterContext
     } else if (this.afterLeft > 0) {
-      out.push(this.render(this.index, line, start, false))
+      out.push(this.render(this.index, line, start, hit && this.trailingMatches))
       this.lastPrinted = this.index
       this.afterLeft -= 1
     } else {
@@ -95,7 +103,8 @@ export class ContextRenderer {
       this.byteOffsets ? start : null,
       selected,
     )
-    return encodeLine(`${fields}${line}\n`)
+    const name = this.label === null ? '' : `${this.label}${selected ? ':' : '-'}`
+    return encodeLine(`${name}${fields}${line}\n`)
   }
 }
 
@@ -113,6 +122,8 @@ export function grepContextLines(
   afterContext: number,
   beforeContext: number,
   byteOffsets = false,
+  label: string | null = null,
+  trailingMatches = false,
 ): Uint8Array[] {
   const renderer = new ContextRenderer(
     pat,
@@ -122,6 +133,8 @@ export function grepContextLines(
     afterContext,
     beforeContext,
     byteOffsets,
+    label,
+    trailingMatches,
   )
   const out: Uint8Array[] = []
   for (const line of lines) {
@@ -141,6 +154,8 @@ export async function* grepContextStream(
   afterContext: number,
   beforeContext: number,
   byteOffsets = false,
+  label: string | null = null,
+  trailingMatches = false,
 ): AsyncIterable<Uint8Array> {
   const renderer = new ContextRenderer(
     pat,
@@ -150,6 +165,8 @@ export async function* grepContextStream(
     afterContext,
     beforeContext,
     byteOffsets,
+    label,
+    trailingMatches,
   )
   const lines = new AsyncLineIterator(source)
   while (!renderer.finished) {

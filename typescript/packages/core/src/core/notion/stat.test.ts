@@ -18,7 +18,7 @@ import { IndexEntry } from '../../cache/index/config.ts'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { ContentType, FileType, PathSpec } from '../../types.ts'
 import type { NotionAccessor } from '../../accessor/notion.ts'
-import type { NotionTransport } from './client.ts'
+import { NotionAPIError, type NotionTransport } from './client.ts'
 import { stat } from './stat.ts'
 
 class FakeTransport implements NotionTransport {
@@ -291,5 +291,114 @@ describe('notion stat', () => {
     expect(result.name).toBe(segment)
     expect(result.type).toBe(FileType.DIRECTORY)
     expect(result.extra.page_id).toBe(PAGE_ID)
+  })
+})
+
+const DS_ID = 'cccc1111-2222-3333-4444-555566667777'
+const DS_DIR = `/databases/Tasks__${DB_ID}/Tasks__${DS_ID}`
+
+function rowBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: PAGE_ID,
+    object: 'page',
+    last_edited_time: '2024-03-04T00:00:00Z',
+    in_trash: false,
+    parent: { type: 'data_source_id', data_source_id: DS_ID, database_id: DB_ID },
+    properties: { Name: { type: 'title', title: [{ plain_text: 'Row A' }] } },
+    ...overrides,
+  }
+}
+
+describe('notion stat rows', () => {
+  // A data source lists rows.jsonl rather than its rows, so a row directory
+  // proves itself with one retrieve instead of through a listing.
+  it('returns a directory stat for a row of this data source', async () => {
+    const transport = new FakeTransport()
+    transport.enqueue('API-retrieve-a-page', rowBody())
+    const segment = `Row_A__${PAGE_ID}`
+    const result = await stat(
+      makeAccessor(transport),
+      spec(`${DS_DIR}/${segment}`),
+      new RAMIndexCacheStore(),
+    )
+    expect(result.name).toBe(segment)
+    expect(result.type).toBe(FileType.DIRECTORY)
+    expect(result.modified).toBe('2024-03-04T00:00:00Z')
+    expect(result.extra.page_id).toBe(PAGE_ID)
+    expect(transport.invocations).toEqual([
+      { name: 'API-retrieve-a-page', args: { page_id: PAGE_ID } },
+    ])
+  })
+
+  it('throws ENOENT for a row of another data source', async () => {
+    const transport = new FakeTransport()
+    transport.enqueue(
+      'API-retrieve-a-page',
+      rowBody({
+        parent: { type: 'data_source_id', data_source_id: 'eeee1111-2222-3333-4444-555566667777' },
+      }),
+    )
+    await expect(
+      stat(makeAccessor(transport), spec(`${DS_DIR}/Row_A__${PAGE_ID}`), new RAMIndexCacheStore()),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('throws ENOENT for a row spelled with another title', async () => {
+    const transport = new FakeTransport()
+    transport.enqueue('API-retrieve-a-page', rowBody())
+    await expect(
+      stat(makeAccessor(transport), spec(`${DS_DIR}/Row_B__${PAGE_ID}`), new RAMIndexCacheStore()),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('throws ENOENT for a row in the trash', async () => {
+    const transport = new FakeTransport()
+    transport.enqueue('API-retrieve-a-page', rowBody({ in_trash: true }))
+    await expect(
+      stat(makeAccessor(transport), spec(`${DS_DIR}/Row_A__${PAGE_ID}`), new RAMIndexCacheStore()),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('throws ENOENT for a row Notion does not know', async () => {
+    const transport: NotionTransport = {
+      callTool: () =>
+        Promise.reject(new NotionAPIError('Could not find page', 404, 'object_not_found')),
+    }
+    await expect(
+      stat(makeAccessor(transport), spec(`${DS_DIR}/Row_A__${PAGE_ID}`), new RAMIndexCacheStore()),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('returns a text stat for rows.jsonl through the data source listing', async () => {
+    const transport = new FakeTransport()
+    transport.enqueue('API-retrieve-a-data-source', {
+      id: DS_ID,
+      object: 'data_source',
+      title: [{ plain_text: 'Tasks' }],
+      parent: { type: 'database_id', database_id: DB_ID },
+      properties: {},
+    })
+    const result = await stat(
+      makeAccessor(transport),
+      spec(`${DS_DIR}/rows.jsonl`),
+      new RAMIndexCacheStore(),
+    )
+    expect(result.type).toBe(FileType.FILE)
+    expect(result.content).toBe(ContentType.TEXT)
+    expect(result.size).toBeNull()
+    expect(result.extra.data_source_id).toBe(DS_ID)
+  })
+
+  it('returns a json stat for a row page.json without fetching blocks', async () => {
+    const transport = new FakeTransport()
+    transport.enqueue('API-retrieve-a-page', rowBody())
+    const result = await stat(
+      makeAccessor(transport),
+      spec(`${DS_DIR}/Row_A__${PAGE_ID}/page.json`),
+      new RAMIndexCacheStore(),
+    )
+    expect(result.type).toBe(FileType.FILE)
+    expect(result.content).toBe(ContentType.JSON)
+    expect(transport.invocations.map((call) => call.name)).toEqual(['API-retrieve-a-page'])
   })
 })

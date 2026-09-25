@@ -46,6 +46,13 @@ class ContextRenderer:
             fields at all. The rendered line is put back with
             ``encode_line``, so a byte that is not valid UTF-8 prints as
             GNU prints it rather than as U+FFFD.
+        label (str | None): the file name every line leads with, followed
+            by ``:`` on a selected line and ``-`` on a context line; the
+            ``--`` separator carries none.
+        trailing_matches (bool): once -m has selected its last line, a
+            line in that line's trailing context that would be selected
+            prints as selected, still counted as context, the way
+            ripgrep prints it; GNU prints it as context.
     """
 
     def __init__(self,
@@ -55,13 +62,17 @@ class ContextRenderer:
                  max_count: int | None,
                  after_context: int,
                  before_context: int,
-                 byte_offsets: bool = False) -> None:
+                 byte_offsets: bool = False,
+                 label: str | None = None,
+                 trailing_matches: bool = False) -> None:
         self._pat = pat
         self._invert = invert
         self._line_numbers = line_numbers
         self._max_count = max_count
         self._after_context = after_context
         self._byte_offsets = byte_offsets
+        self._label = label
+        self._trailing_matches = trailing_matches
         self._held: deque[tuple[int, str, int]] = deque(maxlen=before_context)
         self._index = -1
         self._position = 0
@@ -86,7 +97,8 @@ class ContextRenderer:
         out: list[bytes] = []
         selecting = (self._max_count is None
                      or self._selected < self._max_count)
-        if selecting and bool(self._pat.search(line)) != self._invert:
+        hit = bool(self._pat.search(line)) != self._invert
+        if selecting and hit:
             self._selected += 1
             first = self._held[0][0] if self._held else self._index
             if self._last_printed >= 0 and first > self._last_printed + 1:
@@ -99,7 +111,9 @@ class ContextRenderer:
             self._last_printed = self._index
             self._after_left = self._after_context
         elif self._after_left > 0:
-            out.append(self._render(self._index, line, start, False))
+            out.append(
+                self._render(self._index, line, start, hit
+                             and self._trailing_matches))
             self._last_printed = self._index
             self._after_left -= 1
         else:
@@ -113,6 +127,8 @@ class ContextRenderer:
                 selected: bool) -> bytes:
         fields = prefix_of(index + 1 if self._line_numbers else None,
                            start if self._byte_offsets else None, selected)
+        if self._label is not None:
+            fields = f"{self._label}{':' if selected else '-'}{fields}"
         return encode_line(f"{fields}{line}\n")
 
 
@@ -125,6 +141,8 @@ def grep_context_lines(
     after_context: int,
     before_context: int,
     byte_offsets: bool = False,
+    label: str | None = None,
+    trailing_matches: bool = False,
 ) -> list[bytes]:
     """Render selected lines with their context, GNU's separators included.
 
@@ -139,9 +157,12 @@ def grep_context_lines(
         after_context (int): -A, trailing context lines.
         before_context (int): -B, leading context lines.
         byte_offsets (bool): -b, see ``ContextRenderer``.
+        label (str | None): the file name, see ``ContextRenderer``.
+        trailing_matches (bool): ripgrep's -m, see ``ContextRenderer``.
     """
     renderer = ContextRenderer(pat, invert, line_numbers, max_count,
-                               after_context, before_context, byte_offsets)
+                               after_context, before_context, byte_offsets,
+                               label, trailing_matches)
     out: list[bytes] = []
     for line in lines:
         if renderer.finished:
@@ -159,6 +180,8 @@ async def grep_context_stream(
     after_context: int,
     before_context: int,
     byte_offsets: bool = False,
+    label: str | None = None,
+    trailing_matches: bool = False,
 ) -> AsyncIterator[bytes]:
     """``grep_context_lines`` over a stream, read no further than it prints.
 
@@ -171,9 +194,12 @@ async def grep_context_stream(
         after_context (int): -A, trailing context lines.
         before_context (int): -B, leading context lines.
         byte_offsets (bool): -b, see ``ContextRenderer``.
+        label (str | None): the file name, see ``ContextRenderer``.
+        trailing_matches (bool): ripgrep's -m, see ``ContextRenderer``.
     """
     renderer = ContextRenderer(pat, invert, line_numbers, max_count,
-                               after_context, before_context, byte_offsets)
+                               after_context, before_context, byte_offsets,
+                               label, trailing_matches)
     if renderer.finished:
         return
     async for raw in AsyncLineIterator(source):

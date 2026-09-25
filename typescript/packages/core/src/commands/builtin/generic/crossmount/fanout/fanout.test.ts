@@ -89,3 +89,36 @@ describe('runFanout wc', () => {
     expect(calls).toEqual([])
   })
 })
+
+// GNU grep 3.11 and ripgrep 14.1.1 put `--` between one file's context and the
+// next file's, so runs on different mounts join the same way; a run that
+// printed nothing adds no separator.
+describe('runFanout grep and rg context', () => {
+  it.each([[Cmd.GREP], [Cmd.RG]])('separates %s context runs', async (cmd) => {
+    const { fn } = fakeRunSingle({
+      '/a/x': '/a/x:hit\n/a/x-next\n',
+      '/c/w': '',
+      '/b/y': '/b/y:hit\n/b/y-next\n',
+    })
+    const [out] = await runFanout(
+      cmd,
+      [scope('/a/x'), scope('/c/w'), scope('/b/y')],
+      ['hit'],
+      { A: '1' },
+      fn,
+    )
+    expect(await text(out)).toBe('/a/x:hit\n/a/x-next\n--\n/b/y:hit\n/b/y-next\n')
+  })
+
+  it.each([[Cmd.GREP], [Cmd.RG]])('joins %s counts without a separator', async (cmd) => {
+    const { fn } = fakeRunSingle({ '/a/x': '/a/x:1\n', '/b/y': '/b/y:1\n' })
+    const [out] = await runFanout(
+      cmd,
+      [scope('/a/x'), scope('/b/y')],
+      ['hit'],
+      { A: '1', c: true },
+      fn,
+    )
+    expect(await text(out)).toBe('/a/x:1\n/b/y:1\n')
+  })
+})

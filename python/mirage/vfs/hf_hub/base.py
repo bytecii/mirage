@@ -60,6 +60,7 @@ class HfHubVFS(BoundVFS, Generic[A]):
     # this off the source, and an imported name reads as unresolvable.
     index_ttl: float = 86_400
     SUPPORTS_SNAPSHOT: bool = True
+    READ_REVALIDATABLE: bool = True
 
     def __init__(self, config: Any) -> None:
         super().__init__(io=IO)

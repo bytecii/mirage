@@ -46,6 +46,9 @@ function makeAccessor(): GitHubAccessor {
     get(path: string): Promise<unknown> {
       throw new Error(`unexpected transport call: ${path}`)
     },
+    requestWithResponse(method: string, path: string): Promise<never> {
+      throw new Error(`unexpected transport call: ${method} ${path}`)
+    },
     request(method: string, path: string): Promise<unknown> {
       throw new Error(`unexpected transport call: ${method} ${path}`)
     },
@@ -149,6 +152,21 @@ describe('github rg push-down', () => {
     expect(out).toEqual(new Uint8Array())
     expect(io.exitCode).toBe(1)
     expect(generic).not.toHaveBeenCalled()
+  })
+
+  it('hands the generic the candidates the walk would search', async () => {
+    narrow.mockResolvedValue({ resolved: [spec('/src/a.py')], fileCount: 1, usedSearch: true })
+    await runRg({ w: true, type: 'py' })
+    expect((generic.mock.calls[0]?.[0] ?? []).map((p) => p.virtual)).toEqual(['/src/a.py'])
+  })
+
+  it('answers no match when the walk would search nothing', async () => {
+    narrow.mockResolvedValue({ resolved: [spec('/src/a.py')], fileCount: 1, usedSearch: true })
+    const result = await runRg({ w: true, type: 'md' })
+    expect(generic).not.toHaveBeenCalled()
+    const [out, io] = result as [Uint8Array, IOResult]
+    expect(out).toEqual(new Uint8Array())
+    expect(io.exitCode).toBe(1)
   })
 
   it.each<[string, CommandOpts['flags']]>([

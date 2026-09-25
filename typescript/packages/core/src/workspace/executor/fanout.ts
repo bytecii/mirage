@@ -34,6 +34,7 @@ import { parseFindExpression, type FindExpr } from '../../commands/builtin/find_
 import { FindParseError } from '../../commands/errors.ts'
 import type { FlagValue } from '../../commands/spec/types.ts'
 import type { RunSingle } from '../../commands/builtin/generic/crossmount/types.ts'
+import { contextSeparated } from '../../commands/builtin/generic/crossmount/utils.ts'
 import type { NamespaceView, StatPath } from '../../ops/types.ts'
 import { inMtimeWindow } from '../../utils/dates.ts'
 import { modifiedTs } from '../../core/generic/find.ts'
@@ -617,9 +618,12 @@ export async function fanOutTraversal(
       return s
     })
     // `ls -R` separates directory groups with a blank line, and a
-    // per-mount block is one more group; every other format is a plain
+    // per-mount block is one more group; grep and rg put `--` between one
+    // file's context and the next file's; every other format is a plain
     // line stream.
-    const sep = cmdName === 'ls' ? '\n\n' : '\n'
+    let sep = '\n'
+    if (cmdName === 'ls') sep = '\n\n'
+    else if (contextSeparated(cmdName, flagKwargs)) sep = '\n--\n'
     combined = new TextEncoder().encode(parts.filter((s) => s !== '').join(sep) + '\n')
   }
 

@@ -16,6 +16,8 @@ import asyncio
 
 import aiohttp
 import pytest
+import pytest_asyncio
+from aiohttp import web
 from aioresponses import aioresponses
 from yarl import URL
 
@@ -482,3 +484,47 @@ def test_floored_delay_raises_to_the_status_floor_under_the_cap():
     wide = RetryPolicy(statuses=frozenset({429}), min_delays={429: 5.0})
     assert floored_delay(1.0, 429, wide) == 5.0
     assert floored_delay(8.0, 429, wide) == 8.0
+
+
+async def _first_hop(_request: web.Request) -> web.Response:
+    raise web.HTTPFound("/final", headers={"ETag": '"first-hop"'})
+
+
+async def _final_hop(request: web.Request) -> web.Response:
+    # Ignores Range and answers 200 with the whole body, which a server may
+    # legally do; the window has to trim it client side.
+    return web.Response(body=b"0123456789",
+                        headers={
+                            "ETag": '"final-hop"',
+                            "X-Mixed-Case": "kept"
+                        })
+
+
+@pytest_asyncio.fixture()
+async def redirecting_url():
+    app = web.Application()
+    app.router.add_get("/start", _first_hop)
+    app.router.add_get("/final", _final_hop)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    yield f"http://127.0.0.1:{port}"
+    await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_bytes_response_returns_the_window_and_the_final_headers(
+        redirecting_url):
+    response = await api_request("GET",
+                                 redirecting_url + "/start",
+                                 error_of=_error_of,
+                                 read="bytes_response",
+                                 window=ByteWindow(2, 3))
+    assert response.data == b"234"
+    assert response.status == 200
+    # The redirect's first hop carries a different ETag; a caller reading
+    # a content token needs the one that came with the bytes.
+    assert response.headers["etag"] == '"final-hop"'
+    assert response.headers["x-mixed-case"] == "kept"
