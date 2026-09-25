@@ -21,6 +21,7 @@ import { getExtension } from '../../resolve.ts'
 import { BINARY_EXTENSIONS } from '../constants.ts'
 import {
   countScopeFiles,
+  isDirectoryKey,
   scopeRelativeKey,
   searchSafe,
   shouldUseSearch,
@@ -77,10 +78,13 @@ export async function narrowScope(
   const fileCount = countScopeFiles(accessor.tree, key)
   const query = pattern !== null ? searchQuery(pattern, fixedString) : null
   // A truncated tree cannot list every file code search skips, so no answer
-  // over it can be shown to be the whole set.
+  // over it can be shown to be the whole set; and a full scan reads every
+  // file named on the line, binary or not, so only directory operands are
+  // narrowed.
   const useSearch =
     !exactFileSet &&
     !accessor.truncated &&
+    paths.every((p) => isDirectoryKey(accessor.tree, scopeRelativeKey(p))) &&
     query !== null &&
     wholeWord &&
     pattern !== null &&
@@ -94,7 +98,9 @@ export async function narrowScope(
       // A recursive walk skips binary extensions; a narrowing holds only the
       // files that walk would have read.
       const kept = narrowed.filter((p) => !BINARY_EXTENSIONS.has(getExtension(p.virtual) ?? ''))
-      return { resolved: kept, fileCount: kept.length, usedSearch: true }
+      // Left empty, the list would read as no operands and grep would read
+      // standard input.
+      if (kept.length > 0) return { resolved: kept, fileCount: kept.length, usedSearch: true }
     }
   }
   const resolved = await resolveGlob(accessor, paths, index ?? undefined)

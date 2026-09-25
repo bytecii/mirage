@@ -16,9 +16,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from mirage.core.github.pushdown import (count_scope_files, is_repo_root,
-                                         scope_relative_key, search_safe,
-                                         unsearchable_keys)
+from mirage.core.github.pushdown import (count_scope_files, is_directory_key,
+                                         is_repo_root, scope_relative_key,
+                                         search_safe, unsearchable_keys)
 from mirage.core.github.tree_entry import TreeEntry
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_key
@@ -139,3 +139,10 @@ def test_unsearchable_keys_lists_what_code_search_never_indexes():
     assert unsearchable_keys(tree, "/") == [
         "docs/big.md", "src/big.bin", "src/none.py", "srcx/big.bin"
     ]
+
+
+def test_is_directory_key(entries):
+    assert is_directory_key(entries, "/")
+    assert is_directory_key(entries, "/src")
+    assert not is_directory_key(entries, "/src/main.py")
+    assert not is_directory_key(entries, "/nope")

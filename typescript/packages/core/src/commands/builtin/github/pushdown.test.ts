@@ -214,6 +214,28 @@ describe('narrowScope trusts only a complete, own-repository answer', () => {
     expect(res.resolved.map((p) => p.virtual)).toEqual(['/src/f1.py'])
   })
 
+  it('never narrows when an operand is a file', async () => {
+    // A full scan reads every file named on the line, binary extension or
+    // not, so a narrowing is only offered over directory operands.
+    const calls: SearchCall[] = []
+    const acc = makeAccessor(['src/f1.py'], calls)
+    const named = new PathSpec({ virtual: '/src/f2.py', directory: '/src', vfsPath: 'src/f2.py' })
+    const res = await narrowScope(acc, [subdir(), named], 'import', false, true, true)
+    expect(res.usedSearch).toBe(false)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('falls back when the binary filter leaves nothing', async () => {
+    // An empty path list would make grep read standard input instead.
+    const tree = bigTree()
+    tree['src/model.gguf'] = { path: 'src/model.gguf', type: 'blob', sha: 'g', size: 400_000 }
+    const calls: SearchCall[] = []
+    const acc = makeAccessor([], calls, { tree })
+    const res = await narrowScope(acc, [subdir()], 'import', false, true, true)
+    expect(res.usedSearch).toBe(false)
+    expect(res.resolved.map((p) => p.virtual)).toEqual(['/src'])
+  })
+
   it('still reads a file code search never indexes', async () => {
     // src/f7.py sits over the 384 KB limit, so code search can never name it.
     const tree = bigTree()

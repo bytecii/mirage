@@ -48,6 +48,22 @@ def is_repo_root(key: str) -> bool:
     return key in ("", "/")
 
 
+def is_directory_key(tree: dict[str, TreeEntry], key: str) -> bool:
+    """Return whether a scope key names a directory of the git tree.
+
+    Args:
+        tree (dict[str, TreeEntry]): The recursive git tree.
+        key (str): Repo-relative key from :func:`scope_relative_key`.
+
+    Returns:
+        bool: True for the repository root or a ``tree`` entry.
+    """
+    if is_repo_root(key):
+        return True
+    entry = tree.get(key.strip("/"))
+    return entry is not None and entry.type == "tree"
+
+
 def count_scope_files(tree: dict[str, TreeEntry], key: str) -> int:
     """Count files under a repo-relative scope key.
 

@@ -368,3 +368,69 @@ async def test_a_big_binary_file_is_not_read(mock_github_api, github_env,
     })
     assert files == ["/src/main.py"]
     assert counting_read == ["bbb222"]
+
+
+@pytest.mark.asyncio
+async def test_a_named_file_is_always_read(mock_github_api, github_env,
+                                           counting_read, monkeypatch):
+    # A full scan reads every file named on the line, binary extension or
+    # not, so a narrowing is only offered over directory operands.
+    accessor, index = github_env
+    monkeypatch.setitem(_NGLOBALS, "SCOPE_WARN", 1)
+    big = dict(MOCK_TREE)
+    big["docs/model.gguf"] = TreeEntry(path="docs/model.gguf",
+                                       type="blob",
+                                       sha="gguf02",
+                                       size=10)
+    monkeypatch.setitem(MOCK_BLOBS, "gguf02", b"import weights\n")
+
+    async def _fetch_tree(config, owner, repo, ref, session=None):
+        return dict(big), False
+
+    monkeypatch.setattr("mirage.core.github.tree.fetch_tree", _fetch_tree)
+    calls = _answer(monkeypatch, [_hit("src/main.py", "bbb222")])
+    named = PathSpec(vfs_path="docs/model.gguf",
+                     virtual="/docs/model.gguf",
+                     directory="/docs",
+                     resolved=False)
+    stdout, _ = await grep(
+        accessor, [_subdir(), named], ["import"],
+        CommandOpts(index=index, flags={
+            "r": True,
+            "w": True
+        }))
+    body = (await materialize(stdout)).decode()
+    assert calls == []
+    assert "/docs/model.gguf:import weights" in body.splitlines()
+
+
+@pytest.mark.asyncio
+async def test_a_narrowing_left_empty_falls_back_instead_of_reading_stdin(
+        mock_github_api, github_env, counting_read, monkeypatch):
+    # Every candidate here is a binary a walk skips; an empty path list
+    # would make grep read standard input instead.
+    accessor, index = github_env
+    monkeypatch.setitem(_NGLOBALS, "SCOPE_WARN", 1)
+    big = dict(MOCK_TREE)
+    big["src/model.gguf"] = TreeEntry(path="src/model.gguf",
+                                      type="blob",
+                                      sha="gguf01",
+                                      size=400_000)
+
+    async def _fetch_tree(config, owner, repo, ref, session=None):
+        return dict(big), False
+
+    monkeypatch.setattr("mirage.core.github.tree.fetch_tree", _fetch_tree)
+    _answer(monkeypatch, [])
+    stdout, _ = await grep(
+        accessor, [_root()], ["import"],
+        CommandOpts(index=index,
+                    stdin=b"import from stdin\n",
+                    flags={
+                        "r": True,
+                        "w": True
+                    }))
+    body = (await materialize(stdout)).decode()
+    assert "import from stdin" not in body
+    assert sorted({line.split(":", 1)[0]
+                   for line in body.splitlines()}) == _IMPORT_FILES

@@ -32,6 +32,11 @@ export function isRepoRoot(key: string): boolean {
   return key === '' || key === '/'
 }
 
+export function isDirectoryKey(tree: Record<string, TreeEntry>, key: string): boolean {
+  if (isRepoRoot(key)) return true
+  return tree[stripSlash(key)]?.type === 'tree'
+}
+
 export function countScopeFiles(tree: Record<string, TreeEntry>, key: string): number {
   // tree keys are repo-relative without a leading slash
   if (isRepoRoot(key)) {
