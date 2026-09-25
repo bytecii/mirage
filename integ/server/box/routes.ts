@@ -210,7 +210,7 @@ async function createFolder(ctx: Ctx<C>): Promise<Reply> {
     ctx.clock.nowIso(false),
     ctx.minter,
   )
-  await recordEvent(ctx.db, ctx.tenant, 'ITEM_CREATE', item)
+  await recordEvent(ctx.db, ctx.tenant, 'ITEM_CREATE', item, ctx.clock.lastIso(false))
   return { status: 201, body: render(item) }
 }
 
@@ -228,7 +228,7 @@ async function createWebLink(ctx: Ctx<C>): Promise<Reply> {
     ctx.clock.nowIso(false),
     ctx.minter,
   )
-  await recordEvent(ctx.db, ctx.tenant, 'ITEM_CREATE', item)
+  await recordEvent(ctx.db, ctx.tenant, 'ITEM_CREATE', item, ctx.clock.lastIso(false))
   return { status: 201, body: render(item) }
 }
 
@@ -252,7 +252,7 @@ async function upload(ctx: Ctx<C>): Promise<Reply> {
     ctx.clock.nowIso(false),
     ctx.minter,
   )
-  await recordEvent(ctx.db, ctx.tenant, 'ITEM_UPLOAD', item)
+  await recordEvent(ctx.db, ctx.tenant, 'ITEM_UPLOAD', item, ctx.clock.lastIso(false))
   return { status: 201, body: { total_count: 1, entries: [render(item)] } }
 }
 
@@ -268,7 +268,7 @@ async function uploadVersion(ctx: Ctx<C>): Promise<Reply> {
     parts.file?.bytes ?? new Uint8Array(0),
     ctx.clock.nowIso(false),
   )
-  await recordEvent(ctx.db, ctx.tenant, 'ITEM_UPLOAD', next)
+  await recordEvent(ctx.db, ctx.tenant, 'ITEM_UPLOAD', next, ctx.clock.lastIso(false))
   return { status: 200, body: { total_count: 1, entries: [render(next)] } }
 }
 
@@ -282,9 +282,9 @@ function deleteOf(kind: string, param: string) {
         return boxError(409, 'folder_not_empty', 'folder is not empty')
       }
     }
-    // One event for the item, none for what was inside it, as the vendor
-    // does; recorded first so the source still carries its old place.
-    await recordEvent(ctx.db, ctx.tenant, 'ITEM_TRASH', item)
+    // One event for the item and none for what was inside it, as the vendor
+    // sends.
+    await recordEvent(ctx.db, ctx.tenant, 'ITEM_TRASH', item, ctx.clock.lastIso(false))
     await removeTree(ctx.db, ctx.tenant, item.id)
     return { status: 204 }
   }
@@ -311,6 +311,7 @@ function updateOf(kind: string, param: string) {
       ctx.tenant,
       parentId === item.parentId ? 'ITEM_RENAME' : 'ITEM_MOVE',
       moved,
+      ctx.clock.lastIso(false),
     )
     return { status: 200, body: render(moved) }
   }
@@ -337,7 +338,7 @@ function copyOf(kind: string, param: string) {
       ctx.clock.nowIso(false),
       ctx.minter,
     )
-    await recordEvent(ctx.db, ctx.tenant, 'ITEM_COPY', made)
+    await recordEvent(ctx.db, ctx.tenant, 'ITEM_COPY', made, ctx.clock.lastIso(false))
     return { status: 201, body: render(made) }
   }
 }
@@ -406,7 +407,7 @@ async function events(ctx: Ctx<C>): Promise<Reply> {
     body: {
       chunk_size: rows.length,
       next_stream_position: String(rows.at(-1)?.seq ?? from),
-      entries: rows.map((row) => eventEntry(row.seq, row.eventType, row.source)),
+      entries: rows.map((row) => eventEntry(row.seq, row.eventType, row.source, row.createdAt)),
     },
   }
 }

@@ -91,6 +91,11 @@ async def list_folder_items(
     return out
 
 
+def _next_position(data: dict[str, Any]) -> str | None:
+    value = data.get("next_stream_position")
+    return None if value is None or value == "" else str(value)
+
+
 async def events_now(tm: BoxTokenManager, stream_type: str) -> str:
     """The current head of the user's event stream.
 
@@ -104,7 +109,10 @@ async def events_now(tm: BoxTokenManager, stream_type: str) -> str:
                              "stream_type": stream_type,
                              "stream_position": "now",
                          })
-    return str(data["next_stream_position"])
+    position = _next_position(data)
+    if position is None:
+        raise RuntimeError("Box GET /events returned no next_stream_position")
+    return position
 
 
 async def events_since(
@@ -134,7 +142,7 @@ async def events_since(
                                  "stream_position": position,
                                  "limit": limit,
                              })
-        position = str(data.get("next_stream_position") or position)
+        position = _next_position(data) or position
         entries = data.get("entries") or []
         if not entries:
             return out, position
@@ -153,7 +161,10 @@ async def realtime_server(tm: BoxTokenManager) -> dict[str, Any]:
         tm (BoxTokenManager): token manager.
     """
     data = await box_options(tm, f"{tm.api_base}/events")
-    server: dict[str, Any] = data["entries"][0]
+    entries = data.get("entries") or []
+    if not entries:
+        raise RuntimeError("Box OPTIONS /events returned no realtime server")
+    server: dict[str, Any] = entries[0]
     return server
 
 

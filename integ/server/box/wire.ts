@@ -82,11 +82,27 @@ export function eventSource(item: Item, ancestors: Item[]): JsonValue {
   }
 }
 
-export function eventEntry(seq: number, eventType: string, source: string): JsonValue {
+// A trashed item as the vendor renders one: its path_collection is the Trash,
+// never the folder it was trashed from.
+export function trashedSource(item: Item): JsonValue {
+  return {
+    ...(render(item) as Record<string, JsonValue>),
+    item_status: 'trashed',
+    path_collection: { total_count: 1, entries: [{ type: 'folder', id: '1', name: 'Trash' }] },
+  }
+}
+
+export function eventEntry(
+  seq: number,
+  eventType: string,
+  source: string,
+  createdAt: string,
+): JsonValue {
   return {
     type: 'event',
     event_id: `event-${String(seq)}`,
     event_type: eventType,
+    created_at: createdAt,
     source: JSON.parse(source) as JsonValue,
   }
 }

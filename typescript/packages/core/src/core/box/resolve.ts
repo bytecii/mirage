@@ -20,24 +20,39 @@ export function pathParts(path: PathSpec): string[] {
   return path.vfsPath.split('/').filter((p) => p !== '')
 }
 
-// Box has no path-addressing endpoint, so writes resolve ids by listing each
-// level from the mount root. Returns the Box item for the full path, or null
-// if any component is missing (or a non-final component is not a folder).
-export async function resolveItem(accessor: BoxAccessor, parts: string[]): Promise<BoxItem | null> {
+/**
+ * Walk folder listings to resolve each component of a path.
+ *
+ * Box has no path-addressing endpoint, so ids are resolved by listing each
+ * level from the mount root. Returns the Box item for every component that
+ * resolved, in order; a missing component, or one below a non-folder, ends
+ * the chain early.
+ */
+export async function resolveChain(accessor: BoxAccessor, parts: string[]): Promise<BoxItem[]> {
   const tm = accessor.tokenManager
   let curId = accessor.rootFolderId
-  let cur: BoxItem | null = null
-  for (let i = 0; i < parts.length; i++) {
+  const chain: BoxItem[] = []
+  for (const name of parts) {
+    if (chain.length > 0 && chain[chain.length - 1]?.type !== 'folder') break
     const children = await listFolderItems(tm, curId)
-    const match = children.find((c) => c.name === parts[i])
-    if (match === undefined) return null
-    cur = match
-    if (i < parts.length - 1) {
-      if (match.type !== 'folder') return null
-      curId = match.id
-    }
+    const match = children.find((c) => c.name === name)
+    if (match === undefined) break
+    chain.push(match)
+    curId = match.id
   }
-  return cur
+  return chain
+}
+
+/**
+ * Resolve a mount-relative path to its Box item.
+ *
+ * Returns null if any component is missing, or a non-final component is not
+ * a folder.
+ */
+export async function resolveItem(accessor: BoxAccessor, parts: string[]): Promise<BoxItem | null> {
+  const chain = await resolveChain(accessor, parts)
+  if (parts.length === 0 || chain.length < parts.length) return null
+  return chain[chain.length - 1] ?? null
 }
 
 export async function resolveParentId(
@@ -50,10 +65,14 @@ export async function resolveParentId(
   return parent.id
 }
 
-// Reconstruct the mount-relative key from the item's ancestor chain by
-// trimming everything up to and including the mount root folder. Box's
-// path_collection lists ancestors from the account root down to the immediate
-// parent (excluding the item itself).
+/**
+ * Mount-relative path of an item, from its `path_collection`.
+ *
+ * Box lists an item's ancestors from the account root down to its immediate
+ * parent, excluding the item itself; everything up to and including the mount
+ * root folder is trimmed. Null when the mount root is not among the
+ * ancestors, which is every item outside the mount.
+ */
 export function mountRelativeKey(
   item: Pick<BoxSearchItem, 'name' | 'path_collection'>,
   rootFolderId: string,

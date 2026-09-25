@@ -110,12 +110,13 @@ export interface BoxEvent {
   type?: string
   event_id?: string
   event_type?: string
+  created_at?: string
   source?: unknown
 }
 
 interface EventsResponse {
   chunk_size?: number
-  next_stream_position?: string | number
+  next_stream_position?: string | number | null
   entries?: BoxEvent[]
 }
 
@@ -128,13 +129,20 @@ export interface BoxRealtimeServer {
   retry_timeout?: number
 }
 
+function nextPosition(data: EventsResponse): string | null {
+  const value = data.next_stream_position
+  return value === undefined || value === null || value === '' ? null : String(value)
+}
+
 /** The current head of the user's event stream. */
 export async function eventsNow(tm: BoxTokenManager, streamType: string): Promise<string> {
   const data = (await boxGet(tm, `${tm.apiBase}/events`, {
     stream_type: streamType,
     stream_position: 'now',
   })) as EventsResponse
-  return String(data.next_stream_position)
+  const position = nextPosition(data)
+  if (position === null) throw new Error('Box GET /events returned no next_stream_position')
+  return position
 }
 
 /**
@@ -158,9 +166,7 @@ export async function eventsSince(
       stream_position: position,
       limit,
     })) as EventsResponse
-    if (data.next_stream_position !== undefined && data.next_stream_position !== '') {
-      position = String(data.next_stream_position)
-    }
+    position = nextPosition(data) ?? position
     const entries = data.entries ?? []
     if (entries.length === 0) return { entries: out, position }
     out.push(...entries)
@@ -177,9 +183,9 @@ export async function eventsSince(
  */
 export async function realtimeServer(tm: BoxTokenManager): Promise<BoxRealtimeServer> {
   const data = (await boxOptions(tm, `${tm.apiBase}/events`)) as {
-    entries: BoxRealtimeServer[]
+    entries?: BoxRealtimeServer[]
   }
-  const server = data.entries[0]
+  const server = data.entries?.[0]
   if (server === undefined) throw new Error('Box OPTIONS /events returned no realtime server')
   return server
 }

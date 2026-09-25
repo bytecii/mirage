@@ -77,4 +77,27 @@ describe('box events api', () => {
     expect((await realtimeServer(TM)).url).toBe(server.url)
     expect(vi.mocked(client.boxOptions).mock.calls[0]?.[1]).toBe('https://api.box.com/2.0/events')
   })
+
+  it('keeps its position on a page without one', async () => {
+    vi.mocked(client.boxGet)
+      .mockResolvedValueOnce({
+        chunk_size: 1,
+        next_stream_position: null,
+        entries: [{ event_id: 'a' }],
+      })
+      .mockResolvedValueOnce({ chunk_size: 0, entries: [] })
+    const found = await eventsSince(TM, '10', 'changes')
+    expect(found.entries.map((e) => e.event_id)).toEqual(['a'])
+    expect(found.position).toBe('10')
+  })
+
+  it('refuses a stream head without a position', async () => {
+    vi.mocked(client.boxGet).mockResolvedValueOnce({ chunk_size: 0, entries: [] })
+    await expect(eventsNow(TM, 'changes')).rejects.toThrow('next_stream_position')
+  })
+
+  it('refuses an OPTIONS answer without a realtime server', async () => {
+    vi.mocked(client.boxOptions).mockResolvedValueOnce({ chunk_size: 0 })
+    await expect(realtimeServer(TM)).rejects.toThrow('realtime server')
+  })
 })

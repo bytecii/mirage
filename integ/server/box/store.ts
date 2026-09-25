@@ -15,7 +15,7 @@
 import { createHash } from 'node:crypto'
 import type { Minter } from '../kit/typescript/index.ts'
 import { ID_BASE, ROOT_ID, type C } from './config.ts'
-import { eventSource, listOrder, type Item } from './wire.ts'
+import { eventSource, listOrder, trashedSource, type Item } from './wire.ts'
 
 function key(tenant: string, id: string): { tenant_id: { tenant: string; id: string } } {
   return { tenant_id: { tenant, id } }
@@ -255,21 +255,26 @@ export async function streamHead(db: C, tenant: string): Promise<number> {
 }
 
 // Rendered at the moment of the write, so the source's path_collection is
-// where the item was then. Its own counter rather than the minter's: the
+// where the item is then. Its own counter rather than the minter's: the
 // minter numbers item ids, and an event taking a number would make them skip.
 export async function recordEvent(
   db: C,
   tenant: string,
   eventType: string,
   item: Item,
+  createdAt: string,
 ): Promise<void> {
-  const source = eventSource(item, await ancestors(db, tenant, item.id))
+  const source =
+    eventType === 'ITEM_TRASH'
+      ? trashedSource(item)
+      : eventSource(item, await ancestors(db, tenant, item.id))
   await db.boxEvent.create({
     data: {
       tenant,
       seq: (await streamHead(db, tenant)) + 1,
       eventType,
       source: JSON.stringify(source),
+      createdAt,
     },
   })
 }
@@ -279,7 +284,7 @@ export async function eventsAfter(
   tenant: string,
   position: number,
   limit: number,
-): Promise<{ seq: number; eventType: string; source: string }[]> {
+): Promise<{ seq: number; eventType: string; source: string; createdAt: string }[]> {
   return db.boxEvent.findMany({
     where: { tenant, seq: { gt: position } },
     orderBy: { seq: 'asc' },

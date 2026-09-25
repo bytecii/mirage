@@ -144,13 +144,15 @@ writes neither loop itself:
 
 Dropbox `pull` already uses `list_folder/continue` and keeps the listing walk
 as the reset path. Box `pull` reads the account's `/events` stream from a
-stored `stream_position` and places each event through its `path_collection`;
-Box never refuses an old position, so a checkpoint older than two weeks walks
-again instead. Other backends with a native cursor can do the same. The
-opaque checkpoint can be a Dropbox cursor, a Microsoft Graph
-delta link, or any other serialized provider state. Keep the walk as the reset
-path, though. A cursor is a promise the server keeps, and when it breaks
-(`path/reset`, `resyncRequired`) a full listing is the only answer.
+stored `stream_position` and places each event through its `path_collection`.
+Box never refuses an old position and may repeat an event or send it out of
+order, so the tree is walked again once the last walk is two weeks old, and
+whenever an event moves the watch root itself or a folder above it. Other
+backends with a native cursor can do the same. The opaque checkpoint can be a
+Dropbox cursor, a Microsoft Graph delta link, or any other serialized provider
+state. Keep the walk as the reset path, though. A cursor is a promise the
+server keeps, and when it breaks (`path/reset`, `resyncRequired`) a full
+listing is the only answer.
 
 A walk that knows it saw only part of the tree must throw
 `IncompleteWalkError` rather than return what it has. A snapshot diff reads
