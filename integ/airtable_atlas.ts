@@ -12,17 +12,6 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-// Replay MCP-Atlas's recorded Airtable calls against the fake, seeded with the
-// base they were recorded against (scripts/gen_airtable_atlas.py).
-//
-// @felores/airtable-mcp-server@0.3.0 sends each tool as one GET and answers
-// with JSON.stringify(<one key of the reply>, null, 2), so a reply is the
-// fake's body through the same two steps, compared byte for byte.
-//
-// Then every table whole, both ways the recordings imply: with no view in
-// record-id order, which each recorded list and search answered in, and
-// through the Grid view in the base's own row order, which the share read.
-
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -93,6 +82,18 @@ async function listIds(url: URL, token: string): Promise<string[]> {
   }
 }
 
+/**
+ * Replay MCP-Atlas's recorded Airtable calls against the fake, seeded with the
+ * base they were recorded against (scripts/gen_airtable_atlas.py).
+ *
+ * The server, @felores/airtable-mcp-server@0.3.0, sends each tool as one GET
+ * and answers with JSON.stringify(<one key of the reply>, null, 2), so a reply
+ * is the fake's body through the same two steps, compared byte for byte.
+ *
+ * Then every table whole, both ways the recordings imply: with no view in
+ * record-id order, which each recorded list and search answered in, and
+ * through the Grid view in the base's own row order, which the share read.
+ */
 async function main(): Promise<void> {
   const corpus = JSON.parse(readFileSync(CORPUS, 'utf8')) as Corpus
   const token = String(((corpus.workspace.tokens as Json[])[0] as Json).token)

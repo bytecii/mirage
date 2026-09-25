@@ -12,16 +12,6 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-// Capture MCP-Atlas's Airtable base from the share link its data_exports
-// README names in place of a file ("Copy base"), for gen_airtable_atlas.py.
-//
-//   pnpm exec tsx scripts/capture_airtable_atlas.ts <out-dir> [chrome-path]
-//
-// The share page loads the base through its own read endpoint, authorised by
-// the share's access policy; this replays that request inside the page, once
-// for the schema and once per table, so every row arrives whole, unrendered and
-// in the base's own row order. Nothing here signs in or holds a key.
-
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -35,6 +25,17 @@ interface Read {
   body: string
 }
 
+/**
+ * Capture MCP-Atlas's Airtable base from the share link its data_exports
+ * README names in place of a file ("Copy base"), for gen_airtable_atlas.py.
+ *
+ *   pnpm exec tsx scripts/capture_airtable_atlas.ts <out-dir> [chrome-path]
+ *
+ * The share page loads the base through its own read endpoint, authorised by
+ * the share's access policy; this replays that request inside the page, once
+ * for the schema and once per table, so every row arrives whole, unrendered
+ * and in the base's own row order. Nothing here signs in or holds a key.
+ */
 async function main(): Promise<void> {
   const [out, chrome] = process.argv.slice(2)
   if (out === undefined) throw new Error('usage: capture_airtable_atlas.ts <out-dir> [chrome-path]')
