@@ -12,12 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { IndexEntry } from '@struktoai/mirage-core/cache/index/config'
 import { runWithRecording } from '@struktoai/mirage-core/observe/context'
 import { PathSpec } from '@struktoai/mirage-core/types'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HfHubAccessor } from '../../accessor/hf_hub.ts'
 import * as client from './client.ts'
-import { read } from './read.ts'
+import { read, rowToken } from './read.ts'
 import { parseEntry } from './tree.ts'
 
 function loaded(): HfHubAccessor {
@@ -40,9 +41,66 @@ afterEach(() => {
 // A key named like its mount: neither `m/k.txt` nor `/m/k.txt` is virtual.
 describe('hf_hub read record path', () => {
   it('records the virtual path', async () => {
-    vi.spyOn(client, 'hubBytes').mockResolvedValue(new TextEncoder().encode('hello'))
+    vi.spyOn(client, 'hubBytesTagged').mockResolvedValue([new TextEncoder().encode('hello'), ''])
     const [data, records] = await runWithRecording(() => read(loaded(), PATH))
     expect(new TextDecoder().decode(data)).toBe('hello')
     expect(records.map((r) => r.path)).toEqual(['/m/m/k.txt'])
+  })
+})
+
+// One row whose four ids all differ, and none is a hash of the content, so
+// every accepted ETag is distinguishable from every other and from a guess.
+const ROW = new IndexEntry({
+  id: 'O',
+  name: 'f.bin',
+  resourceType: 'file',
+  extra: { oid: 'O', lfs_oid: 'L', xet_hash: 'X', last_commit: 'C' },
+})
+// The common case: a plain git file carries its oid and nothing else.
+const PLAIN = new IndexEntry({ id: 'P', name: 'a.txt', resourceType: 'file', extra: { oid: 'P' } })
+
+describe('rowToken', () => {
+  it.each([
+    [ROW, '"O"', 'O'],
+    [ROW, 'L', 'O'],
+    [ROW, 'W/"X"', 'O'],
+    [ROW, '"Z"', null],
+    [ROW, '', null],
+    [ROW, '"C"', null],
+    [PLAIN, '"P"', 'P'],
+    [PLAIN, '', null],
+    [PLAIN, '"Z"', null],
+  ])('stamps the oid only when the etag names the row (%#)', (entry, etag, expected) => {
+    expect(rowToken(entry, etag)).toBe(expected)
+  })
+
+  it('never stamps an empty id', () => {
+    // The ETag matches, so this takes the match branch; an empty id must
+    // still come back as no token rather than ''.
+    const entry = new IndexEntry({ id: '', name: 'f', resourceType: 'file', extra: { lfs_oid: 'L' } })
+    expect(rowToken(entry, '"L"')).toBeNull()
+  })
+})
+
+describe('hf_hub read stamp', () => {
+  it('stamps the oid when the etag names the row', async () => {
+    vi.spyOn(client, 'hubBytesTagged').mockResolvedValue([
+      new TextEncoder().encode('hello'),
+      '"oid-k"',
+    ])
+    const [, records] = await runWithRecording(() => read(loaded(), PATH))
+    expect(records.map((r) => r.fingerprint)).toEqual(['oid-k'])
+  })
+
+  it('stamps nothing when the bytes are another version', async () => {
+    // The listing says oid-k, the download is a newer version: labelling
+    // those bytes with the listing's oid is how a later revert would pass
+    // them off as fresh.
+    vi.spyOn(client, 'hubBytesTagged').mockResolvedValue([
+      new TextEncoder().encode('newer'),
+      '"another-version"',
+    ])
+    const [, records] = await runWithRecording(() => read(loaded(), PATH))
+    expect(records.map((r) => r.fingerprint)).toEqual([null])
   })
 })

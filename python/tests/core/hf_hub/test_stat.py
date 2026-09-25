@@ -218,9 +218,11 @@ async def test_a_point_stat_refuses_rows_for_another_path(loaded):
 async def test_a_refused_point_stat_raises_rather_than_reading_absent(
         loaded, status):
     refused = AsyncMock(side_effect=HfHubError("nope", status))
-    with patch("mirage.core.hf_hub.tree.hub_post", refused, create=True):
+    with patch("mirage.core.hf_hub.tree.hub_post", refused,
+               create=True), _walk() as walk:
         with pytest.raises(HfHubError):
             await stat(loaded, ps("a.txt"), RAMIndexCacheStore())
+    walk.assert_not_awaited()
 
 
 def test_stat_of_an_empty_id_carries_no_token():

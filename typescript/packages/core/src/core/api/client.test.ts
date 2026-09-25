@@ -358,3 +358,29 @@ describe('retry delays', () => {
     expect(flooredDelay(8, 429, wide)).toBe(8)
   })
 })
+
+describe('bytes_response read', () => {
+  it('returns the window and the lower-cased headers of the response the bytes came in', async () => {
+    // fetch follows a redirect and hands back only the final hop, whose ETag
+    // is the one that describes these bytes. The server ignores Range here,
+    // which it may legally do, so the window has to trim client side.
+    const response = new Response(new TextEncoder().encode('0123456789'), {
+      status: 200,
+      headers: { ETag: '"final-hop"', 'X-Mixed-Case': 'kept' },
+    })
+    const drain = vi.spyOn(response, 'arrayBuffer')
+    const fakeFetch: typeof fetch = () => Promise.resolve(response)
+    const out = (await apiRequest('GET', TARGET, {
+      errorOf,
+      fetchFn: fakeFetch,
+      read: 'bytes_response',
+      window: { offset: 2, size: 3 },
+    })) as { data: Uint8Array; status: number; headers: Record<string, string> }
+    expect(out.data).toEqual(new TextEncoder().encode('234'))
+    expect(out.status).toBe(200)
+    expect(out.headers.etag).toBe('"final-hop"')
+    expect(out.headers['x-mixed-case']).toBe('kept')
+    // Read once, as bytes; a text read would have mangled binary content.
+    expect(drain).toHaveBeenCalledTimes(1)
+  })
+})

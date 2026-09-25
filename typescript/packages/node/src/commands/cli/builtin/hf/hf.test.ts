@@ -23,6 +23,7 @@ import { yieldBytes } from '@struktoai/mirage-core/io/stream'
 import type { CommandFnResult } from '@struktoai/mirage-core/commands/config'
 import type { FlagValue } from '@struktoai/mirage-core/commands/spec/types'
 import type { HfConfig } from '../../../../core/hf_hub/config.ts'
+import { HfHubError } from '../../../../core/hf_hub/client.ts'
 import { Absence } from '../../../../core/hf_hub/repo.ts'
 import type * as RepoModule from '../../../../core/hf_hub/repo.ts'
 import type * as TreeModule from '../../../../core/hf_hub/tree.ts'
@@ -307,6 +308,33 @@ describe('why nothing was selected', () => {
     await expect(
       downloadCmd(inv(['acme/widget', ...names], { local_dir: '/work/out' }, CONFIG, doors)),
     ).rejects.toThrow(expected)
+  })
+})
+
+describe('a tree the Hub refuses', () => {
+  // The tree walk raises for a repo it cannot see; download reads that as
+  // nothing listed, so the message upstream prints is unchanged.
+  const doors = { dispatch: vi.fn() } as unknown as CLIDoors
+
+  it.each([
+    [401, ''],
+    [403, ''],
+    [404, 'RepoNotFound'],
+    [404, 'RevisionNotFound'],
+  ])('still names the absence for %i %s', async (status, code) => {
+    fetchTreeMock.mockRejectedValue(new HfHubError('nope', status, code))
+    classifyAbsenceMock.mockResolvedValue(Absence.REPO)
+    await expect(
+      downloadCmd(inv(['acme/widget'], { local_dir: '/work/out' }, CONFIG, doors)),
+    ).rejects.toThrow('Repository Not Found')
+  })
+
+  it('lets a server failure through', async () => {
+    fetchTreeMock.mockRejectedValue(new HfHubError('boom', 500))
+    await expect(
+      downloadCmd(inv(['acme/widget'], { local_dir: '/work/out' }, CONFIG, doors)),
+    ).rejects.toThrow('boom')
+    expect(classifyAbsenceMock).not.toHaveBeenCalled()
   })
 })
 
