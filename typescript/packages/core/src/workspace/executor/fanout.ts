@@ -31,16 +31,17 @@ import {
   type PredNode,
 } from '../../commands/builtin/find_eval.ts'
 import { parseFindExpression, type FindExpr } from '../../commands/builtin/find_parse.ts'
-import { FindParseError } from '../../commands/errors.ts'
+import { FindParseError, UsageError } from '../../commands/errors.ts'
 import type { FlagValue } from '../../commands/spec/types.ts'
 import type { RunSingle } from '../../commands/builtin/generic/crossmount/types.ts'
-import { contextSeparated } from '../../commands/builtin/generic/crossmount/utils.ts'
+import { runSeparator } from '../../commands/builtin/generic/crossmount/utils.ts'
 import type { NamespaceView, StatPath } from '../../ops/types.ts'
 import { inMtimeWindow } from '../../utils/dates.ts'
 import { modifiedTs } from '../../core/generic/find.ts'
 import { mergeDuBlocks } from '../../commands/builtin/generic/crossmount/fanout/du.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import { filenameMode } from '../../commands/builtin/generic/grep.ts'
+import { labelFlags, walksDescendantMounts } from '../../commands/builtin/generic/rg.ts'
 import { FlagView } from '../../commands/spec/flag_view.ts'
 import { specOf } from '../../commands/spec/builtins.ts'
 
@@ -141,8 +142,8 @@ export function shouldFanOut(
   if (cmdName === 'grep') {
     return flagKwargs.r === true || flagKwargs.R === true || flagKwargs.recursive === true
   }
-  // ripgrep recurses directories by default; no flag to check.
-  if (cmdName === 'rg') return true
+  // ripgrep recurses directories by default.
+  if (cmdName === 'rg') return walksDescendantMounts(flagKwargs)
   if (cmdName === 'ls') {
     return flagKwargs.recursive === true
   }
@@ -487,13 +488,15 @@ export async function fanOutTraversal(
       const adjusted = adjustDepthFlags(flags, targetPath, mount.prefix)
       if (adjusted === null || prunedAway(mountRoot, tree)) continue
       subFlags = adjusted
-      if (
-        cmdName === 'rg' ||
-        (cmdName === 'grep' && filenameMode(new FlagView(subFlags, specOf('grep'))) === null)
+      // A tree search labels every hit; a descendant mount whose root is a
+      // single file would otherwise drop the filename (grep/rg label only
+      // multi-file or -H runs).
+      if (cmdName === 'rg') {
+        subFlags = labelFlags(subFlags)
+      } else if (
+        cmdName === 'grep' &&
+        filenameMode(new FlagView(subFlags, specOf('grep'))) === null
       ) {
-        // A tree search labels every hit; a descendant mount whose root
-        // is a single file would otherwise drop the filename (grep/rg label
-        // only multi-file or -H runs).
         subFlags = { ...subFlags, H: true }
       }
       subTexts = adjustDepthTexts(texts, targetPath, mount.prefix)
@@ -523,13 +526,28 @@ export async function fanOutTraversal(
     // ancestor) has no backend listing, so without them the primary run
     // reports the operand missing.
     signal?.throwIfAborted()
-    const [stdout0, io] = await mount.executeCmd(cmdName, subPaths, subTexts, subFlags, {
-      stdin,
-      cwd,
-      ...(signal === undefined ? {} : { signal }),
-      ...(ns === undefined ? {} : { ns }),
-      ...(statPath !== null ? { statPath } : {}),
-    })
+    let ran: Awaited<ReturnType<typeof mount.executeCmd>>
+    try {
+      ran = await mount.executeCmd(cmdName, subPaths, subTexts, subFlags, {
+        stdin,
+        cwd,
+        ...(signal === undefined ? {} : { signal }),
+        ...(ns === undefined ? {} : { ns }),
+        ...(statPath !== null ? { statPath } : {}),
+      })
+    } catch (err) {
+      // A usage error belongs to the line, not to one mount: the
+      // single-mount path reports it once as the command's result (#452),
+      // and so does the walk, rather than aborting the line.
+      if (!(err instanceof UsageError)) throw err
+      const usage = new TextEncoder().encode(`${err.message}\n`)
+      return [
+        null,
+        new IOResult({ exitCode: err.exitCode, stderr: usage }),
+        new ExecutionNode({ command: cmdStr, stderr: usage, exitCode: err.exitCode }),
+      ]
+    }
+    const [stdout0, io] = ran
     let stdout: ByteSource | null = stdout0
     if (mount !== primaryMount && io.exitCode === 127) {
       // A descendant that does not serve this command contributes
@@ -621,9 +639,7 @@ export async function fanOutTraversal(
     // per-mount block is one more group; grep and rg put `--` between one
     // file's context and the next file's; every other format is a plain
     // line stream.
-    let sep = '\n'
-    if (cmdName === 'ls') sep = '\n\n'
-    else if (contextSeparated(cmdName, flagKwargs)) sep = '\n--\n'
+    const sep = cmdName === 'ls' ? '\n\n' : '\n' + runSeparator(cmdName, flagKwargs)
     combined = new TextEncoder().encode(parts.filter((s) => s !== '').join(sep) + '\n')
   }
 

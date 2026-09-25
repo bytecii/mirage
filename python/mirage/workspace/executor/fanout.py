@@ -23,10 +23,12 @@ from mirage.commands.builtin.find_parse import parse_find_expression
 from mirage.commands.builtin.generic.crossmount.fanout.du import \
     merge_du_blocks
 from mirage.commands.builtin.generic.crossmount.types import RunSingle
-from mirage.commands.builtin.generic.crossmount.utils import context_separated
+from mirage.commands.builtin.generic.crossmount.utils import run_separator
 from mirage.commands.builtin.generic.grep import filename_mode
+from mirage.commands.builtin.generic.rg import (label_flags,
+                                                walks_descendant_mounts)
 from mirage.commands.config import ExecContext
-from mirage.commands.errors import FindParseError
+from mirage.commands.errors import FindParseError, UsageError
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
@@ -179,8 +181,8 @@ def _should_fan_out(
         return (flag_kwargs.get("r") is True or flag_kwargs.get("R") is True
                 or flag_kwargs.get("recursive") is True)
     if cmd_name == "rg":
-        # ripgrep recurses directories by default; no flag to check.
-        return True
+        # ripgrep recurses directories by default.
+        return walks_descendant_mounts(flag_kwargs)
     if cmd_name == "ls":
         return flag_kwargs.get("recursive") is True
     return False
@@ -562,11 +564,13 @@ async def _fan_out_traversal(
             if adjusted is None or _pruned_away(mount_root, tree):
                 continue
             sub_flags = adjusted
-            if cmd_name == "rg" or (cmd_name == "grep" and filename_mode(
-                    FlagView(sub_flags, spec=SPECS["grep"])) is None):
-                # A tree search labels every hit; a descendant mount
-                # whose root is a single file would otherwise drop the
-                # filename without the inherited -H.
+            # A tree search labels every hit; a descendant mount whose
+            # root is a single file would otherwise drop the filename
+            # without the inherited -H.
+            if cmd_name == "rg":
+                sub_flags = label_flags(sub_flags)
+            elif cmd_name == "grep" and filename_mode(
+                    FlagView(sub_flags, spec=SPECS["grep"])) is None:
                 sub_flags["H"] = True
             sub_texts = _adjust_depth_texts(texts, target_path, mount.prefix)
             # The descendant operand keeps the traversal root's typed
@@ -581,9 +585,20 @@ async def _fan_out_traversal(
                          raw_path=mount_root if du_merge else respell_one(
                              mount_root, target_path, paths[0].raw_path))
             ]
-        stdout, io = await mount.execute_cmd(
-            cmd_name, sub_paths, sub_texts, sub_flags,
-            ExecContext(stdin=stdin, cwd=cwd, ns=ns, stat_path=stat_path))
+        try:
+            stdout, io = await mount.execute_cmd(
+                cmd_name, sub_paths, sub_texts, sub_flags,
+                ExecContext(stdin=stdin, cwd=cwd, ns=ns, stat_path=stat_path))
+        except UsageError as exc:
+            # A usage error belongs to the line, not to one mount: the
+            # single-mount path reports it once as the command's result
+            # (#452), and so does the walk, rather than aborting the line.
+            usage = f"{exc}\n".encode()
+            return None, IOResult(exit_code=exc.exit_code,
+                                  stderr=usage), ExecutionNode(
+                                      command=cmd_str,
+                                      exit_code=exc.exit_code,
+                                      stderr=usage)
 
         if mount is not primary_mount and io.exit_code == 127:
             # A descendant that does not serve this command contributes
@@ -667,11 +682,8 @@ async def _fan_out_traversal(
         # per-mount block is one more group; grep and rg put `--` between
         # one file's context and the next file's; every other format is a
         # plain line stream.
-        sep = b"\n"
-        if cmd_name == "ls":
-            sep = b"\n\n"
-        elif context_separated(cmd_name, flag_kwargs):
-            sep = b"\n--\n"
+        sep = b"\n\n" if cmd_name == "ls" else b"\n" + run_separator(
+            cmd_name, flag_kwargs)
         combined = sep.join(b.rstrip(b"\n") for b in all_stdout) + b"\n"
     else:
         combined = None

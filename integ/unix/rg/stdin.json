@@ -979,10 +979,10 @@
         "gdrive-folder",
         "box"
       ],
-      "command": "(cd /data/sub && printf 'content\\n' | rg -l content)",
+      "command": "(cd /data/sub && printf 'content\\n' | rg -l content); (cd /data/sub && printf 'x\\n' | rg --files --sort path -g '*deeper*' -g 'nested.txt'); (cd /data/sub && printf 'x\\n' | rg --type-list | grep '^rust:')",
       "expect": {
         "exit": 0,
-        "stdout": "<stdin>\n",
+        "stdout": "<stdin>\ndeep/deeper.txt\nnested.txt\nrust: *.rs\n",
         "stderr": ""
       }
     },
