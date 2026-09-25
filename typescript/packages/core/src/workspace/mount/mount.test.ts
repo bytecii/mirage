@@ -558,3 +558,26 @@ describe('ExecContext parity with CommandOpts', () => {
     expect(parity).toBeDefined()
   })
 })
+
+it('a write predicate cannot bypass the path guard', async () => {
+  const vfs = new RAMVFS()
+  vfs.store.files.set('/a', new TextEncoder().encode('original'))
+  const mount = new MountEntry({ prefix: '/ram/', vfs, mode: MountMode.READ })
+  const cmd = vfs.commands().find((cmd) => cmd.name === 'gzip')
+  if (cmd === undefined) throw new Error('missing gzip')
+  mount.register(
+    new RegisteredCommand({
+      name: cmd.name,
+      spec: cmd.spec,
+      vfs: cmd.vfs,
+      filetype: cmd.filetype,
+      fn: cmd.fn,
+      write: cmd.write,
+      writes: () => false,
+    }),
+  )
+  await expect(
+    mount.executeCmd('gzip', [PathSpec.fromStrPath('/ram/a')], [], {}),
+  ).rejects.toMatchObject({ code: 'EROFS' })
+  expect([...vfs.store.files.entries()]).toEqual([['/a', new TextEncoder().encode('original')]])
+})

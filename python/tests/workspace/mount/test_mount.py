@@ -14,6 +14,7 @@
 
 import asyncio
 import errno
+from dataclasses import replace
 
 import pytest
 
@@ -299,3 +300,20 @@ def test_resolve_command_missing(registry):
     mount = registry.mount_for("/data/hello.txt")
     cmd = mount.resolve_command("nonexistent")
     assert cmd is None
+
+
+def _never_writes(flags, paths) -> bool:
+    return False
+
+
+@pytest.mark.asyncio
+async def test_write_predicate_cannot_bypass_the_path_guard():
+    vfs = RAMVFS()
+    vfs._store.files["/a"] = b"original"
+    mount = MountEntry("/ram/", vfs, MountMode.READ)
+    cmd = next(cmd for cmd in vfs.commands() if cmd.name == "gzip")
+    mount.register(replace(cmd, writes=_never_writes))
+    with pytest.raises(ReadOnlyError):
+        await mount.execute_cmd("gzip", [PathSpec.from_str_path("/ram/a")], [],
+                                {})
+    assert vfs._store.files == {"/a": b"original"}
