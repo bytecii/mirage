@@ -48,6 +48,14 @@ export class AsyncLineIterator implements AsyncIterableIterator<Uint8Array> {
     return { done: false, value: line }
   }
 
+  /** Consume buffered empty lines without pulling more input. */
+  skipEmptyLines(limit = Infinity): number {
+    let count = 0
+    while (count < limit && this.buf[count] === NEWLINE) count++
+    this.buf = this.buf.subarray(count)
+    return count
+  }
+
   async readline(signal?: AbortSignal): Promise<Uint8Array | null> {
     try {
       // A buffered line is handed out without a pull, so the signal is

@@ -172,8 +172,9 @@ export async function* grepInput(
   // newline is never read.
   let bytePos = 0
   const input = binary.read(source)
+  const lines = new AsyncLineIterator(input)
   try {
-    for await (const raw of new AsyncLineIterator(input)) {
+    for await (const raw of lines) {
       if (binary.nul && f.binaryMode === 'without-match') break
       number += 1
       const lineStart = bytePos
@@ -192,6 +193,15 @@ export async function* grepInput(
         // A selected line is all -L needs to know: the file is not listed,
         // and the status still says it matched.
         if (f.filesWithoutMatch) return
+      }
+      // NUL runs become empty lines. Batch identical decisions within the
+      // current buffer when no per-line output or context must be retained.
+      if (raw.length === 0 && (f.countOnly || (!hit && !hasContext))) {
+        const limit = hit && f.maxCount !== null ? f.maxCount - count : Infinity
+        const skipped = lines.skipEmptyLines(limit)
+        number += skipped
+        bytePos += skipped
+        if (hit) count += skipped
       }
       if (f.countOnly) {
         if (f.maxCount !== null && count >= f.maxCount) break

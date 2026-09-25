@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { specOf } from '../spec/builtins.ts'
 import { FlagView } from '../spec/flag_view.ts'
+import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
 import { IOResult, materialize } from '../../io/types.ts'
 import { parseFlags } from './generic/grep.ts'
 import { grepInput, PROBE_BLOCK_BYTES } from './grep_binary.ts'
@@ -573,3 +574,51 @@ it('allows timer cancellation while collecting matches from one line', async () 
     at.mockRestore()
   }
 })
+
+it.each([
+  [{ c: true }, /needle/, '0\n', 1],
+  [{ c: true, v: true }, /needle/, '100003\n', 0],
+  [{ c: true }, /^$/, '100003\n', 0],
+  [{ c: true, m: 17000 }, /^$/, '17000\n', 0],
+  [{ c: true, B: 2, A: 2 }, /^$/, '100003\n', 0],
+  [{ files_without_match: true }, /needle/, 'binary.so\n', 1],
+  [{}, /needle/, '', 1],
+] as const)('batches NUL runs without changing selection: %j', async (flags, pat, stdout, code) => {
+  const data = new Uint8Array(100003)
+  async function* source(): AsyncIterable<Uint8Array> {
+    await Promise.resolve()
+    yield data
+  }
+  const f = parseFlags(new FlagView(flags, specOf('grep')))
+  const io = new IOResult()
+  const reads = vi.spyOn(AsyncLineIterator.prototype, 'readline')
+  try {
+    const out = await materialize(grepInput(source(), pat, f, 'binary.so', false, io))
+    expect(DEC.decode(out)).toBe(stdout)
+    expect(io.exitCode).toBe(code)
+    expect(io.stderr).toBeNull()
+    expect(reads.mock.calls.length).toBeLessThan(20)
+  } finally {
+    reads.mockRestore()
+  }
+})
+
+it.each([{}, { B: 2 }, { o: true }])(
+  'preserves offsets and context after empty lines: %j',
+  async (flags) => {
+    const data = ENC.encode('\n'.repeat(17003) + 'é needle\n')
+    async function* source(): AsyncIterable<Uint8Array> {
+      await Promise.resolve()
+      yield data
+    }
+    const f = parseFlags(new FlagView({ ...flags, n: true, byte_offset: true }, specOf('grep')))
+    const io = new IOResult()
+    const out = await materialize(grepInput(source(), /needle/, f, 'text', false, io))
+    const expected =
+      'o' in flags
+        ? '17004:17006:needle\n'
+        : ('B' in flags ? '17002-17001-\n17003-17002-\n' : '') + '17004:17003:é needle\n'
+    expect(DEC.decode(out)).toBe(expected)
+    expect(io.exitCode).toBe(0)
+  },
+)
