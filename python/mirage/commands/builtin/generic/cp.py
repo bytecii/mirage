@@ -245,6 +245,9 @@ async def target_dir_error(cmd_name: str, stat: StatFn,
     """
     try:
         info = await stat(target)
+    except NotADirectoryError:
+        return (f"{cmd_name}: target directory '{target.virtual}': "
+                "Not a directory")
     except (FileNotFoundError, ValueError):
         return (f"{cmd_name}: target directory '{target.virtual}': "
                 "No such file or directory")
@@ -467,7 +470,7 @@ async def overwrite_gate(policy: TransferPolicy, stat: StatFn, src: PathSpec,
         return True
     try:
         target_info = await stat(target)
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, NotADirectoryError, ValueError):
         return True
     if policy.no_clobber or policy.update == "none":
         return False
@@ -477,7 +480,7 @@ async def overwrite_gate(policy: TransferPolicy, stat: StatFn, src: PathSpec,
     if policy.update == "older":
         try:
             src_info = await stat(src)
-        except (FileNotFoundError, ValueError):
+        except (FileNotFoundError, NotADirectoryError, ValueError):
             return True
         src_ts = iso_timestamp(src_info.modified)
         target_ts = iso_timestamp(target_info.modified)

@@ -15,7 +15,7 @@
 from mirage.commands.builtin.generic.crossmount.types import Cmd
 
 STREAM_COMMANDS = frozenset(
-    {Cmd.CAT, Cmd.NL, Cmd.SORT, Cmd.CUT, Cmd.SED, Cmd.REV, Cmd.AWK})
+    {Cmd.CAT, Cmd.NL, Cmd.CUT, Cmd.SED, Cmd.REV, Cmd.AWK})
 FANOUT_COMMANDS = frozenset({
     Cmd.GREP, Cmd.RG, Cmd.HEAD, Cmd.TAIL, Cmd.WC, Cmd.DU, Cmd.FILE, Cmd.MD5,
     Cmd.MD5SUM, Cmd.SHA1SUM, Cmd.SHA256SUM, Cmd.SHA384SUM, Cmd.SHA512SUM,
@@ -24,6 +24,6 @@ FANOUT_COMMANDS = frozenset({
 })
 RELAY_COMMANDS = frozenset({
     Cmd.CP, Cmd.MV, Cmd.DIFF, Cmd.CMP, Cmd.PASTE, Cmd.COMM, Cmd.JOIN, Cmd.TAR,
-    Cmd.UNZIP, Cmd.ZIP, Cmd.LS
+    Cmd.UNZIP, Cmd.ZIP, Cmd.LS, Cmd.SORT
 })
 CROSS_MOUNT_COMMANDS = STREAM_COMMANDS | FANOUT_COMMANDS | RELAY_COMMANDS

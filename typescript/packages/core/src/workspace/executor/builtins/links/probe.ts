@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { FileStat, FileType, PathSpec, type StatFn } from '../../../../types.ts'
-import { enoent, isMissError } from '../../../../utils/errors.ts'
+import { enoent, isEnotdir, isMissError } from '../../../../utils/errors.ts'
 import { gnuBasename } from '../../../../utils/path.ts'
 import { rstripSlash } from '../../../../utils/slash.ts'
 import type { StatOverlay } from '../../../../ops/types.ts'
@@ -100,6 +100,22 @@ export async function pathStat(
   const stat = await resolvePathStat(dispatch, spec)
   if (stat === null) return null
   return overlay !== null ? overlay(virtual, stat) : stat
+}
+
+// The strerror GNU names for a path pathStat found nothing at. pathStat
+// answers null for both ways a lookup fails, since an existence probe treats
+// them alike, while a diagnostic names the one the stat met: ENOTDIR for a
+// path under a plain file, ENOENT for the rest. Asked only after a miss, so
+// its round trip is on the failure path. Mirrors miss_strerror in probe.py.
+export async function missStrerror(dispatch: DispatchFn, virtual: string): Promise<string> {
+  try {
+    await dispatch('stat', PathSpec.fromStrPath(virtual))
+  } catch (err) {
+    if (isEnotdir(err)) return 'Not a directory'
+    if (isMissError(err)) return 'No such file or directory'
+    throw err
+  }
+  return 'No such file or directory'
 }
 
 // List one virtual path through the workspace, as virtual paths.

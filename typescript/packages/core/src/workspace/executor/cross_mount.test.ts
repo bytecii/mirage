@@ -330,21 +330,23 @@ describe('handleCrossMount — stream/fanout via runSingle', () => {
     expect(calls.map((c) => c.cmd)).toEqual(['cat', 'cat'])
   })
 
-  it('sort runs once on the merged stream with a resolve hint', async () => {
-    const calls: Record<string, unknown>[] = []
-    const perOperand: Record<string, [string, number]> = {
-      '/ram/a': ['b\n', 0],
-      '/disk/b': ['a\n', 0],
-      '': ['a\nb\n', 0],
-    }
-    const rs = runSingleFrom(perOperand, calls)
+  it('sort relays independent inputs without native cat sub-runs', async () => {
+    const dispatch = vi.fn(
+      (op: string, path: PathSpec): Promise<[unknown, IOResult]> =>
+        Promise.resolve([
+          op === 'stat'
+            ? fileStat(path.virtual)
+            : new TextEncoder().encode(path.virtual === '/ram/a' ? 'b' : 'a'),
+          new IOResult(),
+        ]),
+    )
+    const native = vi.fn(runSingleNoop)
     const paths = [PathSpec.fromStrPath('/ram/a'), PathSpec.fromStrPath('/disk/b')]
-    const [, io] = await handleCrossMount('sort', paths, [], {}, noDispatch, rs, null, 'sort')
+    const [out, io] = await handleCrossMount('sort', paths, [], {}, dispatch, native, null, 'sort')
     expect(io.exitCode).toBe(0)
-    const final = calls.at(-1)
-    expect(final?.cmd).toBe('sort')
-    expect(final?.paths).toEqual([])
-    expect(final?.resolveHint).toBe('/ram/a')
+    expect(decode(await materialize(out))).toBe('a\nb\n')
+    expect(dispatch.mock.calls.map(([op]) => op)).toEqual(['stat', 'read', 'stat', 'read'])
+    expect(native).not.toHaveBeenCalled()
   })
 
   it('grep fans out per operand and forces -H', async () => {

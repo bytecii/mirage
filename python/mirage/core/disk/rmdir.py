@@ -17,6 +17,7 @@ import aiofiles.os
 from mirage.accessor.disk import DiskAccessor
 from mirage.cache.context import invalidate_after_unlink
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.core.disk.errors import disk_errors
 from mirage.core.disk.utils import resolve_inside
 from mirage.types import PathSpec
 
@@ -25,5 +26,6 @@ async def rmdir(accessor: DiskAccessor,
                 path_spec: PathSpec,
                 index: IndexCacheStore = NULL_INDEX) -> None:
     p = await resolve_inside(accessor.root, path_spec)
-    await aiofiles.os.rmdir(p)
+    with disk_errors(path_spec.virtual):
+        await aiofiles.os.rmdir(p)
     await invalidate_after_unlink(path_spec)

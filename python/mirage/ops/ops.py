@@ -445,7 +445,7 @@ class Ops:
         """
         try:
             await self.stat(path, session_id=session_id)
-        except (FileNotFoundError, NoMountError):
+        except (FileNotFoundError, NotADirectoryError, NoMountError):
             return False
         return True
 
@@ -461,7 +461,7 @@ class Ops:
         """
         try:
             st = await self.stat(path, session_id=session_id)
-        except (FileNotFoundError, NoMountError):
+        except (FileNotFoundError, NotADirectoryError, NoMountError):
             return False
         return st.type == FileType.DIRECTORY
 
@@ -477,7 +477,7 @@ class Ops:
         """
         try:
             st = await self.stat(path, session_id=session_id)
-        except (FileNotFoundError, NoMountError):
+        except (FileNotFoundError, NotADirectoryError, NoMountError):
             return False
         return st.type != FileType.DIRECTORY
 

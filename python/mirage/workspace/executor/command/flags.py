@@ -17,6 +17,7 @@ from collections.abc import Mapping, Sequence
 
 from mirage.commands.spec import (CommandSpec, flag_kwarg_name, parse_command,
                                   parse_to_kwargs)
+from mirage.commands.spec.flag_view import FlagBag
 from mirage.commands.spec.types import FlagValue
 from mirage.commands.spec.usage import (  # yapf: disable
     ambiguous_option_error, invalid_argument_error, invalid_float_error,
@@ -147,7 +148,7 @@ def parse_flags(
                                abbreviations=abbreviations)
         # Widens from ParsedFlagValue to FlagValue: PATH values
         # become PathSpec just below.
-        flag_kwargs: dict[str, FlagValue] = dict(parse_to_kwargs(parsed))
+        flag_kwargs: dict[str, FlagValue] = FlagBag(parse_to_kwargs(parsed))
 
         # Recover PathSpec for PATH flag values; multiple PATH flags
         # arrive as a list of resolved paths and become list[PathSpec].

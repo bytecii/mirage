@@ -22,6 +22,7 @@ from mirage.commands.builtin.generic.crossmount.relay.join import run_join
 from mirage.commands.builtin.generic.crossmount.relay.ls import run_ls
 from mirage.commands.builtin.generic.crossmount.relay.mv import run_mv
 from mirage.commands.builtin.generic.crossmount.relay.paste import run_paste
+from mirage.commands.builtin.generic.crossmount.relay.sort import run_sort
 from mirage.commands.builtin.generic.crossmount.relay.tar import run_tar
 from mirage.commands.builtin.generic.crossmount.relay.unzip import run_unzip
 from mirage.commands.builtin.generic.crossmount.relay.zip_cmd import run_zip
@@ -65,6 +66,8 @@ async def run_relay(cmd_name: str,
         session_view (SessionView | None): The session plane's door, for
             the generic that renders the session's profile (ls -l).
     """
+    if cmd_name == Cmd.SORT:
+        return await run_sort(scopes, flag_kwargs, dispatch, stdin)
     if cmd_name == Cmd.LS:
         return await run_ls(scopes, flag_kwargs, dispatch, ns, session_view)
     if cmd_name == Cmd.CP:

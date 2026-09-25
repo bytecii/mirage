@@ -14,6 +14,7 @@
 
 from mirage.accessor.redis import RedisAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.core.redis.dest import lookup_error
 from mirage.observe.context import record, start_op
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
@@ -44,7 +45,7 @@ async def read_bytes(accessor: RedisAccessor,
     else:
         data = await store.get_file(key)
     if data is None:
-        raise enoent(virtual)
+        raise await lookup_error(store, path_spec, key)
     record("read", virtual, "redis", len(data), timer)
     return data
 

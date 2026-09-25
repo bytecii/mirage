@@ -18,6 +18,7 @@ from mirage.io import IOResult
 from mirage.io.types import ByteSource
 from mirage.runtime.types import DispatchFn
 from mirage.types import FileType, PathSpec
+from mirage.utils.errors import FS_ERRORS, fs_strerror
 from mirage.utils.path import CycleError, resolve_path
 from mirage.workspace.executor.builtins.dirs.constants import CD_USAGE
 from mirage.workspace.executor.builtins.dirs.dirs import (join_raw, norm,
@@ -126,6 +127,9 @@ async def handle_cd(
             s, _ = await dispatch("stat", scope)
         except FileNotFoundError:
             not_found = True
+        except FS_ERRORS as exc:
+            error = f"cd: {raw}: {fs_strerror(exc)}\n"
+            continue
         except ValueError as exc:
             error = f"cd: {raw}: {exc}\n"
             continue

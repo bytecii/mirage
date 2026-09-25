@@ -22,6 +22,7 @@ import { runJoin } from './join.ts'
 import { runLs } from './ls.ts'
 import { runMv } from './mv.ts'
 import { runPaste } from './paste.ts'
+import { runSort } from './sort.ts'
 import { runTar } from './tar.ts'
 import { runUnzip } from './unzip.ts'
 import { runZip } from './zip_cmd.ts'
@@ -52,6 +53,7 @@ export async function runRelay(
   sessionView?: SessionView,
   stdin: ByteSource | null = null,
 ): Promise<CrossResult> {
+  if (cmdName === Cmd.SORT) return runSort(scopes, flagKwargs, dispatch, stdin)
   if (cmdName === Cmd.LS) return runLs(scopes, flagKwargs, dispatch, ns, sessionView)
   if (cmdName === Cmd.CP) return runCp(scopes, flagKwargs, dispatch, storageKey)
   if (cmdName === Cmd.MV) return runMv(scopes, flagKwargs, dispatch, storageKey)

@@ -18,7 +18,7 @@ def _mounted(accessor: Accessor) -> bool:
 async def _exists(stat: StatOp, accessor: Accessor, path: PathSpec) -> bool:
     try:
         await stat(accessor, path)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return False
     return True
 

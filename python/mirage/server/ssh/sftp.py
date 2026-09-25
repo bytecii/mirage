@@ -114,7 +114,7 @@ def to_attrs(st: dict[str, Any]) -> asyncssh.SFTPAttrs:
 def exists(core: MountCore, path: str) -> bool:
     try:
         core.getattr(path)
-    except (FileNotFoundError, NoMountError):
+    except (FileNotFoundError, NotADirectoryError, NoMountError):
         return False
     return True
 
@@ -143,7 +143,7 @@ def listing(core: MountCore, path: str) -> list[tuple[str, dict[str, Any]]]:
             child = posixpath.join(path, name)
         try:
             entries.append((name, core.getattr(child)))
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, NotADirectoryError) as exc:
             logger.debug("sftp: %s vanished while listing: %r", child, exc)
     return entries
 

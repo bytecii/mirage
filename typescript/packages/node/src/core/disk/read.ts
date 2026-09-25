@@ -18,6 +18,7 @@ import { record, startOp } from '@struktoai/mirage-core/observe/context'
 import { VFSName } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { enoent } from '@struktoai/mirage-core/utils/errors'
+import { diskError } from './errors.ts'
 import { resolveInside } from './utils.ts'
 
 const CHUNK = 1 << 20
@@ -32,7 +33,7 @@ export async function read(accessor: DiskAccessor, path: PathSpec): Promise<Uint
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       throw enoent(path)
     }
-    throw err
+    throw diskError(err, path)
   }
   record('read', path.virtual, VFSName.DISK, data.byteLength, timer)
   return new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
@@ -67,7 +68,7 @@ export async function readRange(
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       throw enoent(path)
     }
-    throw err
+    throw diskError(err, path)
   }
   try {
     if (size !== null) {

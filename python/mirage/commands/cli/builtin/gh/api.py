@@ -29,6 +29,7 @@ from mirage.core.jq import jq_eval
 from mirage.io.stream import materialize
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import JsonValue, PathSpec
+from mirage.utils.errors import fs_strerror
 
 INT_RE = re.compile(r"^-?\d+$")
 KEY_RE = re.compile(r"^([^\[\]]+)((?:\[[^\[\]]*\])*)$")
@@ -145,8 +146,8 @@ async def _read_file(inv: CLIInvocation[GhConfig], path: str) -> bytes:
         raise ValueError(f"read {path}: a workspace is required")
     try:
         data, _ = await inv.doors.dispatch("read", _file_spec(inv, path))
-    except FileNotFoundError:
-        raise ValueError(f"read {path}: No such file or directory") from None
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        raise ValueError(f"read {path}: {fs_strerror(exc)}") from None
     return data if isinstance(data, bytes) else bytes(data)
 
 

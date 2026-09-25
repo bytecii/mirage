@@ -78,6 +78,28 @@ async def path_stat(dispatch: DispatchFn, virtual: str) -> FileStat | None:
     return await resolve_path_stat(dispatch, spec)
 
 
+async def miss_strerror(dispatch: DispatchFn, virtual: str) -> str:
+    """The strerror GNU names for a path ``path_stat`` found nothing at.
+
+    ``path_stat`` answers None for both ways a lookup fails, since an
+    existence probe treats them alike, while a diagnostic names the one
+    the stat met: ENOTDIR for a path under a plain file, ENOENT for the
+    rest. Asked only after a miss, so its round trip is on the failure
+    path.
+
+    Args:
+        dispatch (DispatchFn): op dispatcher.
+        virtual (str): absolute virtual path.
+    """
+    try:
+        await dispatch("stat", PathSpec.from_str_path(virtual))
+    except NotADirectoryError:
+        return "Not a directory"
+    except MISS_ERRORS:
+        return "No such file or directory"
+    return "No such file or directory"
+
+
 async def path_readdir(dispatch: DispatchFn, virtual: str) -> list[str]:
     """List one virtual path through the workspace, as virtual paths.
 

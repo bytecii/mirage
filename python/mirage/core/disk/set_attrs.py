@@ -18,6 +18,7 @@ from datetime import datetime
 import aiofiles.os
 
 from mirage.accessor.disk import DiskAccessor
+from mirage.core.disk.errors import disk_errors
 from mirage.core.disk.utils import resolve_inside
 from mirage.types import PathSpec
 
@@ -58,8 +59,8 @@ async def set_attrs(
         dict[str, int | str]: requested fields the inode does not hold.
     """
     p = await resolve_inside(accessor.root, path)
-    if not await aiofiles.os.path.exists(p):
-        raise FileNotFoundError(path.raw_path)
+    with disk_errors(path.virtual):
+        await aiofiles.os.stat(p)
     residual: dict[str, int | str] = {}
     if mode is not None:
         keep = 0o700 if await aiofiles.os.path.isdir(p) else 0o600

@@ -79,7 +79,7 @@ class Reconciler:
             remote_stat = await mount.execute_op("stat",
                                                  path,
                                                  index=RAMIndexCacheStore())
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             await self.on_missing(path)
             await mount.index.clear()
             return Verdict.GONE
@@ -117,7 +117,7 @@ class Reconciler:
         """
         try:
             return await self._probe(mount, path)
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             raise
         except (TypeError, AttributeError, NameError):
             # A backend that cannot answer is one thing; a bug in the probe

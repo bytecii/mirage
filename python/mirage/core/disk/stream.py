@@ -18,6 +18,7 @@ import aiofiles
 
 from mirage.accessor.disk import DiskAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.core.disk.errors import disk_errors
 from mirage.core.disk.utils import resolve_inside
 from mirage.observe.context import record_stream
 from mirage.types import PathSpec
@@ -31,7 +32,7 @@ async def read_stream(accessor: DiskAccessor,
     root = accessor.root
     rec = record_stream("read", virtual, "disk")
     p = await resolve_inside(root, path_spec)
-    try:
+    with disk_errors(virtual):
         async with aiofiles.open(p, "rb") as f:
             while True:
                 chunk = await f.read(chunk_size)
@@ -40,5 +41,3 @@ async def read_stream(accessor: DiskAccessor,
                 if rec is not None:
                     rec.bytes += len(chunk)
                 yield chunk
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(virtual) from exc

@@ -86,8 +86,9 @@ export class PyodideExecution {
   evaluate(
     code: string,
     inputs: Record<string, EvalValue>,
+    cwd = '',
   ): [string, Uint8Array, Uint8Array, boolean, boolean] {
-    const [value, stdout, stderr, ok, syntax] = this.call('evaluate', code, inputs) as [
+    const [value, stdout, stderr, ok, syntax] = this.call('evaluate', code, inputs, cwd) as [
       string,
       number[],
       number[],
@@ -101,8 +102,9 @@ export class PyodideExecution {
     code: string,
     session: string,
     inputs: Record<string, EvalValue>,
+    cwd = '',
   ): [Uint8Array, Uint8Array, number, EvalStatus] {
-    const [stdout, stderr, exitCode, status] = this.call('repl', code, session, inputs) as [
+    const [stdout, stderr, exitCode, status] = this.call('repl', code, session, inputs, cwd) as [
       number[],
       number[],
       number,

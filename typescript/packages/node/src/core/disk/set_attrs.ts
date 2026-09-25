@@ -16,6 +16,7 @@ import { chmod, stat as fsStat, utimes } from 'node:fs/promises'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { enoent } from '@struktoai/mirage-core/utils/errors'
 import type { DiskAccessor } from '../../accessor/disk.ts'
+import { diskError } from './errors.ts'
 import { resolveInside } from './utils.ts'
 
 export interface SetAttrsFields {
@@ -44,7 +45,7 @@ export async function setAttrs(
     st = await fsStat(full)
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw enoent(path)
-    throw err
+    throw diskError(err, path)
   }
   const residual: Record<string, number | string> = {}
   if (fields.mode !== undefined) {

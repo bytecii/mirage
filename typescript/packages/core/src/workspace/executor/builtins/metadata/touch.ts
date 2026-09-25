@@ -16,7 +16,13 @@ import { DEFAULT_UMASK } from '../../../../context/session_context.ts'
 import { IOResult } from '../../../../io/types.ts'
 import type { FileStat, SetAttrFields } from '../../../../types.ts'
 import { FileType, PathSpec } from '../../../../types.ts'
-import { fsStrerror, isEnoent, isFsError, isMissingOp } from '../../../../utils/errors.ts'
+import {
+  fsStrerror,
+  isEnoent,
+  isEnotdir,
+  isFsError,
+  isMissingOp,
+} from '../../../../utils/errors.ts'
 import { CycleError, resolvePath } from '../../../../utils/path.ts'
 import type { DispatchFn } from '../../../../runtime/types.ts'
 import type { Namespace } from '../../../mount/namespace/namespace.ts'
@@ -53,11 +59,9 @@ export async function handleTouch(
       const [refStat] = await dispatch('stat', ref)
       stamp = (refStat as FileStat).modified
     } catch (err) {
-      if (isEnoent(err)) {
-        return fail(
-          'touch',
-          `touch: failed to get attributes of '${refText}': No such file or directory\n`,
-        )
+      const strerror = isEnoent(err) || isEnotdir(err) ? fsStrerror(err) : null
+      if (strerror !== null) {
+        return fail('touch', `touch: failed to get attributes of '${refText}': ${strerror}\n`)
       }
       throw err
     }
@@ -111,6 +115,12 @@ export async function handleTouch(
       try {
         await dispatch('stat', resolved)
       } catch (err) {
+        // -c never opens the file, so GNU meets the bad parent when it sets
+        // the times, and says so in those words.
+        if (isEnotdir(err) && flags.has('c')) {
+          errors.push(`touch: setting times of '${target.rawPath}': Not a directory\n`)
+          continue
+        }
         if (!isEnoent(err)) throw err
         if (flags.has('c')) continue
         try {
@@ -146,9 +156,9 @@ export async function handleTouch(
       // A destination whose parent chain is not all directories is one
       // failed operand, not an aborted command: GNU reports it and touches
       // the rest. Caught here rather than around the write because backends
-      // disagree about which call refuses first (ram answers stat with
-      // ENOENT and fails the write; a real filesystem answers stat itself
-      // with ENOTDIR).
+      // disagree about which call refuses first (an object store answers
+      // stat with ENOENT and fails the write; a filesystem or a keyed store
+      // answers stat itself with ENOTDIR).
       if (!isFsError(err)) throw err
       errors.push(`touch: cannot touch '${target.rawPath}': ${String(fsStrerror(err))}\n`)
     }

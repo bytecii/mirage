@@ -127,7 +127,7 @@
       "expect": {
         "exit": 2,
         "stdout": "",
-        "stderr": "sort: /airtable/bases/Product_Roadmap__appRoadmapBase001/Wrong__tblFeatures000001/records.jsonl: No such file or directory\n"
+        "stderr": "sort: cannot read: /airtable/bases/Product_Roadmap__appRoadmapBase001/Wrong__tblFeatures000001/records.jsonl: No such file or directory\n"
       }
     },
     {

@@ -190,7 +190,7 @@ async def check_partial_read(ws: Workspace, dst: str, label: str) -> None:
     out, err, code = await run(ws, f"sort {src} {miss}")
     check(
         f"{label}: sort aborts", out == "" and code == 2
-        and err == f"sort: {miss}: No such file or directory\n")
+        and err == f"sort: cannot read: {miss}: No such file or directory\n")
 
 
 async def check_compare(ws: Workspace, dst: str, label: str) -> None:

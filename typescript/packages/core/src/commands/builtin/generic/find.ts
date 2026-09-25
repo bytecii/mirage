@@ -16,7 +16,7 @@ import { activeCacheManager } from '../../../cache/context.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { modifiedTs } from '../../../core/generic/find.ts'
-import { isEnoent } from '../../../utils/errors.ts'
+import { isEnoent, isEnotdir, isMissError } from '../../../utils/errors.ts'
 import { failureText } from '../../../errors/classify.ts'
 import { IOResult } from '../../../io/types.ts'
 import type { FindOptions } from '../../../vfs/base.ts'
@@ -95,7 +95,7 @@ async function applyMtimeFilter(
     try {
       st = await stat(rowSpec(r, mountPrefix))
     } catch (err) {
-      if (isEnoent(err)) continue
+      if (isEnoent(err) || isEnotdir(err)) continue
       throw err
     }
     const mt = modifiedTs(st.modified)
@@ -117,7 +117,7 @@ async function rowMtime(
   try {
     return modifiedTs((await stat(rowSpec(displayPath(mountPrefix, row), mountPrefix))).modified)
   } catch (err) {
-    if (!isEnoent(err)) throw err
+    if (!isEnoent(err) && !isEnotdir(err)) throw err
     return null
   }
 }
@@ -325,6 +325,26 @@ function withRootRow(rows: string[], display: string, root: string[]): string[] 
     .concat(root.length > 0 ? [display] : [])
 }
 
+// The strerror of a start point statPath found nothing at. statPath answers
+// null for both ways a lookup fails, because every other caller of it treats
+// them alike, while GNU names the one its stat met. So the mount's own stat
+// is asked which, on the failure path only: a start point under a plain file
+// is ENOTDIR. Mirrors _missing_start in find.py.
+async function missingStartDetail(
+  root: PathSpec,
+  stat: ((spec: PathSpec) => Promise<FileStat>) | undefined,
+): Promise<string> {
+  if (stat === undefined) return 'No such file or directory'
+  try {
+    await stat(root)
+  } catch (err) {
+    if (isEnotdir(err)) return 'Not a directory'
+    if (isMissError(err)) return 'No such file or directory'
+    throw err
+  }
+  return 'No such file or directory'
+}
+
 export function findGeneric(
   paths: PathSpec[],
   texts: string[],
@@ -451,7 +471,7 @@ export function findGeneric(
           // rest, and exits 1. Reported as the operand was typed, falling
           // back to the resolved path for a synthesized root.
           const label = root.rawPath !== '' ? root.rawPath : root.virtual
-          missing.push(`find: '${label}': No such file or directory`)
+          missing.push(`find: '${label}': ${await missingStartDetail(root, stat)}`)
           continue
         }
         const cachedSize = start.size === null ? await cacheManager?.cachedSize(root) : null

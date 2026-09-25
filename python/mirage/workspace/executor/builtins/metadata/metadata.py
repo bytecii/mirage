@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from mirage.policy import PolicyDenied
 from mirage.runtime.types import DispatchFn
 from mirage.types import FileStat, FileType, PathSpec
-from mirage.utils.errors import format_fs_error
+from mirage.utils.errors import format_fs_error, fs_strerror
 from mirage.utils.path import CycleError
 from mirage.workspace.executor.builtins.shared import read_only_error
 from mirage.workspace.mount.namespace import Namespace
@@ -261,9 +261,9 @@ async def resolve_operand(
         return None
     try:
         stat, _ = await dispatch("stat", resolved)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError) as exc:
         errors.append(f"{cmd}: cannot access '{target.raw_path}': "
-                      f"No such file or directory\n")
+                      f"{fs_strerror(exc)}\n")
         return None
     return resolved, stat
 
