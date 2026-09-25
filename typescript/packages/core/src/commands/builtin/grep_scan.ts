@@ -20,7 +20,7 @@ import { type IOResult } from '../../io/types.ts'
 import { type FileStat, FileType } from '../../types.ts'
 import { getExtension } from '../resolve.ts'
 import { BINARY_EXTENSIONS } from './constants.ts'
-import { grepContextLines } from './grep_context.ts'
+import { grepContextStream } from './grep_context.ts'
 import { decodeLine, encodeLine, lineOffsets, MatchOffsets, prefixOf } from './grep_offsets.ts'
 import { compilePattern } from './grep_pattern.ts'
 import { NO_FILTERS, type WalkFilters, dirAdmitted, fileAdmitted } from './grep_select.ts'
@@ -192,12 +192,11 @@ export async function* grepStream(
   }
   const hasContext = opts.afterContext > 0 || opts.beforeContext > 0
   if (hasContext && !opts.countOnly && !opts.onlyMatching) {
-    const allLines: string[] = []
-    const iter = new AsyncLineIterator(source)
-    for await (const raw of iter) allLines.push(decodeLine(raw))
-    let printed = false
-    for (const chunk of grepContextLines(
-      allLines,
+    if (opts.io !== undefined) opts.io.exitCode = 1
+    // Context only ever accompanies a selected line, so the first chunk is
+    // the selection.
+    for await (const chunk of grepContextStream(
+      source,
       pat,
       opts.invert,
       opts.lineNumbers,
@@ -206,12 +205,9 @@ export async function* grepStream(
       opts.beforeContext,
       opts.byteOffsets === true,
     )) {
-      printed = true
+      if (opts.io !== undefined) opts.io.exitCode = 0
       yield chunk
     }
-    // Context lines only ever accompany a selected line, so here emptiness
-    // and selection are the same fact.
-    if (opts.io !== undefined) opts.io.exitCode = printed ? 0 : 1
     return
   }
   if (opts.io !== undefined) opts.io.exitCode = 1

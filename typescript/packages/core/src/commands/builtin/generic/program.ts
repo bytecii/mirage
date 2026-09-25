@@ -8,7 +8,13 @@ import type { DispatchFn } from '../../../runtime/types.ts'
 import { PathSpec } from '../../../types.ts'
 import { fsErrorLine, isFsError } from '../../../utils/errors.ts'
 
-export const PROGRAM_FILE_COMMANDS = new Set(['grep', 'sed', 'awk', 'jq'])
+export const PROGRAM_FILE_COMMANDS = new Set(['grep', 'rg', 'sed', 'awk', 'jq'])
+
+// ripgrep reads patterns from stdin once, and refuses both a second `-f -`
+// and a `-` operand after it, exit 2 (14.1.1).
+const RG_STDIN_REREAD = 'rg: error reading -f/--file from stdin: stdin has already been consumed\n'
+const RG_STDIN_SEARCHED =
+  'rg: error: attempted to read patterns from stdin while also searching stdin\n'
 
 /** The invocation's program files, or an empty list for inline programs. */
 export function programFiles(name: string, bag: Record<string, FlagValue>): string[] {
@@ -19,7 +25,10 @@ export function programFiles(name: string, bag: Record<string, FlagValue>): stri
 
 /** Read program files once before input routing or traversal fan-out.
  * Lower to the inline form so every native sub-run sees the same program,
- * including when reading it consumed stdin. Pinned against debian:stable-slim.
+ * including when reading it consumed stdin. Pinned against debian:stable-slim
+ * (grep 3.11, sed 4.9, ripgrep 14.1.1).
+ * `operands` are the path operands, which rg checks for a `-` once `-f -` has
+ * read stdin.
  */
 export async function prepareProgram(
   name: string,
@@ -27,6 +36,7 @@ export async function prepareProgram(
   bag: Record<string, FlagValue>,
   stdin: ByteSource | null,
   dispatch: DispatchFn,
+  operands: readonly PathSpec[] = [],
 ): Promise<[string[], Record<string, FlagValue>, ByteSource | null, IOResult | null]> {
   const fl = new FlagView(bag, specOf(name))
   const key = name === 'jq' ? 'from_file' : name === 'grep' ? 'file' : 'f'
@@ -34,11 +44,25 @@ export async function prepareProgram(
   if (files.length === 0) return [texts, bag, stdin, null]
   const source = resolveSource(stdin)
   let consumed = false
+  // Only a literal `-` takes stdin in ripgrep's sense: `-f /dev/stdin` reads
+  // the same bytes as a file, so neither refusal follows from it.
+  let taken = false
   const pieces: Uint8Array[] = []
   for (const file of files) {
     const path = PathSpec.fromStrPath(file)
     try {
       if (name !== 'jq' && (file === '-' || file === '/dev/stdin')) {
+        if (name === 'rg' && file === '-') {
+          if (taken) {
+            return [
+              texts,
+              bag,
+              stdin,
+              new IOResult({ exitCode: 2, stderr: new TextEncoder().encode(RG_STDIN_REREAD) }),
+            ]
+          }
+          taken = true
+        }
         pieces.push(await materialize(source))
         consumed = true
       } else {
@@ -60,14 +84,22 @@ export async function prepareProgram(
       ]
     }
   }
+  if (taken && operands.some((p) => p.rawPath === '-')) {
+    return [
+      texts,
+      bag,
+      stdin,
+      new IOResult({ exitCode: 2, stderr: new TextEncoder().encode(RG_STDIN_SEARCHED) }),
+    ]
+  }
   const out = Object.fromEntries(Object.entries(bag).filter(([name]) => name !== key))
   const dec = new TextDecoder()
-  if (name === 'grep') {
+  if (name === 'grep' || name === 'rg') {
     const expressions = fl.asList('e')
     let pattern = expressions.length > 0 ? expressions.join('\n') : null
     for (const data of pieces) pattern = mergePatternList(pattern, data)
     // An empty pattern-file list preserves grep's zero-pattern sentinel.
-    out.file = []
+    out[key] = []
     out.e = pattern === null ? [] : [pattern]
   } else if (name === 'sed') {
     out.e = [...fl.asList('e'), ...pieces.map((data) => dec.decode(data).replace(/\n$/, ''))]

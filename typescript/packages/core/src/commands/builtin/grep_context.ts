@@ -12,20 +12,97 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { encodeLine, lineOffsets, prefixOf } from './grep_offsets.ts'
+import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
+import { decodeLine, encodeLine, prefixOf } from './grep_offsets.ts'
 
 const SEPARATOR = new TextEncoder().encode('--\n')
 
 /**
- * Render selected lines with their context, GNU's separators included.
+ * grep's context output, settled one line at a time.
+ *
+ * Selected lines and their context, grouped the way GNU groups them, with `--`
+ * between groups. It holds only the last `beforeContext` lines nothing has
+ * printed yet, and `finished` turns true once -m has selected its last line
+ * and that line's trailing context is out, so a caller feeding it a stream can
+ * stop reading there: a pipe that goes on past the answer is never waited on.
  *
  * `byteOffsets` is -b: every line carries the byte offset of its own start, a
  * context line renders it with `-` like every other field, and the `--` group
- * separator carries no fields at all. The offsets are derived from the lines
- * because this renderer is handed text rather than bytes, which is exact only
- * for text that came through `decodeLine` -- so that is what a caller must
- * hand over. The rendered line is put back with `encodeLine`, so a byte that
- * is not valid UTF-8 prints as GNU prints it rather than as U+FFFD.
+ * separator carries no fields at all. The rendered line is put back with
+ * `encodeLine`, so a byte that is not valid UTF-8 prints as GNU prints it
+ * rather than as U+FFFD.
+ */
+export class ContextRenderer {
+  // GNU selects no line at all under -m0, context and all, so there is
+  // nothing to group and nothing to print.
+  finished: boolean
+  private readonly held: [number, string, number][] = []
+  private index = -1
+  private position = 0
+  private selected = 0
+  private lastPrinted = -1
+  private afterLeft = 0
+
+  constructor(
+    private readonly pat: RegExp,
+    private readonly invert: boolean,
+    private readonly lineNumbers: boolean,
+    private readonly maxCount: number | null,
+    private readonly afterContext: number,
+    private readonly beforeContext: number,
+    private readonly byteOffsets = false,
+  ) {
+    this.finished = maxCount === 0
+  }
+
+  // Render what one more line settles. `line` comes from `decodeLine` with its
+  // terminator stripped, which is what makes its -b offset exact, and `width`
+  // is its length in bytes.
+  feed(line: string, width: number): Uint8Array[] {
+    this.index += 1
+    const start = this.position
+    this.position += width + 1
+    const out: Uint8Array[] = []
+    const selecting = this.maxCount === null || this.selected < this.maxCount
+    const found = selecting && this.pat.test(line)
+    this.pat.lastIndex = 0
+    if (selecting && found !== this.invert) {
+      this.selected += 1
+      const first = this.held[0]?.[0] ?? this.index
+      if (this.lastPrinted >= 0 && first > this.lastPrinted + 1) out.push(SEPARATOR)
+      for (const [number, text, at] of this.held) out.push(this.render(number, text, at, false))
+      this.held.length = 0
+      out.push(this.render(this.index, line, start, true))
+      this.lastPrinted = this.index
+      this.afterLeft = this.afterContext
+    } else if (this.afterLeft > 0) {
+      out.push(this.render(this.index, line, start, false))
+      this.lastPrinted = this.index
+      this.afterLeft -= 1
+    } else {
+      this.held.push([this.index, line, start])
+      if (this.held.length > this.beforeContext) this.held.shift()
+    }
+    if (this.maxCount !== null && this.selected >= this.maxCount && this.afterLeft === 0) {
+      this.finished = true
+    }
+    return out
+  }
+
+  private render(index: number, line: string, start: number, selected: boolean): Uint8Array {
+    const fields = prefixOf(
+      this.lineNumbers ? index + 1 : null,
+      this.byteOffsets ? start : null,
+      selected,
+    )
+    return encodeLine(`${fields}${line}\n`)
+  }
+}
+
+/**
+ * Render selected lines with their context, GNU's separators included. The
+ * lines come from `decodeLine`: the -b offsets are counted back out of the
+ * text, which is exact only for text read that way.
  */
 export function grepContextLines(
   lines: readonly string[],
@@ -37,76 +114,47 @@ export function grepContextLines(
   beforeContext: number,
   byteOffsets = false,
 ): Uint8Array[] {
-  if (maxCount === 0) {
-    // GNU selects no line at all under -m0, context and all, so there is
-    // nothing to group and nothing to print. Read before the scan because
-    // `matchIndices.length >= 0` is already true, so the check below would
-    // keep the first selected line. `grepInput` and both scans in
-    // `grep_scan` take the same early return.
-    return []
+  const renderer = new ContextRenderer(
+    pat,
+    invert,
+    lineNumbers,
+    maxCount,
+    afterContext,
+    beforeContext,
+    byteOffsets,
+  )
+  const out: Uint8Array[] = []
+  for (const line of lines) {
+    if (renderer.finished) break
+    out.push(...renderer.feed(line, encodeLine(line).length))
   }
-  const total = lines.length
-  const offsets = byteOffsets ? lineOffsets(lines) : []
-  const matchIndices: number[] = []
-  for (let idx = 0; idx < lines.length; idx++) {
-    const line = lines[idx] ?? ''
-    const found = pat.test(line)
-    const hit = invert ? !found : found
-    if (hit) {
-      matchIndices.push(idx)
-      if (maxCount !== null && matchIndices.length >= maxCount) break
-    }
-    pat.lastIndex = 0
-  }
-  if (matchIndices.length === 0) return []
+  return out
+}
 
-  const printed = new Set<number>()
-  const groups: number[][] = []
-  let currentGroup: number[] = []
-
-  for (const mi of matchIndices) {
-    const start = Math.max(0, mi - beforeContext)
-    const end = Math.min(total - 1, mi + afterContext)
-    const range: number[] = []
-    for (let k = start; k <= end; k++) range.push(k)
-    const last = currentGroup.length > 0 ? currentGroup[currentGroup.length - 1] : undefined
-    if (
-      currentGroup.length > 0 &&
-      last !== undefined &&
-      range[0] !== undefined &&
-      range[0] <= last + 1
-    ) {
-      for (const ln of range) {
-        if (!printed.has(ln)) {
-          currentGroup.push(ln)
-          printed.add(ln)
-        }
-      }
-    } else {
-      if (currentGroup.length > 0) groups.push(currentGroup)
-      currentGroup = []
-      for (const ln of range) {
-        printed.add(ln)
-        currentGroup.push(ln)
-      }
-    }
+/** `grepContextLines` over a stream, read no further than it prints. */
+export async function* grepContextStream(
+  source: AsyncIterable<Uint8Array>,
+  pat: RegExp,
+  invert: boolean,
+  lineNumbers: boolean,
+  maxCount: number | null,
+  afterContext: number,
+  beforeContext: number,
+  byteOffsets = false,
+): AsyncIterable<Uint8Array> {
+  const renderer = new ContextRenderer(
+    pat,
+    invert,
+    lineNumbers,
+    maxCount,
+    afterContext,
+    beforeContext,
+    byteOffsets,
+  )
+  const lines = new AsyncLineIterator(source)
+  while (!renderer.finished) {
+    const next = await lines.next()
+    if (next.done === true) return
+    yield* renderer.feed(decodeLine(next.value), next.value.byteLength)
   }
-  if (currentGroup.length > 0) groups.push(currentGroup)
-
-  const matchSet = new Set(matchIndices)
-  const result: Uint8Array[] = []
-  for (let gi = 0; gi < groups.length; gi++) {
-    if (gi > 0) result.push(SEPARATOR)
-    const group = groups[gi] ?? []
-    for (const ln of group) {
-      const line = lines[ln] ?? ''
-      const fields = prefixOf(
-        lineNumbers ? ln + 1 : null,
-        byteOffsets ? (offsets[ln] ?? 0) : null,
-        matchSet.has(ln),
-      )
-      result.push(encodeLine(`${fields}${line}\n`))
-    }
-  }
-  return result
 }

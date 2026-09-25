@@ -292,6 +292,21 @@ describe('loneOperand', () => {
     expect(loneOperand([])).toBe(null)
     expect(loneOperand([operand('/traces/*', '*')])).toBe(null)
   })
+
+  it('never answers for stdin', () => {
+    // A `-` is the line's stdin, which no backend holds, so every push-down
+    // defers to the scan that reads the pipe.
+    const dash = new PathSpec({
+      virtual: '/traces/-',
+      directory: '/traces/',
+      vfsPath: 'traces/-',
+      resolved: true,
+      rawPath: '-',
+    })
+    expect(loneOperand([dash])).toBe(null)
+    expect(pushdownOperand([dash], {}, 'ada')).toBe(null)
+    expect(literalPushdownOperand([dash], {}, 'ada')).toBe(null)
+  })
 })
 
 describe('literalPushdownOperand', () => {

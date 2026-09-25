@@ -1,11 +1,13 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { describe, expect, it, vi } from 'vitest'
-import { IOResult } from '../../../io/types.ts'
+import { IOResult, materialize } from '../../../io/types.ts'
 import { RAMVFS } from '../../../vfs/ram/ram.ts'
 import { createShellParser } from '../../../shell/parse/index.ts'
 import { Workspace } from '../../../workspace/workspace/workspace.ts'
-import { MountMode } from '../../../types.ts'
+import { MountMode, PathSpec } from '../../../types.ts'
+import type { DispatchFn } from '../../../runtime/types.ts'
+import { prepareProgram } from './program.ts'
 
 const require = createRequire(import.meta.url)
 const engineWasm = readFileSync(require.resolve('web-tree-sitter/web-tree-sitter.wasm'))
@@ -69,4 +71,93 @@ describe('program file routing', () => {
       }
     })
   }
+})
+
+function typed(raw: string): PathSpec {
+  const virtual = raw.startsWith('/') ? raw : `/${raw}`
+  return new PathSpec({ virtual, directory: '/', vfsPath: '', resolved: true, rawPath: raw })
+}
+
+const noDispatch = ((op: string, path: PathSpec) => {
+  throw new Error(`stdin only, but ${op} ${path.virtual} was dispatched`)
+}) as unknown as DispatchFn
+
+const ENC = new TextEncoder()
+const DEC = new TextDecoder()
+
+describe('rg program files from stdin', () => {
+  it('lowers a -f - to -e', async () => {
+    const [texts, flags, rest, error] = await prepareProgram(
+      'rg',
+      ['/in'],
+      { f: ['-'] },
+      ENC.encode('a\nb\n'),
+      noDispatch,
+    )
+    expect(error).toBeNull()
+    expect([texts, flags]).toEqual([['/in'], { f: [], e: ['a\nb'] }])
+    expect(await materialize(rest)).toEqual(new Uint8Array())
+  })
+
+  it('refuses a second -f -', async () => {
+    // ripgrep 14.1.1: `rg -f - -f -` reads stdin once and refuses the second
+    // before any operand is looked at.
+    const [, , , error] = await prepareProgram(
+      'rg',
+      [],
+      { f: ['-', '-'] },
+      ENC.encode('a\n'),
+      noDispatch,
+      [typed('-')],
+    )
+    expect(error?.exitCode).toBe(2)
+    expect(DEC.decode(error?.stderr as Uint8Array)).toBe(
+      'rg: error reading -f/--file from stdin: stdin has already been consumed\n',
+    )
+  })
+
+  it('refuses a - operand after -f -', async () => {
+    const [, , , error] = await prepareProgram(
+      'rg',
+      [],
+      { f: ['-'] },
+      ENC.encode('a\n'),
+      noDispatch,
+      [typed('/in'), typed('-')],
+    )
+    expect(error?.exitCode).toBe(2)
+    expect(DEC.decode(error?.stderr as Uint8Array)).toBe(
+      'rg: error: attempted to read patterns from stdin while also searching stdin\n',
+    )
+  })
+
+  it('takes no - from -f /dev/stdin', async () => {
+    // ripgrep reads `-f /dev/stdin` as a file, so a `-` operand after it
+    // searches what is left of stdin (nothing) rather than being refused.
+    const [, flags, rest, error] = await prepareProgram(
+      'rg',
+      [],
+      { f: ['/dev/stdin'] },
+      ENC.encode('a\n'),
+      noDispatch,
+      [typed('-')],
+    )
+    expect(error).toBeNull()
+    expect(flags).toEqual({ f: [], e: ['a'] })
+    expect(await materialize(rest)).toEqual(new Uint8Array())
+  })
+
+  it('leaves grep reading a second -f - as empty', async () => {
+    // GNU grep 3.11 reads the second `-f -` as an empty pattern file.
+    const [, flags, , error] = await prepareProgram(
+      'grep',
+      [],
+      { file: ['-', '-'], e: [] },
+      ENC.encode('a\n'),
+      noDispatch,
+      [typed('-')],
+    )
+    expect(error).toBeNull()
+    expect(flags).toEqual({ file: [], e: ['a'] })
+  })
 })

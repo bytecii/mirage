@@ -211,3 +211,34 @@ def test_query_carries_the_honored_flags():
                CommandOpts(flags={"i": True})))
     assert seen[0].options["grep"]["ignore_case"]
     assert not seen[0].options["grep"]["fixed_string"]
+
+
+def test_stdin_operand_reads_the_pipe_not_the_backend():
+    # A `-` operand is the line's stdin, which no backend holds. Asked
+    # about it, a search that answers any operand said "no match" and
+    # the pipe was never read.
+    asked: list[str] = []
+
+    async def answer_everything(accessor: FakeAccessor,
+                                operand: PathSpec,
+                                query: SearchQuery,
+                                index=NULL_INDEX) -> list[str]:
+        asked.append(operand.raw_path)
+        return []
+
+    ops = SearchOps(search=answer_everything,
+                    meta={"grep": {
+                        "mode": "literal",
+                        "stream": False
+                    }})
+    dash = PathSpec(virtual="/h/-",
+                    directory="/h/",
+                    vfs_path="-",
+                    resolved=True,
+                    raw_path="-")
+    for name in ("grep", "rg"):
+        out, result = asyncio.run(
+            run_search(replace(IO, search=ops), name, FakeAccessor(), [dash],
+                       ["ada"], CommandOpts(stdin=b"x ada\n")))
+        assert (asyncio.run(_drain(out)), result.exit_code) == (b"x ada\n", 0)
+    assert asked == []

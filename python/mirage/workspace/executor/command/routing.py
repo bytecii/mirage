@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from mirage.commands.builtin.find_parse import find_expr_tail
 from mirage.commands.cli.walk import walk
 from mirage.commands.spec import SPECS, parse_command, parse_to_kwargs
+from mirage.commands.spec.flag_view import FlagView
 from mirage.io.types import ByteSource
 from mirage.types import PathSpec
 from mirage.workspace.expand.classify.path import classify_bare_path
@@ -29,7 +30,8 @@ from mirage.workspace.mount import MountRegistry
 # grep -r and bare rg print bare relative names (empty raw). Two gates:
 # grep only defaults under -r/-R (and ignores stdin, GNU's rule); rg
 # yields to an attached stdin, even an empty one (its readable-stdin
-# rule). All pinned on debian:stable-slim / ripgrep 14.
+# rule), unless `-f -` reads it for patterns. All pinned on
+# debian:stable-slim / ripgrep 14.
 CWD_DEFAULT_RAW = {
     "grep": "",
     "rg": "",
@@ -59,7 +61,10 @@ def default_cwd_operand(parts: list[str | PathSpec], cmd_name: str,
     spec = SPECS.get(cmd_name)
     if spec is None:
         return None
-    argv = [p.virtual if isinstance(p, PathSpec) else p for p in parts[1:]]
+    # A typed `-` goes back to the parser as itself, as it does from
+    # `parse_flags`, so `rg -f -` reads as stdin rather than a file `/-`.
+    argv = [("-" if p.raw_path == "-" else p.virtual) if isinstance(
+        p, PathSpec) else p for p in parts[1:]]
     if cmd_name == "find":
         # Only the words before the expression can be start points: an
         # `-exec` command word or a `-newer` reference is the parser's.
@@ -71,7 +76,10 @@ def default_cwd_operand(parts: list[str | PathSpec], cmd_name: str,
         kwargs = parse_to_kwargs(parsed)
         if kwargs.get("r") is not True and kwargs.get("R") is not True:
             return None
-    elif cmd_name == "rg" and stdin is not None:
+    elif cmd_name == "rg" and stdin is not None and "-" not in FlagView(
+            parse_to_kwargs(parsed), spec=spec).as_list("f"):
+        # `-f -` reads the attached stdin for patterns first, which
+        # leaves ripgrep nothing to search there but the cwd.
         return None
     operand = classify_bare_path(".", registry, cwd)
     if not isinstance(operand, PathSpec):
@@ -87,6 +95,7 @@ def path_flag_scopes(cmd_name: str, argv: list[str],
     parsed = parse_command(spec, argv, cwd, cmd_name)
     key = {
         "grep": "--file",
+        "rg": "-f",
         "sed": "-f",
         "awk": "-f",
         "jq": "--from-file"

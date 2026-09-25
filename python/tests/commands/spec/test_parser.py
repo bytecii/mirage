@@ -136,6 +136,15 @@ def test_rg_dash_e_frees_positional_and_accumulates():
     assert parsed.paths() == ["/x"]
 
 
+def test_rg_dash_f_dash_stays_stdin_as_grep_does():
+    # Resolved against the cwd, `-` became a pattern file named `/-`.
+    parsed = parse_command(SPECS["rg"], ["-f", "-", "/a.txt"],
+                           "/data",
+                           cmd_name="rg")
+    assert parsed.flags["-f"] == ["-"]
+    assert parsed.paths() == ["/a.txt"]
+
+
 def test_long_value_flag_equals_syntax():
     parsed = parse_command(SPECS["du"], ["--max-depth=1", "/data"], "/")
     assert parsed.flags["--max-depth"] == "1"

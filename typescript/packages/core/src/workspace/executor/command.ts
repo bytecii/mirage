@@ -311,6 +311,7 @@ export async function handleCommand(
           prepared.flagKwargs,
           stdin,
           dispatch,
+          prepared.paths,
         )
         if (error !== null) {
           return [

@@ -20,6 +20,7 @@ from mirage.commands.builtin.constants import PatternType
 from mirage.commands.builtin.grep_pattern import bre_source
 from mirage.commands.builtin.types import GrepSearchMeta, GrepSearchOptions
 from mirage.commands.builtin.utils.paths import has_unresolved_glob
+from mirage.commands.builtin.utils.stream import is_stdin
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.types import PathSpec
@@ -298,15 +299,20 @@ def lone_operand(paths: list[PathSpec]) -> PathSpec | None:
     therefore takes the generic scan, which searches each operand in turn
     the way GNU does. A glob operand defers for the older reason: an
     unexpanded pattern segment would be read as a literal entity name.
+    A ``-`` operand defers because it is the line's stdin, which no
+    backend holds: asked about ``<mount>/-``, the search answered "no
+    match" and the pipe was never read.
 
     Args:
         paths (list[PathSpec]): operands as parsed.
 
     Returns:
         PathSpec | None: the sole concrete operand, or None when the line
-            named none, named several, or still carries a glob.
+            named none, named several, named stdin, or still carries a
+            glob.
     """
-    if len(paths) != 1 or has_unresolved_glob(paths):
+    if (len(paths) != 1 or has_unresolved_glob(paths)
+            or any(is_stdin(p) for p in paths)):
         return None
     return paths[0]
 

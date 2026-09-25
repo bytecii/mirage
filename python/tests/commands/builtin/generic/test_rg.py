@@ -834,3 +834,144 @@ def test_rg_output_mode_is_the_last_of_c_l_and_files_without_match():
     }),
                           never_match=False)
     assert (counted.files_only, counted.count_only) == (False, True)
+
+
+def _stdin_operand(raw: str = "-") -> PathSpec:
+    # How the classifier hands a typed `-` over: resolved under the cwd,
+    # spelled as typed.
+    virtual = "/dev/stdin" if raw == "/dev/stdin" else "/-"
+    return PathSpec(vfs_path=virtual.strip("/"),
+                    virtual=virtual,
+                    directory="/",
+                    resolved=True,
+                    raw_path=raw)
+
+
+async def _run(paths: list[PathSpec],
+               texts: list[str],
+               flags: dict,
+               stdin,
+               files: dict[str, bytes] | None = None):
+    readdir, stat, rb, rs = _make_backend(files or {})
+    output, io = await rg(paths,
+                          texts,
+                          CommandOpts(flags=flags),
+                          readdir=readdir,
+                          stat=stat,
+                          read_bytes=rb,
+                          read_stream=rs,
+                          stdin=stdin)
+    return await _drain_async(output), io
+
+
+@pytest.mark.asyncio
+async def test_rg_dash_operand_reads_stdin():
+    # ripgrep 14.1.1: `printf 'b\n' | rg b -` prints `b`, exit 0. The
+    # backend holds no `/-`, so reading one would fail the line.
+    out, io = await _run([_stdin_operand()], ["b"], {}, b"b\n")
+    assert (out, io.exit_code) == (b"b\n", 0)
+
+
+@pytest.mark.asyncio
+async def test_rg_dash_beside_a_file_is_named_stdin():
+    files = {"/a.txt": b"hello\nworld\n"}
+    out, io = await _run([_stdin_operand(), _spec("/a.txt")], ["world"], {},
+                         b"world\n", files)
+    assert (out, io.exit_code) == (b"<stdin>:world\n/a.txt:world\n", 0)
+    out, io = await _run([_stdin_operand(), _spec("/a.txt")], ["world"],
+                         {"c": True}, b"world\n", files)
+    assert (out, io.exit_code) == (b"<stdin>:1\n/a.txt:1\n", 0)
+
+
+@pytest.mark.asyncio
+async def test_rg_dash_twice_reads_stdin_once():
+    # Both operands read one cursor: the second finds it drained.
+    out, io = await _run([_stdin_operand(), _stdin_operand()], ["b"], {},
+                         b"b\n")
+    assert (out, io.exit_code) == (b"<stdin>:b\n", 0)
+    out, io = await _run([_stdin_operand(), _stdin_operand()], ["z"],
+                         {"files_without_match": True}, b"b\n")
+    assert (out, io.exit_code) == (b"<stdin>\n<stdin>\n", 0)
+
+
+@pytest.mark.asyncio
+async def test_rg_dash_listing_names_stdin():
+    out, io = await _run([_stdin_operand()], ["b"], {"args_l": True}, b"b\n")
+    assert (out, io.exit_code) == (b"<stdin>\n", 0)
+    out, io = await _run([_stdin_operand()], ["z"], {"args_l": True}, b"b\n")
+    assert (out, io.exit_code) == (b"", 1)
+    out, io = await _run([_stdin_operand()], ["z"],
+                         {"files_without_match": True}, b"b\n")
+    assert (out, io.exit_code) == (b"<stdin>\n", 0)
+    out, io = await _run([_stdin_operand()], ["b"],
+                         {"files_without_match": True}, b"b\n")
+    assert (out, io.exit_code) == (b"", 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags", [{
+    "args_l": True
+}, {
+    "files_without_match": True
+}])
+async def test_rg_dash_listing_stops_at_the_first_match(flags):
+    # The listing is settled by the first selected line, so an endless
+    # stdin is never read past it.
+    out, io = await _run([_stdin_operand()], ["hello"], flags,
+                         _endless_after_first_match())
+    expected = (b"<stdin>\n", 0) if "args_l" in flags else (b"", 1)
+    assert (out, io.exit_code) == expected
+
+
+@pytest.mark.asyncio
+async def test_rg_dash_is_never_filtered_by_type_or_glob():
+    # ripgrep searches an explicit operand whatever --type or --glob say,
+    # and stdin is always explicit.
+    for flags in ({"type": "py"}, {"glob": "*.rs"}):
+        out, io = await _run([_stdin_operand()], ["b"], flags, b"b\n")
+        assert (out, io.exit_code) == (b"b\n", 0)
+
+
+@pytest.mark.asyncio
+async def test_rg_dash_prints_context():
+    out, io = await _run([_stdin_operand()], ["b"], {"C": "1"}, b"a\nb\nc\n")
+    assert (out, io.exit_code) == (b"a\nb\nc\n", 0)
+
+
+@pytest.mark.asyncio
+async def test_rg_dev_stdin_reads_stdin_under_its_own_name():
+    # ripgrep opens /dev/stdin as the path it is, so a label names it.
+    files = {"/a.txt": b"world\n"}
+    out, io = await _run([_stdin_operand("/dev/stdin"),
+                          _spec("/a.txt")], ["world"], {}, b"world\n", files)
+    assert (out, io.exit_code) == (b"/dev/stdin:world\n/a.txt:world\n", 0)
+
+
+async def _pipe_that_goes_on(first: bytes):
+    yield first
+    raise AssertionError("read past the answer")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags, paths, want", [
+    ({
+        "m": "1",
+        "C": "1"
+    }, [None], b"a\nb\nc\n"),
+    ({
+        "m": "1",
+        "type": "py"
+    }, [None], b"b\n"),
+    ({
+        "m": "1"
+    }, [None, "/a.txt"], b"<stdin>:b\n"),
+])
+async def test_rg_dash_stops_reading_at_max_count(flags, paths, want):
+    # -m is answered once its last selected line (and that line's
+    # trailing context) is out, so a pipe that goes on is never waited
+    # on: in the full-scan branch (context, --type) and beside a file.
+    operands = [_stdin_operand() if p is None else _spec(p) for p in paths]
+    out, io = await _run(operands, ["b"], flags,
+                         _pipe_that_goes_on(b"a\nb\nc\n"),
+                         {"/a.txt": b"hello\nworld\n"})
+    assert (out, io.exit_code) == (want, 0)

@@ -16,7 +16,7 @@ import { mountKey, mountPrefixOf } from '../../../utils/key_prefix.ts'
 import { cacheAwareStream } from '../../../cache/read_through.ts'
 import { mountParentReaddir, mountParentStat } from '../utils/operands.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
-import { FileType, PathSpec, type FileStat } from '../../../types.ts'
+import { FileStat, FileType, PathSpec } from '../../../types.ts'
 import { fsStrerror, isFsError, isWalkError } from '../../../utils/errors.ts'
 import { respellRaw } from '../../../utils/path.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
@@ -31,12 +31,16 @@ import {
   type GrepStreamOptions,
 } from '../grep_scan.ts'
 import { rgFull } from '../rg_scan.ts'
-import { resolveSource } from '../utils/stream.ts'
+import { decodeLine } from '../grep_offsets.ts'
+import { splitLines } from '../utils/lines.ts'
+import { isStdin, resolveSource, stdinStream } from '../utils/stream.ts'
 import { formatRecords } from '../utils/output.ts'
 
 const ENC = new TextEncoder()
 // ripgrep's own words for a line with no pattern, exit 2 (14.1.1).
 export const RG_NO_PATTERN = 'rg: ripgrep requires at least one pattern to execute a search'
+// ripgrep's name for stdin wherever it names the file a line came from.
+const STDIN_NAME = '<stdin>'
 const DEC = new TextDecoder()
 
 type Stat = (p: PathSpec) => Promise<FileStat>
@@ -125,6 +129,77 @@ function makeSpec(path: string, template: PathSpec): PathSpec {
   })
 }
 
+// The name ripgrep prints for an operand. `-` is `<stdin>`; `/dev/stdin`
+// reads the same bytes, but ripgrep opens it as the path it is and names it
+// as typed.
+function operandName(p: PathSpec): string {
+  return p.rawPath === '-' ? STDIN_NAME : p.rawPath
+}
+
+// A stdin operand's stat: a stream, never a directory to walk.
+function fifoStat(path: string): Promise<FileStat> {
+  return Promise.resolve(new FileStat({ name: path, type: FileType.FIFO }))
+}
+
+// Whether `source` selects a line, read no further than the first. The
+// listing modes need only that one bit, so an unbounded pipe is never
+// buffered whole to answer them.
+async function selectsAny(
+  source: AsyncIterable<Uint8Array>,
+  pat: RegExp,
+  flags: RgFlags,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const probe = new IOResult({ exitCode: 1 })
+  const scan = grepStream(source, pat, {
+    ...streamOptionsOf(flags, probe, signal),
+    maxCount: 1,
+    countOnly: true,
+  })
+  for await (const _ of scan) void _
+  return probe.exitCode === 0
+}
+
+// A stdin operand's records in the full-scan branch, never read whole: -l and
+// --files-without-match are settled at the first selected line and -m at its
+// last one and that line's trailing context, so a pipe that goes on past the
+// answer is never waited on. ripgrep searches stdin whatever --type or --glob
+// say, since it never filters an explicit operand, and a labelled search drops
+// context here as rgFull drops it for a labelled file.
+async function operandRecords(
+  source: AsyncIterable<Uint8Array>,
+  name: string,
+  pat: RegExp,
+  flags: RgFlags,
+  label: boolean,
+  io: IOResult,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  if (flags.filesOnly || flags.filesWithoutMatch) {
+    // -m0 reads nothing at all.
+    if (flags.maxCount === 0) return []
+    const hit = await selectsAny(source, pat, flags, signal)
+    if (hit) io.exitCode = 0
+    // -l lists a stdin that selected a line, --files-without-match one that
+    // selected none.
+    return hit === flags.filesOnly ? [name] : []
+  }
+  const scanned = new IOResult({ exitCode: 1 })
+  const scan = grepStream(source, pat, {
+    ...streamOptionsOf(flags, scanned, signal),
+    ...(label ? { afterContext: 0, beforeContext: 0 } : {}),
+  })
+  const hits = splitLines(decodeLine(await materialize(scan)))
+  if (scanned.exitCode === 0) io.exitCode = 0
+  if (flags.countOnly) {
+    // grepStream prints a zero count; ripgrep lists nothing for it.
+    const [count] = hits
+    if (count === undefined || count === '0') return []
+    return [label ? `${name}:${count}` : count]
+  }
+  return label ? hits.map((hit) => `${name}:${hit}`) : hits
+}
+
 export async function rgGeneric(
   paths: PathSpec[],
   texts: string[],
@@ -133,7 +208,8 @@ export async function rgGeneric(
   readdir: Readdir,
   stream: Stream,
 ): Promise<CommandFnResult> {
-  stream = cacheAwareStream(stream)
+  // Every `-` operand reads stdin through one cursor, as grep's do.
+  stream = stdinStream(cacheAwareStream(stream), opts.stdin)
   const resolution = await resolvePattern('rg', texts, opts.flags, paths, opts.mountPrefix, stream)
   if (resolution.error !== null) {
     return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(resolution.error) })]
@@ -166,19 +242,12 @@ export async function rgGeneric(
     const io = new IOResult({ exitCode: 1 })
     if (flags.filesWithoutMatch && !flags.countOnly) {
       // ripgrep names a matchless stdin `<stdin>`, exit 0 for the listing,
-      // and lists nothing under -m0, where it reads nothing. The probe
-      // streams through the scanner and stops at the first selected line,
-      // so an unbounded pipe is never buffered whole.
+      // and lists nothing under -m0, where it reads nothing.
       if (flags.maxCount === 0) return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
-      const probe = new IOResult({ exitCode: 1 })
-      const scan = grepStream(source, pat, {
-        ...streamOptionsOf(flags, probe, opts.signal),
-        maxCount: 1,
-        countOnly: true,
-      })
-      for await (const _ of scan) void _
-      if (probe.exitCode === 0) return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
-      return [ENC.encode('<stdin>\n'), new IOResult()]
+      if (await selectsAny(source, pat, flags, opts.signal)) {
+        return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
+      }
+      return [ENC.encode(`${STDIN_NAME}\n`), new IOResult()]
     }
     return [grepStream(source, pat, streamOptionsOf(flags, io, opts.signal)), io]
   }
@@ -197,7 +266,7 @@ export async function rgGeneric(
   // it missing while the fan-out prints hits from the mounts below it.
   let isDir = false
   try {
-    const s = await statFn(first.virtual)
+    const s = await (isStdin(first) ? fifoStat(first.rawPath) : statFn(first.virtual))
     isDir = s.type === FileType.DIRECTORY
   } catch (err) {
     if (!isWalkError(err)) throw err
@@ -218,6 +287,7 @@ export async function rgGeneric(
     flags.afterContext > 0 ||
     flags.fileType !== null ||
     flags.globPattern !== null
+  const pat = compilePattern(exprText, flags.ignoreCase, flags.fixedString, flags.wholeWord)
   if (needsFull) {
     const warnings: string[] = []
     const fullOpts = {
@@ -246,6 +316,20 @@ export async function rgGeneric(
     // same way.
     const fullIO = new IOResult({ exitCode: 1 })
     for (const p of paths) {
+      if (isStdin(p)) {
+        results.push(
+          ...(await operandRecords(
+            stream(p),
+            operandName(p),
+            pat,
+            flags,
+            label,
+            fullIO,
+            opts.signal,
+          )),
+        )
+        continue
+      }
       const hitsFull = await rgFull(
         readdirFn,
         statFn,
@@ -286,7 +370,6 @@ export async function rgGeneric(
   }
 
   if (flags.countOnly) {
-    const pat = compilePattern(exprText, flags.ignoreCase, flags.fixedString, flags.wholeWord)
     const streamOpts = {
       invert: flags.invert,
       lineNumbers: false,
@@ -312,7 +395,7 @@ export async function rgGeneric(
           continue
         }
         const n = Number.parseInt(DEC.decode(counted).trim() || '0', 10)
-        if (n > 0) results.push(label ? `${p.rawPath}:${String(n)}` : String(n))
+        if (n > 0) results.push(label ? `${operandName(p)}:${String(n)}` : String(n))
       }
       const stderr = warnings.length > 0 ? ENC.encode(warnings.join('\n') + '\n') : undefined
       const code = exitCodeFor(results.length > 0, warnings.length > 0, false)
@@ -334,7 +417,6 @@ export async function rgGeneric(
     return [counted, io]
   }
 
-  const pat = compilePattern(exprText, flags.ignoreCase, flags.fixedString, flags.wholeWord)
   if (paths.length > 1 || flags.withFilename) {
     const results: string[] = []
     const warnings: string[] = []
@@ -344,7 +426,7 @@ export async function rgGeneric(
       const fileIO = new IOResult({ exitCode: 1 })
       try {
         const matched = grepStream(stream(p), pat, streamOptionsOf(flags, fileIO, opts.signal))
-        data = await materialize(label ? prefixLines(matched, p.rawPath + ':') : matched)
+        data = await materialize(label ? prefixLines(matched, operandName(p) + ':') : matched)
       } catch (error) {
         if (!isFsError(error)) throw error
         warnings.push(`rg: ${p.rawPath}: ${String(fsStrerror(error))}`)
@@ -363,7 +445,7 @@ export async function rgGeneric(
   }
 
   try {
-    await statFn(first.virtual)
+    await (isStdin(first) ? fifoStat(first.rawPath) : statFn(first.virtual))
   } catch (error) {
     if (!isFsError(error)) throw error
     return [

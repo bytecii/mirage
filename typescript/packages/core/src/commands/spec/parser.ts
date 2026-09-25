@@ -978,7 +978,7 @@ export function parseCommand(
     } else if (Array.isArray(val)) {
       const resolvedList = val.map((part) =>
         part === '-' &&
-        ['grep', 'sed', 'awk'].includes(cmdName) &&
+        ['grep', 'rg', 'sed', 'awk'].includes(cmdName) &&
         ['-f', '--file'].includes(flagName)
           ? '-'
           : resolvePath(part, cwd),

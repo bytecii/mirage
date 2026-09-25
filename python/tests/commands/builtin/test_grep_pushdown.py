@@ -299,6 +299,19 @@ def test_lone_operand_is_the_operand_rule_on_its_own():
     assert grep_pushdown.lone_operand([_operand("/traces/*", "*")]) is None
 
 
+def test_lone_operand_never_answers_for_stdin():
+    # A `-` is the line's stdin, which no backend holds, so every
+    # push-down defers to the scan that reads the pipe.
+    dash = PathSpec(virtual="/traces/-",
+                    directory="/traces/",
+                    vfs_path="traces/-",
+                    resolved=True,
+                    raw_path="-")
+    assert grep_pushdown.lone_operand([dash]) is None
+    assert grep_pushdown.pushdown_operand([dash], {}, "ada") is None
+    assert grep_pushdown.literal_pushdown_operand([dash], {}, "ada") is None
+
+
 @pytest.mark.parametrize("mode", ["binary", "text", "without-match", "bad"])
 def test_binary_mode_requires_scanning(mode):
     assert grep_pushdown.has_search_shaping_flags({"binary_files": mode})

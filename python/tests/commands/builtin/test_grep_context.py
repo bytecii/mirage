@@ -1,6 +1,10 @@
+import asyncio
 import re
 
-from mirage.commands.builtin.grep_context import grep_context_lines
+import pytest
+
+from mirage.commands.builtin.grep_context import (grep_context_lines,
+                                                  grep_context_stream)
 from mirage.commands.builtin.grep_offsets import decode_line
 
 # one\ntwo abc\nthree\nfour\nfive abc\nsix\n, the fixture every row below
@@ -139,3 +143,61 @@ class TestOffsetsOverASmuggledByte:
 
 def test_no_match_renders_nothing():
     assert _render(LINES, re.compile("zzz"), after_context=1) == []
+
+
+async def _chunks(data: bytes, size: int):
+    for start in range(0, len(data), size):
+        yield data[start:start + size]
+
+
+async def _then_fail(data: bytes):
+    yield data
+    raise AssertionError("read past the answer")
+
+
+def _stream(source, pat=ABC, **kw):
+
+    async def drain():
+        return [
+            chunk async for chunk in grep_context_stream(
+                source, pat, kw.get("invert", False),
+                kw.get("line_numbers", False), kw.get("max_count"),
+                kw.get("after_context", 0), kw.get("before_context", 0),
+                kw.get("byte_offsets", False))
+        ]
+
+    return asyncio.run(drain())
+
+
+@pytest.mark.parametrize("kw", [
+    {
+        "after_context": 1,
+        "before_context": 1,
+        "line_numbers": True
+    },
+    {
+        "before_context": 1,
+        "byte_offsets": True
+    },
+    {
+        "after_context": 2,
+        "max_count": 1
+    },
+    {
+        "after_context": 1,
+        "invert": True
+    },
+])
+def test_stream_renders_what_the_lines_render(kw):
+    data = ("\n".join(LINES) + "\n").encode()
+    assert b"".join(_stream(_chunks(data, 3),
+                            **kw)) == b"".join(_render(LINES, **kw))
+
+
+def test_stream_stops_once_max_count_and_its_context_are_out():
+    # The answer to -m1 -A1 is settled by the line after the match, so a
+    # pipe that goes on after it is never read.
+    out = _stream(_then_fail(b"one\ntwo abc\nthree\n"),
+                  max_count=1,
+                  after_context=1)
+    assert out == [b"two abc\n", b"three\n"]
