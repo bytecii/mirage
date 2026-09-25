@@ -20,6 +20,7 @@ import type { RegisteredCommand } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { cpWalk } from '../generic/cp.ts'
+import { rmWithoutOperands, rmWrites } from '../generic/rm_cmd.ts'
 import { requireOp } from '../generic_bind/adapter.ts'
 import { resolveGlobOf, type CommandIO } from '../generic_bind/index.ts'
 import { formatRecords } from '../utils/output.ts'
@@ -96,15 +97,13 @@ export function makeRm<A extends Accessor>(vfs: string, io: CommandIO<A>): Regis
     _texts: string[],
     opts: CommandOpts,
   ): Promise<CommandFnResult> {
-    if (paths.length === 0) {
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('rm: missing operand\n') })]
-    }
-    const resolved = await resolveGlob(accessor, paths, opts.index ?? undefined)
     const fl = new FlagView(opts.flags, specOf('rm'))
     const recursive = fl.asBool('r') || fl.asBool('R')
     const force = fl.asBool('f')
     const removeDir = fl.asBool('d')
     const verbose = fl.asBool('v')
+    if (paths.length === 0) return rmWithoutOperands(force)
+    const resolved = await resolveGlob(accessor, paths, opts.index ?? undefined)
     const verboseParts: string[] = []
     const errors: string[] = []
     const writes: Record<string, Uint8Array> = {}
@@ -149,5 +148,6 @@ export function makeRm<A extends Accessor>(vfs: string, io: CommandIO<A>): Regis
     spec: specOf('rm'),
     fn: rmCommand,
     write: true,
+    writes: rmWrites,
   })
 }

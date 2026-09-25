@@ -18,7 +18,7 @@ import { mountKey } from '../../../utils/key_prefix.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import { gzip, gunzip, getCompressionCodec } from '../../../utils/compress.ts'
-import type { CommandFnResult, CommandOpts } from '../../config.ts'
+import type { CommandFnResult, CommandOpts, WritesFn } from '../../config.ts'
 import { readTar, writeTar, type TarEntry } from '../tar_helper.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import { COMPRESSION_SIGNATURES, CREATE_ERROR_EXIT, ERROR_TRAILER } from './tar/constants.ts'
@@ -223,6 +223,15 @@ async function writeArchive(
       ...(stderr !== null ? { stderr } : {}),
     }),
   ]
+}
+
+// Whether a tar invocation writes: -c writes the archive and -x its members,
+// while -t only lists them and -x -O extracts to stdout. The modes are read
+// in tar's own order, create before list before extract. Mirrors Python's
+// tar_writes.
+export const tarWrites: WritesFn = (flags) => {
+  const fl = new FlagView(flags, specOf('tar'))
+  return fl.asBool('c') || (fl.asBool('x') && !fl.asBool('t') && !fl.asBool('to_stdout'))
 }
 
 export async function tarGeneric(

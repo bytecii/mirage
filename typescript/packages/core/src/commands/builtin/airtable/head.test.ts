@@ -55,7 +55,7 @@ describe('airtable head', () => {
       // 10 lines asked of a 7-record table under a cap of 5: the full answer
       // would exceed the cap, so it is refused rather than truncated
       expect(result.exitCode).toBe(1)
-      expect(DEC.decode(result.stderr)).toBe(`head: ${RECORDS}: File too large\n`)
+      expect(DEC.decode(result.stderr)).toBe(`head: error reading '${RECORDS}': File too large\n`)
     } finally {
       await ws.close()
     }

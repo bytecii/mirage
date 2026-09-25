@@ -19,6 +19,8 @@ from typing import Any
 from mirage.accessor.base import Accessor
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin.generic.cp import walk
+from mirage.commands.builtin.generic.rm_cmd import (rm_without_operands,
+                                                    rm_writes)
 from mirage.commands.builtin.generic_bind.adapter import CommandIO, Operation
 from mirage.commands.builtin.utils.output import format_optional_records
 from mirage.commands.builtin.utils.slash_links import (is_slashed_link,
@@ -112,13 +114,13 @@ def make_rm(vfs: str, io: CommandIO) -> Callable[..., Any]:
         texts: list[str],
         opts: CommandOpts,
     ) -> tuple[ByteSource | None, IOResult]:
-        if not paths:
-            raise ValueError("rm: missing operand")
         fl = FlagView(opts.flags, spec=SPECS["rm"])
         r = fl.as_bool("r") or fl.as_bool("R")
         f = fl.as_bool("f")
         v = fl.as_bool("v")
         d = fl.as_bool("d")
+        if not paths:
+            return rm_without_operands(f)
         paths = await resolve_glob(accessor, paths, opts.index)
         verbose_parts: list[str] = []
         errors: list[str] = []
@@ -155,5 +157,6 @@ def make_rm(vfs: str, io: CommandIO) -> Callable[..., Any]:
     wrapped: Callable[..., Any] = command("rm",
                                           vfs=vfs,
                                           spec=SPECS["rm"],
-                                          write=True)(rm)
+                                          write=True,
+                                          writes=rm_writes)(rm)
     return wrapped

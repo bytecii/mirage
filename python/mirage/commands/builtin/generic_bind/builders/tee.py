@@ -16,6 +16,7 @@ from functools import partial
 
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.generic.tee import tee as generic_tee
+from mirage.commands.builtin.generic.tee import tee_writes
 from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
                                                           Operation, bound_op)
 from mirage.commands.config import CommandOpts
@@ -26,9 +27,8 @@ from mirage.types import PathSpec
 async def tee(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
               texts: list[str],
               opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
-    if not paths:
-        raise ValueError("tee: missing operand")
-    paths = await ops.resolve_glob(accessor, paths, opts.index)
+    paths = await ops.resolve_glob(accessor, paths,
+                                   opts.index) if paths else []
     # A backend that can append natively does; the rest fall back to the
     # read-modify-write inside the generic.
     append = ops.append
@@ -45,4 +45,5 @@ async def tee(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
 BUILDER = Builder('tee',
                   tee,
                   write=True,
-                  requirements=frozenset({Operation.WRITE}))
+                  requirements=frozenset({Operation.WRITE}),
+                  writes=tee_writes)

@@ -690,7 +690,9 @@ describe('op hooks bind at the op doors and the command tier', () => {
 
     const lazy = await ws.shell('head -c 3 /a/secret.txt')
     expect(lazy.exitCode).not.toBe(0)
-    expect(voicedStderr(lazy)).toContain('head: /a/secret.txt: Permission denied')
+    expect(voicedStderr(lazy)).toContain(
+      "head: cannot open '/a/secret.txt' for reading: Permission denied",
+    )
     const fine = await ws.shell('head -c 3 /a/ok.txt')
     expect(fine.exitCode).toBe(0)
     expect(stdoutStr(fine)).toBe('has')

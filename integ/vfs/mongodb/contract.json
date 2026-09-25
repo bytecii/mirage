@@ -127,7 +127,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "head: /mongo-denied/mirage_integ/collections/books/documents.jsonl: No such file or directory\n"
+        "stderr": "head: cannot open '/mongo-denied/mirage_integ/collections/books/documents.jsonl' for reading: No such file or directory\n"
       }
     },
     {
@@ -140,7 +140,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "tail: /mongo-denied/mirage_integ/collections/books/documents.jsonl: No such file or directory\n"
+        "stderr": "tail: cannot open '/mongo-denied/mirage_integ/collections/books/documents.jsonl' for reading: No such file or directory\n"
       }
     },
     {

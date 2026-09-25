@@ -589,11 +589,14 @@ export class MountEntry {
                     // together as `...at /ro/rm: read-only mount at /ro/`,
                     // and the node table's twin of this refusal (a symlink
                     // `rm`, rendered by shared.readOnlyError) concatenates
-                    // with it.
+                    // with it. An invocation its generic says writes nothing
+                    // (`gzip -c`, `tar -t`) runs like a reader: it has no
+                    // write for the mount to refuse.
                     if (
                       cmd.write &&
                       !infoOnly &&
-                      strongestModeUnder(this.prefix, this.mode) === MountMode.READ
+                      strongestModeUnder(this.prefix, this.mode) === MountMode.READ &&
+                      (cmd.writes === null || cmd.writes(flags, paths))
                     ) {
                       return [
                         null,

@@ -676,9 +676,12 @@ class MountEntry:
                     # together as `...at /ro/rm: read-only mount at /ro/`,
                     # and the node table's twin of this refusal (a symlink
                     # `rm`, rendered by shared.read_only_error) concatenates
-                    # with it.
+                    # with it. An invocation its generic says writes nothing
+                    # (`gzip -c`, `tar -t`) runs like a reader: it has no
+                    # write for the mount to refuse.
                     if (cmd.write and not info_only and strongest_mode_under(
-                            self.prefix, self.mode) == MountMode.READ):
+                            self.prefix, self.mode) == MountMode.READ and
+                        (cmd.writes is None or cmd.writes(flags, paths))):
                         return None, IOResult(
                             exit_code=1,
                             stderr=(f"{cmd_name}: read-only mount "

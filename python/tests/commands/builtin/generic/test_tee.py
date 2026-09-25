@@ -1,9 +1,12 @@
 import pytest
 
-from mirage.commands.builtin.generic.tee import TeeFlags, parse_flags, tee
+from mirage.commands.builtin.generic.tee import (TeeFlags, parse_flags, tee,
+                                                 tee_writes)
 from mirage.commands.spec import SPECS, parse_command
 from mirage.io.stream import materialize
-from mirage.types import PathSpec
+from mirage.types import MountMode, PathSpec
+from mirage.vfs.ram import RAMVFS
+from mirage.workspace import Workspace
 
 
 def _spec(path: str) -> PathSpec:
@@ -283,3 +286,16 @@ async def test_without_a_native_append_it_reads_and_rewrites():
                             flags={"append": True})
     assert written == {"/n": b"oldadd"}
     assert io.cache == ["/n"]
+
+
+def test_tee_writes_only_with_operands():
+    assert not tee_writes({"append": True}, [])
+    assert tee_writes({}, [_spec("/out.txt")])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [MountMode.WRITE, MountMode.READ])
+async def test_no_operand_tee_runs_on_either_mode(mode):
+    ws = Workspace({"/m/": (RAMVFS(), mode)})
+    result = await ws.shell("cd /m && printf 'x\\n' | tee")
+    assert (result.exit_code, result.stdout) == (0, b"x\n")

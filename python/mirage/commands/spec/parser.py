@@ -87,7 +87,6 @@ def _argmatch_dests(spec: CommandSpec) -> frozenset[str]:
 class ParsedArgs:
     flags: dict[str, ParsedFlagValue]
     args: list[tuple[str, ValueType]]
-    cache_paths: list[str] = field(default_factory=list)
     path_flag_values: list[str] = field(default_factory=list)
     raw_operands: list[tuple[str, ValueType]] = field(default_factory=list)
     text_flag_values: list[str] = field(default_factory=list)
@@ -498,22 +497,6 @@ def parse_command(
     scan_argv = old.argv if old is not None else argv
     scan_origins = old.origins if old is not None else list(range(len(argv)))
 
-    cache_paths: list[str] = []
-    filtered_argv: list[str] = []
-    # orig_indices[j] = argv position of filtered_argv[j]
-    orig_indices: list[int] = []
-    i = 0
-    while i < len(scan_argv):
-        if scan_argv[i] == "--cache":
-            i += 1
-            while i < len(scan_argv) and not scan_argv[i].startswith("-"):
-                cache_paths.append(resolve_path(scan_argv[i], cwd))
-                i += 1
-        else:
-            filtered_argv.append(scan_argv[i])
-            orig_indices.append(scan_origins[i])
-            i += 1
-
     flags: dict[str, ParsedFlagValue] = {}
     # Every scalar value-flag occurrence, in scan order, beside the bag
     # that keeps only the last of each. Appended to by _set_value_flag
@@ -522,16 +505,17 @@ def parse_command(
     # raw_indices[k] = argv position of raw_args[k]
     raw_indices: list[int] = []
     # Per-position operand kinds aligned with the caller's argv (None =
-    # a word the scan never reads, such as a --cache token). Positions,
-    # not value sets, so the same word can be TEXT in one slot and PATH
-    # in another:
+    # a word the scan never reads, such as tar's empty old-style
+    # cluster). Positions, not value sets, so the same word can be TEXT
+    # in one slot and PATH in another:
     #   grep  *.txt  *.txt                  -> [TEXT, PATH]
     #   find  /data  -name  *.txt           -> [PATH, TEXT, TEXT]
-    #   grep  --cache  /c  -e  pat  f.txt   -> [None, None, TEXT, TEXT, PATH]
-    # orig_indices/raw_indices map the parser's shrunken views back to
-    # argv slots (filtered_argv drops --cache tokens, raw_args keeps
-    # only operands); kinds must be written at the original positions
-    # or one dropped token shifts every later kind onto the wrong word.
+    #   tar   ""  f.txt                     -> [None, PATH]
+    # scan_origins/raw_indices map the parser's views back to argv slots
+    # (scan_argv spells a tar cluster as one word per letter, raw_args
+    # keeps only operands); kinds must be written at the original
+    # positions or one expanded cluster shifts every later kind onto the
+    # wrong word.
     word_kinds: list[ValueType | None] = [None] * len(argv)
     # The directory the next path operand resolves against, and where it
     # was for each word already read. It only ever moves for a spec that
@@ -583,11 +567,9 @@ def parse_command(
         # gnulib's parse_long_options reads argv[1] only when it is the
         # whole line, so outside that one-argument window the program
         # has no long options AT ALL and even an exact `--help` is an
-        # operand. Counted over filtered_argv because `--cache` is
-        # mirage's own out-of-band word and not part of the command line
-        # being emulated.
+        # operand.
         sole_argument = builtin and cmd_name in SOLE_ARGUMENT_LONG_OPTIONS
-        outside_sole_argument = sole_argument and len(filtered_argv) != 1
+        outside_sole_argument = sole_argument and len(argv) != 1
         # A dash-leading word this program answers by printing it as an
         # operand rather than by refusing it.
         lenient_dash_operands = no_long_option_parser or sole_argument
@@ -603,12 +585,12 @@ def parse_command(
     i = 0
     end_of_flags = False
 
-    while i < len(filtered_argv):
-        tok = filtered_argv[i]
+    while i < len(scan_argv):
+        tok = scan_argv[i]
         # Keep option words literal: the shape heuristic would treat
         # `-o/data/out` as a relative path. Synthesized tar flags mark the
         # original cluster here; values and operands receive their own kinds.
-        word_kinds[orig_indices[i]] = "str"
+        word_kinds[scan_origins[i]] = "str"
 
         if tok == "--" and not end_of_flags:
             end_of_flags = True
@@ -617,7 +599,7 @@ def parse_command(
 
         if end_of_flags:
             raw_args.append(tok)
-            raw_indices.append(orig_indices[i])
+            raw_indices.append(scan_origins[i])
             raw_bases.append(base)
             i += 1
             continue
@@ -629,7 +611,7 @@ def parse_command(
                 # whether or not it is declared: `expr --help x` is a
                 # syntax error on `x`, not a help request.
                 raw_args.append(tok)
-                raw_indices.append(orig_indices[i])
+                raw_indices.append(scan_origins[i])
                 raw_bases.append(base)
                 i += 1
                 continue
@@ -666,26 +648,26 @@ def parse_command(
             if etok in cs.long_bool_spellings:
                 _set_bool_flag(flags, cs, etok)
                 i += 1
-            elif is_pair and eq == -1 and i + 2 < len(filtered_argv):
+            elif is_pair and eq == -1 and i + 2 < len(scan_argv):
                 # Two tokens, both recorded under the one dest, so the
                 # command reads the accumulated list in twos.
                 _set_value_flag(flags, refusals, cs, argmatch_dests, spelling,
-                                filtered_argv[i + 1])
+                                scan_argv[i + 1])
                 _set_value_flag(flags, refusals, cs, argmatch_dests, spelling,
-                                filtered_argv[i + 2])
+                                scan_argv[i + 2])
                 # The first token names the value and is always textual;
                 # the option's own kind describes the second.
-                word_kinds[orig_indices[i + 1]] = "str"
-                word_kinds[orig_indices[i + 2]] = cs.kind_of[spelling]
+                word_kinds[scan_origins[i + 1]] = "str"
+                word_kinds[scan_origins[i + 2]] = cs.kind_of[spelling]
                 i += 3
             elif (not is_pair and etok in cs.long_value_spellings
-                  and i + 1 < len(filtered_argv)):
+                  and i + 1 < len(scan_argv)):
                 _set_value_flag(flags, refusals, cs, argmatch_dests, etok,
-                                filtered_argv[i + 1])
-                word_kinds[orig_indices[i + 1]] = cs.kind_of[etok]
+                                scan_argv[i + 1])
+                word_kinds[scan_origins[i + 1]] = cs.kind_of[etok]
                 if cs.dest_of(etok) == cs.base_dest:
-                    word_bases[orig_indices[i + 1]] = base
-                base = _rebase(flags, cs, etok, filtered_argv[i + 1], base)
+                    word_bases[scan_origins[i + 1]] = base
+                base = _rebase(flags, cs, etok, scan_argv[i + 1], base)
                 i += 2
             elif is_pair:
                 if eq == -1:
@@ -709,7 +691,7 @@ def parse_command(
                     option_error_kinds.append("needs_value")
                 elif lenient_dash_operands:
                     raw_args.append(tok)
-                    raw_indices.append(orig_indices[i])
+                    raw_indices.append(scan_origins[i])
                     raw_bases.append(base)
                 elif eq != -1 and spelling in cs.long_bool_spellings:
                     # A boolean long handed a value. getopt_long knows
@@ -751,13 +733,13 @@ def parse_command(
                 continue
             matched_value = False
             for vf in cs.value_spellings:
-                if tok == vf and i + 1 < len(filtered_argv):
+                if tok == vf and i + 1 < len(scan_argv):
                     _set_value_flag(flags, refusals, cs, argmatch_dests, vf,
-                                    filtered_argv[i + 1])
-                    word_kinds[orig_indices[i + 1]] = cs.kind_of[vf]
+                                    scan_argv[i + 1])
+                    word_kinds[scan_origins[i + 1]] = cs.kind_of[vf]
                     if cs.dest_of(vf) == cs.base_dest:
-                        word_bases[orig_indices[i + 1]] = base
-                    base = _rebase(flags, cs, vf, filtered_argv[i + 1], base)
+                        word_bases[scan_origins[i + 1]] = base
+                    base = _rebase(flags, cs, vf, scan_argv[i + 1], base)
                     i += 2
                     matched_value = True
                     break
@@ -809,22 +791,21 @@ def parse_command(
                     base = _rebase(flags, cs, vflag, attached, base)
                     i += 1
                     continue
-                if i + 1 < len(filtered_argv):
+                if i + 1 < len(scan_argv):
                     for name in cluster_bools:
                         _set_bool_flag(flags, cs, name)
                     _set_value_flag(flags, refusals, cs, argmatch_dests, vflag,
-                                    filtered_argv[i + 1])
-                    word_kinds[orig_indices[i + 1]] = cs.kind_of[vflag]
+                                    scan_argv[i + 1])
+                    word_kinds[scan_origins[i + 1]] = cs.kind_of[vflag]
                     if cs.dest_of(vflag) == cs.base_dest:
-                        word_bases[orig_indices[i + 1]] = base
-                    base = _rebase(flags, cs, vflag, filtered_argv[i + 1],
-                                   base)
+                        word_bases[scan_origins[i + 1]] = base
+                    base = _rebase(flags, cs, vflag, scan_argv[i + 1], base)
                     i += 2
                     continue
 
             if lenient_dash_operands or NUMERIC_SHORT.match(tok):
                 raw_args.append(tok)
-                raw_indices.append(orig_indices[i])
+                raw_indices.append(scan_origins[i])
                 raw_bases.append(base)
             elif tok in cs.value_spellings or (mixed is not None
                                                and mixed[2] is None):
@@ -851,7 +832,7 @@ def parse_command(
             continue
 
         raw_args.append(tok)
-        raw_indices.append(orig_indices[i])
+        raw_indices.append(scan_origins[i])
         raw_bases.append(base)
         # argparse's REMAINDER: the first operand ends option parsing,
         # so a script's own flags reach the script instead of being read
@@ -1020,7 +1001,6 @@ def parse_command(
     return ParsedArgs(
         flags=flags,
         args=classified,
-        cache_paths=cache_paths,
         path_flag_values=path_flag_values,
         raw_operands=raw_operands,
         text_flag_values=text_flag_values,

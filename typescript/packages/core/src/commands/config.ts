@@ -145,6 +145,19 @@ export type ProvisionFn<A extends Accessor = Accessor> = (
 
 export type AggregateFn = (results: AggregateResult[]) => Uint8Array
 
+/**
+ * Whether one invocation of a write command writes at all; mirrors
+ * Python's `WritesFn`. A read-only mount refuses a write command before
+ * it runs. Some write commands have modes that only read (gzip filtering
+ * stdin to stdout, tar listing an archive), and those run there like any
+ * reader. The command's generic answers from the parsed flags and the
+ * operands it was given; a write command without one writes in every mode.
+ */
+export type WritesFn = (
+  flags: Readonly<Record<string, FlagValue>>,
+  paths: readonly PathSpec[],
+) => boolean
+
 export interface RegisteredCommandInit {
   name: string
   spec: CommandSpec
@@ -157,6 +170,7 @@ export interface RegisteredCommandInit {
   dst?: string | null
   write?: boolean
   limit?: Limit | null
+  writes?: WritesFn | null
 }
 
 export interface RegisteredCommandOverrides {
@@ -176,6 +190,7 @@ export class RegisteredCommand {
   readonly dst: string | null
   readonly write: boolean
   readonly limit: Limit | null
+  readonly writes: WritesFn | null
 
   constructor(init: RegisteredCommandInit) {
     this.name = init.name
@@ -189,6 +204,7 @@ export class RegisteredCommand {
     this.dst = init.dst ?? null
     this.write = init.write ?? false
     this.limit = init.limit ?? null
+    this.writes = init.writes ?? null
     Object.freeze(this)
   }
 
@@ -206,6 +222,7 @@ export class RegisteredCommand {
       dst: this.dst,
       write: this.write,
       limit: this.limit,
+      writes: this.writes,
     })
   }
 }
@@ -263,6 +280,7 @@ export interface CommandOptions<A extends Accessor = Accessor> {
   aggregate?: AggregateFn | null
   write?: boolean
   limit?: Limit | null
+  writes?: WritesFn | null
 }
 
 const HELP_ENC = new TextEncoder()
@@ -469,6 +487,7 @@ export function command<A extends Accessor = Accessor>(
         aggregate: options.aggregate ?? null,
         write: options.write ?? false,
         limit: options.limit ?? null,
+        writes: options.writes ?? null,
       }),
   )
 }

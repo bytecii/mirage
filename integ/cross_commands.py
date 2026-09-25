@@ -148,11 +148,13 @@ async def check_partial_read(ws: Workspace, dst: str, label: str) -> None:
     out, err, code = await run(ws, f"head -n 1 {src} {miss}")
     check(
         f"{label}: head keeps banner", out == f"==> {src} <==\naaa\n"
-        and code == 1 and err == f"head: {miss}: No such file or directory\n")
+        and code == 1 and err ==
+        f"head: cannot open '{miss}' for reading: No such file or directory\n")
     out, err, code = await run(ws, f"tail -n 1 {src} {miss}")
     check(
         f"{label}: tail keeps banner", out == f"==> {src} <==\naaa\n"
-        and code == 1 and err == f"tail: {miss}: No such file or directory\n")
+        and code == 1 and err ==
+        f"tail: cannot open '{miss}' for reading: No such file or directory\n")
     # nl rides the STREAM strategy cross-mount: the error line must carry
     # nl's own name, not the cat sub-run that fetched the operand.
     out, err, code = await run(ws, f"nl {src} {miss}")

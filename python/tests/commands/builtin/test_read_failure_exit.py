@@ -83,7 +83,8 @@ GNU_READ_EXIT = {
 # the WRONG errno, `strings: Warning: 'dir' is a directory`, and `gzip:
 # dir is a directory -- ignored`. mirage normalizes all of it to
 # `<cmd>: <path>: Is a directory`, so the message test asserts the house
-# style and only the exit code above is GNU's.
+# style and only the exit code above is GNU's. head is the exception: it
+# carries GNU's own `error reading 'dir': Is a directory`.
 #
 # Two lines print nothing at all on a directory in GNU (`jq .` exits 2
 # silently, `zgrep x` exits 1 silently because gzip's warning is
@@ -127,7 +128,8 @@ async def test_directory_read_says_is_a_directory(template):
     ws = await _ws()
     result = await ws.shell(template.format(p="/ram/dir"))
     stderr = (result.stderr or b"").decode()
-    assert "/ram/dir: Is a directory" in stderr
+    assert ("/ram/dir: Is a directory" in stderr
+            or "error reading '/ram/dir': Is a directory" in stderr)
     assert "No such file" not in stderr
 
 

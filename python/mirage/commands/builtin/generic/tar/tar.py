@@ -399,6 +399,21 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> TarFlags:
     )
 
 
+def tar_writes(flags: Mapping[str, FlagValue], paths: list[PathSpec]) -> bool:
+    """Whether a tar invocation writes: ``-c`` writes the archive and
+    ``-x`` its members, while ``-t`` only lists them and ``-x -O``
+    extracts to stdout. The modes are read in ``tar``'s own order, create
+    before list before extract.
+
+    Args:
+        flags (Mapping[str, FlagValue]): the parsed flag bag.
+        paths (list[PathSpec]): the operands the mount received.
+    """
+    parsed = parse_flags(flags)
+    return parsed.create or (parsed.extract and not parsed.list_only
+                             and not parsed.to_stdout)
+
+
 async def tar_generic(
     paths: list[PathSpec],
     texts: list[str],

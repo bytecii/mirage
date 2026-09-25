@@ -26,7 +26,7 @@ import { NodeType as NT } from '../../shell/types.ts'
 import { recordStatus } from '../executor/statement.ts'
 import type { TSNodeLike } from '../../shell/types.ts'
 import { readFailExitCode } from '../../commands/spec/usage.ts'
-import { errorVirtualPath, gnuStrerror } from '../../utils/errors.ts'
+import { formatFsError, isFsError } from '../../utils/errors.ts'
 import { ReturnSignal } from '../../shell/errors.ts'
 import { BreakSignal, ContinueSignal } from '../executor/control.ts'
 import { divertStatement, stdoutToStderr } from '../executor/builtins/exec/index.ts'
@@ -260,21 +260,18 @@ async function runProgram(
         // errors format as a GNU coreutils line, respelling the path as
         // typed via the operands the leaf node carries, mirroring the
         // eager executor chokepoint.
-        const strerror = gnuStrerror((err as { code?: string }).code)
-        if (strerror !== null) {
-          const vpath = errorVirtualPath(err)
+        if (isFsError(err)) {
           const cmdName = execNode.command?.split(' ')[0] ?? ''
-          const spelled = execNode.paths.find((p) => p.virtual === vpath)?.rawPath ?? vpath
-          drainErr = `${cmdName}: ${spelled}: ${strerror}`
+          drainErr = new TextDecoder().decode(formatFsError(cmdName, err, execNode.paths))
           drainExit = readFailExitCode(cmdName, err)
         } else {
-          drainErr = err instanceof Error ? err.message : String(err)
+          drainErr = `${err instanceof Error ? err.message : String(err)}\n`
         }
         stdout = null
       }
       if (drainErr !== null) {
         const existing = await materialize(ioResult.stderr)
-        const added = new TextEncoder().encode(`${drainErr}\n`)
+        const added = new TextEncoder().encode(drainErr)
         const merged = new Uint8Array(existing.byteLength + added.byteLength)
         merged.set(existing, 0)
         merged.set(added, existing.byteLength)
