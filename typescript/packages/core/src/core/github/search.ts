@@ -55,8 +55,8 @@ export async function narrowPaths(
     let answer: GitHubCodeSearch
     try {
       answer = await search(accessor, pattern, pathFilter === '' ? undefined : pathFilter)
-    } catch {
-      // An API failure falls back to the full scan.
+    } catch (err) {
+      console.warn(`github code search failed (${String(err)}); falling back to per-file scan`)
       return null
     }
     if (answer.truncated) return null

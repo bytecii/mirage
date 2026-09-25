@@ -308,3 +308,63 @@ async def test_a_scope_too_large_to_scan_names_why_it_was_not_narrowed(
                           CommandOpts(index=index, flags=flags))
     assert io.exit_code == 1
     assert io.stderr == stderr.encode()
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_tree_never_trusts_a_narrowing(
+        mock_github_api, github_env, counting_read, monkeypatch):
+    # A truncated tree cannot list every file code search skips, so no
+    # answer can be shown to be the whole set.
+    accessor, index = github_env
+    monkeypatch.setitem(_NGLOBALS, "SCOPE_WARN", 1)
+
+    async def _fetch_tree(config, owner, repo, ref, session=None):
+        return dict(MOCK_TREE), True
+
+    async def _fetch_dir_tree(config, owner, repo, tree_sha, session=None):
+        # The per-directory listing a truncated tree falls back to.
+        base = next((p for p, e in MOCK_TREE.items() if e.sha == tree_sha), "")
+        return [
+            TreeEntry(path=p.rsplit("/", 1)[-1],
+                      type=e.type,
+                      sha=e.sha,
+                      size=e.size) for p, e in MOCK_TREE.items()
+            if (p.rsplit("/", 1)[0] if "/" in p else "") == base
+        ]
+
+    monkeypatch.setattr("mirage.core.github.tree.fetch_tree", _fetch_tree)
+    monkeypatch.setattr("mirage.core.github.readdir.fetch_dir_tree",
+                        _fetch_dir_tree)
+    calls = _answer(monkeypatch, [_hit("src/main.py", "bbb222")])
+    files, _ = await _grep_files(accessor, index, "import", {
+        "r": True,
+        "w": True
+    })
+    assert calls == []
+    assert files == _IMPORT_FILES
+
+
+@pytest.mark.asyncio
+async def test_a_big_binary_file_is_not_read(mock_github_api, github_env,
+                                             counting_read, monkeypatch):
+    # A recursive walk skips binary extensions, and an unindexed file joins
+    # the narrowing only as a file that walk would have read.
+    accessor, index = github_env
+    monkeypatch.setitem(_NGLOBALS, "SCOPE_WARN", 1)
+    big = dict(MOCK_TREE)
+    big["docs/model.gguf"] = TreeEntry(path="docs/model.gguf",
+                                       type="blob",
+                                       sha="gguf01",
+                                       size=400_000)
+
+    async def _fetch_tree(config, owner, repo, ref, session=None):
+        return dict(big), False
+
+    monkeypatch.setattr("mirage.core.github.tree.fetch_tree", _fetch_tree)
+    _answer(monkeypatch, [_hit("src/main.py", "bbb222")])
+    files, _ = await _grep_files(accessor, index, "import", {
+        "r": True,
+        "w": True
+    })
+    assert files == ["/src/main.py"]
+    assert counting_read == ["bbb222"]

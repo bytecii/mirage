@@ -44,6 +44,7 @@ interface Answer {
   fullName?: string
   total?: number
   tree?: Record<string, TreeEntry>
+  truncated?: boolean
 }
 
 function makeAccessor(
@@ -82,6 +83,7 @@ function makeAccessor(
     ref: 'main',
     defaultBranch: 'main',
     tree: answer.tree ?? bigTree(),
+    truncated: answer.truncated ?? false,
   })
 }
 
@@ -185,6 +187,28 @@ describe('narrowScope trusts only a complete, own-repository answer', () => {
   it('still narrows on a complete own answer', async () => {
     const calls: SearchCall[] = []
     const acc = makeAccessor(['src/f1.py'], calls)
+    const res = await narrowScope(acc, [subdir()], 'import', false, true, true)
+    expect(res.usedSearch).toBe(true)
+    expect(res.resolved.map((p) => p.virtual)).toEqual(['/src/f1.py'])
+  })
+
+  it('never trusts a narrowing over a truncated tree', async () => {
+    // A truncated tree cannot list every file code search skips, so no
+    // answer can be shown to be the whole set.
+    const calls: SearchCall[] = []
+    const acc = makeAccessor(['src/f1.py'], calls, { truncated: true })
+    const res = await narrowScope(acc, [subdir()], 'import', false, true, true)
+    expect(res.usedSearch).toBe(false)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('does not read a big binary file', async () => {
+    // A recursive walk skips binary extensions, and an unindexed file joins
+    // the narrowing only as a file that walk would have read.
+    const tree = bigTree()
+    tree['src/model.gguf'] = { path: 'src/model.gguf', type: 'blob', sha: 'g', size: 400_000 }
+    const calls: SearchCall[] = []
+    const acc = makeAccessor(['src/f1.py'], calls, { tree })
     const res = await narrowScope(acc, [subdir()], 'import', false, true, true)
     expect(res.usedSearch).toBe(true)
     expect(res.resolved.map((p) => p.virtual)).toEqual(['/src/f1.py'])
