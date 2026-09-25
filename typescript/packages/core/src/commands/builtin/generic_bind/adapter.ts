@@ -77,6 +77,7 @@ export interface CommandIO<A extends Accessor = Accessor>
   extends ReadOps<A>, NativeReadOps<A>, WriteOps<A> {
   readStream: ReadStreamOp<A>
   isMounted: (accessor: A) => boolean
+  streamsBytes?: boolean
   local?: boolean
   maxGlobMatches?: number
   maxDuEntries?: number

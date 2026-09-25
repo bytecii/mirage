@@ -118,6 +118,7 @@ describe('gh tree', () => {
       'release',
       'run',
       'workflow',
+      'search',
     ])
     const repo = GH.subcommands.find((c) => c.name === 'repo')
     expect(repo?.subcommands.map((c) => c.name)).toEqual([

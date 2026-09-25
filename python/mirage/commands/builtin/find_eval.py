@@ -626,12 +626,13 @@ def emit_start_path(
     if not keep(entry, tree, mindepth):
         return
     if min_size is not None or max_size is not None:
-        effective = size if kind == "f" else DIR_SIZE if kind == "d" else 0
-        if effective is not None:
-            if min_size is not None and effective < min_size:
-                return
-            if max_size is not None and effective > max_size:
-                return
+        # Unknown rendered sizes count as zero, like walked entries.
+        effective = (size
+                     or 0) if kind == "f" else DIR_SIZE if kind == "d" else 0
+        if min_size is not None and effective < min_size:
+            return
+        if max_size is not None and effective > max_size:
+            return
     results.append(start_key)
 
 

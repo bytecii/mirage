@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { streamFromBytes } from '../utils/wrap.ts'
 import { guardInput } from '../utils/limit.ts'
 import type { Accessor } from '../../../accessor/base.ts'
 import { activeCacheManager } from '../../../cache/context.ts'
@@ -142,11 +143,14 @@ export function withSlashGuard<A extends Accessor>(ops: CommandIO<A>): CommandIO
 }
 
 function withReadCache<A extends Accessor>(ops: CommandIO<A>): CommandIO<A> {
+  const readBytes = cacheAwareReadBytes(ops.readBytes)
   return {
     ...ops,
     stat: cachedStat(ops.stat),
-    readStream: cacheAwareReadStream(ops.readStream),
-    readBytes: cacheAwareReadBytes(ops.readBytes),
+    readStream: ops.streamsBytes
+      ? (a, p, i) => streamFromBytes(readBytes, a, p, i)
+      : cacheAwareReadStream(ops.readStream),
+    readBytes,
   }
 }
 

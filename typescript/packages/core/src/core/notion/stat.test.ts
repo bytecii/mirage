@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { mountKey } from '../../utils/key_prefix.ts'
 import { describe, expect, it } from 'vitest'
 import { IndexEntry } from '../../cache/index/config.ts'
@@ -19,7 +20,7 @@ import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { ContentType, FileType, PathSpec } from '../../types.ts'
 import type { NotionAccessor } from '../../accessor/notion.ts'
 import { NotionAPIError, type NotionTransport } from './client.ts'
-import { stat } from './stat.ts'
+import { stat as rawOperation } from './stat.ts'
 
 class FakeTransport implements NotionTransport {
   public readonly invocations: { name: string; args: Record<string, unknown> }[] = []
@@ -402,3 +403,54 @@ describe('notion stat rows', () => {
     expect(transport.invocations.map((call) => call.name)).toEqual(['API-retrieve-a-page'])
   })
 })
+
+async function stat(accessor: NotionAccessor, path: PathSpec, index?: IndexCacheStore) {
+  const cache = index ?? new RAMIndexCacheStore()
+  const pieces = path.virtual.replace(/\/$/, '').split('/')
+  const count = pieces.length - 1
+  for (let i = 1; i < count; i++) {
+    const key = pieces.slice(0, i + 1).join('/')
+    const name = pieces[i] ?? ''
+    if (name.includes('__') && (await cache.get(key)).entry == null)
+      await cache.setPartialDir(key.slice(0, key.lastIndexOf('/')) || '/', [
+        [
+          name,
+          new IndexEntry({
+            id: name.split('__').at(-1) ?? '',
+            name,
+            vfsName: name,
+            resourceType: 'notion/container',
+          }),
+        ],
+      ])
+  }
+  return rawOperation(accessor, path, cache)
+}
+
+it.each(['Wrong__db123', 'Tasks__db123/Wrong__ds789', 'Tasks__db123/Other__foreign'])(
+  'rejects an unlisted ancestor %s before reading its leaf',
+  async (directory) => {
+    for (const index of [new RAMIndexCacheStore(), undefined]) {
+      const transport = new FakeTransport()
+      transport.enqueue('API-post-search', {
+        results: [{ id: 'ds789', object: 'data_source', parent: { database_id: 'db123' } }],
+        has_more: false,
+        next_cursor: null,
+      })
+      const database = {
+        id: 'db123',
+        title: [{ plain_text: 'Tasks' }],
+        data_sources: [{ id: 'ds789', name: 'Tasks' }],
+      }
+      transport.enqueue('API-retrieve-a-database', database)
+      transport.enqueue('API-retrieve-a-database', database)
+      const leaf = directory.includes('/') ? 'rows.jsonl' : 'database.json'
+      await expect(
+        rawOperation(makeAccessor(transport), spec(`/databases/${directory}/${leaf}`), index),
+      ).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(transport.invocations.some((call) => call.name === 'API-retrieve-a-data-source')).toBe(
+        false,
+      )
+    }
+  },
+)

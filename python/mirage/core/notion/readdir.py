@@ -77,8 +77,8 @@ async def _list_databases_root(
     return entries
 
 
-async def _list_page(accessor: NotionAccessor,
-                     match: ScopeMatch) -> list[tuple[str, IndexEntry]]:
+async def _list_page(accessor: NotionAccessor, match: ScopeMatch,
+                     entry: IndexEntry) -> list[tuple[str, IndexEntry]]:
     page_id = match.slots.get("page_id") or match.slots["row_id"]
     blocks = await list_block_children(accessor.config,
                                        page_id,
@@ -113,8 +113,8 @@ async def _list_page(accessor: NotionAccessor,
     return entries
 
 
-async def _list_database(accessor: NotionAccessor,
-                         match: ScopeMatch) -> list[tuple[str, IndexEntry]]:
+async def _list_database(accessor: NotionAccessor, match: ScopeMatch,
+                         entry: IndexEntry) -> list[tuple[str, IndexEntry]]:
     database_id = match.slots["database_id"]
     database = await get_database(accessor.config,
                                   database_id,
@@ -142,8 +142,8 @@ async def _list_database(accessor: NotionAccessor,
     return entries
 
 
-async def _list_data_source(accessor: NotionAccessor,
-                            match: ScopeMatch) -> list[tuple[str, IndexEntry]]:
+async def _list_data_source(accessor: NotionAccessor, match: ScopeMatch,
+                            entry: IndexEntry) -> list[tuple[str, IndexEntry]]:
     data_source_id = match.slots["data_source_id"]
     data_source = await get_data_source(accessor.config,
                                         data_source_id,
@@ -176,8 +176,10 @@ readdir = make_readdir(
     listers={
         "pages": _list_pages_root,
         "databases": _list_databases_root,
+    },
+    parent_entry_listers={"row": _list_page},
+    entry_listers={
         "page": _list_page,
-        "row": _list_page,
         "database": _list_database,
         "data_source": _list_data_source,
     },

@@ -17,8 +17,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from mirage.accessor.github import GitHubAccessor
-from mirage.core.github.config import GitHubConfig
-from mirage.core.github.search import SearchResult, narrow_paths, search_code
+from mirage.core.api.client import ApiResponse
+from mirage.core.github.config import GhConfig, GitHubConfig
+from mirage.core.github.search import (SearchResult, narrow_paths, search,
+                                       search_code)
 from mirage.core.github.tree_entry import TreeEntry
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_key
@@ -401,3 +403,25 @@ async def test_narrow_paths_big_files_do_not_rescue_a_truncated_answer(
     out = await narrow_paths(_accessor(config, tree), "needle",
                              [PathSpec.from_str_path("/")])
     assert out is None
+
+
+@pytest.mark.asyncio
+async def test_rest_search_paginates_and_clips_the_final_page(monkeypatch):
+    requests = []
+
+    async def request(*args, **kwargs):
+        params = kwargs["params"]
+        requests.append(dict(params))
+        start = (int(params["page"]) - 1) * 100
+        return ApiResponse(
+            {"items": list(range(start, start + 100))}, 200,
+            {"link": '<https://api.github.test/next>; rel="next"'})
+
+    monkeypatch.setitem(search.__globals__, "github_request_response", request)
+    rows = await search(GhConfig(token="test"), "issues", "repo:acme/proj",
+                        102, "created", "asc")
+    assert rows == list(range(102))
+    assert [params["page"] for params in requests] == ["1", "2"]
+    assert all(params["per_page"] == "100" for params in requests)
+    assert requests[0]["sort"] == "created"
+    assert requests[0]["order"] == "asc"

@@ -19,11 +19,9 @@ import { read as linearRead } from '../../../core/linear/read.ts'
 import { readdir as linearReaddir } from '../../../core/linear/readdir.ts'
 import { stat as linearStat } from '../../../core/linear/stat.ts'
 import type { CommandIO } from '../generic_bind/index.ts'
-import { streamFromBytes } from '../utils/wrap.ts'
 
 export const LINEAR_IO: CommandIO<LinearAccessor> = new VFSAdapter<LinearAccessor>({
   read: { readdir: linearReaddir, readBytes: linearRead, stat: linearStat },
-  native: { readStream: (a, p, i) => streamFromBytes(linearRead, a, p, i) },
   isMounted: () => true,
   local: false,
 }).toCommandIO()

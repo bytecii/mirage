@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
 
+from mirage.cache.context import active_cache_manager
 from mirage.cache.index import IndexCacheStore
 from mirage.commands.builtin import find_eval
 from mirage.commands.builtin.find_parse import (parse_depth,
@@ -250,6 +251,11 @@ async def resolve_start(
     start = await stat_path(search.virtual)
     if start is None:
         return MISSING_START
+    manager = active_cache_manager()
+    if start.size is None and manager is not None:
+        cached_size = await manager.cached_size(search)
+        if cached_size is not None:
+            start = start.model_copy(update={"size": cached_size})
     if start.type == FileType.DIRECTORY:
         return StartPoint(walk=True, results=[], stat=start)
     # POSIX reads `x/` as `x/.`, so an operand typed with a trailing
@@ -676,7 +682,13 @@ async def _stat_entry(
                     resolved=False,
                     vfs_path=mount_key(path, prefix))
     try:
-        return await stat(spec, index)
+        row = await stat(spec, index)
+        manager = active_cache_manager()
+        if row.size is None and manager is not None:
+            size = await manager.cached_size(spec)
+            if size is not None:
+                row = row.model_copy(update={"size": size})
+        return row
     except FileNotFoundError:
         return None
     except Exception as exc:

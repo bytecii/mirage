@@ -212,8 +212,10 @@ export const readdir = makeReaddir<NotionAccessor>(detectScope, {
   listers: {
     pages: listPagesRoot,
     databases: listDatabasesRoot,
+  },
+  parentEntryListers: { row: listPage },
+  entryListers: {
     page: listPage,
-    row: listPage,
     database: listDatabase,
     data_source: listDataSource,
   },

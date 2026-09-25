@@ -435,11 +435,10 @@ export function emitStartPath(
     (opts.minSize !== null && opts.minSize !== undefined) ||
     (opts.maxSize !== null && opts.maxSize !== undefined)
   ) {
-    const effective = opts.kind === 'f' ? (opts.size ?? null) : opts.kind === 'd' ? DIR_SIZE : 0
-    if (effective !== null) {
-      if (opts.minSize !== null && opts.minSize !== undefined && effective < opts.minSize) return
-      if (opts.maxSize !== null && opts.maxSize !== undefined && effective > opts.maxSize) return
-    }
+    // Unknown rendered sizes count as zero, like walked entries.
+    const effective = opts.kind === 'f' ? (opts.size ?? 0) : opts.kind === 'd' ? DIR_SIZE : 0
+    if (opts.minSize !== null && opts.minSize !== undefined && effective < opts.minSize) return
+    if (opts.maxSize !== null && opts.maxSize !== undefined && effective > opts.maxSize) return
   }
   results.push(startKey)
 }

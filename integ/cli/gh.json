@@ -916,7 +916,7 @@
       "targets": [
         "cli-gh"
       ],
-      "command": "gh api search/code -X GET -f q=import --jq '.items | map(.repository.full_name) | unique'",
+      "command": "gh api search/code -X GET -f q=import --paginate --slurp --jq 'map(.items) | flatten | map(.repository.full_name) | unique'",
       "expect": {
         "exit": 0,
         "stdout": "[\"integ-user/renamed\",\"integ/repo-cli\"]\n",
@@ -998,6 +998,149 @@
       "expect": {
         "exit": 0,
         "stdout": "[\n  {\n    \"isFork\": false,\n    \"name\": \"repo-cli\",\n    \"visibility\": \"PUBLIC\"\n  }\n]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues",
+      "seq": 569090,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues updated --repo integ/repo-cli --json number,title,repository --jq \".[0].repository.nameWithOwner\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ/repo-cli\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues_repeat_scope",
+      "seq": 569091,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues updated --repo integ/missing --repo integ/repo-cli --json number --jq \"length\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues_template",
+      "seq": 569092,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues updated --repo integ/repo-cli --json title --template '{{range .}}{{.title}}{{\"\\n\"}}{{end}}'",
+      "expect": {
+        "exit": 0,
+        "stdout": "updated\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_prs_merged",
+      "seq": 569093,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search prs --repo integ/repo-cli --merged --json state --jq \"map(.state) | unique | .[]\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "merged\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_prs_draft_false",
+      "seq": 569094,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search prs --repo integ/repo-cli --draft=false --json isDraft --jq \"map(.isDraft) | unique | .[]\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "false\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_repos",
+      "seq": 569095,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search repos --owner integ --json fullName --jq \".[0].fullName\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ/repo-cli\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_code",
+      "seq": 569096,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search code import --repo integ/repo-cli --json path --jq \"length > 0\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "true\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_commits",
+      "seq": 569097,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search commits --repo integ/repo-cli --limit 1 --json repository --jq \".[0].repository.fullName\"",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ/repo-cli\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_empty",
+      "seq": 569098,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues surely-no-such-title --repo integ/repo-cli --json number",
+      "expect": {
+        "exit": 0,
+        "stdout": "[]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_limit_refused",
+      "seq": 569099,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues bootstrap --limit 0 >/dev/null 2>/dev/null; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_fields_refused",
+      "seq": 569100,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues bootstrap --json nosuch >/dev/null 2>/dev/null; echo $?",
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
         "stderr": ""
       }
     }

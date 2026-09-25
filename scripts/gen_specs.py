@@ -41,7 +41,8 @@ BUILTIN = Path(mirage.commands.builtin.__file__).resolve().parent
 
 # Slots holding a configuration value rather than an operation. Everything
 # else on the adapter is a wired operation, reported by name.
-IO_VALUE_FIELDS = frozenset({"local", "max_glob_matches", "max_du_entries"})
+IO_VALUE_FIELDS = frozenset(
+    {"local", "streams_bytes", "max_glob_matches", "max_du_entries"})
 
 
 def _walk_pkg(pkg: Any) -> list[str]:

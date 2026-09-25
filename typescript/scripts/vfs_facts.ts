@@ -42,7 +42,7 @@ const CAPABILITY_FIELDS = [
 
 // Slots that carry a configuration value rather than an operation. They
 // are reported as values; every other key of the literal is a wired slot.
-const IO_VALUE_FIELDS = new Set(['local', 'maxGlobMatches', 'maxDuEntries'])
+const IO_VALUE_FIELDS = new Set(['local', 'streamsBytes', 'maxGlobMatches', 'maxDuEntries'])
 
 const BASE_CLASS = 'BaseVFS'
 

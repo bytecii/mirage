@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { activeCacheManager } from '../../cache/context.ts'
 import { isEacces, isEnoent } from '../../utils/errors.ts'
 import { isEntryError } from '../../commands/errors.ts'
 import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
@@ -88,7 +89,9 @@ async function statEntry(
   })
   if (deps.unstatted?.has(path) === true) return null
   try {
-    return await deps.stat(spec, index)
+    const row = await deps.stat(spec, index)
+    const size = row.size === null ? await activeCacheManager()?.cachedSize(spec) : null
+    return size == null ? row : row.with({ size })
   } catch (err) {
     // Missing entries resolve to null. Any other failure does too when the
     // caller collects it; otherwise it (a rate limit, an auth failure)

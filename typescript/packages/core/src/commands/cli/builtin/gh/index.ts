@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { searchSpec } from './search.ts'
 import { GhConfigSchema } from '../../../../core/github/config.ts'
 import { CLISpec } from '../../types.ts'
 import { Operand, Option } from '../../../spec/types.ts'
@@ -508,5 +509,6 @@ export const GH = new CLISpec({
     release(),
     run(),
     workflow(),
+    searchSpec(),
   ],
 })

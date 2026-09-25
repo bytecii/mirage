@@ -34,6 +34,10 @@ class RecordingInvalidator implements CacheInvalidator {
     return Promise.resolve()
   }
 
+  readThrough(_path: PathSpec, fetch: () => Promise<Uint8Array>): Promise<Uint8Array> {
+    return fetch()
+  }
+
   cachedBytes(): Promise<Uint8Array | null> {
     return Promise.resolve(null)
   }

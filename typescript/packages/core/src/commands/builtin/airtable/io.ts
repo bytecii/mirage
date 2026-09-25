@@ -26,6 +26,7 @@ import { streamFromBytes } from '../utils/wrap.ts'
 export const AIRTABLE_IO: CommandIO<AirtableAccessor> = {
   readdir: airtableReaddir,
   readBytes: airtableRead,
+  streamsBytes: true,
   readStream: (a, p, i) => streamFromBytes(airtableRead, a, p, i),
   stat: airtableStat,
   isMounted: () => true,

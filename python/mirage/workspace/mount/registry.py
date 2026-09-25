@@ -206,9 +206,13 @@ class MountRegistry:
             return await self._may_serve_cached(m, key)
 
         m.cache_manager = CacheManager(
-            self._file_cache, m.vfs.index, m.prefix, m.vfs.caches_reads,
+            self._file_cache,
+            m.vfs.index,
+            m.prefix,
+            m.vfs.caches_reads,
             lambda path: not m.retiring and self.try_mount_for(path) is m,
-            gate)
+            gate,
+            read_ttl=m.read.ttl)
 
     def check_vfs_available(self, vfs: BaseVFS) -> None:
         """A removed VFS instance cannot start a second lifecycle."""

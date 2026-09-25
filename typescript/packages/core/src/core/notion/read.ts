@@ -26,6 +26,7 @@ import {
   toJsonBytes,
 } from './normalize.ts'
 import { getBlockTree, getDataSource, getDatabase, getPage, queryDataSource } from './pages.ts'
+import { stat } from './stat.ts'
 import { detectScope } from './scope.ts'
 
 async function readPageJson(
@@ -65,10 +66,14 @@ async function readRowsJsonl(accessor: NotionAccessor, match: ScopeMatch): Promi
   return jsonlBytes(rows.filter((row) => row.object === 'page').map(normalizeRow))
 }
 
-export const read = makeRead<NotionAccessor>(detectScope, {
-  page_json: readPageJson,
-  row_json: readPageJson,
-  database_json: readDatabaseJson,
-  data_source_json: readDataSourceJson,
-  rows_jsonl: readRowsJsonl,
-})
+export const read = makeRead<NotionAccessor>(
+  detectScope,
+  {
+    page_json: readPageJson,
+    row_json: readPageJson,
+    database_json: readDatabaseJson,
+    data_source_json: readDataSourceJson,
+    rows_jsonl: readRowsJsonl,
+  },
+  { stat },
+)

@@ -15,10 +15,20 @@
 import type { Ctx, JsonValue, KitRoute, Reply } from '../kit/typescript/index.ts'
 import { API_PREFIXES } from './config.ts'
 import type { C } from './config.ts'
-import { blobSha } from './wire.ts'
-import { allRepos, metaOf, repoByName, searchTree, treeOfBranch } from './store.ts'
+import { issueJson } from './issues.ts'
+import { pullJson } from './pulls.ts'
+import { blobSha, commitJson } from './wire.ts'
+import {
+  allRepos,
+  metaOf,
+  scope,
+  commitList,
+  repoByName,
+  searchTree,
+  treeOfBranch,
+} from './store.ts'
 import type { RepoRow } from './store.ts'
-import { authedRoute, everywhere, fail, route } from './http.ts'
+import { authedRoute, everywhere, fail, route, paged } from './http.ts'
 import { repoJson } from './repos.ts'
 
 const TOKEN_RE = /[A-Za-z0-9_]+/g
@@ -96,7 +106,7 @@ async function searchRepos(ctx: Ctx<C>): Promise<Reply> {
     matched.sort((a, b) => (a.fullName < b.fullName ? -1 : a.fullName > b.fullName ? 1 : 0))
   }
   const items = matched.map(repoJson)
-  return { status: 200, body: { total_count: items.length, incomplete_results: false, items } }
+  return searchReply(ctx, items)
 }
 
 interface CodeQuery {
@@ -172,16 +182,197 @@ async function searchCode(ctx: Ctx<C>): Promise<Reply> {
         path,
         sha: blobSha(data),
         score: 1.0,
-        repository: { name: repo.name, full_name: repo.fullName },
+        repository: repoJson(repo),
+        html_url: `https://github.com/${repo.fullName}/blob/${repo.defaultBranch}/${path}`,
+        text_matches: [
+          {
+            object_type: 'FileContent',
+            property: 'content',
+            fragment: data.toString(),
+            matches: terms.flatMap((term) => {
+              const at = data.toString().toLowerCase().indexOf(term)
+              return at < 0
+                ? []
+                : [
+                    {
+                      text: term,
+                      indices: [
+                        Buffer.byteLength(data.toString().slice(0, at)),
+                        Buffer.byteLength(data.toString().slice(0, at + term.length)),
+                      ],
+                    },
+                  ]
+            }),
+          },
+        ],
       })
     }
   }
-  return { status: 200, body: { total_count: items.length, incomplete_results: false, items } }
+  return searchReply(ctx, items)
 }
 
 export function searchRoutes(): KitRoute<C>[] {
   return everywhere<C>(API_PREFIXES, (p) => [
+    route('GET', `${p}/meta`, async () => ({ status: 200, body: { installed_version: '3.16.0' } })),
+    route<C>('GET', `${p}/search/issues`, authedRoute(searchIssues)),
+    route<C>('GET', `${p}/search/commits`, authedRoute(searchCommits)),
     route<C>('GET', `${p}/search/code`, authedRoute(searchCode)),
     route<C>('GET', `${p}/search/repositories`, authedRoute(searchRepos)),
   ])
+}
+
+function record(value: JsonValue): Record<string, JsonValue> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {}
+}
+
+function searchReply(ctx: Ctx<C>, items: JsonValue[]): Reply {
+  const page = paged(ctx, items)
+  if (page === null) return fail(422, 'Validation Failed')
+  return {
+    status: 200,
+    body: { total_count: items.length, incomplete_results: false, items: page.items },
+    headers: page.headers,
+  }
+}
+
+function tokens(query: string): { words: string[]; qualifiers: Map<string, string[]> } {
+  const words: string[] = [],
+    qualifiers = new Map<string, string[]>()
+  for (const token of query.match(/(?:[^\s"]|"(?:\\.|[^"\\])*")+/g) ?? []) {
+    const at = token.indexOf(':')
+    const raw = at < 0 ? token : token.slice(at + 1)
+    const value = raw.startsWith('"') ? String(JSON.parse(raw)) : raw
+    if (at < 0) words.push(value.toLowerCase())
+    else {
+      const key = token.slice(0, at)
+      qualifiers.set(key, [...(qualifiers.get(key) ?? []), value])
+    }
+  }
+  return { words, qualifiers }
+}
+
+function dateMatches(value: string, query: string): boolean {
+  const range = query.split('..')
+  if (range.length === 2)
+    return dateMatches(value, `>=${range[0]}`) && dateMatches(value, `<=${range[1]}`)
+  const match = /^(>=|<=|>|<)?(.*)$/.exec(query)
+  const boundary = match?.[2] ?? '',
+    date = value.slice(0, boundary.length)
+  switch (match?.[1]) {
+    case '>':
+      return date > boundary
+    case '<':
+      return date < boundary
+    case '>=':
+      return date >= boundary
+    case '<=':
+      return date <= boundary
+    default:
+      return date === boundary
+  }
+}
+
+async function searchIssues(ctx: Ctx<C>): Promise<Reply> {
+  const { words, qualifiers: q } = tokens(ctx.query.get('q') ?? '')
+  const items: Record<string, JsonValue>[] = []
+  for (const repo of await allRepos(ctx.db, ctx.tenant)) {
+    if (q.has('repo') && !q.get('repo')?.includes(repo.fullName)) continue
+    if (q.has('user') && !q.get('user')?.includes(repo.owner)) continue
+    const issues = await ctx.db.githubIssue.findMany({
+      where: { ...scope(ctx.tenant), repo: repo.fullName },
+      orderBy: { seq: 'desc' },
+    })
+    const pulls = await ctx.db.githubPull.findMany({
+      where: { ...scope(ctx.tenant), repo: repo.fullName },
+      orderBy: { seq: 'desc' },
+    })
+    const candidates: Record<string, JsonValue>[] = [
+      ...issues.map((row) => record(issueJson(repo, row))),
+      ...pulls.map((row) => {
+        const item = record(pullJson(repo, row))
+        return {
+          ...item,
+          pull_request: { html_url: item.html_url ?? '', merged_at: item.merged_at ?? null },
+        }
+      }),
+    ]
+    for (const item of candidates) {
+      const pull = item.pull_request !== undefined
+      if (q.get('type')?.includes(pull ? 'issue' : 'pr')) continue
+      if (q.has('state') && !q.get('state')?.includes(String(item.state))) continue
+      if (q.has('author') && !q.get('author')?.includes(String(record(item.user ?? null).login)))
+        continue
+      if (
+        q.has('label') &&
+        !q
+          .get('label')
+          ?.every((name) =>
+            (item.labels as JsonValue[]).some((label) => record(label).name === name),
+          )
+      )
+        continue
+      if (
+        q.has('assignee') &&
+        !((item.assignees as JsonValue[]) ?? []).some((user) =>
+          q.get('assignee')?.includes(String(record(user).login)),
+        )
+      )
+        continue
+      if (
+        q.has('created') &&
+        !q.get('created')?.every((date) => dateMatches(String(item.created_at), date))
+      )
+        continue
+      if (
+        q.has('updated') &&
+        !q.get('updated')?.every((date) => dateMatches(String(item.updated_at), date))
+      )
+        continue
+      if (q.has('draft') && String(item.draft ?? false) !== q.get('draft')?.[0]) continue
+      if (q.get('is')?.includes('merged') && !item.merged_at) continue
+      if (q.get('is')?.includes('unmerged') && item.merged_at) continue
+      if (q.has('base') && record(item.base ?? null).ref !== q.get('base')?.[0]) continue
+      if (q.has('head') && record(item.head ?? null).ref !== q.get('head')?.[0]) continue
+      if (q.get('no')?.includes('label') && (item.labels as JsonValue[]).length > 0) continue
+      const haystack = `${String(item.title)} ${String(item.body)}`.toLowerCase()
+      if (!words.every((word) => haystack.includes(word))) continue
+      items.push({
+        ...item,
+        repository_url: `https://api.github.com/repos/${repo.fullName}`,
+        node_id: `${pull ? 'PR' : 'I'}_${repo.fullName}_${String(item.number)}`,
+        comments: 0,
+        locked: false,
+      })
+    }
+  }
+  const sort = ctx.query.get('sort')
+  if (sort === 'created' || sort === 'updated' || sort === 'comments') {
+    const key = sort === 'comments' ? sort : `${sort}_at`,
+      sign = ctx.query.get('order') === 'asc' ? 1 : -1
+    items.sort((a, b) => sign * String(a[key]).localeCompare(String(b[key])))
+  }
+  return searchReply(ctx, items)
+}
+
+async function searchCommits(ctx: Ctx<C>): Promise<Reply> {
+  const { words, qualifiers: q } = tokens(ctx.query.get('q') ?? '')
+  const items: Record<string, JsonValue>[] = []
+  for (const repo of await allRepos(ctx.db, ctx.tenant)) {
+    if (q.has('repo') && !q.get('repo')?.includes(repo.fullName)) continue
+    if (q.has('user') && !q.get('user')?.includes(repo.owner)) continue
+    for (const row of await commitList(ctx.db, ctx.tenant, repo, repo.defaultBranch)) {
+      if (!words.every((word) => row.message.toLowerCase().includes(word))) continue
+      if (q.has('author') && !q.get('author')?.includes(row.authorLogin)) continue
+      if (q.has('hash') && !row.sha.startsWith(q.get('hash')?.[0] ?? '')) continue
+      const item = record(commitJson(row))
+      items.push({
+        ...item,
+        node_id: `C_${row.sha}`,
+        repository: repoJson(repo),
+        html_url: `https://github.com/${repo.fullName}/commit/${row.sha}`,
+        parents: row.parentSha ? [{ sha: row.parentSha }] : [],
+      })
+    }
+  }
+  return searchReply(ctx, items)
 }

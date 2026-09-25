@@ -19,11 +19,9 @@ import { read as notionRead } from '../../../core/notion/read.ts'
 import { readdir as notionReaddir } from '../../../core/notion/readdir.ts'
 import { stat as notionStat } from '../../../core/notion/stat.ts'
 import type { CommandIO } from '../generic_bind/index.ts'
-import { streamFromBytes } from '../utils/wrap.ts'
 
 export const NOTION_IO: CommandIO<NotionAccessor> = new VFSAdapter<NotionAccessor>({
   read: { readdir: notionReaddir, readBytes: notionRead, stat: notionStat },
-  native: { readStream: (a, p, i) => streamFromBytes(notionRead, a, p, i) },
   isMounted: () => true,
   local: false,
 }).toCommandIO()

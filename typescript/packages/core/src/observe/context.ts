@@ -39,6 +39,10 @@ export function captureRecordingContext(): ContextCall[] {
   return [storage.capture(), revisionsStorage.capture()]
 }
 
+export function activeRecords(): readonly OpRecord[] | undefined {
+  return storage.getStore()?.records
+}
+
 export async function runWithRecording<T>(fn: () => Promise<T>): Promise<[T, OpRecord[]]> {
   const state: RecordingState = { records: [], mountId: null }
   const value = await storage.run(state, fn)

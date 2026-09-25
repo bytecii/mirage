@@ -1,0 +1,406 @@
+import { spawn } from 'node:child_process'
+import { createServer } from 'node:https'
+import {
+  createServer as createHttpServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from 'node:http'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
+import { Workspace } from '../../../typescript/packages/node/dist/workspace.js'
+import { RAMVFS } from '../../../typescript/packages/core/dist/vfs/ram/ram.js'
+
+const TENANT = 'gh-search-conformance'
+const REPO = 'integ/repo-v1'
+const HEADERS = {
+  'x-mirage-run': TENANT,
+  'x-mirage-tenant': 'default',
+  authorization: 'token integ',
+  'content-type': 'application/json',
+}
+
+function run(
+  command: string,
+  args: string[],
+  env = process.env,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = '',
+      stderr = ''
+    child.stdout.setEncoding('utf8').on('data', (data: string) => {
+      stdout += data
+    })
+    child.stderr.setEncoding('utf8').on('data', (data: string) => {
+      stderr += data
+    })
+    child.on('error', reject)
+    child.on('close', (code) => resolve({ code: code ?? 1, stdout, stderr }))
+  })
+}
+
+/** Compare vanilla gh and Mirage against the same isolated fake-service tenant. */
+export async function searchConformance(endpoint: string): Promise<number> {
+  const temp = await mkdtemp(join(tmpdir(), 'mirage-gh-search-'))
+  const key = join(temp, 'key.pem'),
+    cert = join(temp, 'cert.pem')
+  const generated = await run('openssl', [
+    'req',
+    '-x509',
+    '-newkey',
+    'rsa:2048',
+    '-nodes',
+    '-keyout',
+    key,
+    '-out',
+    cert,
+    '-days',
+    '1',
+    '-subj',
+    '/CN=localhost',
+    '-addext',
+    'subjectAltName=IP:127.0.0.1,DNS:localhost',
+  ])
+  if (generated.code !== 0) throw new Error(generated.stderr)
+  const nativeQueries: string[] = [],
+    mirageQueries: string[] = []
+  async function forward(
+    req: IncomingMessage,
+    res: ServerResponse,
+    queries: string[],
+  ): Promise<void> {
+    try {
+      const url = new URL(req.url ?? '/', endpoint)
+      if (url.pathname.includes('/search/')) queries.push(url.searchParams.get('q') ?? '')
+      const response = await fetch(url, { headers: HEADERS })
+      res.writeHead(response.status, {
+        ...Object.fromEntries(response.headers),
+        'x-github-enterprise-version': '3.16.0',
+      })
+      res.end(Buffer.from(await response.arrayBuffer()))
+    } catch (error) {
+      res.writeHead(500)
+      res.end(String(error))
+    }
+  }
+  const proxy = createServer(
+    { key: await readFile(key), cert: await readFile(cert) },
+    (req, res) => {
+      void forward(req, res, nativeQueries)
+    },
+  )
+  const mirror = createHttpServer((req, res) => {
+    void forward(req, res, mirageQueries)
+  })
+  await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve))
+  await new Promise<void>((resolve) => mirror.listen(0, '127.0.0.1', resolve))
+  const address = proxy.address(),
+    mirrorAddress = mirror.address()
+  if (
+    address === null ||
+    typeof address === 'string' ||
+    mirrorAddress === null ||
+    typeof mirrorAddress === 'string'
+  )
+    throw new Error('missing proxy address')
+  const base = `http://127.0.0.1:${mirrorAddress.port}`
+  const ws = new Workspace(
+    { '/scratch': new RAMVFS() },
+    { mode: 'exec', clis: { gh: ['gh', { token: 'integ', base_url: base }] } },
+  )
+  try {
+    const reset = await fetch(`${endpoint}/reset`, {
+      method: 'POST',
+      headers: HEADERS,
+      body: JSON.stringify({ run: TENANT, tenants: ['default'], fixture: 'v1' }),
+    })
+    if (!reset.ok) throw new Error(`reset: ${await reset.text()}`)
+    for (let i = 0; i < 105; i++) {
+      const response = await fetch(`${endpoint}/repos/${REPO}/issues`, {
+        method: 'POST',
+        headers: HEADERS,
+        body: JSON.stringify({
+          title: `conformance ${i}`,
+          body: 'search fixture',
+          labels: ['bug'],
+        }),
+      })
+      if (!response.ok) throw new Error(await response.text())
+    }
+    const pull = await fetch(`${endpoint}/repos/${REPO}/pulls`, {
+      method: 'POST',
+      headers: HEADERS,
+      body: JSON.stringify({
+        title: 'conformance pull',
+        body: 'search fixture',
+        head: 'feature',
+        base: 'main',
+        draft: true,
+      }),
+    })
+    if (!pull.ok) throw new Error(await pull.text())
+    const cases: string[][] = [
+      [
+        'issues',
+        'conformance',
+        '--repo',
+        REPO,
+        '--limit',
+        '102',
+        '--json',
+        'number,title,repository,isPullRequest',
+      ],
+      [
+        'issues',
+        'conformance',
+        '--repo',
+        REPO,
+        '--label',
+        'bug',
+        '--created',
+        '2026-01-01',
+        '--limit',
+        '2',
+        '--json',
+        'assignees,author,authorAssociation,body,closedAt,commentsCount,createdAt,id,isLocked,isPullRequest,labels,number,repository,state,title,updatedAt,url',
+      ],
+      ['issues', 'conformance', '--repo', REPO, '--limit', '1'],
+      [
+        'issues',
+        'conformance',
+        '--repo',
+        REPO,
+        '--limit',
+        '2',
+        '--json',
+        'title,number',
+        '--jq',
+        'map(.number)',
+      ],
+      [
+        'issues',
+        'conformance',
+        '--repo',
+        REPO,
+        '--limit',
+        '2',
+        '--json',
+        'number,title',
+        '--template',
+        '{{range .}}{{if .number}}{{printf "%v: %s\\n" .number .title}}{{end}}{{end}}',
+      ],
+      [
+        'issues',
+        'conformance',
+        '--repo',
+        REPO,
+        '--include-prs',
+        '--limit',
+        '110',
+        '--json',
+        'isPullRequest',
+        '--jq',
+        'map(select(.isPullRequest)) | length',
+      ],
+      [
+        'prs',
+        '--repo',
+        REPO,
+        '--draft=true',
+        '--json',
+        'number,title,isDraft,isPullRequest,state,repository',
+      ],
+      ['prs', '--repo', REPO, '--draft=false', '--json', 'number'],
+      [
+        'repos',
+        '--owner',
+        'integ',
+        '--limit',
+        '1',
+        '--json',
+        'createdAt,defaultBranch,description,forksCount,fullName,hasDownloads,hasIssues,hasPages,hasProjects,hasWiki,homepage,id,isArchived,isDisabled,isFork,isPrivate,language,license,name,openIssuesCount,owner,pushedAt,size,stargazersCount,updatedAt,url,visibility,watchersCount',
+      ],
+      ['repos', '--owner', 'integ', '--limit', '1'],
+      [
+        'code',
+        'import',
+        '--repo',
+        REPO,
+        '--limit',
+        '1',
+        '--json',
+        'path,repository,sha,textMatches,url',
+      ],
+      ['code', 'import', '--repo', REPO, '--limit', '1'],
+      [
+        'commits',
+        '--repo',
+        REPO,
+        '--limit',
+        '2',
+        '--json',
+        'author,commit,committer,id,parents,repository,sha,url',
+      ],
+      ['commits', '--repo', REPO, '--limit', '1'],
+    ]
+    const env = {
+      ...process.env,
+      GH_HOST: `127.0.0.1:${address.port}`,
+      GH_ENTERPRISE_TOKEN: 'integ',
+      SSL_CERT_FILE: cert,
+      GH_CONFIG_DIR: temp,
+      GH_PAGER: 'cat',
+      NO_COLOR: '1',
+    }
+    cases.push(
+      ['code', '--repo', REPO, '--json', 'path'],
+      [
+        'issues',
+        'two words',
+        '--repo',
+        REPO,
+        '--repo',
+        'other/repo',
+        '--label',
+        'bug,help wanted',
+        '--owner',
+        'integ',
+        '--archived=false',
+        '--locked=false',
+        '--no-assignee',
+        '--match',
+        'title,body',
+        '--visibility',
+        'public',
+        '--sort',
+        'updated',
+        '--order',
+        'asc',
+        '--json',
+        'number',
+      ],
+      [
+        'prs',
+        '--repo',
+        REPO,
+        '--base',
+        'main',
+        '--head',
+        'feature',
+        '--checks',
+        'success',
+        '--merged=false',
+        '--merged-at',
+        '>2025-01-01',
+        '--review',
+        'required',
+        '--review-requested',
+        'integ/team',
+        '--reviewed-by',
+        'person',
+        '--app',
+        'bot',
+        '--json',
+        'number',
+      ],
+      [
+        'repos',
+        '--owner',
+        'integ,other',
+        '--language',
+        'TypeScript',
+        '--license',
+        'mit,apache-2.0',
+        '--topic',
+        'agent,terminal',
+        '--include-forks',
+        'only',
+        '--number-topics',
+        '>2',
+        '--stars',
+        '>5',
+        '--archived=false',
+        '--json',
+        'name',
+      ],
+      [
+        'code',
+        'two words',
+        '--repo',
+        REPO,
+        '--owner',
+        'integ',
+        '--extension',
+        'ts',
+        '--filename',
+        'main.ts',
+        '--language',
+        'TypeScript',
+        '--match',
+        'file',
+        '--size',
+        '>10',
+        '--json',
+        'path',
+      ],
+      [
+        'commits',
+        '--repo',
+        REPO,
+        '--author-name',
+        'A Person',
+        '--author-email',
+        'a@example.test',
+        '--committer',
+        'person',
+        '--merge=false',
+        '--parent',
+        'abc',
+        '--tree',
+        'def',
+        '--visibility',
+        'public',
+        '--author-date',
+        '>2025-01-01',
+        '--json',
+        'sha',
+      ],
+    )
+    for (const args of cases) {
+      nativeQueries.length = 0
+      mirageQueries.length = 0
+      const native = await run('gh', ['search', ...args], env)
+      const line = ['gh', 'search', ...args]
+        .map((word) => `'${word.replaceAll("'", "'\\''")}'`)
+        .join(' ')
+      const result = await ws.shell(line)
+      if (nativeQueries[0] !== mirageQueries[0])
+        throw new Error(
+          `${line}\nquery native: ${nativeQueries[0]}\nquery mirage: ${mirageQueries[0]}`,
+        )
+      const stdout = new TextDecoder().decode(result.stdout),
+        stderr = new TextDecoder().decode(result.stderr)
+      const json = args.includes('--json') && !args.includes('--jq') && !args.includes('--template')
+      const same =
+        json && result.exitCode === 0 && native.code === 0
+          ? isDeepStrictEqual(JSON.parse(stdout), JSON.parse(native.stdout))
+          : stdout === native.stdout
+      if (result.exitCode !== native.code || !same || stderr !== native.stderr)
+        throw new Error(
+          `${line}\nnative ${native.code}: ${native.stdout}${native.stderr}\nmirage ${result.exitCode}: ${stdout}${stderr}`,
+        )
+    }
+    return cases.length
+  } finally {
+    await ws.close()
+    await new Promise<void>((resolve, reject) =>
+      proxy.close((error) => (error ? reject(error) : resolve())),
+    )
+    await new Promise<void>((resolve, reject) =>
+      mirror.close((error) => (error ? reject(error) : resolve())),
+    )
+    await rm(temp, { recursive: true, force: true })
+  }
+}
