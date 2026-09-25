@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 
 from mirage.types import PathSpec
 from mirage.utils.path import drop_trailing_segments, respell_one
-from mirage.utils.quote import quotes_operands, shell_quote
+from mirage.utils.quote import quotes_operands, shell_quote, shell_quote_always
 
 
 class OperationNotSupportedError(OSError):
@@ -328,6 +328,14 @@ def _segments(path: str) -> list[str]:
     return [part for part in path.split("/") if part]
 
 
+# The commands GNU words a failed operand as the step that failed rather
+# than as the bare name, the name always quoted (gnulib's quoteaf): a
+# missing file is ``cannot open 'x' for reading``, and a directory, which
+# opens and then refuses the read, is ``error reading 'x'``. Measured on
+# coreutils 9.7 (debian:stable-slim).
+OPEN_FAILURE_COMMANDS: frozenset[str] = frozenset({"head", "tail"})
+
+
 def fs_error_line(cmd_name: str, path: str | PathSpec,
                   exc: BaseException) -> str:
     """GNU coreutils stderr line for one failed path operand.
@@ -338,7 +346,10 @@ def fs_error_line(cmd_name: str, path: str | PathSpec,
     after one fails, reported as typed via ``raw_path``), or an
     already-resolved label string. A command in ``SHELL_QUOTED_COMMANDS``
     reports the operand shell-quoted when it needs it (``'*.txt'``), the
-    way GNU does; every other command reports it bare.
+    way GNU does; every other command reports it bare. A command in
+    ``OPEN_FAILURE_COMMANDS`` says which step failed instead, except for
+    standard input, whose ``-`` line is the one GNU prints when it closes
+    a stdin it could not read.
 
     Args:
         cmd_name (str): Command name for the ``<cmd>:`` prefix.
@@ -347,9 +358,15 @@ def fs_error_line(cmd_name: str, path: str | PathSpec,
         exc (BaseException): The filesystem error.
     """
     label = getattr(path, "raw_path", None) or _virtual_of(path)
+    strerror = fs_strerror(exc)
+    if (cmd_name in OPEN_FAILURE_COMMANDS and strerror is not None
+            and label != "-"):
+        quoted = shell_quote_always(label)
+        if isinstance(exc, IsADirectoryError):
+            return f"{cmd_name}: error reading {quoted}: {strerror}\n"
+        return f"{cmd_name}: cannot open {quoted} for reading: {strerror}\n"
     if quotes_operands(cmd_name):
         label = shell_quote(label)
-    strerror = fs_strerror(exc)
     if strerror is not None:
         return f"{cmd_name}: {label}: {strerror}\n"
     return f"{cmd_name}: {label}\n"

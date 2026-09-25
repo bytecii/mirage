@@ -174,14 +174,14 @@ async function checkPartialRead(ws: Workspace, dst: string, label: string): Prom
     `${label}: head keeps banner`,
     out === `==> ${src} <==\naaa\n` &&
       code === 1 &&
-      err === `head: ${miss}: No such file or directory\n`,
+      err === `head: cannot open '${miss}' for reading: No such file or directory\n`,
   )
   ;[out, err, code] = await run(ws, `tail -n 1 ${src} ${miss}`)
   check(
     `${label}: tail keeps banner`,
     out === `==> ${src} <==\naaa\n` &&
       code === 1 &&
-      err === `tail: ${miss}: No such file or directory\n`,
+      err === `tail: cannot open '${miss}' for reading: No such file or directory\n`,
   )
   // nl rides the STREAM strategy cross-mount: the error line must carry
   // nl's own name, not the cat sub-run that fetched the operand.

@@ -18,12 +18,12 @@ import pytest
 
 from mirage.errors import FsCondition, classify
 from mirage.types import PathSpec
-from mirage.utils.errors import (FS_ERRORS, FileTooLargeError, NoMountError,
-                                 OperationNotSupportedError, eacces, efbig,
-                                 eloop, enoent, enotdir, enotempty, enotsup,
-                                 error_path, exdev, format_fs_error,
-                                 fs_strerror, listing_error, no_mount,
-                                 readdir_error)
+
+from mirage.utils.errors import (  # isort: skip
+    FS_ERRORS, BadDescriptorError, FileTooLargeError, NoMountError,
+    OperationNotSupportedError, eacces, efbig, eisdir, eloop, enoent, enotdir,
+    enotempty, enotsup, error_path, exdev, format_fs_error, fs_error_line,
+    fs_strerror, listing_error, no_mount, readdir_error)
 
 
 def test_fs_strerror_known_types():
@@ -69,8 +69,43 @@ def test_format_fs_error_rewrites_to_raw_path():
 
 def test_format_fs_error_prefers_exc_filename():
     exc = FileNotFoundError(2, "No such file or directory", "/a/gone.txt")
-    err = format_fs_error("head", exc)
-    assert err == b"head: /a/gone.txt: No such file or directory\n"
+    err = format_fs_error("cat", exc)
+    assert err == b"cat: /a/gone.txt: No such file or directory\n"
+
+
+@pytest.mark.parametrize("cmd", ["head", "tail"])
+def test_open_failure_line_names_the_failed_open(cmd):
+    line = fs_error_line(cmd, "/data/nope.txt", enoent("/data/nope.txt"))
+    assert line == (f"{cmd}: cannot open '/data/nope.txt' for reading: "
+                    "No such file or directory\n")
+
+
+@pytest.mark.parametrize("cmd", ["head", "tail"])
+def test_open_failure_line_names_a_directory_read(cmd):
+    line = fs_error_line(cmd, "/data/sub", eisdir("/data/sub"))
+    assert line == f"{cmd}: error reading '/data/sub': Is a directory\n"
+
+
+def test_open_failure_line_quotes_the_operand_as_typed():
+    spec = PathSpec(virtual="/data/it's.txt",
+                    directory="/data/",
+                    vfs_path="it's.txt",
+                    raw_path="it's.txt")
+    line = fs_error_line("head", spec, enoent(spec))
+    assert line == ("head: cannot open \"it's.txt\" for reading: "
+                    "No such file or directory\n")
+
+
+def test_open_failure_line_leaves_standard_input_bare():
+    exc = BadDescriptorError(errno.EBADF, "Bad file descriptor", "-")
+    assert fs_error_line("tail", "-", exc) == "tail: -: Bad file descriptor\n"
+
+
+def test_format_fs_error_words_a_head_open_failure():
+    exc = FileNotFoundError(2, "No such file or directory", "/a/gone.txt")
+    assert format_fs_error(
+        "head", exc) == (b"head: cannot open '/a/gone.txt' for reading: "
+                         b"No such file or directory\n")
 
 
 def test_format_fs_error_generic_prefixes_command():

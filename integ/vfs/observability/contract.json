@@ -217,7 +217,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "head: {mount}/__nf_missing__: No such file or directory\n"
+        "stderr": "head: cannot open '{mount}/__nf_missing__' for reading: No such file or directory\n"
       }
     },
     {
@@ -238,7 +238,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "head: {mount}/__nf_missing__: No such file or directory\n"
+        "stderr": "head: cannot open '{mount}/__nf_missing__' for reading: No such file or directory\n"
       }
     },
     {
@@ -259,7 +259,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "tail: {mount}/__nf_missing__: No such file or directory\n"
+        "stderr": "tail: cannot open '{mount}/__nf_missing__' for reading: No such file or directory\n"
       }
     },
     {

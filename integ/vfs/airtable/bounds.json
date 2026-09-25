@@ -36,7 +36,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "head: /airtable/bases/Product_Roadmap__appRoadmapBase001/Backlog__tblBacklog0000003/records.jsonl: File too large\n"
+        "stderr": "head: cannot open '/airtable/bases/Product_Roadmap__appRoadmapBase001/Backlog__tblBacklog0000003/records.jsonl' for reading: File too large\n"
       }
     },
     {

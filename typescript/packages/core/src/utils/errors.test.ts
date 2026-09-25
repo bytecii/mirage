@@ -16,12 +16,15 @@ import { describe, expect, it } from 'vitest'
 import {
   eacces,
   eaccesRefused,
+  ebadfStdin,
   efbig,
+  eisdir,
   erofsReadOnly,
   enoent,
   enotsup,
   enotdir,
   formatFsError,
+  fsErrorLine,
   fsStrerror,
   isFsError,
   isMissingPath,
@@ -69,6 +72,37 @@ describe('formatFsError', () => {
       ]),
     )
     expect(line).toBe('diff: missing.txt: No such file or directory\n')
+  })
+})
+
+describe('fsErrorLine — commands that name the failed open', () => {
+  it.each(['head', 'tail'])('%s reports a missing operand as a failed open', (cmd) => {
+    expect(fsErrorLine(cmd, '/data/nope.txt', enoent('/data/nope.txt'))).toBe(
+      `${cmd}: cannot open '/data/nope.txt' for reading: No such file or directory\n`,
+    )
+  })
+
+  it.each(['head', 'tail'])('%s reports a directory as a failed read', (cmd) => {
+    expect(fsErrorLine(cmd, '/data/sub', eisdir('/data/sub'))).toBe(
+      `${cmd}: error reading '/data/sub': Is a directory\n`,
+    )
+  })
+
+  it('quotes the operand as typed', () => {
+    const spec = { virtual: "/data/it's.txt", rawPath: "it's.txt" }
+    expect(fsErrorLine('head', spec, enoent(spec))).toBe(
+      'head: cannot open "it\'s.txt" for reading: No such file or directory\n',
+    )
+  })
+
+  it('leaves standard input bare', () => {
+    expect(fsErrorLine('tail', '-', ebadfStdin())).toBe('tail: -: Bad file descriptor\n')
+  })
+
+  it('words a head open failure at the chokepoint', () => {
+    expect(decode(formatFsError('head', enoent('/a/gone.txt')))).toBe(
+      "head: cannot open '/a/gone.txt' for reading: No such file or directory\n",
+    )
   })
 })
 
