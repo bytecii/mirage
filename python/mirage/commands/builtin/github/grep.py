@@ -111,6 +111,8 @@ async def grep(accessor: GitHubAccessor, paths: list[PathSpec],
             exact_file_set=fl.as_bool("v") or fl.as_bool("c")
             or fl.as_bool("text") or fl.as_str("binary_files") == "text",
         )
+        if used_search and not resolved:
+            return b"", IOResult(exit_code=1)
         if file_count > SCOPE_ERROR:
             # A scope this large with no trusted narrowing is refused rather
             # than scanned blob by blob.

@@ -356,3 +356,33 @@ def test_plain_query_and_other_namespaces_do_not_require_grep():
     assert options.fixed_string
     assert grep_pushdown.grep_search_meta(
         SearchOps(search=AsyncMock(), meta={"semantic": True})) is None
+
+
+@pytest.mark.parametrize("pattern, fixed, whole_word, expected", [
+    ("import", False, True, "import"),
+    ("import", True, True, "import"),
+    ("import os", False, True, "import os"),
+    ("import", False, False, None),
+    ("import.*os", False, True, None),
+    ("import.*os", True, True, "import.*os"),
+    ("foo|bar", False, True, None),
+    ("a\nb", True, True, None),
+    (None, False, True, None),
+])
+def test_whole_word_literal_is_the_term_a_word_index_answers_for(
+        pattern, fixed, whole_word, expected):
+    # Only a whole-word literal is what the index is asked for: without -w
+    # a word index under-fetches substrings, a regex narrows on a term that
+    # is only part of the match, and a pattern list has no required term.
+    assert grep_pushdown.whole_word_literal(pattern, fixed,
+                                            whole_word) == expected
+
+
+def test_text_candidates_drops_what_a_walk_never_reads():
+    paths = [
+        PathSpec.from_str_path(p)
+        for p in ["/a.py", "/m.gguf", "/b.txt", "/w.bin", "/README"]
+    ]
+    assert [p.virtual for p in grep_pushdown.text_candidates(paths)
+            ] == ["/a.py", "/b.txt", "/README"]
+    assert grep_pushdown.text_candidates([]) == []

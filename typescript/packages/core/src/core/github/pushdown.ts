@@ -37,21 +37,25 @@ export function isDirectoryKey(tree: Record<string, TreeEntry>, key: string): bo
   return tree[stripSlash(key)]?.type === 'tree'
 }
 
-export function countScopeFiles(tree: Record<string, TreeEntry>, key: string): number {
-  // tree keys are repo-relative without a leading slash
-  if (isRepoRoot(key)) {
-    let count = 0
-    for (const entry of Object.values(tree)) if (entry.type === 'blob') count += 1
-    return count
-  }
+// The file entries at or below a repo-relative scope key, in tree order:
+// every blob for the repository root, the file itself for a file key. A
+// sibling that merely shares the scope's spelling (srcx/ beside src/) is
+// outside it. Tree keys are repo-relative without a leading slash, which is
+// the space `key` is already in.
+export function scopeBlobs(tree: Record<string, TreeEntry>, key: string): [string, TreeEntry][] {
   const norm = stripSlash(key)
   const prefix = `${norm}/`
-  let count = 0
+  const out: [string, TreeEntry][] = []
   for (const [p, entry] of Object.entries(tree)) {
     if (entry.type !== 'blob') continue
-    if (p === norm || p.startsWith(prefix)) count += 1
+    if (norm !== '' && p !== norm && !p.startsWith(prefix)) continue
+    out.push([p, entry])
   }
-  return count
+  return out
+}
+
+export function countScopeFiles(tree: Record<string, TreeEntry>, key: string): number {
+  return scopeBlobs(tree, key).length
 }
 
 export function shouldUseSearch(recursive: boolean, onDefaultBranch: boolean): boolean {
@@ -81,12 +85,8 @@ export function searchSafe(query: string): boolean {
 // CODE_SEARCH_SIZE_LIMIT, or of a size the tree did not report, since
 // nothing vouches for those either. Sorted repo-relative keys.
 export function unsearchableKeys(tree: Record<string, TreeEntry>, key: string): string[] {
-  const norm = stripSlash(key)
-  const prefix = `${norm}/`
   const out: string[] = []
-  for (const [p, entry] of Object.entries(tree)) {
-    if (entry.type !== 'blob') continue
-    if (norm !== '' && p !== norm && !p.startsWith(prefix)) continue
+  for (const [p, entry] of scopeBlobs(tree, key)) {
     if (entry.size === null || entry.size >= CODE_SEARCH_SIZE_LIMIT) out.push(p)
   }
   return out.sort(compareCodePoints)

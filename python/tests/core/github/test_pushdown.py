@@ -17,8 +17,9 @@ from types import SimpleNamespace
 import pytest
 
 from mirage.core.github.pushdown import (count_scope_files, is_directory_key,
-                                         is_repo_root, scope_relative_key,
-                                         search_safe, unsearchable_keys)
+                                         is_repo_root, scope_blobs,
+                                         scope_relative_key, search_safe,
+                                         unsearchable_keys)
 from mirage.core.github.tree_entry import TreeEntry
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_key
@@ -78,6 +79,21 @@ def test_count_scope_files_single_file(entries):
 
 def test_count_scope_files_missing(entries):
     assert count_scope_files(entries, "/nope") == 0
+
+
+def test_scope_blobs_lists_the_files_at_or_below_a_key(entries):
+    # Tree order, files only; the root key is every file, a file key is
+    # itself, and a sibling sharing the spelling (srcx/) is outside.
+    entries["srcx/other.py"] = entries["src/main.py"]
+    assert [p for p, _ in scope_blobs(entries, "/")] == [
+        "README.md", "src/main.py", "src/utils.py", "src/models/user.py",
+        "srcx/other.py"
+    ]
+    assert [p for p, _ in scope_blobs(entries, "/src")
+            ] == ["src/main.py", "src/utils.py", "src/models/user.py"]
+    assert [p for p, _ in scope_blobs(entries, "/src/main.py")
+            ] == ["src/main.py"]
+    assert scope_blobs(entries, "/nope") == []
 
 
 # Measured against api.github.com on 2026-09-25: a `name:` word is a

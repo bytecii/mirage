@@ -64,12 +64,33 @@ def is_directory_key(tree: dict[str, TreeEntry], key: str) -> bool:
     return entry is not None and entry.type == "tree"
 
 
+def scope_blobs(tree: dict[str, TreeEntry],
+                key: str) -> list[tuple[str, TreeEntry]]:
+    """The file entries at or below a repo-relative scope key.
+
+    Read off the git tree rather than the index, mirroring TypeScript's:
+    the tree keys are repo-relative with no leading slash, which is the
+    space ``key`` is already in. A sibling that merely shares the scope's
+    spelling (``srcx/`` beside ``src/``) is outside it.
+
+    Args:
+        tree (dict[str, TreeEntry]): The recursive git tree.
+        key (str): Repo-relative scope key from :func:`scope_relative_key`.
+
+    Returns:
+        list[tuple[str, TreeEntry]]: each blob's key and entry, in tree
+            order; every blob for the repository root.
+    """
+    norm = key.strip("/")
+    prefix = norm + "/"
+    return [
+        (p, e) for p, e in tree.items()
+        if e.type == "blob" and (not norm or p == norm or p.startswith(prefix))
+    ]
+
+
 def count_scope_files(tree: dict[str, TreeEntry], key: str) -> int:
     """Count files under a repo-relative scope key.
-
-    Counted off the git tree rather than the index, mirroring
-    TypeScript's: the tree keys are repo-relative with no leading slash,
-    which is the space ``key`` is already in.
 
     Args:
         tree (dict[str, TreeEntry]): The recursive git tree.
@@ -78,12 +99,7 @@ def count_scope_files(tree: dict[str, TreeEntry], key: str) -> int:
     Returns:
         int: Number of file entries at or below the scope.
     """
-    if is_repo_root(key):
-        return sum(1 for e in tree.values() if e.type == "blob")
-    norm = key.strip("/")
-    prefix = norm + "/"
-    return sum(1 for p, e in tree.items()
-               if e.type == "blob" and (p == norm or p.startswith(prefix)))
+    return len(scope_blobs(tree, key))
 
 
 def should_use_search(
@@ -139,9 +155,5 @@ def unsearchable_keys(tree: dict[str, TreeEntry], key: str) -> list[str]:
     Returns:
         list[str]: Sorted repo-relative keys of those files.
     """
-    norm = key.strip("/")
-    prefix = norm + "/"
-    return sorted(
-        p for p, e in tree.items()
-        if e.type == "blob" and (not norm or p == norm or p.startswith(prefix))
-        and (e.size is None or e.size >= CODE_SEARCH_SIZE_LIMIT))
+    return sorted(p for p, e in scope_blobs(tree, key)
+                  if e.size is None or e.size >= CODE_SEARCH_SIZE_LIMIT)

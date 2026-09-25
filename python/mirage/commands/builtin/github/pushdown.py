@@ -14,11 +14,9 @@
 
 from mirage.accessor.github import GitHubAccessor
 from mirage.cache.index import IndexCacheStore
-from mirage.commands.builtin.constants import BINARY_EXTENSIONS
 from mirage.commands.builtin.github.io import resolve_glob
-from mirage.commands.builtin.grep_pushdown import (is_literal_pattern,
-                                                   search_query)
-from mirage.commands.resolve import get_extension
+from mirage.commands.builtin.grep_pushdown import (text_candidates,
+                                                   whole_word_literal)
 from mirage.core.github.constants import SCOPE_WARN
 from mirage.core.github.pushdown import (count_scope_files, is_directory_key,
                                          scope_relative_key, search_safe,
@@ -66,20 +64,16 @@ async def narrow_scope(
     """Resolve grep/rg scope paths, narrowing via GitHub code search.
 
     Narrows any recursive scope (repo root or subdirectory) on the default
-    branch when a literal can be pushed down to code search and the scope is
-    larger than ``SCOPE_WARN``; otherwise expands the scope by glob.
-
-    Push-down requires ``-w`` and a fully literal pattern. GitHub code search
-    matches whole words while grep matches substrings, so for a bare literal
-    the search result is a strict subset of the grep matches: a file holding
-    the literal only inside a longer word (``quokka`` in ``quokkabuild``)
-    never comes back and would be silently dropped from the scan. Under ``-w``
-    both sides mean the same thing, and any tokenizer disagreement can only
-    over-fetch, which the local scan filters. A regex narrowed on an extracted
-    literal stays excluded even under ``-w``, because the searched term is
-    then only part of the match: ``foo[0-9]`` matches ``foo1`` as a whole
-    word, but searching ``foo`` never returns a file whose only token is
-    ``foo1``.
+    branch when a whole-word literal can be pushed down to code search
+    (``whole_word_literal``) and the scope is larger than ``SCOPE_WARN``;
+    otherwise expands the scope by glob. Code search is trusted only where
+    it can answer for the whole scope: never over a truncated tree, which
+    cannot list every file the search skips; only over directory operands,
+    since a full scan reads a file named on the line whatever its
+    extension; only for a literal the search grammar reads as plain terms
+    (``search_safe``); and only for an answer that is the whole set
+    (``narrow_paths``). Binary-extension candidates are dropped from the
+    narrowed set because the recursive walk it replaces skips them.
 
     Args:
         accessor (GitHubAccessor): backend handle.
@@ -94,7 +88,9 @@ async def narrow_scope(
     Returns:
         tuple[list[PathSpec], int, bool]: resolved file paths, the file count
             in scope (narrowed count when search was used), and whether code
-            search actually narrowed the set.
+            search narrowed the set. A narrowed set may be empty (every
+            candidate was binary); callers must not treat that as a stdin
+            run.
     """
     key = scope_relative_key(paths[0])
     # Both facts below are hydrated on first use, not at construction:
@@ -103,46 +99,21 @@ async def narrow_scope(
     await ensure_tree(accessor, index,
                       mount_prefix_of(paths[0].virtual, paths[0].vfs_path))
     file_count = count_scope_files(accessor.tree, key)
-    query = search_query(pattern,
-                         fixed_string) if pattern is not None else None
-    literal = (pattern is not None
-               and is_literal_pattern(pattern, fixed_string))
-    # The scope size moved ahead of should_use_search: it is free, and
+    query = whole_word_literal(pattern, fixed_string, whole_word)
+    # The scope size sits ahead of should_use_search: it is free, and
     # resolving the default branch is the one term here that can cost a
     # request.
-    # A truncated tree cannot list every file code search skips, so no
-    # answer over it can be shown to be the whole set; and a full scan reads
-    # every file named on the line, binary or not, so only directory
-    # operands are narrowed.
-    use_search = (not exact_file_set and query is not None and whole_word
-                  and literal and file_count > SCOPE_WARN
-                  and not accessor.truncated and all(
-                      is_directory_key(accessor.tree, scope_relative_key(p))
-                      for p in paths) and search_safe(query)
-                  and should_use_search(
-                      recursive=recursive,
-                      on_default_branch=(await ensure_ref(accessor) == await
-                                         ensure_default_branch(accessor)),
-                  ))
-    if use_search:
-        assert query is not None
-        narrowed = await narrow_paths(accessor.config,
-                                      accessor.owner,
-                                      accessor.repo,
-                                      query,
-                                      paths,
-                                      accessor.tree,
-                                      session=accessor.pool)
+    if (query is not None and not exact_file_set and file_count > SCOPE_WARN
+            and not accessor.truncated and all(
+                is_directory_key(accessor.tree, scope_relative_key(p))
+                for p in paths) and search_safe(query) and should_use_search(
+                    recursive=recursive,
+                    on_default_branch=(await ensure_ref(accessor) == await
+                                       ensure_default_branch(accessor)),
+                )):
+        narrowed = await narrow_paths(accessor, query, paths)
         if narrowed:
-            # A recursive walk skips binary extensions; a narrowing holds
-            # only the files that walk would have read.
-            kept = [
-                p for p in narrowed
-                if get_extension(p.virtual) not in BINARY_EXTENSIONS
-            ]
-            # Left empty, the list would read as no operands and grep
-            # would read standard input.
-            if kept:
-                return kept, len(kept), True
+            kept = text_candidates(narrowed)
+            return kept, len(kept), True
     resolved = await resolve_glob(accessor, paths, index)
     return resolved, file_count, False

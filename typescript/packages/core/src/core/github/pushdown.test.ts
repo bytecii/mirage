@@ -20,6 +20,7 @@ import {
   countScopeFiles,
   isDirectoryKey,
   isRepoRoot,
+  scopeBlobs,
   scopeRelativeKey,
   searchSafe,
   shouldUseSearch,
@@ -84,6 +85,24 @@ describe('countScopeFiles', () => {
 
   it('returns zero for unknown scopes', () => {
     expect(countScopeFiles(TREE, '/missing')).toBe(0)
+  })
+})
+
+describe('scopeBlobs', () => {
+  it('lists the files at or below a key, in tree order', () => {
+    // The root key is every file, a file key is itself, and a sibling that
+    // shares the spelling (docsx/) is outside.
+    const tree = { ...TREE, 'docsx/c.md': { path: 'docsx/c.md', type: 'blob', sha: 's7', size: 1 } }
+    expect(scopeBlobs(tree, '/').map(([p]) => p)).toEqual([
+      'docs/a.md',
+      'docs/b.md',
+      'src/main.py',
+      'readme.txt',
+      'docsx/c.md',
+    ])
+    expect(scopeBlobs(tree, '/docs').map(([p]) => p)).toEqual(['docs/a.md', 'docs/b.md'])
+    expect(scopeBlobs(tree, '/readme.txt').map(([p]) => p)).toEqual(['readme.txt'])
+    expect(scopeBlobs(tree, '/nope')).toEqual([])
   })
 })
 
