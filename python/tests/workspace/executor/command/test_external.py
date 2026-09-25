@@ -164,14 +164,31 @@ async def test_refused_external_capture_does_not_expand_globs(
 @pytest.mark.asyncio
 async def test_shell_function_precedes_external_and_discovery_names_the_route(
 ):
-    probe = ProcessProbe()
+    probe = ProcessProbe(captures=("named-tool", EXTERNAL_COMMANDS))
     async with workspace({"/": RAMVFS()}, runtimes=[probe]) as ws:
-        assert await (
-            await ws.shell("type -t native-tool")).stdout_str() == "external\n"
+        assert await (await
+                      ws.shell("type -t named-tool")).stdout_str() == "file\n"
         await ws.shell("native-tool() { echo function; }")
         assert await (await
                       ws.shell("native-tool")).stdout_str() == "function\n"
         assert not probe.requests
+
+
+@pytest.mark.asyncio
+async def test_a_name_only_the_fallback_takes_runs_but_is_not_found():
+    probe = ProcessProbe()
+    async with workspace({"/": RAMVFS()},
+                         mode=MountMode.EXEC,
+                         runtimes=[probe]) as ws:
+        for line in ("which native-tool", "command -v native-tool",
+                     "type -t native-tool", "cat /usr/bin/native-tool"):
+            result = await ws.shell(line)
+            assert result.exit_code == 1, line
+            assert await result.stdout_str() == "", line
+        result = await ws.shell("type native-tool")
+        assert await result.stderr_str() == "type: native-tool: not found\n"
+        assert (await ws.shell("native-tool")).exit_code == 0
+        assert probe.requests[0].argv == ("native-tool", )
 
 
 @pytest.mark.parametrize(
@@ -478,8 +495,8 @@ async def test_native_captures_preserve_shell_builtins(kind, willing):
             await
             ws.shell('printf "%s\n" "$NATIVE_TEST"')).stdout_str() == "kept\n"
         assert await (await ws.shell("echo shell")).stdout_str() == "shell\n"
-        assert await (await ws.shell("type -a echo")
-                      ).stdout_str() == "echo is a shell builtin\n"
+        assert await (await ws.shell("type -a echo")).stdout_str() == (
+            "echo is a shell builtin\necho is /usr/bin/echo\n")
         assert not (probe.requests
                     if isinstance(probe, ProcessProbe) else probe.lines)
         for name in ("python", "python3", "node", "js"):

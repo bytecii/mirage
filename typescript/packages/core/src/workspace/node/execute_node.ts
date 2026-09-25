@@ -223,8 +223,9 @@ async function recurseReassociated(
   session: SessionState,
   stdin: ByteSource | null,
   callStack: CallStack | null,
+  opts?: ExecuteNodeOpts,
 ): Promise<Result> {
-  if (node !== right) return recurse(node, session, stdin, callStack)
+  if (node !== right) return recurse(node, session, stdin, callStack, opts)
   const [expanded, pipeNode] = await expandRedirects(
     redirects,
     session,
@@ -391,9 +392,10 @@ async function recursePipeStderr(
   session: SessionState,
   stdin: ByteSource | null,
   callStack: CallStack | null,
+  opts?: ExecuteNodeOpts,
 ): Promise<Result> {
   if (!targets.includes(node) || nodeKind(node) !== NodeKind.REDIRECT) {
-    return recurse(node, session, stdin, callStack)
+    return recurse(node, session, stdin, callStack, opts)
   }
   const [command, redirects] = getRedirects(node)
   redirects.push(new Redirect({ fd: 2, target: 1, kind: RedirectKind.STDERR_TO_STDOUT }))
@@ -661,6 +663,7 @@ async function executeNodeBody(
       session,
       stdin,
       callStack,
+      deps.signal,
     )
     if (!negated) return [stdout, io, execNode]
     const flipped = new IOResult({

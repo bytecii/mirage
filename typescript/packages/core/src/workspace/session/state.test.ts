@@ -196,7 +196,7 @@ describe('sessionView', () => {
   it('envSnapshot is a copy', () => {
     const session = new SessionState({ sessionId: 's', cwd: '/', vars: varsFromEnv({ A: '1' }) })
     const snap = envSnapshot(session)
-    expect(snap).toEqual({ ...session.env })
+    expect(snap).toEqual({ A: '1', PWD: '/' })
     expect(snap).not.toBe(session.env)
   })
 
@@ -275,7 +275,7 @@ describe('hidden vars in the session door', () => {
     expect('SLACK_TOKEN' in env).toBe(false)
     expect('AWS_SECRET_KEY' in env).toBe(false)
     expect(env.PUBLIC).toBe('1')
-    expect(Object.keys(env).sort()).toEqual(['PUBLIC', 'PWD'])
+    expect(Object.keys(env).sort()).toEqual(['PATH', 'PUBLIC', 'PWD'])
   })
 })
 

@@ -298,7 +298,7 @@ async def grep(
             io.stderr = b"".join(diagnostics)
         io.exit_code = exit_code_for(matched, bool(warnings), f.quiet)
 
-    return await materialize(run()), io
+    return run(), io
 
 
 async def wrap_bytes(data: bytes) -> AsyncIterator[bytes]:

@@ -36,7 +36,7 @@ class FakeNode:
 async def test_handle_pipe_passes_empty_stdin_when_left_returns_none():
     calls: list[dict] = []
 
-    async def execute_node(nd, _session, stdin, _call_stack=None):
+    async def execute_node(nd, _session, stdin, _call_stack=None, **kwargs):
         stdin_was_none = stdin is None
         materialized = await materialize(stdin)
         calls.append({
@@ -66,7 +66,7 @@ async def test_handle_pipe_passes_empty_stdin_when_left_returns_none():
 async def test_handle_pipe_threads_stdout_to_next_stdin():
     seen: list[bytes] = []
 
-    async def execute_node(nd, _session, stdin, _call_stack=None):
+    async def execute_node(nd, _session, stdin, _call_stack=None, **kwargs):
         seen.append(await materialize(stdin))
         return (f"{nd.text}-out".encode(), IOResult(exit_code=0),
                 ExecutionNode(command=nd.text, exit_code=0))
@@ -88,7 +88,7 @@ async def test_handle_subshell_seeds_last_exit_code_between_children():
     session.last_exit_code = 0
     seen: list[int] = []
 
-    async def execute_node(nd, sess, _stdin, _call_stack=None):
+    async def execute_node(nd, sess, _stdin, _call_stack=None, **kwargs):
         seen.append(sess.last_exit_code)
         code = 7 if nd.text == "a" else 0
         return (b"", IOResult(exit_code=code),
@@ -110,7 +110,7 @@ async def test_each_segment_sees_the_status_the_pipeline_started_with():
     session.last_exit_code = 1
     seen: list[int] = []
 
-    async def execute_node(nd, sess, _stdin, _call_stack=None):
+    async def execute_node(nd, sess, _stdin, _call_stack=None, **kwargs):
         seen.append(sess.last_exit_code)
         # An inner statement of a compound segment lands its own status.
         sess.last_exit_code = 0

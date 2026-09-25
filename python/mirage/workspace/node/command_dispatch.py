@@ -538,7 +538,7 @@ async def _route_argv(
     if name and "/" in name:
         return await handle_exec_path(dispatch, execute_fn, name,
                                       [word_text(a) for a in args], session,
-                                      stdin)
+                                      registry, namespace, stdin)
 
     # ── unsupported bash builtins ──────────────
     # Constructs the parser accepts but the executor cannot honor.

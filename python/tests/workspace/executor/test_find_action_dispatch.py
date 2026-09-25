@@ -222,8 +222,8 @@ def test_delete_removes_emptied_directories() -> None:
         r = await ws.shell("find /tree -delete", session_id="s")
         assert r.exit_code == 0
         assert await r.stderr_str() == ""
-        check = await ws.shell("find / -name tree", session_id="s")
-        assert await check.stdout_str() == ""
+        check = await ws.shell("test -e /tree", session_id="s")
+        assert check.exit_code == 1
         await ws.close()
 
     _run(_go())

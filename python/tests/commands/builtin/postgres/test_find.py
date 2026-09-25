@@ -21,6 +21,7 @@ from mirage.accessor.postgres import PostgresAccessor
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.commands.builtin.postgres import COMMANDS
 from mirage.commands.config import CommandOpts
+from mirage.io.types import materialize
 from mirage.types import PathSpec
 from mirage.vfs.postgres.config import PostgresConfig
 
@@ -73,7 +74,7 @@ async def _run(paths: list[PathSpec], *texts: str, **flags) -> list[str]:
         stdout, _io = await find(
             _accessor(), paths, list(texts),
             CommandOpts(index=RAMIndexCacheStore(), flags={**flags}))
-    data = stdout if isinstance(stdout, bytes) else b""
+        data = await materialize(stdout)
     return data.decode().splitlines()
 
 

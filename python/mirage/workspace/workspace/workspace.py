@@ -50,18 +50,21 @@ from mirage.secrets.registry import source_for
 from mirage.secrets.sources import resolve_sources
 from mirage.secrets.types import ResolvedSource
 from mirage.shell import parse
+from mirage.shell.constants import BIN_PREFIX
 from mirage.shell.job_table import ConsoleFactory, JobTable
 from mirage.types import (CacheFacts, DriftPolicy, FileEvent, FileStat,
                           JsonValue, MountBackend, MountMode, PathSpec,
                           ReadSpec, parse_mount_mode)
 from mirage.utils.ids import new_session_id, new_workspace_id
 from mirage.vfs.base import BaseVFS
+from mirage.vfs.bin import BinViewVFS
 from mirage.vfs.history import HISTORY_PREFIX, HistoryViewVFS
 from mirage.workspace.abort import MirageAbortError, run_cancellable
 from mirage.workspace.cli import CLIInstall
 from mirage.workspace.dispatcher import Dispatcher
 from mirage.workspace.executor.statement import restore_status
 from mirage.workspace.file_prompt import build_file_prompt
+from mirage.workspace.lookup import program_note, programs
 from mirage.workspace.mount import MountEntry, MountRegistry
 from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.mount.namespace.store import NamespaceStore
@@ -289,6 +292,14 @@ class Workspace:
         # cache reads, so its policy can only ever be bounded.
         self._registry.mount(HISTORY_PREFIX, HistoryViewVFS(self.observer),
                              MountMode.READ, ReadSpec())
+        # One file per program the session can run, where PATH finds it:
+        # the same lookup which, type and command -v answer from.
+        self._registry.mount(
+            BIN_PREFIX,
+            BinViewVFS(
+                lambda: programs(self._op_session(), self._registry), lambda
+                name: program_note(name, self._op_session(), self._registry)),
+            MountMode.READ, ReadSpec())
         # The facade delegates every op to the dispatcher, so FUSE and
         # programmatic ws.vfs walk the same pipeline as a shell command
         # and the policy gates fire exactly once, at that door. It runs
@@ -635,21 +646,28 @@ class Workspace:
         explicit root mount is forwarded like any other prefix, and a
         runtime that cannot serve it refuses on its own (pyodide does,
         because Emscripten already owns ``/``). What is withheld is the
-        history view, which is a shell surface rather than a place to
-        put files, and the synthetic root anchor, which nobody mounted:
-        the workspace adds it so arg-less commands and root listing
-        have somewhere to resolve, so announcing it as a mount would
-        make every runtime report a claim on a VFS the embedder
-        never asked for (TS ``sandboxVisibleMounts``).
+        history and program views, which are shell surfaces rather than
+        places to put files (a runtime has its own ``/usr/bin``), and the
+        synthetic root anchor, which nobody mounted: the workspace adds it
+        so arg-less commands and root listing have somewhere to resolve,
+        so announcing it as a mount would make every runtime report a
+        claim on a VFS the embedder never asked for (TS
+        ``sandboxVisibleMounts``).
         """
         prefixes: list[str] = []
         for entry in self._registry.mounts():
-            if entry.prefix in (HISTORY_PREFIX, HISTORY_PREFIX + "/"):
+            if entry.prefix in (HISTORY_PREFIX, HISTORY_PREFIX + "/",
+                                BIN_PREFIX + "/"):
                 continue
             if self._implicit_root and entry.prefix == "/":
                 continue
             prefixes.append(entry.prefix)
         return prefixes
+
+    def _op_session(self) -> SessionState:
+        """The session an op runs under: the bound one, else the default."""
+        return (get_current_session_for(self._session_mgr)
+                or self._session_mgr.get(self._session_mgr.default_id))
 
     def runtime_context(self, session_id: str | None = None) -> RuntimeContext:
         """Capture local workspace doors for an adapter, scoped to one session.
@@ -659,9 +677,8 @@ class Workspace:
         """
         from mirage.workspace.executor.command.run import namespace_view_of
 
-        session = (self._session_mgr.get(session_id) if session_id is not None
-                   else get_current_session_for(self._session_mgr)
-                   or self._session_mgr.get(self._session_mgr.default_id))
+        session = (self._session_mgr.get(session_id)
+                   if session_id is not None else self._op_session())
         token = set_current_session(session, self._session_mgr)
         try:
             return capture_binding(

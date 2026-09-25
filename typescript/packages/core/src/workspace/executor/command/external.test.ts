@@ -187,13 +187,36 @@ describe('external program capture', () => {
   })
 
   it('names the external route and keeps shell functions in Mirage', async () => {
-    const probe = new ProcessProbe()
+    const probe = new ProcessProbe({ captures: ['named-tool', EXTERNAL_COMMANDS] })
     const ws = await workspace(probe)
     try {
-      expect(DEC.decode((await ws.shell('type -t native-tool')).stdout)).toBe('external\n')
+      expect(DEC.decode((await ws.shell('type -t named-tool')).stdout)).toBe('file\n')
       await ws.shell('native-tool() { echo function; }')
       expect(DEC.decode((await ws.shell('native-tool')).stdout)).toBe('function\n')
       expect(probe.requests).toHaveLength(0)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('runs a name only the fallback takes, which is not found', async () => {
+    const probe = new ProcessProbe()
+    const ws = await workspace(probe)
+    try {
+      for (const line of [
+        'which native-tool',
+        'command -v native-tool',
+        'type -t native-tool',
+        'cat /usr/bin/native-tool',
+      ]) {
+        const result = await ws.shell(line)
+        expect(result.exitCode, line).toBe(1)
+        expect(DEC.decode(result.stdout), line).toBe('')
+      }
+      const typed = await ws.shell('type native-tool')
+      expect(DEC.decode(typed.stderr)).toBe('type: native-tool: not found\n')
+      expect((await ws.shell('native-tool')).exitCode).toBe(0)
+      expect(probe.requests[0]?.argv).toEqual(['native-tool'])
     } finally {
       await ws.close()
     }
@@ -502,7 +525,9 @@ describe.each(['process', 'shell'] as const)('native %s builtin precedence', (ki
       expect((await ws.shell('export NATIVE_TEST=kept')).exitCode).toBe(0)
       expect(DEC.decode((await ws.shell('printf "%s\n" "$NATIVE_TEST"')).stdout)).toBe('kept\n')
       expect(DEC.decode((await ws.shell('echo shell')).stdout)).toBe('shell\n')
-      expect(DEC.decode((await ws.shell('type -a echo')).stdout)).toBe('echo is a shell builtin\n')
+      expect(DEC.decode((await ws.shell('type -a echo')).stdout)).toBe(
+        'echo is a shell builtin\necho is /usr/bin/echo\n',
+      )
       expect(probe instanceof ProcessProbe ? probe.requests : probe.lines).toHaveLength(0)
       for (const name of ['python', 'python3', 'node', 'js']) {
         expect((await ws.shell(name + ' --version')).exitCode).toBe(willing ? 0 : 126)

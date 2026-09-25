@@ -16,6 +16,10 @@ import { describe, expect, it } from 'vitest'
 import { CLISpec } from '../../commands/cli/types.ts'
 import { IOResult } from '../../io/types.ts'
 import { OpsRegistry } from '../../ops/registry.ts'
+import { Runtime } from '../../runtime/base.ts'
+import { EXTERNAL_COMMANDS } from '../../runtime/constants.ts'
+import { PROCESS_EXECUTOR, type ProcessExecutor } from '../../runtime/mixin.ts'
+import type { RunResult } from '../../runtime/types.ts'
 import { RAMVFS } from '../../vfs/ram/ram.ts'
 import { MountMode } from '../../types.ts'
 import {
@@ -26,11 +30,25 @@ import {
   readsSubtrees,
   lookup,
   lookupAll,
+  program,
+  programNote,
+  programs,
   verbVisible,
   walksMounts,
 } from './index.ts'
 import { SessionState } from '../session/session.ts'
 import { Workspace } from '../workspace/workspace.ts'
+
+class Sandbox extends Runtime implements ProcessExecutor {
+  readonly [PROCESS_EXECUTOR] = true as const
+  readonly name = 'sandbox'
+  constructor() {
+    super({}, ['gcc', EXTERNAL_COMMANDS])
+  }
+  runProcess(): Promise<RunResult> {
+    return Promise.resolve({ stdout: new Uint8Array(), stderr: null, exitCode: 0 })
+  }
+}
 
 function fixture(): { session: SessionState; ws: Workspace } {
   const ram = new RAMVFS()
@@ -260,5 +278,93 @@ describe('allow lists', () => {
     session.commands = null
     expect(lookupAll('rm', session, reg)).toEqual([Consumer.FUNCTION, Consumer.MOUNT])
     expect(lookup('sleep', session, reg)).toBe(Consumer.SESSION)
+  })
+})
+
+describe('program', () => {
+  it('is what a real system ships as a file', () => {
+    const { session, ws } = fixture()
+    expect(program('cat', session, ws.registry)).toBe(Consumer.MOUNT)
+    expect(program('readlink', session, ws.registry)).toBe(Consumer.NAMESPACE)
+    // A builtin a real system also finds on disk keeps its file.
+    expect(program('echo', session, ws.registry)).toBe(Consumer.SESSION)
+    expect(program('xargs', session, ws.registry)).toBe(Consumer.SESSION)
+    // The shell's own words, reserved words and unknowns have none.
+    for (const name of ['cd', 'export', 'if', 'nope-xyz', '/bin/ls']) {
+      expect(program(name, session, ws.registry)).toBeNull()
+    }
+  })
+
+  it('keeps the file under a shadowing function', () => {
+    const { session, ws } = fixture()
+    session.functions.cat = 'cat() { :; }'
+    expect(lookup('cat', session, ws.registry)).toBe(Consumer.FUNCTION)
+    expect(program('cat', session, ws.registry)).toBe(Consumer.MOUNT)
+    session.functions.myfn = 'myfn() { :; }'
+    expect(program('myfn', session, ws.registry)).toBeNull()
+  })
+
+  it('programs lists every program the session can run, sorted', () => {
+    const { session, ws } = fixture()
+    ws.registerCli('prog', cliTree())
+    const names = programs(session, ws.registry)
+    expect(names).toEqual([...names].sort())
+    for (const name of ['cat', 'echo', 'prog', 'readlink', 'xargs']) expect(names).toContain(name)
+    for (const name of ['cd', 'export', '[[']) expect(names).not.toContain(name)
+  })
+
+  it('programs follows the allow list', () => {
+    const { ws } = fixture()
+    const narrow = new SessionState({
+      sessionId: 'n',
+      commands: { allow: ['cat'], ask: [], deny: [] },
+    })
+    expect(programs(narrow, ws.registry)).toEqual(['cat'])
+  })
+
+  it('has no file for a shell word a mount also registers', () => {
+    const { session, ws } = fixture()
+    expect(lookupAll('history', session, ws.registry)).toEqual([Consumer.SESSION, Consumer.MOUNT])
+    expect(program('history', session, ws.registry)).toBeNull()
+    expect(programs(session, ws.registry)).not.toContain('history')
+  })
+
+  it('is no file for a name only the fallback takes', () => {
+    const session = new SessionState({ sessionId: 't' })
+    const ws = new Workspace({ '/': new RAMVFS() }, { runtimes: [new Sandbox()] })
+    expect(lookup('native-tool', session, ws.registry)).toBe(Consumer.EXTERNAL)
+    expect(program('native-tool', session, ws.registry)).toBeNull()
+    expect(program('gcc', session, ws.registry)).toBe(Consumer.EXTERNAL)
+    expect(programs(session, ws.registry)).toContain('gcc')
+  })
+})
+
+describe('programNote', () => {
+  it('says what runs the name', () => {
+    const { session, ws } = fixture()
+    ws.registerCli('prog', cliTree())
+    expect(programNote('cat', session, ws.registry)).toBe(
+      'cat is built into mirage. Help: cat --help',
+    )
+    expect(programNote('prog', session, ws.registry)).toBe(
+      'prog is a CLI registered with this workspace. Help: prog --help',
+    )
+    expect(programNote('python3', session, ws.registry)).toBe(
+      "python3 runs on the workspace's pyodide runtime.",
+    )
+    // A builtin's --help varies, so its line names none.
+    for (const name of ['echo', 'ln', 'xargs']) {
+      expect(programNote(name, session, ws.registry)).toBe(`${name} is built into mirage.`)
+    }
+    expect(programNote('cd', session, ws.registry)).toBeNull()
+  })
+
+  it('names the runtime a capture runs on', () => {
+    const session = new SessionState({ sessionId: 't' })
+    const ws = new Workspace({ '/': new RAMVFS() }, { runtimes: [new Sandbox()] })
+    expect(programNote('gcc', session, ws.registry)).toBe(
+      "gcc runs on the workspace's sandbox runtime.",
+    )
+    expect(programNote('native-tool', session, ws.registry)).toBeNull()
   })
 })

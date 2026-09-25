@@ -140,8 +140,8 @@ describe('executeNode dispatcher', () => {
     }
     const session = new SessionState({ sessionId: 't' })
     await executeNode(buildDeps(reg), node, session)
-    // Only the seeded $PWD, so the assignment really did nothing.
-    expect(Object.keys(session.env)).toEqual(['PWD'])
+    // Only the seeded $PWD and $PATH, so the assignment really did nothing.
+    expect(Object.keys(session.env)).toEqual(['PWD', 'PATH'])
   })
 
   it('NEGATED_COMMAND flips a zero exit into one', async () => {

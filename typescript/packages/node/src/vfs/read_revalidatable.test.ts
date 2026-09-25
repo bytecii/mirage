@@ -12,7 +12,29 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { describe, expect, it } from 'vitest'
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { Readable } from 'node:stream'
+import { fileURLToPath } from 'node:url'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as ContextModule from '@struktoai/mirage-core/observe/context'
+import type { OpRecord } from '@struktoai/mirage-core/observe/record'
+import type * as ClientModule from '../core/gridfs/client.ts'
+import type { Accessor } from '@struktoai/mirage-core/accessor/base'
+import type { S3Accessor } from '@struktoai/mirage-core/accessor/s3'
+import { RAMIndexCacheStore } from '@struktoai/mirage-core/cache/index/ram'
+import { S3_IO } from '@struktoai/mirage-core/commands/builtin/s3/io'
+import { DRIVER as S3_DRIVER } from '@struktoai/mirage-core/core/s3/driver'
+import { recordingActive } from '@struktoai/mirage-core/observe/context'
+import { type FileStat, MountMode, PathSpec } from '@struktoai/mirage-core/types'
+import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
+import { Mount } from '@struktoai/mirage-core/workspace/mount/spec'
+import type { GridFSAccessor } from '../accessor/gridfs.ts'
+import { GRIDFS_IO } from '../commands/builtin/gridfs/io.ts'
+import { Workspace } from '../workspace.ts'
+import { buildVfs, knownVfsNames } from './registry.ts'
+import { installS3Mock, type S3Mock } from './s3/mock.ts'
 import { AliyunVFS } from './aliyun/aliyun.ts'
 import { BackblazeVFS } from './backblaze/backblaze.ts'
 import { CephVFS } from './ceph/ceph.ts'
@@ -34,6 +56,107 @@ import { SSHVFS } from './ssh/ssh.ts'
 import { readRevalidatable, type VFS } from '@struktoai/mirage-core/vfs/base'
 import { checkReadCapability } from '@struktoai/mirage-core/workspace/mount/read_policy'
 import { DEFAULT_READ_TTL, ReadPolicy } from '@struktoai/mirage-core/types'
+
+interface GridFSDoc {
+  _id: { toString(): string }
+  filename: string
+  length: number
+  uploadDate: Date
+  data: Uint8Array
+}
+
+// Shared with the two module mocks below; vitest hoists all three above
+// the imports.
+const H = vi.hoisted(() => ({
+  unrecorded: false,
+  slots: [] as [string, string][],
+  captured: [] as OpRecord[],
+  gridfs: new Map<string, GridFSDoc>(),
+  opened: 0,
+  reach: [] as string[],
+}))
+
+// One seam for both contracts. A spies on which read slot recorded, and
+// otherwise delegates; B turns `unrecorded` on and captures what a read
+// would have recorded while no recorder is bound.
+vi.mock('@struktoai/mirage-core/observe/context', async (importOriginal) => {
+  const actual = await importOriginal<typeof ContextModule>()
+  const { OpRecord: Record } = await import('@struktoai/mirage-core/observe/record')
+  const capture = (
+    op: string,
+    path: string,
+    source: string,
+    bytes: number,
+    options: ContextModule.RecordOptions,
+  ): OpRecord =>
+    new Record({
+      op,
+      path,
+      source,
+      bytes,
+      timestamp: 0,
+      durationMs: 0,
+      fingerprint: options.fingerprint ?? null,
+      revision: options.revision ?? null,
+      mountId: null,
+    })
+  return {
+    ...actual,
+    record: (
+      op: string,
+      path: string,
+      source: string,
+      nbytes: number,
+      timer: ContextModule.OpTimer,
+      options: ContextModule.RecordOptions = {},
+    ): void => {
+      if (op === 'read') H.slots.push(['bytes', path])
+      if (!H.unrecorded) {
+        actual.record(op, path, source, nbytes, timer, options)
+        return
+      }
+      H.captured.push(capture(op, path, source, nbytes, options))
+    },
+    recordStream: (
+      op: string,
+      path: string,
+      source: string,
+      options: ContextModule.RecordOptions = {},
+    ): OpRecord | null => {
+      if (op === 'read') H.slots.push(['stream', path])
+      if (!H.unrecorded) return actual.recordStream(op, path, source, options)
+      const rec = capture(op, path, source, 0, options)
+      H.captured.push(rec)
+      return rec
+    },
+  }
+})
+
+vi.mock('../core/gridfs/client.ts', async () => {
+  const actual = await vi.importActual<typeof ClientModule>('../core/gridfs/client.ts')
+  // A listing or a collection query means the path under test reached for
+  // something no read or stat should need; refuse it loudly. The mock is
+  // file-wide, so a gridfs listing anywhere in this file throws.
+  const refuse = (name: string) => (): never => {
+    H.reach.push(name)
+    throw new Error(`stray reach: ${name}`)
+  }
+  return {
+    ...actual,
+    latestFile: (_accessor: unknown, key: string) => Promise.resolve(H.gridfs.get(key) ?? null),
+    bucket: () =>
+      Promise.resolve({
+        openDownloadStream: (id: { toString(): string }) => {
+          H.opened += 1
+          const doc = [...H.gridfs.values()].find((d) => d._id.toString() === id.toString())
+          if (doc === undefined) throw new Error(`no file ${id.toString()}`)
+          return Readable.from(chunked(doc.data))
+        },
+      }),
+    iterLatest: refuse('iterLatest'),
+    filesColl: refuse('filesColl'),
+  }
+})
 
 // Python declares READ_REVALIDATABLE as a class attribute, so its twin asserts
 // it straight off each alias class. A TypeScript class field is per-instance,
@@ -123,4 +246,398 @@ describe('a backend that caches but cannot revalidate refuses fresh', () => {
       }).toThrow(/comparable content token/)
     })
   }
+})
+
+// The read-token contract (#1165). The flag is a claim that stat and an
+// ordinary read stamp the same kind of content token. The blocks above
+// check the flag; these check the claim, for every backend declaring it.
+// Twin of python/tests/vfs/test_read_revalidatable.py, with the same row ids.
+
+const S3_FAMILY = [
+  's3',
+  'aliyun',
+  'backblaze',
+  'ceph',
+  'digitalocean',
+  'gcs',
+  'minio',
+  'oci',
+  'qingstor',
+  'r2',
+  'scaleway',
+  'seaweedfs',
+  'supabase',
+  'tencent',
+  'wasabi',
+]
+
+const HARNESSES: Record<string, 's3' | 'gridfs'> = {
+  ...Object.fromEntries(S3_FAMILY.map((name) => [name, 's3' as const])),
+  gridfs: 'gridfs',
+}
+
+// One document per family, identical in the python twin. oci is the one
+// alias with a required field beyond these; every other one-of (r2's
+// account_id, supabase's project_ref) is satisfied by the endpoint.
+const S3_CONFIG = { bucket: 'b', region: 'us-east-1', endpoint_url: 'http://127.0.0.1:9000' }
+const S3_EXTRA: Record<string, Record<string, string>> = { oci: { namespace: 'ns' } }
+const GRIDFS_CONFIG = { uri: 'mongodb://127.0.0.1:27017', database: 'd' }
+
+const PREFIX = 'pfx/'
+
+// A non-empty suffix makes the mock's ETag differ from md5(content), so a
+// token the backend returned is distinguishable from a fabricated md5.
+const SUFFIX = '-2'
+
+type Shape = 'root' | 'listed' | 'nested' | 'prefixed'
+
+const KEYS: Record<Shape, string> = {
+  root: 'a.txt',
+  listed: 'a.txt',
+  nested: 'm/a.txt',
+  prefixed: 'a.txt',
+}
+
+const ENC = new TextEncoder()
+const SEED = ENC.encode('name,age\nalice,30\n')
+const CHANGED = ENC.encode('name,age\nalice,31\n')
+const DECOY = ENC.encode('decoy at the unprefixed key\n')
+// Several download chunks, so the background drain has bytes left to pull
+// after `head -c 1` stops reading.
+const BIG = ENC.encode(('x'.repeat(1023) + '\n').repeat(300))
+
+type Row = 'bytes' | 'stream' | 'drain'
+
+const COMMANDS: Record<Row, (v: string) => string> = {
+  bytes: (v) => `cp ${v} /r/a.txt`,
+  stream: (v) => `cat ${v}`,
+  drain: (v) => `cat ${v} | head -c 1`,
+}
+const SLOTS: Record<Row, string> = { bytes: 'bytes', stream: 'stream', drain: 'stream' }
+
+const SPEC_VFS = resolve(
+  fileURLToPath(import.meta.url),
+  '../../../../../../spec/typescript/node/vfs.json',
+)
+
+interface Fake {
+  vfs: VFS
+  accessor: Accessor
+  key: string
+  fetches: () => number
+  rewrite: (data: Uint8Array) => void
+  readBytes: (path: PathSpec) => Promise<Uint8Array>
+  readStream: (path: PathSpec) => AsyncIterable<Uint8Array>
+  stat: (path: PathSpec) => Promise<FileStat>
+}
+
+function chunked(data: Uint8Array): Uint8Array[] {
+  const out: Uint8Array[] = []
+  for (let i = 0; i < data.byteLength; i += 16384) out.push(data.slice(i, i + 16384))
+  return out
+}
+
+function gridfsDoc(key: string, data: Uint8Array, oid: string, year: number): GridFSDoc {
+  return {
+    _id: { toString: () => oid },
+    filename: key,
+    length: data.byteLength,
+    uploadDate: new Date(Date.UTC(year, 0, 2)),
+    data,
+  }
+}
+
+function md5Hex(data: Uint8Array): string {
+  return createHash('md5').update(data).digest('hex')
+}
+
+let s3: S3Mock
+
+async function makeFake(name: string, shape: Shape, data: Uint8Array): Promise<Fake> {
+  const key = KEYS[shape]
+  const prefix = shape === 'prefixed' ? PREFIX : null
+  const stored = (prefix ?? '') + key
+  if (HARNESSES[name] === 'gridfs') {
+    // _id is neither the md5 nor the uploadDate, so a stat or a read that
+    // moved to either kind of token no longer matches the other side.
+    H.gridfs.set(stored, gridfsDoc(stored, data, '0123456789ab0123456789ab', 2020))
+    if (prefix !== null) H.gridfs.set(key, gridfsDoc(key, DECOY, 'ffffffffffffffffffffffff', 2021))
+    const vfs = await buildVfs('gridfs', {
+      ...GRIDFS_CONFIG,
+      ...(prefix === null ? {} : { key_prefix: prefix }),
+    })
+    const accessor = vfs.accessor as GridFSAccessor
+    expect(readRevalidatable(vfs)).toBe(true)
+    expect(accessor.config.keyPrefix ?? null).toBe(prefix)
+    const before = H.opened
+    return {
+      vfs,
+      accessor,
+      key,
+      fetches: () => H.opened - before,
+      rewrite: (next) => {
+        H.gridfs.set(stored, gridfsDoc(stored, next, 'aaaaaaaaaaaaaaaaaaaaaaaa', 2022))
+      },
+      readBytes: (p) => GRIDFS_IO.readBytes(accessor, p),
+      readStream: (p) => GRIDFS_IO.readStream(accessor, p),
+      stat: (p) => GRIDFS_IO.stat(accessor, p),
+    }
+  }
+  s3.store.set('b', stored, data)
+  if (prefix !== null) s3.store.set('b', key, DECOY)
+  const vfs = await buildVfs(name, {
+    ...S3_CONFIG,
+    ...(S3_EXTRA[name] ?? {}),
+    ...(prefix === null ? {} : { key_prefix: prefix }),
+  })
+  const accessor = vfs.accessor as S3Accessor
+  expect(readRevalidatable(vfs)).toBe(true)
+  expect(accessor.config.keyPrefix ?? null).toBe(prefix)
+  const before = s3.calls.get('GetObject') ?? 0
+  return {
+    vfs,
+    accessor,
+    key,
+    fetches: () => (s3.calls.get('GetObject') ?? 0) - before,
+    rewrite: (next) => {
+      s3.store.set('b', stored, next)
+    },
+    readBytes: (p) => S3_IO.readBytes(accessor, p),
+    readStream: (p) => S3_IO.readStream(accessor, p),
+    stat: (p) => S3_IO.stat(accessor, p),
+  }
+}
+
+interface Case {
+  name: string
+  shape: Shape
+  row: Row
+}
+
+function cases(rows: readonly Row[]): Case[] {
+  const out: Case[] = []
+  for (const [name, family] of Object.entries(HARNESSES)) {
+    // The aliases share every read and stat path with s3, so the key
+    // shapes run once per family.
+    const shapes: Shape[] = name === family ? ['root', 'nested', 'prefixed'] : ['root']
+    for (const shape of shapes) for (const row of rows) out.push({ name, shape, row })
+  }
+  return out
+}
+
+const A_CASES = [
+  ...cases(['bytes', 'stream', 'drain']),
+  { name: 's3', shape: 'listed' as const, row: 'stream' as const },
+]
+const B_CASES = cases(['bytes', 'stream'])
+
+function specFor(virtual: string, key: string): PathSpec {
+  return new PathSpec({
+    virtual,
+    directory: virtual.slice(0, virtual.lastIndexOf('/') + 1),
+    vfsPath: key,
+  })
+}
+
+function freshWorkspace(vfs: VFS): Workspace {
+  return new Workspace({
+    '/m': new Mount(vfs, {
+      mode: MountMode.WRITE,
+      read: { policy: ReadPolicy.FRESH, ttl: DEFAULT_READ_TTL },
+    }),
+    '/r': [new RAMVFS(), MountMode.WRITE],
+  })
+}
+
+async function line(ws: Workspace, command: string): Promise<Uint8Array> {
+  const result = await ws.shell(command)
+  expect([result.exitCode, new TextDecoder().decode(result.stderr)], command).toEqual([0, ''])
+  return result.stdout
+}
+
+// Reconcile stats through a fresh index (workspace/reconcile.ts), so a
+// listing's index row, which carries no token, cannot answer for it.
+async function reconcileStat(ws: Workspace, fake: Fake, virtual: string): Promise<FileStat> {
+  const stat = await ws.opsRegistry.call(
+    'stat',
+    fake.vfs,
+    fake.accessor,
+    specFor(virtual, fake.key),
+    [],
+    { index: new RAMIndexCacheStore() },
+  )
+  return stat as FileStat
+}
+
+function readsOnMount(): [string, string][] {
+  return H.slots.filter(([, path]) => path.startsWith('/m/'))
+}
+
+describe('the read-token contract', () => {
+  beforeAll(() => {
+    s3 = installS3Mock(undefined, { etagSuffix: SUFFIX })
+  })
+
+  afterAll(() => {
+    s3.restore()
+  })
+
+  beforeEach(() => {
+    for (const b of s3.store.allBuckets()) s3.store.objects(b).clear()
+    H.unrecorded = false
+    H.slots.length = 0
+    H.captured.length = 0
+    H.gridfs.clear()
+    H.reach.length = 0
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  /**
+   * Every readRevalidatable backend runs the read-token contract.
+   *
+   * The flag lets a mount declare `read: fresh`, which is a claim that stat
+   * and an ordinary read stamp the same kind of content token. For a long
+   * time nothing checked the read half: a backend could set the flag, stamp
+   * nothing on reads, and the suite stayed green while every fresh read
+   * refetched (#1165). The roster is read from the committed spec, so a new
+   * declarer fails this test until it has a harness, and a harness
+   * outliving its flag fails it too; each harness also asserts the flag on
+   * the instance it builds.
+   */
+  it('every declaring backend has a harness', () => {
+    const manifest = JSON.parse(readFileSync(SPEC_VFS, 'utf8')) as {
+      capabilities: Record<string, { read_revalidatable?: boolean }>
+    }
+    const known = new Set(knownVfsNames())
+    const declared = Object.entries(manifest.capabilities)
+      .filter(([name, caps]) => caps.read_revalidatable === true && known.has(name))
+      .map(([name]) => name)
+    expect(declared.length).toBeGreaterThan(0)
+    expect(Object.keys(HARNESSES).sort()).toEqual(declared.sort())
+  })
+
+  for (const { name, shape, row } of A_CASES) {
+    it(`a read leaves an entry reconcile calls fresh: ${name}-${shape}-${row}`, async () => {
+      const data = row === 'drain' ? BIG : SEED
+      const fake = await makeFake(name, shape, data)
+      const virtual = `/m/${fake.key}`
+      const command = COMMANDS[row](virtual)
+      const ws = freshWorkspace(fake.vfs)
+      const add = vi.spyOn(ws.cache, 'add')
+      try {
+        if (shape === 'listed') await line(ws, 'ls /m')
+        expect(await ws.cache.exists(virtual)).toBe(false)
+        let first = await line(ws, command)
+        await Promise.all([...(ws.cache.drainTasks?.values() ?? [])])
+        // Only the background drain fills through `add`; the synchronous
+        // fills use `set`.
+        expect(add).toHaveBeenCalledTimes(row === 'drain' ? 1 : 0)
+        expect(readsOnMount()).toEqual([[SLOTS[row], virtual]])
+        expect(fake.fetches()).toBe(1)
+        if (row === 'bytes') first = await line(ws, 'cat /r/a.txt')
+        expect(first).toEqual(row === 'drain' ? data.slice(0, 1) : data)
+
+        const stat = await reconcileStat(ws, fake, virtual)
+        expect(stat.fingerprint).not.toBeNull()
+        expect(await ws.cache.isFresh(virtual, stat.fingerprint ?? '')).toBe(true)
+
+        // The drain row's second run reads the whole entry back, so a drain
+        // that cached a truncated buffer cannot pass.
+        let second = await line(ws, row === 'drain' ? `cat ${virtual}` : command)
+        if (row === 'bytes') second = await line(ws, 'cat /r/a.txt')
+        // Reconcile answered FRESH: the warm read made no content fetch.
+        expect(fake.fetches()).toBe(1)
+        expect(second).toEqual(data)
+        expect(H.reach).toEqual([])
+      } finally {
+        await ws.close()
+      }
+    })
+  }
+
+  for (const { name, shape, row } of B_CASES) {
+    it(`an unrecorded read stamps the stat token: ${name}-${shape}-${row}`, async () => {
+      const fake = await makeFake(name, shape, SEED)
+      const virtual = `/m/${fake.key}`
+      const spec = specFor(virtual, fake.key)
+      expect(recordingActive()).toBe(false)
+      H.unrecorded = true
+      let data: Uint8Array
+      if (row === 'bytes') {
+        data = await fake.readBytes(spec)
+      } else {
+        const parts: Uint8Array[] = []
+        for await (const chunk of fake.readStream(spec)) parts.push(chunk)
+        data = Buffer.concat(parts)
+      }
+      const stat = await fake.stat(spec)
+      expect(new Uint8Array(data)).toEqual(SEED)
+      expect(H.captured.map((r) => r.path)).toEqual([virtual])
+      // The real recordStream returns null with no recorder bound, so no
+      // stream read can stamp a token outside a capture at all. This row can
+      // only show the stamp does not depend on the recorder check itself.
+      expect(H.captured[0]?.fingerprint).not.toBeNull()
+      expect(stat.fingerprint).not.toBeNull()
+      expect(H.captured[0]?.fingerprint).toBe(stat.fingerprint)
+    })
+  }
+
+  for (const name of [...new Set(Object.values(HARNESSES))].sort()) {
+    it(`a changed object is refetched: ${name}-changed-stream`, async () => {
+      // The rows above prove stat and read agree; this proves what they agree
+      // on is the content. A backend stamping a constant, or the key, on both
+      // sides passes every other row and serves stale bytes here.
+      const fake = await makeFake(name, 'root', SEED)
+      const virtual = `/m/${fake.key}`
+      const ws = freshWorkspace(fake.vfs)
+      try {
+        await line(ws, `cat ${virtual}`)
+        fake.rewrite(CHANGED)
+        const stat = await reconcileStat(ws, fake, virtual)
+        expect(stat.fingerprint).not.toBeNull()
+        expect(await ws.cache.isFresh(virtual, stat.fingerprint ?? '')).toBe(false)
+        const before = fake.fetches()
+        expect(await line(ws, `cat ${virtual}`)).toEqual(CHANGED)
+        expect(fake.fetches() - before).toBe(1)
+        expect(H.reach).toEqual([])
+      } finally {
+        await ws.close()
+      }
+    })
+  }
+
+  it('the contract goes red on a backend with two token kinds', async () => {
+    // The python twin forces gdrive to claim the flag. Its fake cannot back
+    // a node Workspace (captureFileMetadata calls an unmocked googleGet), so
+    // this stats a timestamp while the read returns the ETag, which is the
+    // same mismatch. The contract must fail it, or it could not tell a
+    // backend that keeps the promise from one that only makes it.
+    const fake = await makeFake('s3', 'root', SEED)
+    const head = S3_DRIVER.head
+    vi.spyOn(S3_DRIVER, 'head').mockImplementation(async (conn, key) => {
+      const meta = await head(conn, key)
+      return meta === null ? null : { ...meta, fingerprint: '2026-04-16T00:00:00Z' }
+    })
+    const virtual = '/m/a.txt'
+    const ws = freshWorkspace(fake.vfs)
+    try {
+      await line(ws, `cat ${virtual}`)
+      // The entry does hold the read's token, so a helper that compared the
+      // entry with itself would call it fresh.
+      expect(await ws.cache.isFresh(virtual, md5Hex(SEED) + SUFFIX)).toBe(true)
+      const stat = await reconcileStat(ws, fake, virtual)
+      // The stat token exists and is another kind; a missing one would also
+      // read as not fresh without showing a mismatch go red.
+      expect(stat.fingerprint).not.toBeNull()
+      expect(stat.fingerprint).not.toBe(md5Hex(SEED) + SUFFIX)
+      expect(await ws.cache.isFresh(virtual, stat.fingerprint ?? '')).toBe(false)
+      await line(ws, `cat ${virtual}`)
+      expect(fake.fetches()).toBeGreaterThan(1)
+    } finally {
+      await ws.close()
+    }
+  })
 })

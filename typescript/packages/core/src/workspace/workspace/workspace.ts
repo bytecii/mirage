@@ -24,6 +24,9 @@ import type { OpRecord } from '../../observe/record.ts'
 import { type OpKwargs, OpsRegistry } from '../../ops/registry.ts'
 import type { VFS } from '../../vfs/base.ts'
 import { HISTORY_PREFIX, HistoryViewVFS } from '../../vfs/history/history.ts'
+import { BIN_PREFIX } from '../../shell/constants.ts'
+import { BinViewVFS } from '../../vfs/bin/bin.ts'
+import { programNote, programs } from '../lookup/lookup.ts'
 import { vfsStateRequiresOverride } from '../../vfs/secrets.ts'
 import { GENERAL_COMMANDS } from '../../commands/builtin/general/index.ts'
 import { cliSpecFor } from '../../commands/cli/specs.ts'
@@ -349,6 +352,17 @@ export class Workspace {
       MountMode.READ,
       DEFAULT_READ_SPEC,
     )
+    // One file per program the session can run, where PATH finds it: the
+    // same lookup which, type and command -v answer from.
+    this.registry.mount(
+      BIN_PREFIX,
+      new BinViewVFS(
+        () => programs(this.opSession(), this.registry),
+        (name) => programNote(name, this.opSession(), this.registry),
+      ),
+      MountMode.READ,
+      DEFAULT_READ_SPEC,
+    )
     this.cache = buildFileCache(options.cache, options.cacheLimit)
     this.registry.attachFileCache(this.cache)
     // Only an explicit agentId claims the workspace user; a bare launch
@@ -473,17 +487,18 @@ export class Workspace {
    * Two are withheld, and neither is withheld for being `/`. An explicit
    * root mount is forwarded like any other prefix, and a runtime that
    * cannot serve it refuses on its own (Pyodide does, because Emscripten
-   * already owns `/`). What is withheld is the history view, which is a
-   * shell surface rather than a place to put files, and the synthetic
-   * root anchor, which nobody mounted: the workspace adds it so arg-less
-   * commands and root listing have somewhere to resolve, so announcing
-   * it as a mount would make every runtime report a claim on a VFS
-   * the embedder never asked for.
+   * already owns `/`). What is withheld is the history and program views,
+   * which are shell surfaces rather than places to put files (a runtime
+   * has its own `/usr/bin`), and the synthetic root anchor, which nobody
+   * mounted: the workspace adds it so arg-less commands and root listing
+   * have somewhere to resolve, so announcing it as a mount would make
+   * every runtime report a claim on a VFS the embedder never asked for.
    */
   private sandboxVisibleMounts(): string[] {
     const prefixes: string[] = []
     for (const m of this.registry.allMounts()) {
       if (m.prefix === HISTORY_PREFIX || m.prefix === HISTORY_PREFIX + '/') continue
+      if (m.prefix === BIN_PREFIX + '/') continue
       if (this.syntheticRootAnchor && m.prefix === '/') continue
       prefixes.push(m.prefix)
     }
@@ -535,13 +550,17 @@ export class Workspace {
     return this.observer.commandEvents()
   }
 
+  /** The session an op runs under: the bound one, else the default. */
+  private opSession(): SessionState {
+    return (
+      getCurrentSessionFor(this.sessionManager) ??
+      this.sessionManager.get(this.sessionManager.defaultId)
+    )
+  }
+
   /** Capture local adapter doors under this workspace's active or explicitly named session. */
   runtimeContext(sessionId?: string): RuntimeContext {
-    const session =
-      sessionId === undefined
-        ? (getCurrentSessionFor(this.sessionManager) ??
-          this.sessionManager.get(this.sessionManager.defaultId))
-        : this.sessionManager.get(sessionId)
+    const session = sessionId === undefined ? this.opSession() : this.sessionManager.get(sessionId)
     const scope = new ContextScope([
       ...captureSessionContext(session, this.sessionManager),
       ...captureRecordingContext(),

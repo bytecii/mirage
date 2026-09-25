@@ -13,7 +13,7 @@
           "op": "readdir",
           "path": "/",
           "expect": {
-            "value": ["/.bash_history", "/dev"]
+            "value": ["/.bash_history", "/dev", "/usr"]
           }
         },
         {
@@ -32,7 +32,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "dev\n",
+              "stdout": "dev\nusr\n",
               "stderr": ""
             }
           }
@@ -67,7 +67,7 @@
           "op": "readdir",
           "path": "/",
           "expect": {
-            "value": ["/.bash_history", "/dev"]
+            "value": ["/.bash_history", "/dev", "/usr"]
           }
         },
         {
@@ -86,7 +86,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "dev\n",
+              "stdout": "dev\nusr\n",
               "stderr": ""
             }
           }
@@ -132,7 +132,7 @@
           "op": "readdir",
           "path": "/",
           "expect": {
-            "value": ["/.bash_history", "/dev"]
+            "value": ["/.bash_history", "/dev", "/usr"]
           }
         },
         {
@@ -151,7 +151,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "dev\n",
+              "stdout": "dev\nusr\n",
               "stderr": ""
             }
           }
@@ -209,7 +209,7 @@
           "op": "readdir",
           "path": "/",
           "expect": {
-            "value": ["/.bash_history", "/dev"]
+            "value": ["/.bash_history", "/dev", "/usr"]
           }
         },
         {
@@ -228,7 +228,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "dev\n",
+              "stdout": "dev\nusr\n",
               "stderr": ""
             }
           }
@@ -264,7 +264,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "dev\n",
+              "stdout": "dev\nusr\n",
               "stderr": ""
             }
           }
@@ -279,7 +279,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "dev\n",
+              "stdout": "dev\nusr\n",
               "stderr": ""
             }
           }
@@ -292,7 +292,7 @@
           "op": "readdir",
           "path": "/",
           "expect": {
-            "value": ["/.bash_history", "/dev"]
+            "value": ["/.bash_history", "/dev", "/usr"]
           }
         },
         {
@@ -311,7 +311,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "dev\n",
+              "stdout": "dev\nusr\n",
               "stderr": ""
             }
           }
@@ -332,7 +332,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "dev\n",
+              "stdout": "dev\nusr\n",
               "stderr": ""
             }
           }
@@ -345,7 +345,7 @@
           "op": "readdir",
           "path": "/",
           "expect": {
-            "value": ["/.bash_history", "/dev"]
+            "value": ["/.bash_history", "/dev", "/usr"]
           }
         },
         {
@@ -364,7 +364,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "dev\n",
+              "stdout": "dev\nusr\n",
               "stderr": ""
             }
           }
@@ -424,7 +424,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "dev\nnote.txt\n",
+              "stdout": "dev\nnote.txt\nusr\n",
               "stderr": ""
             }
           }
@@ -538,7 +538,7 @@
           "op": "readdir",
           "path": "/",
           "expect": {
-            "value": ["/.bash_history", "/dev"]
+            "value": ["/.bash_history", "/dev", "/usr"]
           }
         },
         {
@@ -557,7 +557,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "dev\n",
+              "stdout": "dev\nusr\n",
               "stderr": ""
             }
           }
@@ -600,7 +600,7 @@
         {
           "op": "mounts",
           "expect": {
-            "value": ["/", "/.bash_history/", "/data/", "/dev/"]
+            "value": ["/", "/.bash_history/", "/data/", "/dev/", "/usr/bin/"]
           }
         },
         {
@@ -639,7 +639,7 @@
           "op": "readdir",
           "path": "/",
           "expect": {
-            "value": ["/.bash_history", "/dev"]
+            "value": ["/.bash_history", "/dev", "/usr"]
           }
         },
         {
@@ -658,7 +658,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "dev\n",
+              "stdout": "dev\nusr\n",
               "stderr": ""
             }
           }
@@ -750,7 +750,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "cli\n",
+              "stdout": "file\n",
               "stderr": ""
             }
           }
@@ -761,7 +761,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "probe\n",
+              "stdout": "/usr/bin/probe\n",
               "stderr": ""
             }
           }
@@ -1091,7 +1091,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "dev\nwork\n",
+              "stdout": "dev\nusr\nwork\n",
               "stderr": ""
             }
           }
@@ -1784,7 +1784,7 @@
           "expect": {
             "value": {
               "exit_code": 0,
-              "stdout": "dev\n",
+              "stdout": "dev\nusr\n",
               "stderr": ""
             }
           },

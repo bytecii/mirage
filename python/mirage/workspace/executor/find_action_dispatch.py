@@ -526,6 +526,7 @@ async def _apply_find_actions(
     reorders = expr.depth_first
     if stdout is None or not (_has_actions(expr) or reorders):
         return stdout, b"", 0
+    await materialize(stdout)
     if expr.execs and execute_fn is None:
         return None, b"find: -exec: no shell to run the command\n", 1
     if matched_runs is None:

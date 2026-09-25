@@ -20,7 +20,7 @@ from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.commands.builtin.slack.grep import grep
 from mirage.commands.builtin.slack.rg import rg
 from mirage.commands.config import CommandOpts
-from mirage.io.types import IOResult
+from mirage.io.types import IOResult, materialize
 from mirage.types import ContentType, FileStat, FileType, PathSpec
 from mirage.utils.key_prefix import mount_key
 
@@ -255,6 +255,7 @@ async def test_grep_without_word_flag_skips_native_search():
         out, io = await grep(
             accessor, _concrete_paths(7), ['hello'],
             CommandOpts(index=RAMIndexCacheStore(), flags={'i': True}))
+        out = await materialize(out)
     fake_search.assert_not_awaited()
     assert out == b""
     assert io.exit_code == 2

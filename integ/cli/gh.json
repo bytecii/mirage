@@ -256,7 +256,7 @@
       "command": "type -t gh; which gh",
       "expect": {
         "exit": 0,
-        "stdout": "cli\ngh\n",
+        "stdout": "file\n/usr/bin/gh\n",
         "stderr": ""
       }
     },
@@ -881,6 +881,45 @@
       "expect": {
         "exit": 0,
         "stdout": "[{\"author\":{\"login\":\"integ-user\"},\"edited\":false,\"minimized\":false,\"reason\":\"\",\"reactions\":[],\"mine\":true}]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_code_unscoped",
+      "seq": 569078,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api search/code -X GET -f 'q=\"Mixture-of-Depths\"' --jq .total_count",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_code_owner",
+      "seq": 569079,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api search/code -X GET -f 'q=import user:integ' --jq '.items | map(.repository.full_name) | unique'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"integ/repo-cli\"]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_code_every_owner",
+      "seq": 569080,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh api search/code -X GET -f q=import --jq '.items | map(.repository.full_name) | unique'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[\"integ-user/renamed\",\"integ/repo-cli\"]\n",
         "stderr": ""
       }
     }

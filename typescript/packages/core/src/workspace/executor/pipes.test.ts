@@ -362,13 +362,29 @@ it('keeps a cache read drainable after a normal early pipeline exit', async () =
     await stdin[Symbol.asyncIterator]().next()
     return [encode('first'), new IOResult(), new ExecutionNode({ command: 'head' })]
   }
-  await handlePipe(
-    execute,
-    [node('cat'), node('head')],
-    [],
-    new SessionState({ sessionId: 'test' }),
-  )
+  const session = new SessionState({ sessionId: 'test' })
+  session.shellOptions.pipefail = true
+  const [, io] = await handlePipe(execute, [node('cat'), node('head')], [], session)
+  expect(io.exitCode).toBe(0)
   expect(closed).toBe(false)
   expect(decode(await input.drain())).toBe('firstrest')
   expect(closed).toBe(true)
+})
+
+it('pipeline timeout releases the caller even when a producer ignores cancellation', async () => {
+  const session = new SessionState({ sessionId: 'timeout' })
+  session.pipelineTimeoutSeconds = 0.01
+  let finish: ((value: Awaited<ReturnType<ExecuteNodeFn>>) => void) | undefined
+  const pending = new Promise<Awaited<ReturnType<ExecuteNodeFn>>>((resolve) => {
+    finish = resolve
+  })
+  const execute: ExecuteNodeFn = (nd) =>
+    nd.text === 'blocked' ? pending : Promise.resolve([null, new IOResult(), new ExecutionNode()])
+  try {
+    await expect(
+      handlePipe(execute, [node('blocked'), node('done')], [false], session),
+    ).rejects.toThrow('timed out')
+  } finally {
+    finish?.([null, new IOResult(), new ExecutionNode()])
+  }
 })

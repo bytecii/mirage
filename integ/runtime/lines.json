@@ -166,7 +166,7 @@
           "command": "cd /ram; export BUILTIN_VALUE=kept; printf \"%s\\n\" \"$BUILTIN_VALUE\"; echo shell; pwd; type -a echo",
           "expect": {
             "exit": 0,
-            "stdout": "kept\nshell\n/ram\necho is a shell builtin\n"
+            "stdout": "kept\nshell\n/ram\necho is a shell builtin\necho is /usr/bin/echo\n"
           }
         },
         {
@@ -256,6 +256,53 @@
           "expect": {
             "exit": 0,
             "stdout": "mirage\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "external_fallback_is_no_program",
+      "world": {
+        "runtimes": [
+          {
+            "name": "echobox",
+            "captures": [
+              "gcc",
+              "@external"
+            ]
+          }
+        ]
+      },
+      "steps": [
+        {
+          "command": "which native-tool; echo \"rc=$?\"; command -v native-tool; echo \"rc=$?\"; type -t native-tool; echo \"rc=$?\"",
+          "expect": {
+            "exit": 0,
+            "stdout": "rc=1\nrc=1\nrc=1\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "cat /usr/bin/native-tool",
+          "expect": {
+            "exit": 1,
+            "stdout": "",
+            "stderr": "cat: /usr/bin/native-tool: No such file or directory\n"
+          }
+        },
+        {
+          "command": "native-tool --version",
+          "expect": {
+            "exit": 0,
+            "stdout": "box:native-tool --version\n"
+          }
+        },
+        {
+          "command": "which gcc; cat /usr/bin/gcc",
+          "expect": {
+            "exit": 0,
+            "stdout": "/usr/bin/gcc\n#!/bin/sh\n# gcc runs on the workspace's echobox runtime.\ncommand gcc \"$@\"\n",
+            "stderr": ""
           }
         }
       ]

@@ -50,17 +50,21 @@ async function expandBraceWord(
   view?: SessionView,
 ): Promise<string[] | null> {
   const pieces: string[] = []
-  const values: string[] = []
+  const atoms: TSNodeLike[] = []
   for (const child of node.children) {
     if (child.isNamed !== true || BRACE_LITERAL_TYPES.has(child.type)) {
       pieces.push(child.text)
     } else {
-      values.push(await expandNodeMarked(child, session, executeFn, callStack, view))
-      pieces.push(makeInert(values.length - 1))
+      atoms.push(child)
+      pieces.push(makeInert(atoms.length - 1))
     }
   }
   const words = expandTemplate(pieces.join(''))
   if (words === null) return null
+  const values: string[] = []
+  for (const atom of atoms) {
+    values.push(await expandNodeMarked(atom, session, executeFn, callStack, view))
+  }
   const home = homeDir(session)
   return words.map((w) =>
     substitute(expandTilde(unescapeUnquoted(markEscapedGlobs(w)), home), values),

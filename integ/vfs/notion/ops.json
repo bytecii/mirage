@@ -415,6 +415,32 @@
         "stdout": "/notion/pages/Project_Roadmap__aaaa1111-2222-3333-4444-555566667777/page.json:0\n/notion/pages/Project_Roadmap__aaaa1111-2222-3333-4444-555566667777/Q1_Goals__cccc1111-2222-3333-4444-555566667777/page.json:0\n/notion/pages/Notes__bbbb2222-3333-4444-5555-666677778888/page.json:0\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "notion_find_stops_at_root",
+      "seq": 9901203,
+      "targets": [
+        "notion"
+      ],
+      "command": "find /notion | head -n 1",
+      "expect": {
+        "exit": 0,
+        "stdout": "/notion\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_find_depth_one",
+      "seq": 9901204,
+      "targets": [
+        "notion"
+      ],
+      "command": "find /notion -maxdepth 1",
+      "expect": {
+        "exit": 0,
+        "stdout": "/notion\n/notion/databases\n/notion/pages\n",
+        "stderr": ""
+      }
     }
   ]
 }
