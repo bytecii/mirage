@@ -36,6 +36,13 @@ that use file operations, such as PIL and NumPy. These operations reach
 the same workspace mounts used by shell commands. Symlinks and metadata
 overlays come from the workspace namespace.
 
+Shell commands and direct `run()` or `eval()` calls inherit the current
+workspace directory. An explicit `RunArgs.cwd` overrides it for one run.
+Each console session starts there on its first feed and retains its own
+`os.chdir()` changes, including changes made before an exception. Other
+consoles and one-shot evaluations remain isolated. The Mirage session and
+host process directories are unchanged.
+
 `os.getxattr`, `os.listxattr`, `os.setxattr` and `os.removexattr` reach
 the attributes the shell's `getfattr` and `setfattr` see. They need the
 worker; the fallback below answers them with `OSError` (`ENOTSUP`).

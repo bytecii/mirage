@@ -133,6 +133,12 @@ key, or any setup. The interpreter's own build directory is served
 read-only from the host; a mount at `/` coexists with it (mount
 prefixes win for their subtrees, the build serves the rest).
 
+Each execution starts at the Mirage session's working directory, so
+`open('file.txt')` and `Path.cwd()` agree with the shell. Direct `run()`
+calls can supply `RunArgs.cwd` to override it. Guest `os.chdir()` changes
+last for that execution; they do not change the Mirage session or host
+process directory. A missing or non-directory cwd fails before user code.
+
 It needs the `wasi` extra plus a CPython WASI build (download and
 unzip a release from
 [cpython-wasi-build](https://github.com/brettcannon/cpython-wasi-build/releases)):

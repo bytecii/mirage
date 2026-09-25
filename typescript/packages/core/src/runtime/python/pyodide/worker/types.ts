@@ -32,6 +32,7 @@ export interface ExecuteRequest {
   prefixes: string[]
   args?: Omit<RunArgs, 'cwd' | 'signal'> & { cwd?: string }
   code?: string
+  cwd?: string
   inputs?: Record<string, EvalValue>
   session?: string
   interruptBuffer?: SharedArrayBuffer

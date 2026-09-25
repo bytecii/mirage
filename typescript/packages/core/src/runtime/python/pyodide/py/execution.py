@@ -11,6 +11,7 @@ import sys
 import traceback
 import types
 import warnings
+from contextlib import contextmanager
 
 import _mirage_xattr
 
@@ -55,6 +56,26 @@ class OutputCapture(io.RawIOBase):
 
 
 repl_session_globals = {}
+repl_session_cwds = {}
+
+
+@contextmanager
+def working_directory(cwd, session=None):
+    saved_getcwd, saved_chdir = os.getcwd, os.chdir
+    saved_cwd = saved_getcwd()
+    entered = False
+    try:
+        if cwd:
+            saved_chdir(cwd)
+        entered = True
+        yield
+    finally:
+        try:
+            if entered and session is not None:
+                repl_session_cwds[session] = saved_getcwd()
+        finally:
+            os.getcwd, os.chdir = saved_getcwd, saved_chdir
+            saved_chdir(saved_cwd)
 
 
 def eval_enc(o):
@@ -183,7 +204,7 @@ def run(request, arm_interrupt, disarm_interrupt):
     return (out_bytes.to_list(), err_bytes.to_list(), exit_code)
 
 
-def evaluate(user_code, eval_inputs):
+def evaluate(user_code, eval_inputs, cwd=''):
     out_bytes = OutputCapture()
     err_bytes = OutputCapture()
     out_text = out_bytes.text
@@ -209,10 +230,11 @@ def evaluate(user_code, eval_inputs):
             saved_stdout, saved_stderr = sys.stdout, sys.stderr
             sys.stdout, sys.stderr = out_text, err_text
             try:
-                exec(compile(tree, '<eval>', 'exec'), g)
-                value = None
-                if last is not None:
-                    value = eval(compile(last, '<eval>', 'eval'), g)
+                with working_directory(cwd):
+                    exec(compile(tree, '<eval>', 'exec'), g)
+                    value = None
+                    if last is not None:
+                        value = eval(compile(last, '<eval>', 'eval'), g)
                 try:
                     value_json = json.dumps(value, default=eval_enc)
                 except TypeError:
@@ -229,9 +251,10 @@ def evaluate(user_code, eval_inputs):
     return (value_json, out_bytes.to_list(), err_bytes.to_list(), ok, syntax)
 
 
-def repl(user_code, repl_session_id, repl_inputs):
+def repl(user_code, repl_session_id, repl_inputs, cwd=''):
     sid = repl_session_id
     if sid not in repl_session_globals:
+        repl_session_cwds[sid] = cwd or os.getcwd()
         repl_session_globals[sid] = {
             '__name__': '__main__',
             '__doc__': None,
@@ -273,7 +296,8 @@ def repl(user_code, repl_session_id, repl_inputs):
                                          encoding='utf-8',
                                          errors='replace')
             try:
-                exec(codeobj, repl_globals)
+                with working_directory(repl_session_cwds[sid], sid):
+                    exec(codeobj, repl_globals)
             except SystemExit as e:
                 code = e.code
                 if code is None:
