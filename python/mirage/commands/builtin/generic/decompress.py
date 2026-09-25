@@ -88,5 +88,5 @@ async def decompress_inputs(
     body = run()
     if test_only or any(not (to_stdout or p.raw_path == "-")
                         for p in operands):
-        return await materialize(body), io
+        return (await materialize(body)) or None, io
     return body, io

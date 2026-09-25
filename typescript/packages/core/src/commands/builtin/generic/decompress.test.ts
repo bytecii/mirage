@@ -50,7 +50,7 @@ it('retains in-place output on a trailing warning and continues', async () => {
     yield* yieldBytes(data)
   }
   const paths = [...files.keys()].map((p) => PathSpec.fromStrPath(p))
-  const [, io] = await decompressInputs(paths, read, {
+  const [body, io] = await decompressInputs(paths, read, {
     command: 'gunzip',
     stdin: null,
     write: (path, data) => {
@@ -62,6 +62,7 @@ it('retains in-place output on a trailing warning and continues', async () => {
       return Promise.resolve()
     },
   })
+  expect(body).toBeNull()
   expect(Object.fromEntries(files)).toEqual({
     '/data/a': enc.encode('hello'),
     '/data/b': enc.encode('world'),

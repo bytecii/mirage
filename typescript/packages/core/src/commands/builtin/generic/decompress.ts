@@ -73,7 +73,9 @@ export async function decompressInputs(
     }
   }
   const body = run()
-  if (options.testOnly || operands.some((p) => !(options.toStdout === true || p.rawPath === '-')))
-    return [await materialize(body), io]
+  if (options.testOnly || operands.some((p) => !(options.toStdout === true || p.rawPath === '-'))) {
+    const output = await materialize(body)
+    return [output.byteLength > 0 ? output : null, io]
+  }
   return [body, io]
 }
