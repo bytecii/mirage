@@ -12,11 +12,9 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Mapping
-from dataclasses import replace
-
 from mirage.accessor.box import BoxAccessor
 from mirage.commands.builtin.box.pushdown import narrow_scope
+from mirage.commands.builtin.generic.rg import labelled
 from mirage.commands.builtin.generic.rg import rg as generic_rg
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_pattern import pattern_arg
@@ -25,7 +23,6 @@ from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
-from mirage.commands.spec.types import FlagValue
 from mirage.core.box.read import read as _read
 from mirage.core.box.read import stream as _stream
 from mirage.core.box.readdir import readdir as _readdir
@@ -40,7 +37,7 @@ async def rg(accessor: BoxAccessor, paths: list[PathSpec], texts: list[str],
     fl = FlagView(opts.flags, spec=SPECS["rg"])
     pattern_str = pattern_arg(texts, fl)
 
-    run_flags: Mapping[str, FlagValue] = opts.flags
+    run_opts = opts
     if paths:
         # -v needs the walk (a narrowed superset hides fully non-matching
         # files whose every line matches inverted); --type/--glob keep the
@@ -61,17 +58,13 @@ async def rg(accessor: BoxAccessor, paths: list[PathSpec], texts: list[str],
                                        fl.as_str("glob"), fl.as_bool("hidden"))
             if not narrowed:
                 return b"", IOResult(exit_code=1)
-            # ripgrep labels every file a walk finds; narrowed candidates
-            # arrive as explicit operands, so force the label flag -- unless
-            # -I suppresses labels.
-            if not fl.as_bool("args_I"):
-                run_flags = {**opts.flags, "H": True}
+            run_opts = labelled(opts)
         paths = narrowed
 
     return await generic_rg(
         paths,
         texts,
-        replace(opts, flags=run_flags),
+        run_opts,
         readdir=bound_op(_readdir, accessor, opts.index),
         stat=bound_op(_stat, accessor, opts.index),
         read_bytes=bound_op(_read, accessor, opts.index),

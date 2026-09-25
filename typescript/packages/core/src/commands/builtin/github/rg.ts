@@ -22,7 +22,7 @@ import { type FileStat, VFSName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { patternArg } from '../grep_pattern.ts'
-import { rgGeneric } from '../generic/rg.ts'
+import { labelled, rgGeneric } from '../generic/rg.ts'
 import { walkCandidates } from '../rg_scan.ts'
 import { narrowScope, scopeRefusal } from './pushdown.ts'
 import { FlagView } from '../../spec/flag_view.ts'
@@ -36,6 +36,7 @@ async function rgCommand(
   opts: CommandOpts,
 ): Promise<CommandFnResult> {
   let resolved: PathSpec[] = []
+  let runOpts = opts
   if (paths.length > 0) {
     const first = paths[0]
     if (first === undefined) return [null, new IOResult()]
@@ -56,18 +57,6 @@ async function rgCommand(
       fl.asBool('v') || fl.asBool('files_without_match') || Boolean(fl.raw('f')),
     )
     resolved = narrowed.resolved
-    if (narrowed.usedSearch && resolved.length === 0) {
-      return [new Uint8Array(), new IOResult({ exitCode: 1 })]
-    }
-    if (narrowed.fileCount > SCOPE_ERROR) {
-      return [
-        null,
-        new IOResult({
-          exitCode: 1,
-          stderr: ENC.encode(scopeRefusal('rg', narrowed.fileCount, fl.asBool('w'))),
-        }),
-      ]
-    }
     if (narrowed.usedSearch) {
       // The candidates stand in for the walk, so they pass its filters; none
       // left means nothing matched, not a stdin run.
@@ -79,6 +68,16 @@ async function rgCommand(
         fl.asBool('hidden'),
       )
       if (resolved.length === 0) return [new Uint8Array(), new IOResult({ exitCode: 1 })]
+      runOpts = labelled(opts)
+    }
+    if (narrowed.fileCount > SCOPE_ERROR) {
+      return [
+        null,
+        new IOResult({
+          exitCode: 1,
+          stderr: ENC.encode(scopeRefusal('rg', narrowed.fileCount, fl.asBool('w'))),
+        }),
+      ]
     }
   }
   const stat = (p: PathSpec): Promise<FileStat> => githubStat(accessor, p, opts.index ?? undefined)
@@ -86,7 +85,7 @@ async function rgCommand(
     githubReaddir(accessor, p, opts.index ?? undefined)
   const stream = (p: PathSpec): AsyncIterable<Uint8Array> =>
     githubStream(accessor, p, opts.index ?? undefined)
-  return rgGeneric(resolved, texts, opts, stat, readdir, stream)
+  return rgGeneric(resolved, texts, runOpts, stat, readdir, stream)
 }
 
 export const GITHUB_RG = command({

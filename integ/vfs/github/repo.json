@@ -194,6 +194,19 @@
         "stdout": "Run the wombat suite before pushing.\n# wombat invalidates the warm entries\n# wombat compaction pass\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "github_rg_search_single_hit_is_labelled",
+      "seq": 530016,
+      "targets": [
+        "github"
+      ],
+      "command": "rg -w compaction /repo",
+      "expect": {
+        "exit": 0,
+        "stdout": "/repo/src/store/step_5.py:# wombat compaction pass\n",
+        "stderr": ""
+      }
     }
   ]
 }

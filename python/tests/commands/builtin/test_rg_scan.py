@@ -987,3 +987,11 @@ class TestNamedOperandsAreNeverFiltered:
         await _write(backend, "/tmp/w/in", "b\n")
         await _write(backend, "/tmp/w/.hid.rs", "b\n")
         assert await rg(backend, "/tmp/w", "b", file_type="rust") == []
+
+
+def test_walk_candidates_prunes_below_the_longest_matching_scope():
+    scopes = [_scope(), _scope("/data/.cfg")]
+    kept = walk_candidates(
+        [_candidate("/data/.cfg/a.txt"),
+         _candidate("/data/.cfg/.secret")], scopes, None, None, False)
+    assert [p.virtual for p in kept] == ["/data/.cfg/a.txt"]

@@ -12,8 +12,8 @@ from mirage.commands.builtin.grep_scan import exit_code_for
 from mirage.commands.builtin.grep_select import (WalkFilters, dir_admitted,
                                                  file_admitted,
                                                  parse_file_globs)
-from mirage.commands.builtin.utils.stream import (is_stdin, resolve_source,
-                                                  stdin_stream)
+from mirage.commands.builtin.utils.stream import (is_stdin, operand_label,
+                                                  resolve_source, stdin_stream)
 from mirage.commands.builtin.utils.wrap import (call_read_bytes, call_readdir,
                                                 call_stat,
                                                 mount_parent_readdir,
@@ -234,8 +234,7 @@ async def grep(
                 stderr=f"grep: {p.raw_path}: {fs_strerror(exc) or exc}\n".
                 encode())
         io = IOResult()
-        return grep_input(source, pat, f,
-                          "(standard input)" if is_stdin(p) else p.raw_path,
+        return grep_input(source, pat, f, operand_label(p, "(standard input)"),
                           f.with_filename and not f.no_filename, io), io
     warnings: list[str] = []
     diagnostics: list[bytes] = []
@@ -290,10 +289,9 @@ async def grep(
             file_io = IOResult(exit_code=1)
             show = not f.no_filename and (f.with_filename or walked
                                           or len(paths) > 1)
-            async for chunk in grep_input(
-                    source, pat, f,
-                    "(standard input)" if is_stdin(p) else p.raw_path, show,
-                    file_io, printed):
+            async for chunk in grep_input(source, pat, f,
+                                          operand_label(p, "(standard input)"),
+                                          show, file_io, printed):
                 printed = True
                 yield chunk
             matched = matched or file_io.exit_code == 0
