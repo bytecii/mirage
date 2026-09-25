@@ -3,9 +3,9 @@ from collections.abc import Awaitable, Callable
 import pytest
 
 from mirage.commands.builtin.errors import SortKeyError
-from mirage.commands.builtin.generic.sort import (fetch_refusal, parse_flags,
-                                                  sort)
+from mirage.commands.builtin.generic.sort import parse_flags, sort
 from mirage.commands.errors import UsageError
+from mirage.commands.spec import SPECS, parse_command, parse_to_kwargs
 from mirage.io.types import IOResult, materialize
 from mirage.shell.descriptors import unreadable_stdin
 from mirage.types import PathSpec
@@ -430,16 +430,16 @@ async def test_merge_trusts_its_inputs_and_never_reorders_one():
     assert await materialize(stdout) == b"b\nc\na\n"
 
 
-def test_fetch_refusal_ranks_the_fetches_like_the_reads():
-    parsed = parse_flags({})
-    rests = [
-        "/data/dir: Is a directory",
-        "/data2/missing: No such file or directory",
-    ]
-    assert fetch_refusal(rests, parsed) == (
-        b"sort: cannot read: /data2/missing: No such file or directory\n")
-    assert fetch_refusal(
-        rests[:1],
-        parsed) == (b"sort: read failed: /data/dir: Is a directory\n")
-    assert fetch_refusal(["connection reset"],
-                         parsed) == (b"sort: connection reset\n")
+@pytest.mark.parametrize("argv, message", [
+    (["-o", "out", "-k", "2,2", "-k", "0", "-o", "out2"
+      ], "field number is zero"),
+    (["-k", "2,2", "-o", "out", "-o", "out2", "-k", "0"
+      ], "multiple output files"),
+    (["--check", "--check=quiet"], "options '-cC' are incompatible"),
+])
+def test_interleaved_occurrences_refuse_the_first_invalid_option(
+        argv, message):
+    flags = parse_to_kwargs(parse_command(SPECS["sort"], argv, "/data",
+                                          "sort"))
+    with pytest.raises((UsageError, SortKeyError), match=message):
+        parse_flags(flags)

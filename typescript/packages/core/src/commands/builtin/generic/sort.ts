@@ -68,15 +68,6 @@ export const OPEN_FAILED = 'open failed'
 export const STAT_FAILED = 'stat failed'
 export const READ_FAILED = 'read failed'
 
-// Every strerror a per-operand filesystem error renders as, so a failure
-// known only as a rendered line can be told from one that names no errno.
-// The codes are python's FS_ERRORS tuple.
-const FS_STRERRORS: ReadonlySet<string> = new Set(
-  ['EBADF', 'ENOENT', 'ENOTDIR', 'EISDIR', 'EEXIST', 'EROFS', 'EACCES', 'ENOTSUP', 'EFBIG']
-    .map((code) => gnuStrerror(code))
-    .filter((strerror): strerror is string => strerror !== null),
-)
-
 const NO_MODS: KeyMods = {
   numeric: false,
   human: false,
@@ -137,9 +128,8 @@ function earliest(
 // `--check` and `--check=diagnose-first` are `c`; `-C` and `--check=quiet`
 // (or `silent`) are `C`. A `--check` word argmatch refuses throws its
 // UsageError, exit 1.
-function checkMode(fl: FlagView, dest: string): string {
+function checkMode(raw: FlagValue, dest: string): string {
   if (dest !== 'check') return dest
-  const raw = fl.raw('check')
   if (raw === true) return 'c'
   const word = String(raw)
   const match = argmatch(word, CHECK_ARGS)
@@ -149,35 +139,21 @@ function checkMode(fl: FlagView, dest: string): string {
   return match.word === 'quiet' ? 'C' : 'c'
 }
 
-// Read sort's flags once, refusing what GNU's option loop refuses. GNU
-// checks a key, a repeated output and a second check mode as getopt hands
-// each option over, so the refusal that wins is the first bad option on
-// the line: `sort -k0 -o a -o b` names the key and `sort -o a -o b -k0`
-// names the outputs. The options are walked in the order their first
-// occurrence was typed, each value in turn, which is shuf's walk. Two `-o`
-// are refused unless they name one file, and GNU compares the words, so
-// `-o out -o ./out` is refused there; here they are compared as resolved
-// paths, because this bag carries a path option's resolved path and not
-// the word typed, and the python twin compares the same. `-c` and `-C` are
-// one mode each and refuse to mix, whichever spelling asked. Deliberate
-// divergence: the bag keeps one `--check` value, so `--check
-// --check=quiet` runs as quiet where GNU refuses the pair. Throws a
-// UsageError (exit 1 for a `--check` word, 2 for the rest) or a
-// SortKeyError. Mirrors parse_flags in sort.py.
+// Validate every occurrence in scan order, before reading any inputs.
 export function parseFlags(bag: Record<string, FlagValue>): SortFlags {
   const fl = new FlagView(bag, specOf('sort'))
   let mode: string | null = null
   let output: string | null = null
-  for (const dest of fl.typedOrder('key', 'output', 'c', 'C', 'check')) {
-    if (dest === 'key') {
-      for (const spec of fl.asList('key')) parseKeydef(spec, NO_MODS, false)
+  for (const [dest, value] of fl.occurrences('key', 'output', 'c', 'C', 'check')) {
+    if (dest === 'key' && typeof value === 'string') {
+      parseKeydef(value, NO_MODS, false)
     } else if (dest === 'output') {
-      for (const path of fl.asList('output')) {
+      for (const path of typeof value === 'string' ? [value] : []) {
         if (output !== null && path !== output) throw new UsageError(MULTIPLE_OUTPUTS)
         output = path
       }
-    } else if (dest === 'check' || fl.asBool(dest)) {
-      const letter = checkMode(fl, dest)
+    } else if (dest === 'check' || value === true) {
+      const letter = checkMode(value, dest)
       if (mode !== null && letter !== mode) throw new UsageError(CHECK_MODES_CONFLICT)
       mode = letter
     }
@@ -218,16 +194,6 @@ function refusalOf(error: unknown): IOResult {
   throw error
 }
 
-// The refusal the flags alone earn, before any input is touched.
-export function flagRefusal(bag: Record<string, FlagValue>): IOResult | null {
-  try {
-    buildConfig(parseFlags(bag))
-  } catch (error) {
-    return refusalOf(error)
-  }
-  return null
-}
-
 // What `-c` refuses in its operands, which GNU checks before reading. A
 // second operand outranks an `-o`, and both name the check mode by its own
 // letter, so `sort -C a b` is `not allowed with -C`.
@@ -248,30 +214,6 @@ export function operandRefusal(paths: readonly PathSpec[], parsed: SortFlags): I
     })
   }
   return null
-}
-
-// The one line GNU prints for inputs whose fetch failed. The cross-mount
-// stream path fetches every operand with a native `cat`, which reports each
-// failure as `cat: <name>: <strerror>` and goes on. sort names the step that
-// failed and stops at the first failure of the earliest step, so the
-// fetches' lines come down to one, ranked exactly as readRuns ranks the
-// errors. A line naming no errno this family knows is kept as it came, in
-// sort's voice. `rests` are the lines without their `cat: ` prefix, in
-// operand order. Mirrors fetch_refusal in sort.py.
-export function fetchRefusal(rests: readonly string[], parsed: SortFlags): Uint8Array {
-  const sorting = !parsed.check && !parsed.merge
-  let refused: [InputStage, Uint8Array] | null = null
-  for (const rest of rests) {
-    const strerror = rest.slice(rest.lastIndexOf(': ') + 2)
-    if (!rest.includes(': ') || !FS_STRERRORS.has(strerror)) {
-      refused = earliest(refused, InputStage.ACCESS, ENC.encode(`sort: ${rest}\n`))
-      continue
-    }
-    const stage = inputStage(strerror, sorting)
-    const verb = stageVerb(stage, parsed.check)
-    refused = earliest(refused, stage, ENC.encode(`sort: ${verb}: ${rest}\n`))
-  }
-  return refused !== null ? refused[1] : new Uint8Array()
 }
 
 function splitRecords(raw: Uint8Array, zeroTerminated: boolean): string[] {

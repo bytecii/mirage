@@ -67,67 +67,17 @@ function stderrOf(io: IOResult): string {
   return io.stderr === null ? '' : DEC.decode(io.stderr as Uint8Array)
 }
 
-describe('runStream for sort', () => {
-  it('answers one refusal ranked like the single-mount generic', async () => {
-    const fetches = new Fetches(
-      {},
-      { '/a/dir': 'Is a directory', '/b/missing': 'No such file or directory' },
-    )
-    const [out, io] = await runStream(Cmd.SORT, scopes('/a/dir', '/b/missing'), [], {}, fetches.run)
-    expect(out).toBeNull()
-    expect(stderrOf(io)).toBe('sort: cannot read: /b/missing: No such file or directory\n')
-    expect(io.exitCode).toBe(2)
-    expect(fetches.calls.map((c) => c.cmd)).toEqual(['cat', 'cat'])
+describe('runStream', () => {
+  it('keeps byte boundaries invisible for ordinary stream commands', async () => {
+    const fetches = new Fetches({ '/a/x': 'ab', '/b/y': 'cd' })
+    await runStream(Cmd.CUT, scopes('/a/x', '/b/y'), [], {}, fetches.run)
+    expect(DEC.decode(fetches.finalStdin ?? undefined)).toBe('abcd')
   })
-
-  it('reports a directory it could only fail to read', async () => {
-    const fetches = new Fetches({ '/b/y': 'a\n' }, { '/a/dir': 'Is a directory' })
-    const [, io] = await runStream(Cmd.SORT, scopes('/a/dir', '/b/y'), [], {}, fetches.run)
-    expect(stderrOf(io)).toBe('sort: read failed: /a/dir: Is a directory\n')
-    expect(io.exitCode).toBe(2)
-  })
-
-  it('refuses its own line before fetching anything', async () => {
-    const fetches = new Fetches({ '/a/x': 'a\n', '/b/y': 'b\n' })
-    const [, extra] = await runStream(
-      Cmd.SORT,
-      scopes('/a/x', '/b/y'),
-      [],
-      { C: true },
-      fetches.run,
-    )
-    expect(stderrOf(extra)).toBe("sort: extra operand '/b/y' not allowed with -C\n")
-    expect(extra.exitCode).toBe(2)
-    const [, key] = await runStream(
-      Cmd.SORT,
-      scopes('/a/x', '/b/y'),
-      [],
-      { key: ['0'] },
-      fetches.run,
-    )
-    expect(key.exitCode).toBe(2)
-    expect(stderrOf(key)).toContain('invalid field specification')
-    expect(fetches.calls).toEqual([])
-  })
-
-  it('ends every input before the next begins', async () => {
-    const lines = new Fetches({ '/a/x': 'b', '/b/y': 'a\n' })
-    await runStream(Cmd.SORT, scopes('/a/x', '/b/y'), [], {}, lines.run)
-    expect(DEC.decode(lines.finalStdin ?? new Uint8Array())).toBe('b\na\n')
-    const records = new Fetches({ '/a/x': 'b', '/b/y': 'a\0' })
-    await runStream(Cmd.SORT, scopes('/a/x', '/b/y'), [], { zero_terminated: true }, records.run)
-    expect(DEC.decode(records.finalStdin ?? new Uint8Array())).toBe('b\0a\0')
-  })
-
-  it('sorts the merged stream it cannot merge', async () => {
-    const fetches = new Fetches({ '/a/x': 'a\nc\n', '/b/y': 'b\n' })
-    await runStream(
-      Cmd.SORT,
-      scopes('/a/x', '/b/y'),
-      [],
-      { merge: true, unique: true },
-      fetches.run,
-    )
-    expect(fetches.calls.at(-1)?.flags).toEqual({ unique: true })
+  it('reports failures in the command voice and continues', async () => {
+    const fetches = new Fetches({ '/b/y': 'cd' }, { '/a/x': 'No such file or directory' })
+    const [, io] = await runStream(Cmd.CUT, scopes('/a/x', '/b/y'), [], {}, fetches.run)
+    expect(stderrOf(io)).toBe('cut: /a/x: No such file or directory\n')
+    expect(io.exitCode).toBe(1)
+    expect(DEC.decode(fetches.finalStdin ?? undefined)).toBe('cd')
   })
 })

@@ -295,6 +295,48 @@
         "n",
         "g"
       ]
+    },
+    {
+      "id": "sort_interleaved_key_before_output",
+      "targets": [
+        "ram",
+        "disk",
+        "opfs"
+      ],
+      "command": "sort -o /data/out -k 2,2 -k 0 -o /data/out2",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: field number is zero: invalid field specification '0'\n"
+      }
+    },
+    {
+      "id": "sort_interleaved_output_before_key",
+      "targets": [
+        "ram",
+        "disk",
+        "opfs"
+      ],
+      "command": "sort -k 2,2 -o /data/out -o /data/out2 -k 0",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: multiple output files specified\n"
+      }
+    },
+    {
+      "id": "sort_repeated_check_modes",
+      "targets": [
+        "ram",
+        "disk",
+        "opfs"
+      ],
+      "command": "sort --check --check=quiet",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: options '-cC' are incompatible\n"
+      }
     }
   ]
 }

@@ -39,12 +39,6 @@ OPEN_FAILED = "open failed"
 STAT_FAILED = "stat failed"
 READ_FAILED = "read failed"
 
-# Every strerror a per-operand filesystem error renders as, so a failure
-# known only as a rendered line can be told from one that names no errno.
-_FS_STRERRORS = frozenset(strerror for strerror in (fs_strerror(exc_type())
-                                                    for exc_type in FS_ERRORS)
-                          if strerror is not None)
-
 
 class InputStage(Enum):
     """The step at which GNU sort first meets an input's failure.
@@ -133,14 +127,14 @@ class SortFlags:
     zero_terminated: bool = False
 
 
-def _check_mode(fl: FlagView, dest: str) -> str:
+def _check_mode(raw: FlagValue, dest: str) -> str:
     """The check mode one check option asks for, as GNU's letter.
 
     ``-c``, a bare ``--check`` and ``--check=diagnose-first`` are ``c``;
     ``-C`` and ``--check=quiet`` (or ``silent``) are ``C``.
 
     Args:
-        fl (FlagView): spec-bound view over sort's flag bag.
+        raw (FlagValue): one check option's value.
         dest (str): ``c``, ``C`` or ``check``.
 
     Raises:
@@ -149,7 +143,6 @@ def _check_mode(fl: FlagView, dest: str) -> str:
     """
     if dest != "check":
         return dest
-    raw = fl.raw("check")
     if raw is True:
         return "c"
     word = str(raw)
@@ -165,19 +158,9 @@ def _check_mode(fl: FlagView, dest: str) -> str:
 def parse_flags(flags: Mapping[str, FlagValue]) -> SortFlags:
     """Read sort's flags once, refusing what GNU's option loop refuses.
 
-    GNU checks a key, a repeated output and a second check mode as getopt
-    hands each option over, so the refusal that wins is the first bad
-    option on the line: ``sort -k0 -o a -o b`` names the key and
-    ``sort -o a -o b -k0`` names the outputs. The options are walked in
-    the order their first occurrence was typed, each value in turn, which
-    is shuf's walk. Two ``-o`` are refused unless they name one file, and
-    GNU compares the words, so ``-o out -o ./out`` is refused there;
-    here they are compared as resolved paths, because the TypeScript bag
-    carries a path option's resolved path and not the word typed, and
-    the two hosts answer alike. ``-c`` and ``-C`` are one mode each and
-    refuse to mix, whichever spelling asked. Deliberate divergence: the
-    bag keeps one ``--check`` value, so ``--check --check=quiet`` runs as
-    quiet where GNU refuses the pair.
+    Each option is validated in its original scan order, including
+    interleaved accumulating options and repeated scalar check modes.
+    Output paths are compared after resolution in both languages.
 
     Args:
         flags (Mapping[str, FlagValue]): the dispatcher's flag bag.
@@ -190,17 +173,18 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> SortFlags:
     fl = FlagView(flags, spec=SPECS["sort"])
     mode: str | None = None
     output: PathSpec | None = None
-    for dest in fl.typed_order("key", "output", "c", "C", "check"):
-        if dest == "key":
-            for spec in fl.as_list("key"):
-                parse_keydef(spec, KeyMods(), False)
+    for dest, value in fl.occurrences("key", "output", "c", "C", "check"):
+        if dest == "key" and isinstance(value, str):
+            parse_keydef(value, KeyMods(), False)
         elif dest == "output":
-            for path in fl.as_paths("output"):
-                if output is not None and path.virtual != output.virtual:
-                    raise UsageError(MULTIPLE_OUTPUTS)
-                output = path
-        elif dest == "check" or fl.as_bool(dest):
-            letter = _check_mode(fl, dest)
+            path = value if isinstance(value, PathSpec) else next(
+                (p for p in fl.as_paths("output")
+                 if p.virtual == value), PathSpec.from_str_path(str(value)))
+            if output is not None and path.virtual != output.virtual:
+                raise UsageError(MULTIPLE_OUTPUTS)
+            output = path
+        elif dest == "check" or value is True:
+            letter = _check_mode(value, dest)
             if mode is not None and letter != mode:
                 raise UsageError(CHECK_MODES_CONFLICT)
             mode = letter
@@ -255,19 +239,6 @@ def _refusal(exc: ValueError) -> IOResult:
     return IOResult(stderr=f"sort: {exc}\n".encode(), exit_code=2)
 
 
-def flag_refusal(flags: Mapping[str, FlagValue]) -> IOResult | None:
-    """The refusal the flags alone earn, before any input is touched.
-
-    Args:
-        flags (Mapping[str, FlagValue]): the dispatcher's flag bag.
-    """
-    try:
-        _config(parse_flags(flags))
-    except (UsageError, SortKeyError, ValueError) as exc:
-        return _refusal(exc)
-    return None
-
-
 def operand_refusal(paths: list[PathSpec],
                     parsed: SortFlags) -> IOResult | None:
     """What ``-c`` refuses in its operands, which GNU checks before reading.
@@ -295,36 +266,6 @@ def operand_refusal(paths: list[PathSpec],
             exit_code=2,
         )
     return None
-
-
-def fetch_refusal(rests: list[str], parsed: SortFlags) -> bytes:
-    """The one line GNU prints for inputs whose fetch failed.
-
-    The cross-mount stream path fetches every operand with a native
-    ``cat``, which reports each failure as ``cat: <name>: <strerror>``
-    and goes on. sort names the step that failed and stops at the first
-    failure of the earliest step, so the fetches' lines come down to one,
-    ranked exactly as ``_read_runs`` ranks the exceptions. A line naming
-    no errno this family knows is kept as it came, in sort's voice.
-
-    Args:
-        rests (list[str]): each failure line without its ``cat: ``
-            prefix, in operand order, the name already spelled and quoted
-            the way sort spells it.
-        parsed (SortFlags): the parsed flags.
-    """
-    sorting = not parsed.check and not parsed.merge
-    refused: tuple[InputStage, bytes] | None = None
-    for rest in rests:
-        strerror = rest.rsplit(": ", 1)[-1]
-        if ": " not in rest or strerror not in _FS_STRERRORS:
-            refused = _earliest(refused, InputStage.ACCESS,
-                                f"sort: {rest}\n".encode())
-            continue
-        stage = input_stage(strerror, sorting)
-        verb = _stage_verb(stage, parsed.check)
-        refused = _earliest(refused, stage, f"sort: {verb}: {rest}\n".encode())
-    return refused[1] if refused is not None else b""
 
 
 def _split_records(raw: bytes, zero_terminated: bool) -> list[str]:

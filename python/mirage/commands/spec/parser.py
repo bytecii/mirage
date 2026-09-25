@@ -28,6 +28,7 @@ from mirage.commands.spec.constants import (ARG_PLACEHOLDER,
                                             NO_LONG_OPTIONS, NUMERIC_SHORT,
                                             SOLE_ARGUMENT_LONG_OPTIONS,
                                             flag_kwarg_name)
+from mirage.commands.spec.flag_view import FlagBag
 from mirage.commands.spec.oldstyle import expand_old_style
 from mirage.commands.spec.types import (CommandSpec, Option, ParsedFlagValue,
                                         ValueType)
@@ -277,6 +278,8 @@ def _set_value_flag(
     """
     name = cs.dest_of(spelling)
     stored = _check_value(refusals, cs, argmatch_dests, name, value)
+    if isinstance(flags, FlagBag):
+        flags.occurrences.append((name, stored))
     if name in cs.multiple_dests:
         prev = flags.get(name)
         if isinstance(prev, list):
@@ -361,6 +364,8 @@ def _set_bool_flag(
         spelling (str): dashed spelling as typed.
     """
     name = cs.dest_of(spelling)
+    if isinstance(flags, FlagBag):
+        flags.occurrences.append((name, True))
     if name in cs.count_dests:
         prev = flags.get(name)
         flags[name] = prev + 1 if isinstance(prev, int) else 1
@@ -497,7 +502,7 @@ def parse_command(
     scan_argv = old.argv if old is not None else argv
     scan_origins = old.origins if old is not None else list(range(len(argv)))
 
-    flags: dict[str, ParsedFlagValue] = {}
+    flags: FlagBag[ParsedFlagValue] = FlagBag()
     # Every scalar value-flag occurrence, in scan order, beside the bag
     # that keeps only the last of each. Appended to by _set_value_flag
     # and read by nobody here: it leaves on the parse result.
@@ -998,6 +1003,11 @@ def parse_command(
         elif isinstance(value, str):
             text_flag_values.append(value)
 
+    flags.occurrences = [
+        (name, resolve_path(value, cwd) if cs.kind_by_dest.get(name) == "path"
+         and isinstance(value, str) else value)
+        for name, value in flags.occurrences
+    ]
     return ParsedArgs(
         flags=flags,
         args=classified,
@@ -1023,7 +1033,10 @@ def parse_command(
 
 
 def parse_to_kwargs(parsed: ParsedArgs) -> dict[str, ParsedFlagValue]:
-    result: dict[str, ParsedFlagValue] = {}
+    result: FlagBag[ParsedFlagValue] = FlagBag()
+    if isinstance(parsed.flags, FlagBag):
+        result.occurrences = [(flag_kwarg_name(name), value)
+                              for name, value in parsed.flags.occurrences]
     for key, value in parsed.flags.items():
         result[flag_kwarg_name(key)] = value
     return result

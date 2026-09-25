@@ -135,6 +135,66 @@
         "stdout": "",
         "stderr": "sort: extra operand '/data2/xm.txt' not allowed with -C\n"
       }
+    },
+    {
+      "id": "xm_sort_glob_ends_each_file",
+      "seq": 709,
+      "targets": [
+        "ram",
+        "disk",
+        "opfs"
+      ],
+      "command": "mkdir -p /data/sort-boundaries; printf z > /data/sort-boundaries/a; printf a > /data/sort-boundaries/b; printf m > /data2/sort-tail; sort /data/sort-boundaries/* /data2/sort-tail",
+      "expect": {
+        "exit": 0,
+        "stdout": "a\nm\nz\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "xm_sort_glob_zero_ends_each_file",
+      "seq": 709,
+      "targets": [
+        "ram",
+        "disk",
+        "opfs"
+      ],
+      "command": "sort -z /data/sort-boundaries/* /data2/sort-tail",
+      "expect": {
+        "exit": 0,
+        "stdout": "a\u0000m\u0000z\u0000",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "xm_sort_merge_preserves_unsorted_runs",
+      "seq": 709,
+      "targets": [
+        "ram",
+        "disk",
+        "opfs"
+      ],
+      "command": "printf 'c\\na\\n' > /data/sort-boundaries/a; printf 'b\\n' > /data2/sort-tail; sort -m /data/sort-boundaries/a /data2/sort-tail",
+      "expect": {
+        "exit": 0,
+        "stdout": "b\nc\na\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "xm_sort_glob_with_stdin",
+      "seq": 709,
+      "targets": [
+        "ram",
+        "disk",
+        "opfs"
+      ],
+      "command": "printf '0\\n' | sort - /data/sort-boundaries/* /data2/sort-tail && rm -r /data/sort-boundaries /data2/sort-tail",
+      "expect": {
+        "exit": 0,
+        "stdout": "0\na\na\nb\nc\n",
+        "stderr": ""
+      }
     }
   ]
 }

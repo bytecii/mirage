@@ -1,3 +1,5 @@
+import { parseCommand, parseToKwargs } from '../../spec/parser.ts'
+import { specOf } from '../../spec/builtins.ts'
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +20,7 @@ import { PathSpec } from '../../../types.ts'
 import { unreadableStdin } from '../../../shell/descriptors.ts'
 import { eisdir, enoent } from '../../../utils/errors.ts'
 import type { CommandOpts } from '../../config.ts'
-import { fetchRefusal, parseFlags, sortGeneric } from './sort.ts'
+import { parseFlags, sortGeneric } from './sort.ts'
 
 const DEC = new TextDecoder()
 
@@ -364,16 +366,13 @@ describe('sort inputs', () => {
     })
     expect(two).toBe('b\nc\na\n')
   })
+})
 
-  it('ranks fetched failures the way it ranks reads', () => {
-    const parsed = parseFlags({})
-    const rests = ['/data/dir: Is a directory', '/data2/missing: No such file or directory']
-    expect(DEC.decode(fetchRefusal(rests, parsed))).toBe(
-      'sort: cannot read: /data2/missing: No such file or directory\n',
-    )
-    expect(DEC.decode(fetchRefusal(rests.slice(0, 1), parsed))).toBe(
-      'sort: read failed: /data/dir: Is a directory\n',
-    )
-    expect(DEC.decode(fetchRefusal(['connection reset'], parsed))).toBe('sort: connection reset\n')
-  })
+it.each([
+  [['-o', 'out', '-k', '2,2', '-k', '0', '-o', 'out2'], 'field number is zero'],
+  [['-k', '2,2', '-o', 'out', '-o', 'out2', '-k', '0'], 'multiple output files'],
+  [['--check', '--check=quiet'], "options '-cC' are incompatible"],
+] as const)('refuses interleaved options in scan order: %j', (argv, message) => {
+  const flags = parseToKwargs(parseCommand(specOf('sort'), [...argv], '/data', 'sort'))
+  expect(() => parseFlags(flags)).toThrow(message)
 })
