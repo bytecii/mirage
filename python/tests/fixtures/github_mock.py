@@ -130,7 +130,7 @@ def mock_github_api(monkeypatch):
         results = MOCK_SEARCH_RESULTS.get(query, [])
         if path_filter:
             results = [r for r in results if r.path.startswith(path_filter)]
-        return results
+        return results, False
 
     # Both are patched in the module that fetches, because the mount is
     # built without touching the network and hydrates on first use:

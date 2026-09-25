@@ -21,6 +21,7 @@ import type { FlagView } from '../../../spec/flag_view.ts'
 import { IOResult, materialize, type ByteSource } from '../../../../io/types.ts'
 import { PathSpec } from '../../../../types.ts'
 import { resolvePath } from '../../../../utils/path.ts'
+import { compareCodePoints } from '../../../../utils/sort.ts'
 import type { CommandFnResult } from '../../../config.ts'
 import type { CLIInvocation } from '../../types.ts'
 
@@ -175,13 +176,48 @@ function jqLine(value: unknown): string {
   return JSON.stringify(value)
 }
 
+/**
+ * Each row cut to the fields asked for, keys in sorted order: gh exports a
+ * Go map, which its JSON encoder always writes sorted.
+ */
 function select(value: unknown, fields: string[]): unknown {
   const rows = Array.isArray(value) ? value : [value]
+  const keys = [...new Set(fields)].sort(compareCodePoints)
   const selected = rows.map((row) => {
     const source = row !== null && typeof row === 'object' ? (row as Record<string, unknown>) : {}
-    return Object.fromEntries(fields.map((field) => [field, source[field] ?? null]))
+    return Object.fromEntries(keys.map((field) => [field, source[field] ?? null]))
   })
   return Array.isArray(value) ? selected : selected[0]
+}
+
+/**
+ * The `--json` fields a line asked for, null without `--json`.
+ *
+ * Checked before any request, as gh checks them: a field gh does not export
+ * is refused with gh's own message and every field it does, sorted, exit 1.
+ */
+export function jsonFields(fl: FlagView, allowed: readonly string[]): string[] | null {
+  const spelled = fl.asStr('json')
+  if (spelled === undefined) return null
+  const fields = csvValues([spelled])
+  const listing = [...allowed].sort(compareCodePoints).map((field) => `  ${field}`)
+  if (fields.length === 0) {
+    throw new UsageError(
+      ['Specify one or more comma-separated fields for `--json`:', ...listing].join('\n'),
+      1,
+    )
+  }
+  const known = new Set(allowed)
+  const unknown = fields.find((field) => !known.has(field))
+  if (unknown !== undefined) {
+    throw new UsageError(
+      [`Unknown JSON field: ${JSON.stringify(unknown)}`, 'Available fields:', ...listing].join(
+        '\n',
+      ),
+      1,
+    )
+  }
+  return fields
 }
 
 export async function typedOut(
@@ -190,16 +226,12 @@ export async function typedOut(
   human: string,
   allowed: readonly string[],
 ): Promise<CommandFnResult> {
-  const jsonFields = fl.asStr('json')
   const program = fl.asStr('jq')
-  if (jsonFields === undefined) {
+  const fields = jsonFields(fl, allowed)
+  if (fields === null) {
     if (program !== undefined && program !== '') throw new UsageError('--jq requires --json')
     return textOut(human)
   }
-  const fields = csvValues([jsonFields])
-  const known = new Set(allowed)
-  const unknown = fields.find((field) => !known.has(field))
-  if (unknown !== undefined) throw new UsageError(`unknown JSON field: ${unknown}`)
   const selected = select(value, fields)
   if (program !== undefined && program !== '') {
     const values = await jqEval(selected, program)

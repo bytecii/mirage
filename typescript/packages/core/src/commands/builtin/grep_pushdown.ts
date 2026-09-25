@@ -16,7 +16,8 @@ import type { Accessor } from '../../accessor/base.ts'
 import type { SearchOps, SearchQuery } from '../../vfs/types.ts'
 import type { GrepSearchOptions, GrepSearchMeta } from './types.ts'
 import type { PathSpec } from '../../types.ts'
-import { PatternType } from './constants.ts'
+import { getExtension } from '../resolve.ts'
+import { BINARY_EXTENSIONS, PatternType } from './constants.ts'
 import { hasUnresolvedGlob } from './utils/operands.ts'
 import { isStdin } from './utils/stream.ts'
 import { breSource } from './grep_pattern.ts'
@@ -143,6 +144,34 @@ export function isLiteralPattern(pattern: string, fixedString: boolean): boolean
   if (fixedString) return true
   const pt = classifyPattern(pattern, fixedString)
   return pt === PatternType.EXACT || (pt === PatternType.SIMPLE && !pattern.includes('.'))
+}
+
+// The term a whole-word search index may narrow a scan on, or null. A
+// word-based index (GitHub code search, Dropbox and Box file search) matches
+// whole words while grep matches substrings, so for a bare literal its answer
+// is a strict subset of the grep matches: a file holding the literal only
+// inside a longer word (quokka in quokkabuild) never comes back and would be
+// silently dropped from the scan. Under -w both sides mean the same thing,
+// and any tokenizer disagreement can only over-fetch, which the local scan
+// filters. A regex narrowed on an extracted literal stays excluded even under
+// -w (isLiteralPattern), and a newline-joined pattern list is a set of
+// alternatives no one literal is required by.
+export function wholeWordLiteral(
+  pattern: string | null,
+  fixedString: boolean,
+  wholeWord: boolean,
+): string | null {
+  if (pattern === null || !wholeWord || pattern.includes('\n')) return null
+  return isLiteralPattern(pattern, fixedString) ? pattern : null
+}
+
+// Drop the candidates a recursive walk would never have read. A narrowing
+// stands in for the walk it replaces, and that walk skips binary extensions,
+// so a candidate with one is dropped rather than downloaded. The result may
+// be empty, which a caller must not hand to grep as its operand list: no
+// operands means standard input.
+export function textCandidates(paths: readonly PathSpec[]): PathSpec[] {
+  return paths.filter((p) => !BINARY_EXTENSIONS.has(getExtension(p.virtual) ?? ''))
 }
 
 const PUSHDOWN_SHAPING_BOOL = [

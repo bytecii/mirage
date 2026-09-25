@@ -372,11 +372,8 @@ export class InvalidBranchNameError extends GitError {
   }
 }
 
-/** `branch -d` with nothing to delete. */
+/** `branch -d` with nothing to delete: git dies, 128 (pinned against git 2.50.1). */
 export class BranchNameRequiredError extends GitError {
-  override readonly prefix = 'error'
-  override readonly code = OPTION_EXIT
-
   constructor() {
     super('branch name required')
   }
@@ -878,20 +875,22 @@ export class TagNotFoundError extends GitError {
 }
 
 /**
- * `-n` on a `tag` line that deletes rather than lists.
+ * A listing option on a `tag` line that deletes rather than lists.
  *
- * `-n` asks for message lines beside each name, which only a listing prints,
- * and git makes it *imply* a listing rather than refuse it: `git tag -n1
- * nosuch` is a listing whose pattern matches nothing and exits 0. The
- * implication is what cannot happen once `-d` has already said what mode the
- * line is in, so git dies there instead, with the tags untouched. Refusing it
- * matters more here than the wording does: read as a listing flag and dropped,
- * the line went on to delete the refs its operands named. Pinned against git
- * 2.50.1.
+ * `-n` asks for message lines beside each name and `--contains` and its kin
+ * narrow which names are listed, all of which only a listing does, and git
+ * makes each *imply* a listing rather than refuse it: `git tag -n1 nosuch` is a
+ * listing whose pattern matches nothing and exits 0. The implication is what
+ * cannot happen once `-d` has already said what mode the line is in, so git
+ * dies there instead, with the tags untouched, naming the first of `-n`,
+ * `--contains`, `--no-contains`, `--points-at`, `--merged`, `--no-merged` the
+ * line holds. Refusing it matters more here than the wording does: read as a
+ * listing flag and dropped, the line went on to delete the refs its operands
+ * named. Pinned against git 2.50.1.
  */
 export class ListModeOnlyError extends GitError {
-  constructor() {
-    super("the '-n' option is only allowed in list mode")
+  constructor(option = '-n') {
+    super(`the '${option}' option is only allowed in list mode`)
   }
 }
 
@@ -1010,5 +1009,85 @@ export class IncompatibleOptionsError extends GitError {
 
   constructor(first: string, second: string) {
     super(`options '${first}' and '${second}' cannot be used together`)
+  }
+}
+
+/**
+ * Two revision-walk options git refuses to take together.
+ *
+ * The same sentence as IncompatibleOptionsError, from the revision parser
+ * rather than parse-options, so git dies with 128 instead of refusing with
+ * 129: `log --graph --reverse` (pinned against git 2.50.1).
+ */
+export class IncompatibleLogOptionsError extends GitError {
+  constructor(first: string, second: string) {
+    super(`options '${first}' and '${second}' cannot be used together`)
+  }
+}
+
+/**
+ * `--contains` or `--points-at` given a name that resolves to no object.
+ *
+ * Both refuse while the options are parsed, so the line exits 129 and nothing
+ * is listed; `--points-at` quotes the name and `--contains` does not, which is
+ * git's own inconsistency (pinned against git 2.50.1).
+ */
+export class MalformedObjectError extends GitError {
+  override readonly prefix = 'error'
+  override readonly code = OPTION_EXIT
+
+  constructor(name: string, quoted = false) {
+    super(`malformed object name ${quoted ? `'${name}'` : name}`)
+  }
+}
+
+/**
+ * `--merged` or `--no-merged` given a name that resolves to no object.
+ *
+ * The same mistake `MalformedObjectError` reports, and git dies on this one
+ * instead of refusing the option: exit 128 (pinned against git 2.50.1).
+ */
+export class MalformedMergeFilterError extends GitError {
+  constructor(name: string) {
+    super(`malformed object name ${name}`)
+  }
+}
+
+/**
+ * A commit filter given an object that is no commit, such as a blob.
+ *
+ * git names the object and its type, then says which option could not use it:
+ * `--contains` as `no such commit <name>` and `--merged` as the option itself
+ * (pinned against git 2.50.1).
+ */
+export class NotACommitError extends GitError {
+  override readonly prefix = 'error'
+  override readonly code = OPTION_EXIT
+
+  constructor(oid: string, type: string, reason: string) {
+    super(`object ${oid} is a ${type}, not a commit\nerror: ${reason}`)
+  }
+}
+
+/**
+ * `branch` asked to list and to delete on one line.
+ *
+ * `--contains` and its kin imply a listing, and a listing is one mode among
+ * the others, so a line that also deletes names two: git prints its usage and
+ * exits 129 (pinned against git 2.50.1). The lines are git's own, less the
+ * forms this build does not implement.
+ */
+export class BranchUsageError extends GitError {
+  override readonly prefix = null
+  override readonly code = OPTION_EXIT
+
+  constructor() {
+    super(
+      'usage: git branch [<options>] [-r | -a] [--merged] [--no-merged]\n' +
+        '   or: git branch [<options>] <branch-name> [<start-point>]\n' +
+        '   or: git branch [<options>] [-l] [<pattern>...]\n' +
+        '   or: git branch [<options>] [-r] (-d | -D) <branch-name>...\n' +
+        '   or: git branch [<options>] [-r | -a] [--points-at]',
+    )
   }
 }

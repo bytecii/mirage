@@ -16,9 +16,20 @@ import { RAM_COMMANDS } from './index.ts'
 import { describe, expect, it } from 'vitest'
 import { materialize } from '../../../io/types.ts'
 import { RAMVFS } from '../../../vfs/ram/ram.ts'
+import type { RegisteredCommand } from '../../config.ts'
+import { parseFlags } from '../../../workspace/executor/command/flags.ts'
+import { specOf } from '../../spec/builtins.ts'
 const RAM_MKTEMP = RAM_COMMANDS.filter((c) => c.name === 'mktemp' && c.filetype == null)
 
 const DEC = new TextDecoder()
+
+// What a registered command's writes predicate answers for a typed line,
+// read through the same parse the executor hands the mount.
+function writesFor(cmd: RegisteredCommand | undefined, argv: string[]): boolean {
+  if (cmd?.writes == null) throw new Error('the command declares no writes predicate')
+  const parsed = parseFlags(argv, specOf(cmd.name), cmd.name, '/data')
+  return cmd.writes(parsed.flagKwargs, parsed.paths)
+}
 
 async function runMktemp(
   flags: Record<string, string | boolean | number | string[]>,
@@ -67,5 +78,16 @@ describe('mktemp', () => {
     const path = out.trim()
     expect(path.startsWith('/data/mtd/t.')).toBe(true)
     expect(vfs.store.dirs.has(path)).toBe(true)
+  })
+})
+
+describe('mktemp says which invocations write', () => {
+  it.each([
+    [[], true],
+    [['-d'], true],
+    [['-u'], false],
+    [['--dry-run', '-d'], false],
+  ])('mktemp %j writes: %s', (argv, writes) => {
+    expect(writesFor(RAM_MKTEMP[0], argv)).toBe(writes)
   })
 })

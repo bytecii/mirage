@@ -18,7 +18,7 @@ import { mountedPath } from '../../../utils/key_prefix.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import { gunzip } from '../../../utils/compress.ts'
-import type { CommandFnResult, CommandOpts } from '../../config.ts'
+import type { CommandFnResult, CommandOpts, WritesFn } from '../../config.ts'
 import { resolveSource } from '../utils/stream.ts'
 
 const ENC = new TextEncoder()
@@ -33,6 +33,14 @@ function concat(chunks: Uint8Array[]): Uint8Array {
     offset += c.byteLength
   }
   return out
+}
+
+// Whether a gunzip invocation writes: each operand is replaced by its
+// content unless -c sends it to stdout or -t only tests it, and with no
+// operand gunzip filters stdin to stdout. Mirrors Python's gunzip_writes.
+export const gunzipWrites: WritesFn = (flags, paths) => {
+  const fl = new FlagView(flags, specOf('gunzip'))
+  return paths.length > 0 && !(fl.asBool('c') || fl.asBool('t'))
 }
 
 export async function gunzipGeneric(

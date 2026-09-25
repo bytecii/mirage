@@ -14,7 +14,7 @@
 
 import { gnuPhrase } from '../errors/posix.ts'
 import { dropTrailingSegments, respellOne } from './path.ts'
-import { quotesOperands, shellQuote } from './quote.ts'
+import { quotesOperands, shellQuote, shellQuoteAlways } from './quote.ts'
 import { rstripSlash, stripSlash } from './slash.ts'
 
 export interface FsError extends Error {
@@ -411,20 +411,39 @@ export function operandSpelling(
   return path
 }
 
+// The commands GNU words a failed operand as the step that failed rather
+// than as the bare name, the name always quoted (gnulib's quoteaf): a
+// missing file is `cannot open 'x' for reading`, and a directory, which
+// opens and then refuses the read, is `error reading 'x'`. Measured on
+// coreutils 9.7 (debian:stable-slim). Mirrors Python's
+// OPEN_FAILURE_COMMANDS. EFBIG and EBADF identify read failures in the
+// backend contract as well.
+export const OPEN_FAILURE_COMMANDS: ReadonlySet<string> = new Set(['head', 'tail'])
+
 // GNU coreutils stderr line for one failed path operand, spelled as typed
 // (PathSpec.rawPath). Byte-identical with the executor chokepoint and the
 // Python fs_error_line. Used by read-family commands that keep processing
 // remaining operands after one fails, where the caller holds the operand.
 // A command in SHELL_QUOTED_COMMANDS reports the operand shell-quoted when
 // it needs it ('*.txt'), the way GNU does; every other command reports it
-// bare.
+// bare. A command in OPEN_FAILURE_COMMANDS says which step failed instead,
+// except for standard input, whose `-` line is the one GNU prints when it
+// closes a stdin it could not read.
 export function fsErrorLine(
   cmdName: string,
   path: string | { virtual: string; rawPath?: string },
   err: unknown,
 ): string {
-  const label = quotesOperands(cmdName) ? shellQuote(virtualOf(path)) : virtualOf(path)
-  const strerror = gnuStrerror((err as { code?: string }).code)
+  const code = (err as { code?: string }).code
+  const strerror = gnuStrerror(code)
+  const typed = virtualOf(path)
+  if (OPEN_FAILURE_COMMANDS.has(cmdName) && strerror !== null && typed !== '-') {
+    const quoted = shellQuoteAlways(typed)
+    if (code === 'EISDIR' || code === 'EFBIG' || code === 'EBADF')
+      return `${cmdName}: error reading ${quoted}: ${strerror}\n`
+    return `${cmdName}: cannot open ${quoted} for reading: ${strerror}\n`
+  }
+  const label = quotesOperands(cmdName) ? shellQuote(typed) : typed
   if (strerror !== null) return `${cmdName}: ${label}: ${strerror}\n`
   return `${cmdName}: ${label}\n`
 }

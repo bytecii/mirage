@@ -24,7 +24,7 @@ import { specOf } from '../../spec/builtins.ts'
 import { patternArg } from '../grep_pattern.ts'
 import { rgGeneric } from '../generic/rg.ts'
 import { walkCandidates } from '../rg_scan.ts'
-import { narrowScope } from './pushdown.ts'
+import { narrowScope, scopeRefusal } from './pushdown.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 
 const ENC = new TextEncoder()
@@ -50,16 +50,21 @@ async function rgCommand(
       true,
       fl.asBool('w'),
       opts.index ?? undefined,
+      // A narrowing holds only files matching the searched literal: -v and
+      // --files-without-match print from the rest, and -f adds patterns code
+      // search never saw.
+      fl.asBool('v') || fl.asBool('files_without_match') || Boolean(fl.raw('f')),
     )
     resolved = narrowed.resolved
+    if (narrowed.usedSearch && resolved.length === 0) {
+      return [new Uint8Array(), new IOResult({ exitCode: 1 })]
+    }
     if (narrowed.fileCount > SCOPE_ERROR) {
       return [
         null,
         new IOResult({
           exitCode: 1,
-          stderr: ENC.encode(
-            `rg: ${String(narrowed.fileCount)} files in scope, narrow the path, or use -w to enable code search\n`,
-          ),
+          stderr: ENC.encode(scopeRefusal('rg', narrowed.fileCount, fl.asBool('w'))),
         }),
       ]
     }

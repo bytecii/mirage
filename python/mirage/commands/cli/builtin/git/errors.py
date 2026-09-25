@@ -453,14 +453,12 @@ class InvalidBranchNameError(GitError):
 
 
 class BranchNameRequiredError(GitError):
-    """``branch -d`` with nothing to delete.
+    """``branch -d`` with nothing to delete: git dies, 128 (pinned against
+    git 2.50.1).
 
     Args:
         None.
     """
-
-    prefix = "error"
-    code = OPTION_EXIT
 
     def __init__(self) -> None:
         super().__init__("branch name required")
@@ -1061,23 +1059,26 @@ class TagNotFoundError(GitError):
 
 
 class ListModeOnlyError(GitError):
-    """``-n`` on a ``tag`` line that deletes rather than lists.
+    """A listing option on a ``tag`` line that deletes rather than lists.
 
-    ``-n`` asks for message lines beside each name, which only a listing
-    prints, and git makes it *imply* a listing rather than refuse it:
-    ``git tag -n1 nosuch`` is a listing whose pattern matches nothing
-    and exits 0. The implication is what cannot happen once ``-d`` has
-    already said what mode the line is in, so git dies there instead,
-    with the tags untouched. Refusing it matters more here than the
-    wording does: read as a listing flag and dropped, the line went on
-    to delete the refs its operands named. Pinned against git 2.50.1.
+    ``-n`` asks for message lines beside each name and ``--contains``
+    and its kin narrow which names are listed, all of which only a
+    listing does, and git makes each *imply* a listing rather than
+    refuse it: ``git tag -n1 nosuch`` is a listing whose pattern matches
+    nothing and exits 0. The implication is what cannot happen once
+    ``-d`` has already said what mode the line is in, so git dies there
+    instead, with the tags untouched, naming the first of ``-n``,
+    ``--contains``, ``--no-contains``, ``--points-at``, ``--merged``,
+    ``--no-merged`` the line holds. Refusing it matters more here than
+    the wording does: read as a listing flag and dropped, the line went
+    on to delete the refs its operands named. Pinned against git 2.50.1.
 
     Args:
-        None.
+        option (str): the listing option the line holds.
     """
 
-    def __init__(self) -> None:
-        super().__init__("the '-n' option is only allowed in list mode")
+    def __init__(self, option: str = "-n") -> None:
+        super().__init__(f"the '{option}' option is only allowed in list mode")
 
 
 class TagLinesError(GitError):
@@ -1231,3 +1232,105 @@ class IncompatibleOptionsError(GitError):
     def __init__(self, first: str, second: str) -> None:
         super().__init__(f"options '{first}' and '{second}' cannot be used "
                          f"together")
+
+
+class IncompatibleLogOptionsError(GitError):
+    """Two revision-walk options git refuses to take together.
+
+    The same sentence as IncompatibleOptionsError, from the revision
+    parser rather than parse-options, so git dies with 128 instead of
+    refusing with 129: ``log --graph --reverse`` (pinned against git
+    2.50.1).
+
+    Args:
+        first (str): the first option as git names it.
+        second (str): the second.
+    """
+
+    def __init__(self, first: str, second: str) -> None:
+        super().__init__(f"options '{first}' and '{second}' cannot be used "
+                         f"together")
+
+
+class MalformedObjectError(GitError):
+    """``--contains`` or ``--points-at`` given a name that resolves to
+    no object.
+
+    Both refuse while the options are parsed, so the line exits 129 and
+    nothing is listed; ``--points-at`` quotes the name and
+    ``--contains`` does not, which is git's own inconsistency (pinned
+    against git 2.50.1).
+
+    Args:
+        name (str): the name as typed.
+        quoted (bool): whether git quotes it.
+    """
+
+    prefix = "error"
+    code = OPTION_EXIT
+
+    def __init__(self, name: str, quoted: bool = False) -> None:
+        shown = f"'{name}'" if quoted else name
+        super().__init__(f"malformed object name {shown}")
+
+
+class MalformedMergeFilterError(GitError):
+    """``--merged`` or ``--no-merged`` given a name that resolves to no
+    object.
+
+    The same mistake ``MalformedObjectError`` reports, and git dies on
+    this one instead of refusing the option: exit 128 (pinned against
+    git 2.50.1).
+
+    Args:
+        name (str): the name as typed.
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"malformed object name {name}")
+
+
+class NotACommitError(GitError):
+    """A commit filter given an object that is no commit, such as a blob.
+
+    git names the object and its type, then says which option could not
+    use it: ``--contains`` as ``no such commit <name>`` and ``--merged``
+    as the option itself (pinned against git 2.50.1).
+
+    Args:
+        sha (str): the object's id.
+        kind (str): its type.
+        reason (str): git's second line, after its ``error:``.
+    """
+
+    prefix = "error"
+    code = OPTION_EXIT
+
+    def __init__(self, sha: str, kind: str, reason: str) -> None:
+        super().__init__(
+            f"object {sha} is a {kind}, not a commit\nerror: {reason}")
+
+
+class BranchUsageError(GitError):
+    """``branch`` asked to list and to delete on one line.
+
+    ``--contains`` and its kin imply a listing, and a listing is one
+    mode among the others, so a line that also deletes names two: git
+    prints its usage and exits 129 (pinned against git 2.50.1). The
+    lines are git's own, less the forms this build does not implement.
+
+    Args:
+        None.
+    """
+
+    prefix = None
+    code = OPTION_EXIT
+
+    def __init__(self) -> None:
+        super().__init__(
+            "usage: git branch [<options>] [-r | -a] [--merged] "
+            "[--no-merged]\n"
+            "   or: git branch [<options>] <branch-name> [<start-point>]\n"
+            "   or: git branch [<options>] [-l] [<pattern>...]\n"
+            "   or: git branch [<options>] [-r] (-d | -D) <branch-name>...\n"
+            "   or: git branch [<options>] [-r | -a] [--points-at]")

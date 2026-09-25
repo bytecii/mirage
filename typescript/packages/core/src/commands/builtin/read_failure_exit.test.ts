@@ -94,7 +94,12 @@ describe('a read that fails answers like GNU', () => {
       const ws = await makeWs()
       const io = await ws.shell(template.replaceAll('{p}', '/ram/dir'))
       const stderr = io.stderrText
-      expect(stderr).toContain('/ram/dir: Is a directory')
+      // head carries GNU's own `error reading 'dir'`; the rest say the
+      // house `<cmd>: <path>: Is a directory` (see the python twin).
+      expect(
+        stderr.includes('/ram/dir: Is a directory') ||
+          stderr.includes("error reading '/ram/dir': Is a directory"),
+      ).toBe(true)
       expect(stderr).not.toContain('No such file')
     })
   }

@@ -205,7 +205,11 @@ async def test_tee_append_concatenates():
 
 
 @pytest.mark.asyncio
-async def test_tee_missing_path_raises():
-    _, wb, rs, _ = _make_backend({})
-    with pytest.raises(ValueError, match="missing operand"):
-        await tee([], (), read_stream=rs, write_bytes=wb, stdin=b"data")
+async def test_tee_without_a_path_copies_stdin():
+    _, wb, rs, store = _make_backend({})
+    output, io = await tee([], (),
+                           read_stream=rs,
+                           write_bytes=wb,
+                           stdin=b"data")
+    assert (output, io.exit_code) == (b"data", 0)
+    assert store == {}

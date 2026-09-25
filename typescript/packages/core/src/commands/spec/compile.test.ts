@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { describe, expect, it } from 'vitest'
-import { compileSpec, expandLong } from './compile.ts'
+import { compileSpec, expandGitLong, expandLong } from './compile.ts'
 import { CommandSpec, Option } from './types.ts'
 
 describe('compileSpec — count/choices/required/default tables', () => {
@@ -182,5 +182,39 @@ describe('pair options', () => {
     const compiled = compileSpec(spec)
     expect(compiled.pairDests.has('--arg')).toBe(true)
     expect(compiled.multipleDests.has('--arg')).toBe(true)
+  })
+})
+
+// git 2.50.1's `branch` and `show-ref` tables, as far as these cases reach.
+const BRANCH = [
+  '[no-]verbose',
+  '[no-]color',
+  'contains',
+  'no-contains',
+  '[no-]move',
+  'merged',
+  'no-merged',
+]
+const SHOW_REF = ['[no-]heads', '[no-]head']
+
+describe('expandGitLong', () => {
+  it('lets an exact name win over a longer one it prefixes', () => {
+    expect(expandGitLong(SHOW_REF, '--head')).toEqual({ spelling: '--head' })
+  })
+
+  it('expands a unique abbreviation, `no-` included', () => {
+    expect(expandGitLong(BRANCH, '--verb')).toEqual({ spelling: '--verbose' })
+    expect(expandGitLong(BRANCH, '--no-verb')).toEqual({ spelling: '--no-verbose' })
+    expect(expandGitLong(BRANCH, '--no-cont')).toEqual({ spelling: '--no-contains' })
+  })
+
+  it('names the last two candidates of an ambiguity, as git does', () => {
+    expect(expandGitLong(BRANCH, '--no-m')).toEqual({ ambiguous: ['--no-move', '--no-merged'] })
+    expect(expandGitLong(SHOW_REF, '--hea')).toEqual({ ambiguous: ['--heads', '--head'] })
+  })
+
+  it('answers nothing for a word no option starts with', () => {
+    expect(expandGitLong(BRANCH, '--zzz')).toBeNull()
+    expect(expandGitLong([], '--verb')).toBeNull()
   })
 })

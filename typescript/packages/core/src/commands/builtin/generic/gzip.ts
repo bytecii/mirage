@@ -18,7 +18,7 @@ import { mountedPath } from '../../../utils/key_prefix.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
 import { gzip, gunzip } from '../../../utils/compress.ts'
-import type { CommandFnResult, CommandOpts } from '../../config.ts'
+import type { CommandFnResult, CommandOpts, WritesFn } from '../../config.ts'
 import { resolveSource } from '../utils/stream.ts'
 
 const ENC = new TextEncoder()
@@ -34,6 +34,12 @@ function concat(chunks: Uint8Array[]): Uint8Array {
   }
   return out
 }
+
+// Whether a gzip invocation writes: each operand is replaced by its archive
+// unless -c sends the result to stdout, and with no operand gzip filters
+// stdin to stdout. Mirrors Python's gzip_writes.
+export const gzipWrites: WritesFn = (flags, paths) =>
+  paths.length > 0 && !new FlagView(flags, specOf('gzip')).asBool('c')
 
 export async function gzipGeneric(
   paths: PathSpec[],

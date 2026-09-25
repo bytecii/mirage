@@ -269,7 +269,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "head: '/data/*.md': No such file or directory\n"
+        "stderr": "head: cannot open '/data/*.md' for reading: No such file or directory\n"
       }
     },
     {
@@ -303,7 +303,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "tail: '/data/*.md': No such file or directory\n"
+        "stderr": "tail: cannot open '/data/*.md' for reading: No such file or directory\n"
       }
     },
     {

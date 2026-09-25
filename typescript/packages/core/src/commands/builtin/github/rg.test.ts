@@ -16,8 +16,17 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('./pushdown.ts', () => ({ narrowScope: vi.fn() }))
-vi.mock('../generic/rg.ts', () => ({ rgGeneric: vi.fn() }))
+import type * as PushdownModule from './pushdown.ts'
+import type * as GenericModule from '../generic/rg.ts'
+
+vi.mock('./pushdown.ts', async () => {
+  const actual = await vi.importActual<typeof PushdownModule>('./pushdown.ts')
+  return { ...actual, narrowScope: vi.fn() }
+})
+vi.mock('../generic/rg.ts', async () => {
+  const actual = await vi.importActual<typeof GenericModule>('../generic/rg.ts')
+  return { ...actual, rgGeneric: vi.fn() }
+})
 
 import { GitHubAccessor } from '../../../accessor/github.ts'
 import type { GitHubTransport } from '../../../core/github/client.ts'
@@ -61,6 +70,15 @@ const MAIN = new PathSpec({
   resolved: true,
 })
 
+async function exactFileSet(flags: CommandOpts['flags']): Promise<unknown> {
+  const cmd = GITHUB_RG[0]
+  if (cmd === undefined) throw new Error('rg not registered')
+  const root = new PathSpec({ virtual: '/', directory: '/', vfsPath: '' })
+  const opts: CommandOpts = { stdin: null, flags, filetypeFns: null, cwd: '/', index: null }
+  await cmd.fn(makeAccessor(), [root], ['import'], opts)
+  return narrow.mock.calls[0]?.[7]
+}
+
 beforeEach(() => {
   narrow.mockReset()
   generic.mockReset()
@@ -88,5 +106,17 @@ describe('github rg push-down', () => {
     expect(generic).not.toHaveBeenCalled()
     const [out, io] = result as [ByteSource, IOResult]
     expect([(await materialize(out)).byteLength, io.exitCode]).toEqual([0, 1])
+  })
+
+  it.each<[string, CommandOpts['flags']]>([
+    ['-v', { w: true, v: true }],
+    ['--files-without-match', { w: true, files_without_match: true }],
+    ['-f', { w: true, f: ['/docs/patterns.txt'] }],
+  ])('treats %s as needing every file', async (_flag, flags) => {
+    expect(await exactFileSet(flags)).toBe(true)
+  })
+
+  it('still narrows a plain -w search', async () => {
+    expect(await exactFileSet({ w: true })).toBe(false)
   })
 })

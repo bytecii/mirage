@@ -137,6 +137,18 @@ const LOG_OPTIONS = [
   }),
   new Option({ long: '--oneline', description: 'One abbreviated line per commit' }),
   new Option({ long: '--reverse', description: 'Print commits oldest first' }),
+  new Option({
+    long: '--graph',
+    description: 'Draw the commit history beside the log (implies --topo-order)',
+  }),
+  new Option({
+    long: '--topo-order',
+    description: 'Show no parent before all its children, one line of history at a time',
+  }),
+  new Option({
+    long: '--date-order',
+    description: 'Show no parent before all its children, otherwise newest first',
+  }),
   new Option({ long: '--all', description: 'Start from every ref as well as the revision' }),
   PRETTY_OPTION,
   FORMAT_OPTION,
@@ -266,6 +278,55 @@ const MV_OPTIONS = [
   new Option({ short: '-v', long: '--verbose', description: 'Be verbose' }),
 ]
 
+// git's ref-filter options, which `branch` and `tag` share. The four commit
+// filters take the next word as their commit, whatever it looks like
+// (`--merged --no-merged` names a commit called `--no-merged`), except as the
+// line's last word, where they read HEAD: parse-options' LASTARG_DEFAULT. The
+// spec has no word for that, so they are declared with an optional value (a
+// bare one is HEAD, `--merged=main` is main) and `filterWords` reattaches a
+// detached value from the verbatim argv. `--points-at` always takes a value.
+const REF_FILTER_OPTIONS = [
+  new Option({
+    long: '--contains',
+    type: 'str',
+    valueOptional: true,
+    multiple: true,
+    metavar: 'commit',
+    description: 'List only refs that contain the commit (HEAD if omitted)',
+  }),
+  new Option({
+    long: '--no-contains',
+    type: 'str',
+    valueOptional: true,
+    multiple: true,
+    metavar: 'commit',
+    description: "List only refs that don't contain the commit (HEAD if omitted)",
+  }),
+  new Option({
+    long: '--merged',
+    type: 'str',
+    valueOptional: true,
+    multiple: true,
+    metavar: 'commit',
+    description: 'List only refs reachable from the commit (HEAD if omitted)',
+  }),
+  new Option({
+    long: '--no-merged',
+    type: 'str',
+    valueOptional: true,
+    multiple: true,
+    metavar: 'commit',
+    description: 'List only refs not reachable from the commit (HEAD if omitted)',
+  }),
+  new Option({
+    long: '--points-at',
+    type: 'str',
+    multiple: true,
+    metavar: 'object',
+    description: 'List only refs that point at the object',
+  }),
+]
+
 const TAG_OPTIONS = [
   new Option({ short: '-l', long: '--list', description: 'List tag names' }),
   // git spells the count attached (`-n2`) or not at all, never as a separate
@@ -287,6 +348,7 @@ const TAG_OPTIONS = [
     description: 'Tag message (repeatable, one paragraph each)',
   }),
   new Option({ short: '-f', long: '--force', description: 'Replace the tag if exists' }),
+  ...REF_FILTER_OPTIONS,
 ]
 
 const BRANCH_OPTIONS = [
@@ -300,6 +362,8 @@ const BRANCH_OPTIONS = [
   new Option({ short: '-r', description: 'List remote-tracking branches' }),
   new Option({ short: '-d', long: '--delete', description: 'Delete a fully merged branch' }),
   new Option({ short: '-D', description: 'Delete a branch even if not merged' }),
+  new Option({ short: '-l', long: '--list', description: 'List branches matching the patterns' }),
+  ...REF_FILTER_OPTIONS,
 ]
 
 /**

@@ -28,7 +28,7 @@ import {
   type ShellParser,
 } from '../../shell/parse/index.ts'
 import type { ProvisionResult } from '../../provision/types.ts'
-import { errorVirtualPath, gnuStrerror } from '../../utils/errors.ts'
+import { formatFsError, isFsError } from '../../utils/errors.ts'
 import {
   hasAborted,
   lineStatusWriter,
@@ -778,14 +778,11 @@ async function runParsedLine(
       // pull); surface that as a failed command, not a crash. The command
       // name is the first token of the pipeline's failing stage; for a bare
       // command it is simply the command.
-      const strerror = gnuStrerror((err as { code?: string }).code)
       const cmdName = commandName(command) || command
       io.exitCode = 1
-      io.stderr = new TextEncoder().encode(
-        strerror !== null
-          ? `${cmdName}: ${errorVirtualPath(err)}: ${strerror}\n`
-          : `${err instanceof Error ? err.message : String(err)}\n`,
-      )
+      io.stderr = isFsError(err)
+        ? formatFsError(cmdName, err)
+        : new TextEncoder().encode(`${err instanceof Error ? err.message : String(err)}\n`)
       recordStatus(targetSession, 1)
       stdoutBytes = new Uint8Array()
     }

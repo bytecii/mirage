@@ -118,7 +118,7 @@
       "expect": {
         "exit": 1,
         "stdout": "==> /pg/public/tables/books/rows.jsonl <==\n{\"id\":1,\"title\":\"alpha\",\"author\":\"ada\",\"year\":2020,\"rating\":4.5}\n{\"id\":2,\"title\":\"beta\",\"author\":\"ben\",\"year\":2021,\"rating\":3.2}\n",
-        "stderr": "head: /pg/__nf_missing__.txt: No such file or directory\n"
+        "stderr": "head: cannot open '/pg/__nf_missing__.txt' for reading: No such file or directory\n"
       }
     },
     {
@@ -157,7 +157,7 @@
       "expect": {
         "exit": 1,
         "stdout": "==> /pg/public/tables/books/rows.jsonl <==\n{\"id\":4,\"title\":\"delta\",\"author\":\"ada\",\"year\":2023,\"rating\":4}\n{\"id\":5,\"title\":\"epsilon\",\"author\":\"ben\",\"year\":2024,\"rating\":2.5}\n",
-        "stderr": "tail: /pg/__nf_missing__.txt: No such file or directory\n"
+        "stderr": "tail: cannot open '/pg/__nf_missing__.txt' for reading: No such file or directory\n"
       }
     },
     {

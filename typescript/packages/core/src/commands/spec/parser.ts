@@ -16,7 +16,7 @@ import { resolvePath } from '../../utils/path.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import { type ArgmatchChoices, argmatch, valueClasses } from './argmatch.ts'
 import { BUILTIN_SPECS, isBuiltinGrammar } from './builtins.ts'
-import { type CompiledSpec, compileSpec, expandLong } from './compile.ts'
+import { type CompiledSpec, compileSpec, expandGitLong, expandLong } from './compile.ts'
 import {
   ARG_PLACEHOLDER,
   ARGMATCH_CHOICE_OPTIONS,
@@ -92,7 +92,6 @@ function argmatchDests(spec: CommandSpec): ReadonlySet<string> {
 export interface ParsedArgsInit {
   flags: Record<string, FlagValue>
   args: [string, ValueType][]
-  cachePaths?: string[]
   pathFlagValues?: string[]
   rawOperands?: [string, ValueType][]
   textFlagValues?: string[]
@@ -137,7 +136,6 @@ export interface ParsedArgsInit {
 export class ParsedArgs {
   readonly flags: Record<string, FlagValue>
   readonly args: [string, ValueType][]
-  readonly cachePaths: string[]
   readonly pathFlagValues: string[]
   readonly rawOperands: [string, ValueType][]
   readonly textFlagValues: string[]
@@ -189,7 +187,6 @@ export class ParsedArgs {
   constructor(init: ParsedArgsInit) {
     this.flags = init.flags
     this.args = init.args
-    this.cachePaths = init.cachePaths ?? []
     this.pathFlagValues = init.pathFlagValues ?? []
     this.rawOperands = init.rawOperands ?? []
     this.textFlagValues = init.textFlagValues ?? []
@@ -451,6 +448,15 @@ function matchDigitCluster(
  * declarations -- an identity the spec itself settles, so it is not a fact
  * about the caller at all.
  *
+ * `abbreviations` is the same kind of fact about the program reading the
+ * line: its own full table of long options (git's `--[no-]` notation), when it
+ * resolves an abbreviated long option against that table the way git's
+ * parse-options does. A partial spec cannot answer whether `--no-m` is
+ * ambiguous, since the option git would also match is one mirage never
+ * declared, so the program's table is what is asked; an empty table is a
+ * program that takes whole words only (git's revision walkers). Undefined
+ * leaves the getopt_long reading against the spec.
+ *
  * `parse_command` in parser.py is the twin.
  */
 export function parseCommand(
@@ -460,6 +466,7 @@ export function parseCommand(
   cmdName = '',
   env?: Readonly<Record<string, string>>,
   unknownIsOperand = false,
+  abbreviations?: readonly string[],
 ): ParsedArgs {
   const cs = compileSpec(spec)
   const argmatchDestSet = argmatchDests(spec)
@@ -472,30 +479,6 @@ export function parseCommand(
   const scanArgv = old !== null ? old.argv : argv
   const scanOrigins = old !== null ? old.origins : argv.map((_, idx) => idx)
 
-  const cachePaths: string[] = []
-  const filteredArgv: string[] = []
-  // origIndices[j] = argv position of filteredArgv[j]
-  const origIndices: number[] = []
-  let i = 0
-  while (i < scanArgv.length) {
-    const cur = scanArgv[i]
-    if (cur === '--cache') {
-      i += 1
-      for (;;) {
-        const next = scanArgv[i]
-        if (next === undefined || next.startsWith('-')) break
-        cachePaths.push(resolvePath(next, cwd))
-        i += 1
-      }
-    } else {
-      if (cur !== undefined) {
-        filteredArgv.push(cur)
-        origIndices.push(scanOrigins[i] ?? i)
-      }
-      i += 1
-    }
-  }
-
   const flags: Record<string, FlagValue> = {}
   // Every scalar value-flag occurrence, in scan order, beside the bag that
   // keeps only the last of each. Appended to by setValueFlag and read by
@@ -504,16 +487,16 @@ export function parseCommand(
   // rawIndices[k] = argv position of rawArgs[k]
   const rawIndices: number[] = []
   // Per-position operand kinds aligned with the caller's argv (null =
-  // a word the scan never reads, such as a --cache token). Positions,
-  // not value sets, so the same word can be TEXT in one slot and PATH
-  // in another:
+  // a word the scan never reads, such as tar's empty old-style cluster).
+  // Positions, not value sets, so the same word can be TEXT in one slot
+  // and PATH in another:
   //   grep  *.txt  *.txt                  -> [TEXT, PATH]
   //   find  /data  -name  *.txt           -> [PATH, TEXT, TEXT]
-  //   grep  --cache  /c  -e  pat  f.txt   -> [null, null, TEXT, TEXT, PATH]
-  // origIndices/rawIndices map the parser's shrunken views back to
-  // argv slots (filteredArgv drops --cache tokens, rawArgs keeps only
-  // operands); kinds must be written at the original positions or one
-  // dropped token shifts every later kind onto the wrong word.
+  //   tar   ""  f.txt                     -> [null, PATH]
+  // scanOrigins/rawIndices map the parser's views back to argv slots
+  // (scanArgv spells a tar cluster as one word per letter, rawArgs keeps
+  // only operands); kinds must be written at the original positions or
+  // one expanded cluster shifts every later kind onto the wrong word.
   const wordKinds: (ValueType | null)[] = new Array<ValueType | null>(argv.length).fill(null)
   // The directory the next path operand resolves against, and where it
   // was for each word already read. It only ever moves for a spec that
@@ -569,11 +552,9 @@ export function parseCommand(
     noLongOptionParser = builtin && NO_LONG_OPTIONS.has(cmdName)
     // gnulib's parse_long_options reads argv[1] only when it is the whole
     // line, so outside that one-argument window the program has no long
-    // options AT ALL and even an exact `--help` is an operand. Counted over
-    // filteredArgv because `--cache` is mirage's own out-of-band word and not
-    // part of the command line being emulated.
+    // options AT ALL and even an exact `--help` is an operand.
     const soleArgument = builtin && SOLE_ARGUMENT_LONG_OPTIONS.has(cmdName)
-    outsideSoleArgument = soleArgument && filteredArgv.length !== 1
+    outsideSoleArgument = soleArgument && argv.length !== 1
     // A dash-leading word this program answers by printing it as an operand
     // rather than by refusing it.
     lenientDashOperands = noLongOptionParser || soleArgument
@@ -587,16 +568,16 @@ export function parseCommand(
       }
     }
   }
-  i = 0
+  let i = 0
   let endOfFlags = false
 
-  while (i < filteredArgv.length) {
-    const tok = filteredArgv[i]
+  while (i < scanArgv.length) {
+    const tok = scanArgv[i]
     if (tok === undefined) break
     // Keep option words literal: the shape heuristic would treat
     // `-o/data/out` as a relative path. Synthesized tar flags mark the
     // original cluster here; values and operands receive their own kinds.
-    wordKinds[origIndices[i] ?? -1] = 'str'
+    wordKinds[scanOrigins[i] ?? -1] = 'str'
 
     if (!endOfFlags && spec.ignoreTokens.has(tok)) {
       // Expression syntax, never an operand of the declared kind: `find
@@ -615,7 +596,7 @@ export function parseCommand(
 
     if (endOfFlags) {
       rawArgs.push(tok)
-      rawIndices.push(origIndices[i] ?? -1)
+      rawIndices.push(scanOrigins[i] ?? -1)
       rawBases.push(base)
       i += 1
       continue
@@ -628,7 +609,7 @@ export function parseCommand(
         // declared: `expr --help x` is a syntax error on `x`, not a help
         // request.
         rawArgs.push(tok)
-        rawIndices.push(origIndices[i] ?? -1)
+        rawIndices.push(scanOrigins[i] ?? -1)
         rawBases.push(base)
         i += 1
         continue
@@ -642,7 +623,16 @@ export function parseCommand(
       const eqPos = tok.indexOf('=')
       const typed = eqPos === -1 ? tok : tok.slice(0, eqPos)
       let spelling = typed
-      if (!cs.dest.has(typed) && !noLongOptionParser) {
+      if (!cs.dest.has(typed) && abbreviations !== undefined) {
+        const resolved = expandGitLong(abbreviations, typed)
+        if (resolved !== null && 'ambiguous' in resolved) {
+          ambiguousOptions.push([tok, resolved.ambiguous])
+          optionErrorKinds.push('ambiguous')
+          i += 1
+          continue
+        }
+        if (resolved !== null && cs.dest.has(resolved.spelling)) spelling = resolved.spelling
+      } else if (!cs.dest.has(typed) && !noLongOptionParser) {
         const candidates = expandLong(cs, typed, synonyms)
         if (candidates.length === 1) {
           spelling = candidates[0] ?? typed
@@ -658,21 +648,21 @@ export function parseCommand(
       if (cs.longBoolSpellings.has(etok)) {
         setBoolFlag(flags, cs, etok)
         i += 1
-      } else if (isPair && eqPos === -1 && i + 2 < filteredArgv.length) {
+      } else if (isPair && eqPos === -1 && i + 2 < scanArgv.length) {
         // Two tokens, both recorded under the one dest, so the command
         // reads the accumulated list in twos.
-        setValueFlag(flags, refusals, cs, argmatchDestSet, spelling, filteredArgv[i + 1] ?? '')
-        setValueFlag(flags, refusals, cs, argmatchDestSet, spelling, filteredArgv[i + 2] ?? '')
+        setValueFlag(flags, refusals, cs, argmatchDestSet, spelling, scanArgv[i + 1] ?? '')
+        setValueFlag(flags, refusals, cs, argmatchDestSet, spelling, scanArgv[i + 2] ?? '')
         // The first token names the value and is always textual; the
         // option's own kind describes the second.
-        wordKinds[origIndices[i + 1] ?? -1] = 'str'
-        wordKinds[origIndices[i + 2] ?? -1] = cs.kindOf.get(spelling) ?? null
+        wordKinds[scanOrigins[i + 1] ?? -1] = 'str'
+        wordKinds[scanOrigins[i + 2] ?? -1] = cs.kindOf.get(spelling) ?? null
         i += 3
-      } else if (!isPair && cs.longValueSpellings.has(etok) && i + 1 < filteredArgv.length) {
-        setValueFlag(flags, refusals, cs, argmatchDestSet, etok, filteredArgv[i + 1] ?? '')
-        wordKinds[origIndices[i + 1] ?? -1] = cs.kindOf.get(etok) ?? null
-        if (cs.destOf(etok) === cs.baseDest) wordBases[origIndices[i + 1] ?? -1] = base
-        base = rebase(flags, cs, etok, filteredArgv[i + 1] ?? '', base)
+      } else if (!isPair && cs.longValueSpellings.has(etok) && i + 1 < scanArgv.length) {
+        setValueFlag(flags, refusals, cs, argmatchDestSet, etok, scanArgv[i + 1] ?? '')
+        wordKinds[scanOrigins[i + 1] ?? -1] = cs.kindOf.get(etok) ?? null
+        if (cs.destOf(etok) === cs.baseDest) wordBases[scanOrigins[i + 1] ?? -1] = base
+        base = rebase(flags, cs, etok, scanArgv[i + 1] ?? '', base)
         i += 2
       } else if (isPair) {
         if (eqPos === -1) {
@@ -698,7 +688,7 @@ export function parseCommand(
           optionErrorKinds.push('needs_value')
         } else if (lenientDashOperands) {
           rawArgs.push(tok)
-          rawIndices.push(origIndices[i] ?? -1)
+          rawIndices.push(scanOrigins[i] ?? -1)
           rawBases.push(base)
         } else if (eqPos !== -1 && cs.longBoolSpellings.has(spelling)) {
           // A boolean long handed a value. getopt_long knows the option, so
@@ -740,11 +730,11 @@ export function parseCommand(
       if (matchedOptional) continue
       let matchedValue = false
       for (const vf of cs.valueSpellings) {
-        if (tok === vf && i + 1 < filteredArgv.length) {
-          setValueFlag(flags, refusals, cs, argmatchDestSet, vf, filteredArgv[i + 1] ?? '')
-          wordKinds[origIndices[i + 1] ?? -1] = cs.kindOf.get(vf) ?? null
-          if (cs.destOf(vf) === cs.baseDest) wordBases[origIndices[i + 1] ?? -1] = base
-          base = rebase(flags, cs, vf, filteredArgv[i + 1] ?? '', base)
+        if (tok === vf && i + 1 < scanArgv.length) {
+          setValueFlag(flags, refusals, cs, argmatchDestSet, vf, scanArgv[i + 1] ?? '')
+          wordKinds[scanOrigins[i + 1] ?? -1] = cs.kindOf.get(vf) ?? null
+          if (cs.destOf(vf) === cs.baseDest) wordBases[scanOrigins[i + 1] ?? -1] = base
+          base = rebase(flags, cs, vf, scanArgv[i + 1] ?? '', base)
           i += 2
           matchedValue = true
           break
@@ -799,21 +789,14 @@ export function parseCommand(
           i += 1
           continue
         }
-        if (i + 1 < filteredArgv.length) {
+        if (i + 1 < scanArgv.length) {
           for (const name of mixed.bools) setBoolFlag(flags, cs, name)
-          setValueFlag(
-            flags,
-            refusals,
-            cs,
-            argmatchDestSet,
-            mixed.valueFlag,
-            filteredArgv[i + 1] ?? '',
-          )
-          wordKinds[origIndices[i + 1] ?? -1] = cs.kindOf.get(mixed.valueFlag) ?? null
+          setValueFlag(flags, refusals, cs, argmatchDestSet, mixed.valueFlag, scanArgv[i + 1] ?? '')
+          wordKinds[scanOrigins[i + 1] ?? -1] = cs.kindOf.get(mixed.valueFlag) ?? null
           if (cs.destOf(mixed.valueFlag) === cs.baseDest) {
-            wordBases[origIndices[i + 1] ?? -1] = base
+            wordBases[scanOrigins[i + 1] ?? -1] = base
           }
-          base = rebase(flags, cs, mixed.valueFlag, filteredArgv[i + 1] ?? '', base)
+          base = rebase(flags, cs, mixed.valueFlag, scanArgv[i + 1] ?? '', base)
           i += 2
           continue
         }
@@ -821,7 +804,7 @@ export function parseCommand(
 
       if (lenientDashOperands || NUMERIC_SHORT.test(tok)) {
         rawArgs.push(tok)
-        rawIndices.push(origIndices[i] ?? -1)
+        rawIndices.push(scanOrigins[i] ?? -1)
         rawBases.push(base)
       } else if (cs.valueSpellings.includes(tok)) {
         // A declared value flag with no argument left on the line.
@@ -848,7 +831,7 @@ export function parseCommand(
     }
 
     rawArgs.push(tok)
-    rawIndices.push(origIndices[i] ?? -1)
+    rawIndices.push(scanOrigins[i] ?? -1)
     rawBases.push(base)
     // The first operand ends option parsing outright under
     // argparse's REMAINDER, so a script's own flags reach the script
@@ -1002,7 +985,6 @@ export function parseCommand(
   return new ParsedArgs({
     flags,
     args: classified,
-    cachePaths,
     pathFlagValues,
     rawOperands,
     textFlagValues,

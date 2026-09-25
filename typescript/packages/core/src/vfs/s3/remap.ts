@@ -45,6 +45,7 @@ export function remapCommandsVfs(
       dst: cmd.dst,
       write: cmd.write,
       limit: cmd.limit,
+      writes: cmd.writes,
     })
   })
 }

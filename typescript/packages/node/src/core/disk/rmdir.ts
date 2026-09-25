@@ -16,10 +16,10 @@ import type { DiskAccessor } from '../../accessor/disk.ts'
 import { rmdir as fsRmdir } from 'node:fs/promises'
 import { invalidateAfterUnlink } from '@struktoai/mirage-core/cache/context'
 import type { PathSpec } from '@struktoai/mirage-core/types'
-import { resolveSafe } from './utils.ts'
+import { resolveInside } from './utils.ts'
 
 export async function rmdir(accessor: DiskAccessor, path: PathSpec): Promise<void> {
-  const full = resolveSafe(accessor.root, path.mountPath)
+  const full = await resolveInside(accessor.root, path)
   try {
     await fsRmdir(full)
   } catch (err) {
