@@ -14,7 +14,6 @@
 
 import pytest
 
-from mirage.core.hf_hub.client import HfHubError
 from mirage.core.hf_hub.read import read_bytes
 from mirage.observe.context import RecordingScope
 from mirage.types import MountMode, PathSpec, ReadPolicy, ReadSpec
@@ -129,12 +128,36 @@ async def test_a_mount_that_cannot_see_its_repo_fails_loudly():
     with serve(_hub({"a.txt": OLD}, fail={"tree": (401, "")})) as hub:
         ws = _ws(_vfs(hub), ReadPolicy.BOUNDED)
         try:
+            # A refusal reads as a directory the caller may not open, the
+            # error every file tool already knows how to report and skip.
             ls = await ws.shell("ls /m")
-            assert ls.exit_code == 1
-            assert await ls.stderr_str() == "ls: fake tree refused\n"
+            assert ls.exit_code != 0
+            assert "Permission denied" in await ls.stderr_str()
             cat = await ws.shell("cat /m/a.txt")
             assert cat.exit_code == 1
-            assert await cat.stderr_str() == "cat: fake tree refused\n"
+            assert await cat.stderr_str() == (
+                "cat: /m/a.txt: Permission denied\n")
+        finally:
+            await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_mount_does_not_hide_the_other_mounts():
+    # One hf mount the token cannot see must not blank out a search across
+    # the workspace: the walk reports that mount and keeps going.
+    with serve(_hub({"a.txt": OLD}, fail={"tree": (401, "")})) as hub:
+        ws = Workspace({
+            "/h": (_vfs(hub), MountMode.READ),
+            "/r": (RAMVFS(), MountMode.WRITE),
+        })
+        try:
+            await (await ws.shell("tee /r/n.txt",
+                                  stdin=b"needle\n")).materialize_stdout()
+            grep = await ws.shell("grep -r needle /")
+            assert await grep.materialize_stdout() == b"/r/n.txt:needle\n"
+            assert "Permission denied" in await grep.stderr_str()
+            find = await ws.shell("find / -type f")
+            assert b"/r/n.txt" in await find.materialize_stdout()
         finally:
             await ws.close()
 
@@ -153,7 +176,7 @@ async def test_an_expired_token_keeps_the_overlay():
             assert cp.exit_code == 1
             # The refusal, not "No such file": the tree the cold read rebuilt
             # was refused outright rather than read as empty.
-            assert (await cp.stderr_str()).endswith("fake tree refused\n")
+            assert (await cp.stderr_str()).endswith("Permission denied\n")
             meta = ws.namespace.meta_for("/m/a.txt")
             assert meta is not None and meta.mode == 0o600
         finally:
@@ -204,7 +227,7 @@ async def test_a_drift_check_the_hub_refuses_is_not_drift():
     with serve(_hub({"a.txt": OLD})) as hub:
         state = await _pinned_state(hub)
         hub.fail["tree"] = (401, "")
-        with pytest.raises(HfHubError, match="fake tree refused"):
+        with pytest.raises(PermissionError):
             await _load(state, _vfs(hub))
 
 
@@ -224,7 +247,7 @@ async def test_a_drift_check_on_a_loaded_mount_asks_one_path():
                 await _load(state, vfs)
             assert (hub.count("paths_info"), hub.count("tree")) == (1, 0)
             hub.fail["paths_info"] = (401, "")
-            with pytest.raises(HfHubError, match="fake paths_info refused"):
+            with pytest.raises(PermissionError):
                 await _load(state, vfs)
         finally:
             await ws.close()

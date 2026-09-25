@@ -12,14 +12,23 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from mirage.accessor.hf_hub import HfHubAccessor
 from mirage.cache.index import (NULL_INDEX, IndexCacheStore, IndexEntry,
                                 LookupStatus)
 from mirage.cache.index.lock import index_lock
+from mirage.core.hf_hub.client import HfHubError
+from mirage.core.hf_hub.constants import ABSENT_STATUSES
 from mirage.core.hf_hub.tree import (ensure_live_index, fetch_path, index_rows,
                                      local_rows, refill_index)
+from mirage.types import PathSpec
+from mirage.utils.errors import eacces
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +174,28 @@ async def point_lookup(
         return None
     entries, _ = index_rows(await fetch_path(accessor, rel), prefix)
     return Found(entry=entries.get(key_of(prefix, rel)))
+
+
+@contextmanager
+def refusals_denied(path_spec: PathSpec) -> Iterator[None]:
+    """Report a repository the Hub will not show as permission denied.
+
+    A 401, 403 or 404 for the repository or revision is the Hub declining
+    to show the listing, so the path answers the way a directory the caller
+    may not open does: every file tool already reports that and steps past
+    it, where a raw Hub error would stop a walk across other mounts. It is
+    never absence, which reconcile would turn into a delete.
+
+    Args:
+        path_spec (PathSpec): the path the operation was asked about.
+    """
+    try:
+        yield
+    except HfHubError as exc:
+        if exc.status not in ABSENT_STATUSES:
+            raise
+        log.debug("hf %s refused: %s", path_spec.virtual, exc)
+        raise eacces(path_spec) from exc
 
 
 def key_of(prefix: str, local: str) -> str:

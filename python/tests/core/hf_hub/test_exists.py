@@ -37,5 +37,5 @@ async def test_exists_lets_a_refusal_through(accessor):
     # "Cannot see the repo" is not "the file is absent".
     refused = AsyncMock(side_effect=HfHubError("expired", 401))
     with patch("mirage.core.hf_hub.tree.fetch_tree", refused):
-        with pytest.raises(HfHubError):
+        with pytest.raises(PermissionError):
             await exists(accessor, ps("a.txt"))

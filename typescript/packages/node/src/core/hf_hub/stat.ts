@@ -20,7 +20,7 @@ import { enoent } from '@struktoai/mirage-core/utils/errors'
 import { contentTypeForPath } from '@struktoai/mirage-core/utils/filetype'
 import { mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
 import type { HfHubAccessor } from '../../accessor/hf_hub.ts'
-import { dirStatEntry, keyOf, lookupRetrying, pointLookup } from './lookup.ts'
+import { dirStatEntry, keyOf, lookupRetrying, pointLookup, refusalsDenied } from './lookup.ts'
 
 /**
  * Render one tree row as a FileStat.
@@ -66,9 +66,12 @@ export async function stat(
   const key = keyOf(prefix, rel)
   // A probe through a throwaway index asks for this one path; everything else
   // answers from the mount's listing, loading it if need be.
-  const found =
-    (await pointLookup(accessor, index, prefix, rel)) ??
-    (await lookupRetrying(accessor, index, prefix, key))
+  const found = await refusalsDenied(
+    pathSpec,
+    async () =>
+      (await pointLookup(accessor, index, prefix, rel)) ??
+      (await lookupRetrying(accessor, index, prefix, key)),
+  )
   if (found.entry !== null) return statOf(found.entry)
   // A directory the tree implies but has no row of its own for still exists,
   // which is what a listing at the key proves.

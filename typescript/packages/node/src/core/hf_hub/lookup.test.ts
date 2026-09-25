@@ -526,12 +526,32 @@ describe('stat on an index that holds no tree', () => {
     )
   })
 
-  it.each([401, 403, 404])('raises a refused %i rather than reading absent', async (status) => {
-    vi.spyOn(client, 'hubPost').mockRejectedValue(new client.HfHubError('nope', status))
+  it.each([
+    [401, ''],
+    [403, ''],
+    [404, 'RepoNotFound'],
+    [404, 'RevisionNotFound'],
+  ])('reports a refused %i %s as permission denied', async (status, code) => {
+    // Not absence (which reconcile turns into a delete) and not a raw Hub error
+    // (which a recursive walk cannot step past).
+    vi.spyOn(client, 'hubPost').mockRejectedValue(new client.HfHubError('nope', status, code))
     const walk = vi.spyOn(client, 'hubGetResponse').mockResolvedValue(page([]))
+    expect(await codeOf(() => stat(loaded(), ps('a.txt'), new RAMIndexCacheStore()))).toBe('EACCES')
+    expect(walk).not.toHaveBeenCalled()
+  })
+
+  it('keeps a server failure a hub error', async () => {
+    vi.spyOn(client, 'hubPost').mockRejectedValue(new client.HfHubError('boom', 500))
+    vi.spyOn(client, 'hubGetResponse').mockResolvedValue(page([]))
     const err = await stat(loaded(), ps('a.txt'), new RAMIndexCacheStore()).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(client.HfHubError)
-    expect(walk).not.toHaveBeenCalled()
+    expect(String(err)).toContain('boom')
+  })
+
+  it('reports a refused tree walk as permission denied', async () => {
+    vi.spyOn(client, 'hubGetResponse').mockRejectedValue(new client.HfHubError('nope', 401))
+    const accessor = new HfHubAccessor({ repoId: 'acme/widget' } as never)
+    expect(await codeOf(() => stat(accessor, ps('a.txt'), new RAMIndexCacheStore()))).toBe('EACCES')
   })
 
   it('carries no token for an empty oid', async () => {
@@ -645,7 +665,7 @@ describe('exists on a refusal', () => {
     // "Cannot see the repo" is not "the file is absent".
     vi.spyOn(client, 'hubGetResponse').mockRejectedValue(new client.HfHubError('expired', 401))
     const accessor = new HfHubAccessor({ repoId: 'acme/widget' } as never)
-    await expect(pathExists(accessor, ps('a.txt'))).rejects.toBeInstanceOf(client.HfHubError)
+    expect(await codeOf(() => pathExists(accessor, ps('a.txt')))).toBe('EACCES')
     vi.restoreAllMocks()
   })
 })

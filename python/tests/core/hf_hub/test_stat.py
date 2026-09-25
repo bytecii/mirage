@@ -213,14 +213,34 @@ async def test_a_point_stat_refuses_rows_for_another_path(loaded):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [401, 403, 404])
-async def test_a_refused_point_stat_raises_rather_than_reading_absent(
-        loaded, status):
-    refused = AsyncMock(side_effect=HfHubError("nope", status))
+@pytest.mark.parametrize("status,code", [(401, ""), (403, ""),
+                                         (404, "RepoNotFound"),
+                                         (404, "RevisionNotFound")])
+async def test_a_refused_point_stat_is_permission_denied(loaded, status, code):
+    # Not absence (which reconcile turns into a delete) and not a raw Hub
+    # error (which a recursive walk cannot step past).
+    refused = AsyncMock(side_effect=HfHubError("nope", status, code))
     with patch("mirage.core.hf_hub.tree.hub_post", refused), _walk() as walk:
-        with pytest.raises(HfHubError):
+        with pytest.raises(PermissionError):
             await stat(loaded, ps("a.txt"), RAMIndexCacheStore())
     walk.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_point_stat_stays_a_hub_error(loaded):
+    # A server failure is not a refusal; it keeps its own message.
+    failed = AsyncMock(side_effect=HfHubError("boom", 500))
+    with patch("mirage.core.hf_hub.tree.hub_post", failed), _walk():
+        with pytest.raises(HfHubError, match="boom"):
+            await stat(loaded, ps("a.txt"), RAMIndexCacheStore())
+
+
+@pytest.mark.asyncio
+async def test_a_refused_tree_walk_is_permission_denied(accessor):
+    refused = AsyncMock(side_effect=HfHubError("nope", 401))
+    with patch("mirage.core.hf_hub.tree.hub_get_response", refused):
+        with pytest.raises(PermissionError):
+            await stat(accessor, ps("a.txt"), RAMIndexCacheStore())
 
 
 def test_stat_of_an_empty_id_carries_no_token():

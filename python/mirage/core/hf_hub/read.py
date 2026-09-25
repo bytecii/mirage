@@ -15,7 +15,7 @@
 from mirage.accessor.hf_hub import HfHubAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
 from mirage.core.hf_hub.client import etag_value, hub_bytes_tagged, resolve_url
-from mirage.core.hf_hub.lookup import key_of, lookup_retrying
+from mirage.core.hf_hub.lookup import key_of, lookup_retrying, refusals_denied
 from mirage.observe.context import record, start_op
 from mirage.types import PathSpec
 from mirage.utils.errors import eisdir, enoent
@@ -52,7 +52,9 @@ async def resolve_entry(
     rel = path_spec.mount_path.strip("/")
     if not rel:
         raise eisdir(virtual)
-    found = await lookup_retrying(accessor, index, prefix, key_of(prefix, rel))
+    with refusals_denied(path_spec):
+        found = await lookup_retrying(accessor, index, prefix,
+                                      key_of(prefix, rel))
     if found.is_dir:
         raise eisdir(virtual)
     if found.entry is None:

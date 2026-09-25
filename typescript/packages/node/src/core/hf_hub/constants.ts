@@ -94,7 +94,8 @@ export const GLOB_CHARS: readonly string[] = ['*', '?', '[']
 export const DEFAULT_COMMIT_MESSAGE = 'Update from mirage'
 
 // The statuses a refused tree walk comes back with when the repository,
-// revision or subtree cannot be seen. A mount reports them as errors; `hf
-// download` alone folds them into an empty listing, so its failure path can
-// ask the Hub which absence it was and name it in upstream's words.
+// revision or subtree cannot be seen. A mount reports them as permission
+// denied, which every file tool steps past; `hf download` alone folds them into
+// an empty listing, so its failure path can ask the Hub which absence it was
+// and name it in upstream's words.
 export const ABSENT_STATUSES: ReadonlySet<number> = new Set([401, 403, 404])

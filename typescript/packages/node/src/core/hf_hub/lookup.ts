@@ -15,7 +15,11 @@
 import { IndexEntry } from '@struktoai/mirage-core/cache/index/config'
 import type { IndexCacheStore } from '@struktoai/mirage-core/cache/index/store'
 import { LookupStatus } from '@struktoai/mirage-core/cache/index/config'
+import type { PathSpec } from '@struktoai/mirage-core/types'
+import { eacces } from '@struktoai/mirage-core/utils/errors'
 import type { HfHubAccessor } from '../../accessor/hf_hub.ts'
+import { HfHubError } from './client.ts'
+import { ABSENT_STATUSES } from './constants.ts'
 import { ensureLiveIndex, fetchPath, indexRows, localRows, refillIndex } from './tree.ts'
 import { withIndexLock } from '@struktoai/mirage-core/cache/index/lock'
 
@@ -130,6 +134,24 @@ export async function pointLookup(
   if (root.status !== LookupStatus.NOT_FOUND) return null
   const { entries } = indexRows(await fetchPath(accessor, rel), prefix)
   return { entry: entries.get(keyOf(prefix, rel)) ?? null, children: null }
+}
+
+/**
+ * Report a repository the Hub will not show as permission denied.
+ *
+ * A 401, 403 or 404 for the repository or revision is the Hub declining to
+ * show the listing, so the path answers the way a directory the caller may not
+ * open does: every file tool already reports that and steps past it, where a
+ * raw Hub error would stop a walk across other mounts. It is never absence,
+ * which reconcile would turn into a delete.
+ */
+export async function refusalsDenied<T>(pathSpec: PathSpec, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run()
+  } catch (err) {
+    if (err instanceof HfHubError && ABSENT_STATUSES.has(err.status)) throw eacces(pathSpec)
+    throw err
+  }
 }
 
 /** The mount-absolute key for a mount-local path. */

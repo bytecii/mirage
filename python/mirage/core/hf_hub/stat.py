@@ -17,7 +17,7 @@ import logging
 from mirage.accessor.hf_hub import HfHubAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
 from mirage.core.hf_hub.lookup import (dir_stat_entry, key_of, lookup_retrying,
-                                       point_lookup)
+                                       point_lookup, refusals_denied)
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import enoent
 from mirage.utils.filetype import content_type_for_path
@@ -89,9 +89,10 @@ async def stat(
     key = key_of(prefix, rel)
     # A probe through a throwaway index asks for this one path; everything
     # else answers from the mount's listing, loading it if need be.
-    found = await point_lookup(accessor, index, prefix, rel)
-    if found is None:
-        found = await lookup_retrying(accessor, index, prefix, key)
+    with refusals_denied(path_spec):
+        found = await point_lookup(accessor, index, prefix, rel)
+        if found is None:
+            found = await lookup_retrying(accessor, index, prefix, key)
     if found.entry is not None:
         return stat_of(found.entry)
     # A directory the tree implies but has no row of its own for still

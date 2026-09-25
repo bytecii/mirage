@@ -17,7 +17,7 @@ import type { PathSpec } from '@struktoai/mirage-core/types'
 import { listingError } from '@struktoai/mirage-core/utils/errors'
 import { mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
 import type { HfHubAccessor } from '../../accessor/hf_hub.ts'
-import { keyOf, lookup, probeDir, probeFile } from './lookup.ts'
+import { keyOf, lookup, probeDir, probeFile, refusalsDenied } from './lookup.ts'
 
 /**
  * List one directory of the repository.
@@ -32,7 +32,9 @@ export async function readdir(
   const prefix = mountPrefixOf(pathSpec.virtual, pathSpec.vfsPath)
   const target = pathSpec.pattern === null ? pathSpec : pathSpec.dir
   const path = target.mountPath
-  const found = await lookup(accessor, index, prefix, keyOf(prefix, path))
+  const found = await refusalsDenied(pathSpec, () =>
+    lookup(accessor, index, prefix, keyOf(prefix, path)),
+  )
   if (found.children !== null) return found.children
   // A git tree implies every directory above a path it holds, so this store
   // cannot hold an orphan and the one-probe form is the right one; both probes

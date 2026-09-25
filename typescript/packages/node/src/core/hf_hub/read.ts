@@ -21,7 +21,7 @@ import { mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
 import type { ByteWindow } from '@struktoai/mirage-core/utils/ranges'
 import type { HfHubAccessor } from '../../accessor/hf_hub.ts'
 import { etagValue, hubBytesTagged, resolveUrl } from './client.ts'
-import { isDir, keyOf, lookupRetrying } from './lookup.ts'
+import { isDir, keyOf, lookupRetrying, refusalsDenied } from './lookup.ts'
 
 export interface HfHubReadOptions {
   offset?: number
@@ -44,7 +44,9 @@ export async function resolveEntry(
   const prefix = mountPrefixOf(pathSpec.virtual, pathSpec.vfsPath)
   const rel = pathSpec.mountPath.replace(/^\/+|\/+$/g, '')
   if (rel === '') throw eisdir(virtual)
-  const found = await lookupRetrying(accessor, index, prefix, keyOf(prefix, rel))
+  const found = await refusalsDenied(pathSpec, () =>
+    lookupRetrying(accessor, index, prefix, keyOf(prefix, rel)),
+  )
   if (isDir(found)) throw eisdir(virtual)
   if (found.entry === null) throw enoent(virtual)
   return found.entry

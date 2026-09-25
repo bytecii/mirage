@@ -12,11 +12,13 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from mirage.cache.index import IndexEntry
+from mirage.cache.index.ram import RAMIndexCacheStore
+from mirage.core.hf_hub.client import HfHubError
 from mirage.core.hf_hub.read import read_bytes, resolve_entry, row_token
 from mirage.observe.context import RecordingScope
 from tests.core.hf_hub.conftest import file_row, ps, seed
@@ -180,3 +182,11 @@ async def test_read_stamps_nothing_when_the_bytes_are_another_version(
     finally:
         scope.close()
     assert [r.fingerprint for r in scope.records] == [None]
+
+
+@pytest.mark.asyncio
+async def test_a_read_of_a_repo_the_hub_refuses_is_permission_denied(accessor):
+    refused = AsyncMock(side_effect=HfHubError("nope", 403))
+    with patch("mirage.core.hf_hub.tree.hub_get_response", refused):
+        with pytest.raises(PermissionError):
+            await read_bytes(accessor, ps("a.txt"), RAMIndexCacheStore())

@@ -22,7 +22,6 @@ import { toStateDict } from '@struktoai/mirage-core/workspace/snapshot/state'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { HfHubAccessor } from '../../accessor/hf_hub.ts'
 import { FakeHub, blobOid, serveHub } from '../../core/hf_hub/_test_util.ts'
-import { HfHubError } from '../../core/hf_hub/client.ts'
 import { read } from '../../core/hf_hub/read.ts'
 import { Workspace } from '../../workspace.ts'
 import { buildVfs } from '../registry.ts'
@@ -133,10 +132,37 @@ describe('hf_hub under read: fresh', () => {
     fake.fail.set('tree', [401, ''])
     const w = ws(await vfsOf(fake), ReadPolicy.BOUNDED)
     try {
+      // A refusal reads as a directory the caller may not open, the error
+      // every file tool already knows how to report and skip.
       const ls = await w.shell('ls /m')
-      expect([ls.exitCode, DEC.decode(ls.stderr)]).toEqual([1, 'ls: fake tree refused\n'])
+      expect(ls.exitCode).not.toBe(0)
+      expect(DEC.decode(ls.stderr)).toContain('Permission denied')
       const cat = await w.shell('cat /m/a.txt')
-      expect([cat.exitCode, DEC.decode(cat.stderr)]).toEqual([1, 'cat: fake tree refused\n'])
+      expect([cat.exitCode, DEC.decode(cat.stderr)]).toEqual([
+        1,
+        'cat: /m/a.txt: Permission denied\n',
+      ])
+    } finally {
+      await w.close()
+    }
+  })
+
+  it('does not let a refused mount hide the other mounts', async () => {
+    // One hf mount the token cannot see must not blank out a search across the
+    // workspace: the walk reports that mount and keeps going.
+    const fake = await hub({ 'a.txt': OLD })
+    fake.fail.set('tree', [401, ''])
+    const w = new Workspace({
+      '/h': [await vfsOf(fake), MountMode.READ],
+      '/r': [new RAMVFS(), MountMode.WRITE],
+    })
+    try {
+      await w.shell('tee /r/n.txt', { stdin: ENC.encode('needle\n') })
+      const grep = await w.shell('grep -r needle /')
+      expect(DEC.decode(grep.stdout)).toBe('/r/n.txt:needle\n')
+      expect(DEC.decode(grep.stderr)).toContain('Permission denied')
+      const find = await w.shell('find / -type f')
+      expect(DEC.decode(find.stdout)).toContain('/r/n.txt')
     } finally {
       await w.close()
     }
@@ -156,7 +182,7 @@ describe('hf_hub under read: fresh', () => {
       expect(cp.exitCode).toBe(1)
       // The refusal, not "No such file": the tree the cold read rebuilt was
       // refused outright rather than read as empty.
-      expect(DEC.decode(cp.stderr).endsWith('fake tree refused\n')).toBe(true)
+      expect(DEC.decode(cp.stderr).endsWith('Permission denied\n')).toBe(true)
       expect(w.namespace.metaFor('/m/a.txt')?.mode).toBe(0o600)
     } finally {
       await w.close()
@@ -209,8 +235,7 @@ describe('hf_hub snapshot pins', () => {
     const state = await pinnedState(fake)
     fake.fail.set('tree', [401, ''])
     const err = await load(state, await vfsOf(fake)).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(HfHubError)
-    expect(String(err)).toContain('fake tree refused')
+    expect((err as { code?: string }).code).toBe('EACCES')
   })
 
   it('asks one path when the drift check runs on a loaded mount', async () => {
@@ -228,8 +253,7 @@ describe('hf_hub snapshot pins', () => {
       expect([fake.count('paths_info'), fake.count('tree')]).toEqual([1, 0])
       fake.fail.set('paths_info', [401, ''])
       const err = await load(state, vfs).catch((e: unknown) => e)
-      expect(err).toBeInstanceOf(HfHubError)
-      expect(String(err)).toContain('fake paths_info refused')
+      expect((err as { code?: string }).code).toBe('EACCES')
     } finally {
       await w.close()
     }

@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { IndexEntry } from '@struktoai/mirage-core/cache/index/config'
+import { RAMIndexCacheStore } from '@struktoai/mirage-core/cache/index/ram'
 import { runWithRecording } from '@struktoai/mirage-core/observe/context'
 import { PathSpec } from '@struktoai/mirage-core/types'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -116,5 +117,16 @@ describe('hf_hub read stamp', () => {
     ])
     const [, records] = await runWithRecording(() => read(loaded(), PATH))
     expect(records.map((r) => r.fingerprint)).toEqual([null])
+  })
+})
+
+describe('a read the Hub refuses', () => {
+  it('is permission denied', async () => {
+    vi.spyOn(client, 'hubGetResponse').mockRejectedValue(new client.HfHubError('nope', 403))
+    const accessor = new HfHubAccessor({ repoId: 'acme/widget' } as never)
+    const spec = new PathSpec({ virtual: '/a.txt', vfsPath: 'a.txt', directory: '/' })
+    const err = await read(accessor, spec, new RAMIndexCacheStore()).catch((e: unknown) => e)
+    expect((err as { code?: string }).code).toBe('EACCES')
+    vi.restoreAllMocks()
   })
 })
