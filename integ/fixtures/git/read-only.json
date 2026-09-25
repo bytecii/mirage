@@ -293,5 +293,9 @@
   "status --porcel",
   "log --onel -1",
   "show --sta main~1",
-  "branch --cont=evil-base"
+  "branch --cont=evil-base",
+  "log --date-order --topo-order --format=%s main",
+  "log --topo-order --date-order --format=%s main",
+  "log --topo-order --date-order --topo-order --format=%s main",
+  "log --graph --date-order --topo-order --oneline main"
 ]

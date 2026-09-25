@@ -41,7 +41,7 @@ def test_takes_a_dash_word_too_which_the_parser_read_as_an_option():
 
 
 def test_reads_an_attached_value_and_a_unique_prefix():
-    assert _words("branch", "--contains=side", "--no-m", "x") == [
+    assert _words("branch", "--cont=side", "--no-merged", "x") == [
         FilterWord("--contains", "side", False),
         FilterWord("--no-merged", "x", True),
     ]

@@ -133,8 +133,9 @@ export function parseFlags(fl: FlagView): LogFlags {
   const graph = fl.asBool('graph')
   if (graph && fl.asBool('reverse')) throw new IncompatibleLogOptionsError('--graph', '--reverse')
   let order: LogFlags['order'] = graph ? 'topo' : 'default'
-  if (fl.asBool('topo_order')) order = 'topo'
-  if (fl.asBool('date_order')) order = 'date'
+  for (const name of fl.typedOrder('topo_order', 'date_order')) {
+    if (fl.asBool(name)) order = name === 'topo_order' ? 'topo' : 'date'
+  }
   return {
     date: fl.asStr('date') ?? 'default',
     decorate: fl.asBool('decorate'),

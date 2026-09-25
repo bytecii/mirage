@@ -322,7 +322,7 @@ async def handle_cli(
     # table (parse-options), and its revision walkers take whole words
     # only.
     abbreviations = (GIT_LONG_OPTIONS.get(" ".join(result.path), ())
-                     if style is UsageStyle.GIT else None)
+                     if install.spec.name == "git" else None)
     parsed = parse_flags(list(result.argv),
                          parse_spec,
                          prog,

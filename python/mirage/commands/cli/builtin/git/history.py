@@ -167,10 +167,9 @@ def parse_flags(fl: FlagView) -> LogFlags:
     if graph and fl.as_bool("reverse"):
         raise IncompatibleLogOptionsError("--graph", "--reverse")
     order: Literal["default", "topo", "date"] = "topo" if graph else "default"
-    if fl.as_bool("topo_order"):
-        order = "topo"
-    if fl.as_bool("date_order"):
-        order = "date"
+    for name in fl.typed_order("topo_order", "date_order"):
+        if fl.as_bool(name):
+            order = "topo" if name == "topo_order" else "date"
     return LogFlags(
         date=fl.as_str("date") or "default",
         decorate=fl.as_bool("decorate"),

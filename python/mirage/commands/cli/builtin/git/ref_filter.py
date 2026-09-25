@@ -26,8 +26,9 @@ from mirage.commands.cli.builtin.git.errors import (GitError,
 from mirage.commands.cli.builtin.git.history import peel_to_commit
 from mirage.commands.cli.builtin.git.revparse import (resolve_object,
                                                       tag_object, unwrapped)
+from mirage.commands.cli.constants import GIT_LONG_OPTIONS
 from mirage.commands.cli.types import CLIInvocation
-from mirage.commands.spec.compile import compile_spec, expand_long
+from mirage.commands.spec.compile import compile_spec, expand_git_long
 
 CONTAINS = "--contains"
 NO_CONTAINS = "--no-contains"
@@ -106,8 +107,9 @@ def filter_words(inv: CLIInvocation[None]) -> list[FilterWord]:
             break
         if token.startswith("--"):
             typed, eq, attached = token.partition("=")
-            expanded = expand_long(cs, typed)
-            spelling = expanded[0] if len(expanded) == 1 else typed
+            expanded = expand_git_long(GIT_LONG_OPTIONS.get(inv.spec.name, ()),
+                                       typed)
+            spelling = expanded if isinstance(expanded, str) else typed
             if spelling in LIST_MODE_ORDER:
                 if eq:
                     words.append(FilterWord(spelling, attached, False))

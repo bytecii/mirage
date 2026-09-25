@@ -50,7 +50,7 @@ describe('filterWords', () => {
   })
 
   it('reads an attached value and a unique prefix', () => {
-    expect(words('branch', ['--contains=side', '--no-m', 'x'])).toEqual([
+    expect(words('branch', ['--cont=side', '--no-merged', 'x'])).toEqual([
       { option: '--contains', value: 'side', operand: false },
       { option: '--no-merged', value: 'x', operand: true },
     ])

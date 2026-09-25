@@ -14,7 +14,8 @@
 
 import git from 'isomorphic-git'
 
-import { compileSpec, expandLong } from '../../../spec/compile.ts'
+import { compileSpec, expandGitLong } from '../../../spec/compile.ts'
+import { GIT_LONG_OPTIONS } from '../../constants.ts'
 import type { CLIInvocation } from '../../types.ts'
 import { HEAD } from './constants.ts'
 import {
@@ -86,8 +87,8 @@ export function filterWords(inv: CLIInvocation): FilterWord[] {
     if (token.startsWith('--')) {
       const eq = token.indexOf('=')
       const typed = eq === -1 ? token : token.slice(0, eq)
-      const expanded = expandLong(cs, typed)
-      const spelling = expanded.length === 1 ? (expanded[0] ?? typed) : typed
+      const expanded = expandGitLong(GIT_LONG_OPTIONS.get(inv.spec.name) ?? [], typed)
+      const spelling = expanded !== null && 'spelling' in expanded ? expanded.spelling : typed
       const next = argv[i + 1]
       if (LIST_MODE_ORDER.includes(spelling)) {
         if (eq !== -1) {

@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from mirage.commands.cli.types import CLIInvocation, CLISpec
 from mirage.commands.errors import CommandTimeoutError
 from mirage.commands.spec.parser import parse_command
-from mirage.commands.spec.types import CommandSpec, Operand, Option
+from mirage.commands.spec.types import CommandSpec, Operand, Option, UsageStyle
 from mirage.io import IOResult
 from mirage.io.types import materialize
 from mirage.policy import Action, Deny, Policy
@@ -806,3 +806,20 @@ def test_a_service_reaching_root_drops_mount_caches():
     assert drops_mount_caches(make_install().spec)
     assert drops_mount_caches(script_install().spec)
     assert not drops_mount_caches(STASH)
+
+
+@pytest.mark.asyncio
+async def test_git_usage_style_does_not_change_custom_cli_option_grammar():
+    spec = CLISpec(name="custom",
+                   config_model=TokenConfig,
+                   usage_style=UsageStyle.GIT,
+                   subcommands=(CLISpec(name="branch",
+                                        fn=send,
+                                        options=(Option(long="--topic"), )), ))
+    install = CLIInstall(name="custom",
+                         spec=spec,
+                         config=TokenConfig(token="tok"))
+    stdout, io, _ = await handle_cli(install, ["custom", "branch", "--top"],
+                                     SessionState("t"))
+    assert io.exit_code == 0
+    assert await materialize(stdout) == b"sent[tok]\n"

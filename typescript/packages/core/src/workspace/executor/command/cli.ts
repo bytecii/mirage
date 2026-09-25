@@ -249,7 +249,7 @@ export async function handleCli(
   // git resolves an abbreviated long option against the verb's own full table
   // (parse-options), and its revision walkers take whole words only.
   const abbreviations =
-    style === UsageStyle.GIT ? (GIT_LONG_OPTIONS.get(result.path.join(' ')) ?? []) : undefined
+    install.spec.name === 'git' ? (GIT_LONG_OPTIONS.get(result.path.join(' ')) ?? []) : undefined
   const parsed = parseFlags(
     [...result.argv],
     parseSpec,
