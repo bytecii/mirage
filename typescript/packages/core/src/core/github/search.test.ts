@@ -123,9 +123,14 @@ describe('narrowPaths', () => {
     expect(out?.map((p) => p.virtual)).toEqual(['/src/a.py', '/src/big.bin'])
   })
 
-  it('returns null when the only scope fails', async () => {
+  it('returns null when the only scope fails, and says why', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     search.mockRejectedValueOnce(new Error('boom'))
     expect(await narrowPaths(makeAccessor(SMALL), 'needle', [scope('src')])).toBeNull()
+    expect(warn).toHaveBeenCalledWith(
+      'github code search failed (Error: boom); falling back to per-file scan',
+    )
+    warn.mockRestore()
   })
 
   it('filters a subdirectory scope by its repo-relative path', async () => {

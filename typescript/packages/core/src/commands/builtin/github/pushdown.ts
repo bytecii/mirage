@@ -17,6 +17,8 @@ import type { IndexCacheStore } from '../../../cache/index/store.ts'
 import { SCOPE_WARN } from '../../../core/github/constants.ts'
 import { resolveGlobOf } from '../generic_bind/index.ts'
 import { GITHUB_IO } from './io.ts'
+import { getExtension } from '../../resolve.ts'
+import { BINARY_EXTENSIONS } from '../constants.ts'
 import {
   countScopeFiles,
   scopeRelativeKey,
@@ -74,8 +76,11 @@ export async function narrowScope(
   const key = scopeRelativeKey(first)
   const fileCount = countScopeFiles(accessor.tree, key)
   const query = pattern !== null ? searchQuery(pattern, fixedString) : null
+  // A truncated tree cannot list every file code search skips, so no answer
+  // over it can be shown to be the whole set.
   const useSearch =
     !exactFileSet &&
+    !accessor.truncated &&
     query !== null &&
     wholeWord &&
     pattern !== null &&
@@ -86,7 +91,10 @@ export async function narrowScope(
   if (useSearch) {
     const narrowed = await narrowPaths(accessor, query, paths)
     if (narrowed !== null && narrowed.length > 0) {
-      return { resolved: narrowed, fileCount: narrowed.length, usedSearch: true }
+      // A recursive walk skips binary extensions; a narrowing holds only the
+      // files that walk would have read.
+      const kept = narrowed.filter((p) => !BINARY_EXTENSIONS.has(getExtension(p.virtual) ?? ''))
+      return { resolved: kept, fileCount: kept.length, usedSearch: true }
     }
   }
   const resolved = await resolveGlob(accessor, paths, index ?? undefined)

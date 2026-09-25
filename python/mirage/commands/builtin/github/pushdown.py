@@ -14,9 +14,11 @@
 
 from mirage.accessor.github import GitHubAccessor
 from mirage.cache.index import IndexCacheStore
+from mirage.commands.builtin.constants import BINARY_EXTENSIONS
 from mirage.commands.builtin.github.io import resolve_glob
 from mirage.commands.builtin.grep_pushdown import (is_literal_pattern,
                                                    search_query)
+from mirage.commands.resolve import get_extension
 from mirage.core.github.constants import SCOPE_WARN
 from mirage.core.github.pushdown import (count_scope_files, scope_relative_key,
                                          search_safe, should_use_search)
@@ -107,9 +109,12 @@ async def narrow_scope(
     # The scope size moved ahead of should_use_search: it is free, and
     # resolving the default branch is the one term here that can cost a
     # request.
+    # A truncated tree cannot list every file code search skips, so no
+    # answer over it can be shown to be the whole set.
     use_search = (not exact_file_set and query is not None and whole_word
                   and literal and file_count > SCOPE_WARN
-                  and search_safe(query) and should_use_search(
+                  and not accessor.truncated and search_safe(query)
+                  and should_use_search(
                       recursive=recursive,
                       on_default_branch=(await ensure_ref(accessor) == await
                                          ensure_default_branch(accessor)),
@@ -124,6 +129,12 @@ async def narrow_scope(
                                       accessor.tree,
                                       session=accessor.pool)
         if narrowed:
-            return narrowed, len(narrowed), True
+            # A recursive walk skips binary extensions; a narrowing holds
+            # only the files that walk would have read.
+            kept = [
+                p for p in narrowed
+                if get_extension(p.virtual) not in BINARY_EXTENSIONS
+            ]
+            return kept, len(kept), True
     resolved = await resolve_glob(accessor, paths, index)
     return resolved, file_count, False
