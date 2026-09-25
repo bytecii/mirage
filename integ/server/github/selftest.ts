@@ -1175,6 +1175,63 @@ async function main(): Promise<void> {
       ['comment 2'],
     )
     eq('last page terminates pagination', field(field(lastPage, 'pageInfo'), 'hasNextPage'), false)
+
+    // ---- GraphQL repository lists honour orderBy and filters, and a fork's
+    // parent is found by identity, so renaming the source keeps it
+    const v1Seed = await fetch(`${at}/reset`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tenants: [TENANT], fixture: 'v1' }),
+    })
+    check('the v1 fixture is seeded again', v1Seed.status === 200)
+    const repositoryNames = async (login: string, args: string): Promise<JsonValue[]> => {
+      const r = await post(`${at}/graphql`, {
+        query: `{ repositoryOwner(login: "${login}") { repositories(first: 10${args}) { nodes { name } } } }`,
+      })
+      eq(`repositories(${args}) has no errors`, field(r.body, 'errors'), null)
+      const page = field(field(field(r.body, 'data'), 'repositoryOwner'), 'repositories')
+      return (field(page, 'nodes') as JsonValue[]).map((node) => field(node, 'name'))
+    }
+    eq(
+      'repositories order by name ascending',
+      await repositoryNames('integ', ', orderBy: { field: NAME, direction: ASC }'),
+      ['repo-cli', 'repo-trunc', 'repo-v1'],
+    )
+    eq(
+      'repositories order by name descending',
+      await repositoryNames('integ', ', orderBy: { field: NAME, direction: DESC }'),
+      ['repo-v1', 'repo-trunc', 'repo-cli'],
+    )
+    eq(
+      'repositories a push order ties are listed by name',
+      await repositoryNames('integ', ', orderBy: { field: PUSHED_AT, direction: DESC }'),
+      ['repo-cli', 'repo-trunc', 'repo-v1'],
+    )
+    const forked = await post(`${at}/repos/integ/repo-v1/forks`, { name: 'v1-fork' })
+    check('the fork is created', forked.status < 300, String(forked.status))
+    const renamed = await fetch(`${at}/repos/integ/repo-v1`, {
+      method: 'PATCH',
+      headers: HEADERS,
+      body: JSON.stringify({ name: 'repo-v1-moved' }),
+    })
+    check('the source is renamed', renamed.status === 200, String(renamed.status))
+    const parent = await post(`${at}/graphql`, {
+      query:
+        '{ repository(owner: "integ-user", name: "v1-fork") { isFork parent { name owner { login } } } }',
+    })
+    eq('a fork names its parent under the name it carries now', field(parent.body, 'data'), {
+      repository: { isFork: true, parent: { name: 'repo-v1-moved', owner: { login: 'integ' } } },
+    })
+    eq(
+      'isFork narrows a repository list to forks',
+      await repositoryNames('integ-user', ', isFork: true'),
+      ['v1-fork'],
+    )
+    eq(
+      'isFork: false leaves the forks out',
+      await repositoryNames('integ-user', ', isFork: false'),
+      [],
+    )
     process.stdout.write(`github selftest: ${String(checks)} checks passed\n`)
   } finally {
     fake.child.kill('SIGTERM')

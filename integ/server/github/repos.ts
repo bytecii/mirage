@@ -48,7 +48,7 @@ import type { Handler } from './http.ts'
 // default_branch, which seeding decides.
 export function repoJson(repo: RepoRow): JsonValue {
   const meta = metaOf(repo)
-  const { default_branch: _ignored, parent_full_name: _parent, ...rest } = meta
+  const { default_branch: _ignored, parent_seq: _parent, ...rest } = meta
   return {
     name: repo.name,
     full_name: repo.fullName,
@@ -106,17 +106,20 @@ export async function repositoryNode(
   const language = text('language')
   const owned = repo.owner === DEFAULT_LOGIN
   const user = { id: nodeId('04:User', DEFAULT_LOGIN), login: DEFAULT_LOGIN, name: DEFAULT_LOGIN }
-  const parentName = text('parent_full_name')
-  const related = async (name: string | null): Promise<Record<string, unknown> | null> => {
-    const row = name === null ? null : await repoByName(ctx.db, ctx.tenant, name)
-    return row === null ? null : repositoryNode(ctx, row)
+  // A fork records its source by seq, the identity a rename keeps, so the
+  // parent is found under whatever name it carries now.
+  const parentSeq = typeof meta.parent_seq === 'number' ? meta.parent_seq : null
+  const parent = async (): Promise<Record<string, unknown> | null> => {
+    if (parentSeq === null) return null
+    const row = (await allRepos(ctx.db, ctx.tenant)).find((each) => each.seq === parentSeq)
+    return row === undefined ? null : repositoryNode(ctx, row)
   }
   return {
     id: nodeId('010:Repository', repo.seq),
     name: repo.name,
     nameWithOwner: repo.fullName,
     owner: ownerNode(repo.owner),
-    parent: () => related(parentName),
+    parent,
     templateRepository: null,
     description: text('description'),
     homepageUrl: text('homepage'),
@@ -201,20 +204,56 @@ export async function repositoryNode(
   }
 }
 
+/** The value a GraphQL `RepositoryOrder` field sorts one repository by. */
+function orderKey(repo: RepoRow, field: string): string | number {
+  const meta = metaOf(repo)
+  const date = (key: string): string =>
+    typeof meta[key] === 'string' ? (meta[key] as string) : REPO_DATE
+  if (field === 'NAME') return repo.name
+  if (field === 'STARGAZERS') {
+    return typeof meta.stargazers_count === 'number' ? meta.stargazers_count : 0
+  }
+  if (field === 'CREATED_AT') return date('created_at')
+  if (field === 'UPDATED_AT') return date('updated_at')
+  return date('pushed_at')
+}
+
+interface RepositoriesArgs {
+  first: number
+  after?: string | null
+  privacy?: string | null
+  isFork?: boolean | null
+  orderBy?: { field: string; direction: string } | null
+}
+
 /**
- * The repositories a GraphQL `RepositoryOwner` lists: the owner's own, in the
- * order the REST listing gives them, a page at a time.
+ * The repositories a GraphQL `RepositoryOwner` lists: the owner's own, narrowed
+ * by `privacy` and `isFork`, in the `orderBy` asked for, a page at a time.
+ * Repositories the order ties are listed by name, so a page is the same page
+ * on every request.
  */
 export async function ownedRepositories(
   ctx: { db: C; tenant: string },
   login: string,
 ): Promise<Record<string, unknown>> {
-  const rows = (await allRepos(ctx.db, ctx.tenant))
-    .filter((row) => row.owner === login)
-    .sort((a, b) => (a.fullName < b.fullName ? -1 : 1))
+  const owned = (await allRepos(ctx.db, ctx.tenant)).filter((row) => row.owner === login)
   return {
     login,
-    repositories: async ({ first, after }: { first: number; after?: string | null }) => {
+    repositories: async ({ first, after, privacy, isFork, orderBy }: RepositoriesArgs) => {
+      const rows = owned
+        .filter((row) => {
+          const meta = metaOf(row)
+          if (privacy === 'PUBLIC' && meta.private === true) return false
+          if (privacy === 'PRIVATE' && meta.private !== true) return false
+          return isFork === null || isFork === undefined || (meta.fork === true) === isFork
+        })
+        .sort((a, b) => {
+          const field = orderBy?.field ?? 'NAME'
+          const [x, y] = [orderKey(a, field), orderKey(b, field)]
+          const order = x < y ? -1 : x > y ? 1 : 0
+          if (order !== 0) return orderBy?.direction === 'DESC' ? -order : order
+          return a.fullName < b.fullName ? -1 : a.fullName > b.fullName ? 1 : 0
+        })
       const start = after ? Number(Buffer.from(after, 'base64').toString()) : 0
       const page = rows.slice(start, start + first)
       const end = start + page.length
@@ -509,7 +548,7 @@ const forkRepo: Handler = authed(
         metaJson: JSON.stringify({
           ...metaOf(source),
           fork: true,
-          parent_full_name: source.fullName,
+          parent_seq: source.seq,
         }),
         seq: await nextRepoSeq(ctx.db, ctx.tenant),
       },
