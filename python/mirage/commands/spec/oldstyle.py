@@ -24,13 +24,8 @@ class OldStyleArgv:
     Args:
         argv (list[str]): the rewritten words.
         origins (list[int]): for each rewritten word, the position it came
-            from in the caller's argv. Synthesized flag tokens all carry
-            the cluster's own position, so a word kind written back
-            through this table can only land on a real word, and the
-            TEXT kind the scan gives every flag token lands on the
-            cluster: it survives path classification verbatim and the
-            dispatch-time scan reads the same letters the hint-time scan
-            did.
+            from in the caller's argv; synthesized flags use the cluster's
+            position.
         needs_value (str | None): the cluster letter whose argument ran
             off the end of the line, when one did.
     """

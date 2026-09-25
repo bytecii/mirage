@@ -594,14 +594,9 @@ def parse_command(
 
     while i < len(filtered_argv):
         tok = filtered_argv[i]
-        # A word the scan starts on is TEXT unless the operand pass
-        # below re-kinds it: an option is the parser's own syntax, and
-        # so are `--` and tar's old-style letters (all synthesized onto
-        # the cluster's slot). Only a value read off the next word takes
-        # its option's kind. None would hand the word to the shape
-        # heuristic, which reads `-o/data/s1.txt` as a path relative to
-        # the cwd, because `-o` is a well-formed directory name; the
-        # value inside the word is this parser's to resolve.
+        # Keep option words literal: the shape heuristic would treat
+        # `-o/data/out` as a relative path. Synthesized tar flags mark the
+        # original cluster here; values and operands receive their own kinds.
         word_kinds[orig_indices[i]] = "str"
 
         if tok == "--" and not end_of_flags:

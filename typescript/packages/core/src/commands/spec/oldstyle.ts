@@ -17,12 +17,7 @@ import type { CompiledSpec } from './compile.ts'
 export interface OldStyleArgv {
   // The rewritten words.
   argv: string[]
-  // For each rewritten word, the position it came from in the caller's
-  // argv. Synthesized flag tokens all carry the cluster's own position,
-  // so a word kind written back through this table can only land on a
-  // real word, and the TEXT kind the scan gives every flag token lands
-  // on the cluster: it survives path classification verbatim and the
-  // dispatch-time scan reads the same letters the hint-time scan did.
+  // Original argv positions; synthesized flags use the cluster's position.
   origins: number[]
   // The cluster letter whose argument ran off the end of the line.
   needsValue: string | null

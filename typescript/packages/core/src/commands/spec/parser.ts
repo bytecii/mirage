@@ -593,15 +593,9 @@ export function parseCommand(
   while (i < filteredArgv.length) {
     const tok = filteredArgv[i]
     if (tok === undefined) break
-    // A word the scan starts on is TEXT unless the operand pass below
-    // re-kinds it: an option is the parser's own syntax, and so are `--`,
-    // expression tokens and tar's old-style letters (all synthesized onto
-    // the cluster's slot). Only a value read off the next word takes its
-    // option's kind. The kind is stated rather than left null, because
-    // null means "guess from the shape" and the shape of a grammar token
-    // says nothing about it: the heuristic reads `-o/data/s1.txt` as a
-    // path relative to the cwd, because `-o` is a well-formed directory
-    // name, while the value inside the word is this parser's to resolve.
+    // Keep option words literal: the shape heuristic would treat
+    // `-o/data/out` as a relative path. Synthesized tar flags mark the
+    // original cluster here; values and operands receive their own kinds.
     wordKinds[origIndices[i] ?? -1] = 'str'
 
     if (!endOfFlags && spec.ignoreTokens.has(tok)) {
