@@ -35,24 +35,14 @@ ZERO_TIME = "0001-01-01T00:00:00Z"
 
 @dataclass(frozen=True, slots=True)
 class _Struct:
-    """A Go struct gh prints: every field, in order, zero-filled.
-
-    Args:
-        fields (tuple): ``(name, shape, source)`` per field; ``source``
-            is the key read from the answer when it is spelled otherwise.
-        nullable (bool): whether it is a pointer, which prints null.
-    """
+    """Ordered, zero-filled Go fields; nullable structs preserve null."""
     fields: tuple[tuple[str, "Shape", str | None], ...]
     nullable: bool
 
 
 @dataclass(frozen=True, slots=True)
 class _List:
-    """A Go slice gh prints, null when the answer carried none.
-
-    Args:
-        item (Shape): each element's shape.
-    """
+    """A Go slice that preserves null when the answer carried none."""
     item: "Shape"
 
 
