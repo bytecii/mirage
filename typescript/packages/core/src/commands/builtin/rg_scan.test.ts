@@ -283,11 +283,10 @@ function digitReaddirFn(path: string): Promise<string[]> {
   return Promise.reject(new Error(`not a dir: ${path}`))
 }
 
-describe('rgFull -o GNU semantics', () => {
-  // GNU grep 3.11: an empty match prints nothing at all, but the line is
-  // still selected, so -c says 1 and the exit status is 0. Every non-empty
-  // match prints, one per line.
-  it('prints nothing for an empty match yet counts the line', async () => {
+describe('rgFull -o ripgrep semantics', () => {
+  // ripgrep 14.1.1: every match prints on its own line, an empty one included,
+  // found the way Rust's regex iterates, and -c counts the matches.
+  it('prints each empty match and counts it', async () => {
     const printed = await rgFull(
       digitReaddirFn,
       digitStatFn,
@@ -297,7 +296,7 @@ describe('rgFull -o GNU semantics', () => {
       opts({ onlyMatching: true }),
       null,
     )
-    expect(printed).toEqual([])
+    expect(printed).toEqual(['', '', ''])
     const counted = await rgFull(
       digitReaddirFn,
       digitStatFn,
@@ -307,7 +306,7 @@ describe('rgFull -o GNU semantics', () => {
       opts({ onlyMatching: true, countOnly: true }),
       null,
     )
-    expect(counted).toEqual(['1'])
+    expect(counted).toEqual(['3'])
   })
 
   it('prints every non-empty match on the line', async () => {
@@ -323,7 +322,7 @@ describe('rgFull -o GNU semantics', () => {
     expect(out).toEqual(['1', '2'])
   })
 
-  it('drops the empty matches around a non-empty one', async () => {
+  it('prints the empty matches around a non-empty one', async () => {
     const out = await rgFull(
       digitReaddirFn,
       digitStatFn,
@@ -333,7 +332,7 @@ describe('rgFull -o GNU semantics', () => {
       opts({ onlyMatching: true }),
       null,
     )
-    expect(out).toEqual(['1'])
+    expect(out).toEqual(['', '1', ''])
   })
 })
 
@@ -453,8 +452,8 @@ describe('rg -b / --byte-offset', () => {
 })
 
 describe('rgFull reports selection on the IOResult it is given', () => {
-  // Selection cannot be read off the printed lines under -o: a directory
-  // whose only matches are zero-width prints nothing and GNU still exits 0.
+  // The status rides the IOResult, not the printed lines; a zero-width match
+  // selects its line and prints an empty piece.
   function emptyReaddirFn(path: string): Promise<string[]> {
     if (path === '/off') return Promise.resolve(['/off/empty.txt'])
     return Promise.reject(new Error(`not a dir: ${path}`))
@@ -473,7 +472,7 @@ describe('rgFull reports selection on the IOResult it is given', () => {
       null,
       io,
     )
-    expect(out).toEqual([])
+    expect(out).toEqual(['/off/empty.txt:', '/off/empty.txt:', '/off/empty.txt:'])
     expect(io.exitCode).toBe(0)
   })
 
@@ -507,7 +506,7 @@ describe('rgFull reports selection on the IOResult it is given', () => {
       null,
       io,
     )
-    expect(out).toEqual([])
+    expect(out).toEqual(['', '', ''])
     expect(io.exitCode).toBe(0)
   })
 })
@@ -624,24 +623,28 @@ describe('rgFull -m 0 selects nothing', () => {
   })
 })
 
-describe('rgFull -o -v prints nothing', () => {
-  // GNU grep 3.11 over `abc\ndef\n` answers zero bytes and exit 0 for
-  // `grep -ov abc`, and `1` for `grep -ovc`. ripgrep prints the whole line,
-  // and GNU is the reference this family already follows for -o.
-  it('prints nothing', async () => {
+describe('rgFull -o -v prints each selected line whole', () => {
+  // ripgrep 14.1.1 over `abc\ndef\n` answers `def` for `rg -ov abc` and `0`
+  // for `rg -ovc abc`, counting matches, where GNU grep prints nothing and
+  // counts the line. rg follows ripgrep.
+  it('prints the line whole', async () => {
     const io = new IOResult({ exitCode: 1 })
-    expect(await raw('/raw/ov.txt', 'abc', { onlyMatching: true, invert: true }, io)).toEqual([])
+    expect(await raw('/raw/ov.txt', 'abc', { onlyMatching: true, invert: true }, io)).toEqual([
+      'def',
+    ])
     expect(io.exitCode).toBe(0)
   })
 
-  it('still counts the selected line', async () => {
+  it('counts no matches', async () => {
     expect(
       await raw('/raw/ov.txt', 'abc', { onlyMatching: true, invert: true, countOnly: true }),
-    ).toEqual(['1'])
+    ).toEqual(['0'])
   })
 
-  it('prints nothing from a walk', async () => {
-    expect(await raw('/rawdir', 'abc', { onlyMatching: true, invert: true })).toEqual([])
+  it('prints the line whole from a walk', async () => {
+    expect(await raw('/rawdir', 'abc', { onlyMatching: true, invert: true })).toEqual([
+      '/raw/ov.txt:def',
+    ])
   })
 })
 

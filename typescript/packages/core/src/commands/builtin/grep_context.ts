@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { AsyncLineIterator } from '../../io/async_line_iterator.ts'
-import { decodeLine, encodeLine, prefixOf } from './grep_offsets.ts'
+import { decodeLine, encodeLine, MatchOffsets, prefixOf, rgPieces } from './grep_offsets.ts'
 
 const SEPARATOR = new TextEncoder().encode('--\n')
 
@@ -36,7 +36,9 @@ const SEPARATOR = new TextEncoder().encode('--\n')
  * selected line and `-` on a context line; the `--` separator carries none.
  * `trailingMatches` is ripgrep's -m: once -m has selected its last line, a
  * line in that line's trailing context that would be selected prints as
- * selected, still counted as context; GNU prints it as context.
+ * selected, still counted as context; GNU prints it as context. `pieces` is
+ * ripgrep's -o, which prints every line, selected or context, as its matches
+ * (`rgPieces`), each with its own -b offset; GNU's -o prints no context.
  */
 export class ContextRenderer {
   // GNU selects no line at all under -m0, context and all, so there is
@@ -59,6 +61,7 @@ export class ContextRenderer {
     private readonly byteOffsets = false,
     private readonly label: string | null = null,
     private readonly trailingMatches = false,
+    private readonly pieces = false,
   ) {
     this.finished = maxCount === 0
   }
@@ -98,13 +101,19 @@ export class ContextRenderer {
   }
 
   private render(index: number, line: string, start: number, selected: boolean): Uint8Array {
-    const fields = prefixOf(
-      this.lineNumbers ? index + 1 : null,
-      this.byteOffsets ? start : null,
-      selected,
-    )
     const name = this.label === null ? '' : `${this.label}${selected ? ':' : '-'}`
-    return encodeLine(`${name}${fields}${line}\n`)
+    const pieces: [number, string][] = this.pieces ? rgPieces(this.pat, line) : [[0, line]]
+    const offsets = this.byteOffsets ? new MatchOffsets(start, line) : null
+    let text = ''
+    for (const [at, piece] of pieces) {
+      const fields = prefixOf(
+        this.lineNumbers ? index + 1 : null,
+        offsets?.at(at) ?? null,
+        selected,
+      )
+      text += `${name}${fields}${piece}\n`
+    }
+    return encodeLine(text)
   }
 }
 
@@ -124,6 +133,7 @@ export function grepContextLines(
   byteOffsets = false,
   label: string | null = null,
   trailingMatches = false,
+  pieces = false,
 ): Uint8Array[] {
   const renderer = new ContextRenderer(
     pat,
@@ -135,6 +145,7 @@ export function grepContextLines(
     byteOffsets,
     label,
     trailingMatches,
+    pieces,
   )
   const out: Uint8Array[] = []
   for (const line of lines) {
@@ -156,6 +167,7 @@ export async function* grepContextStream(
   byteOffsets = false,
   label: string | null = null,
   trailingMatches = false,
+  pieces = false,
 ): AsyncIterable<Uint8Array> {
   const renderer = new ContextRenderer(
     pat,
@@ -167,6 +179,7 @@ export async function* grepContextStream(
     byteOffsets,
     label,
     trailingMatches,
+    pieces,
   )
   const lines = new AsyncLineIterator(source)
   while (!renderer.finished) {

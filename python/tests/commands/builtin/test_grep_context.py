@@ -19,7 +19,8 @@ def _render(lines, pat=ABC, **kw):
                               kw.get("max_count"), kw.get("after_context", 0),
                               kw.get("before_context", 0),
                               kw.get("byte_offsets", False), kw.get("label"),
-                              kw.get("trailing_matches", False))
+                              kw.get("trailing_matches", False),
+                              kw.get("pieces", False))
 
 
 class TestMaxCountZeroSelectsNothing:
@@ -279,3 +280,54 @@ class TestTrailingMatches:
                        max_count=1,
                        after_context=1,
                        trailing_matches=True) == [b"1:hello\n", b"2:world\n"]
+
+
+class TestPiecesPrintEveryLineAsItsMatches:
+    """ripgrep's -o prints context too, each line as its matches.
+
+    Measured on ripgrep 14.1.1: a line with no match prints whole, which is
+    how both a context line and an inverted selection print.
+    """
+
+    def test_context_lines_without_a_match_print_whole(self):
+        # `rg -o -n -C1 b` over a\nb\nc\n.
+        assert _render(["a", "b", "c"],
+                       re.compile("b"),
+                       line_numbers=True,
+                       after_context=1,
+                       before_context=1,
+                       pieces=True) == [b"1-a\n", b"2:b\n", b"3-c\n"]
+
+    def test_a_context_line_prints_as_its_matches(self):
+        # `rg -o -v -C1 'a|y'` over xay\nb\n.
+        assert _render(["xay", "b"],
+                       re.compile("a|y"),
+                       invert=True,
+                       before_context=1,
+                       pieces=True) == [b"a\ny\n", b"b\n"]
+
+    def test_each_piece_carries_its_own_byte_offset(self):
+        # `rg -o -b -v -C1 'a|y'` over xay\nb\n.
+        assert _render(["xay", "b"],
+                       re.compile("a|y"),
+                       invert=True,
+                       before_context=1,
+                       byte_offsets=True,
+                       pieces=True) == [b"1-a\n2-y\n", b"4:b\n"]
+
+    def test_the_label_leads_every_piece(self):
+        # `rg -o -H -C1 a` over aa\nb\n in /data/rgo8.txt.
+        assert _render(["aa", "b"],
+                       re.compile("a"),
+                       after_context=1,
+                       label="/data/rgo8.txt",
+                       pieces=True) == [
+                           b"/data/rgo8.txt:a\n/data/rgo8.txt:a\n",
+                           b"/data/rgo8.txt-b\n"
+                       ]
+
+    def test_gnu_prints_the_line_whole(self):
+        assert _render(["xay", "b"],
+                       re.compile("a|y"),
+                       invert=True,
+                       before_context=1) == [b"xay\n", b"b\n"]

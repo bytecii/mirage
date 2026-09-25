@@ -8,10 +8,9 @@ from mirage.cache.read_through import (cache_aware_bound_bytes,
 from mirage.commands.builtin.grep_offsets import decode_line
 from mirage.commands.builtin.grep_pattern import (  # yapf: disable
     compile_pattern, resolve_pattern)
-from mirage.commands.builtin.grep_scan import (exit_code_for,
-                                               grep_count_has_matches,
-                                               grep_lines, grep_stream,
-                                               nonzero_count_stream)
+from mirage.commands.builtin.grep_scan import (exit_code_for, grep_lines,
+                                               grep_stream,
+                                               selected_count_stream)
 from mirage.commands.builtin.rg_scan import rg_full
 from mirage.commands.builtin.utils.constants import STDIN_OPERAND
 from mirage.commands.builtin.utils.lines import split_lines
@@ -155,14 +154,14 @@ def prints_context(f: RgFlags) -> bool:
     """Whether the output shows -A/-B/-C context.
 
     Only printed lines carry it: -c, -l and --files-without-match answer
-    per file, and -o drops it (ripgrep prints -o's context its own way).
+    per file. -o keeps it, each line printed as its matches.
 
     Args:
         f (RgFlags): the parsed flags.
     """
     if f.count_only or f.files_only or f.files_without_match:
         return False
-    return bool(f.context_before or f.context_after) and not f.only_matching
+    return bool(f.context_before or f.context_after)
 
 
 async def stream_hits(source: AsyncIterator[bytes],
@@ -197,7 +196,8 @@ async def stream_hits(source: AsyncIterator[bytes],
                     io=io,
                     byte_offsets=f.byte_offsets,
                     context_label=label,
-                    trailing_matches=True))
+                    trailing_matches=True,
+                    pieces=True))
     hits = split_lines(decode_line(printed))
     if label is None or f.count_only or prints_context(f):
         # The context renderer leads each line with the label itself.
@@ -237,8 +237,8 @@ async def operand_records(source: AsyncIterator[bytes], name: str,
     if scanned.exit_code == 0:
         io.exit_code = 0
     if f.count_only:
-        # grep_stream prints a zero count; ripgrep lists nothing for it.
-        if not grep_count_has_matches(hits):
+        # ripgrep lists nothing for an input that selected no line.
+        if scanned.exit_code != 0:
             return []
         return [f"{name}:{hits[0]}" if label else hits[0]]
     return hits
@@ -344,10 +344,8 @@ async def rg(
     if needs_full:
         warnings_f: list[str] = []
         results: list[str] = []
-        # Status comes from selection, not from the printed lines:
-        # under -o a zero-width match selects the line and prints
-        # nothing, so an empty `results` is not "nothing matched".
-        # `grep -r` reads its status the same way.
+        # Status comes from selection, not from the printed lines, the
+        # way `grep -r` reads its status.
         full_io = IOResult(exit_code=1)
         # ripgrep puts `--` between one operand's context and the next
         # one's, labelled or not.
@@ -403,11 +401,8 @@ async def rg(
     if len(paths) > 1 or f.with_filename:
         all_results: list[str] = []
         warnings: list[str] = []
-        # Status comes from selection, not from the printed lines:
-        # with -o a zero-width match selects the line and prints
-        # nothing, so `all_results` is no longer a proxy for
-        # "nothing matched". Same per-file IOResult that
-        # `grep_generic` reads selection off.
+        # Status comes from selection, not from the printed lines: the
+        # same per-file IOResult that `grep_generic` reads selection off.
         matched = False
         for p in paths:
             file_io = IOResult(exit_code=1)
@@ -430,12 +425,21 @@ async def rg(
                 # where GNU and the single-operand path (which counts
                 # raw bytes in `grep_stream`) both say 2.
                 data = split_lines(decode_line(raw))
-                hits = grep_lines(name, data, pat, f.invert, f.line_numbers,
-                                  f.count_only, f.files_only, f.only_matching,
-                                  f.max_count, file_io, f.byte_offsets)
+                hits = grep_lines(name,
+                                  data,
+                                  pat,
+                                  f.invert,
+                                  f.line_numbers,
+                                  f.count_only,
+                                  f.files_only,
+                                  f.only_matching,
+                                  f.max_count,
+                                  file_io,
+                                  f.byte_offsets,
+                                  pieces=True)
             matched = matched or file_io.exit_code == 0
             if f.count_only:
-                if grep_count_has_matches(hits):
+                if file_io.exit_code == 0:
                     all_results.append(
                         f"{name}:{hits[0]}" if label else hits[0])
             elif f.files_only:
@@ -463,9 +467,8 @@ async def rg(
     else:
         raw_bytes = await rb(paths[0].virtual)
         source = _wrap_bytes(raw_bytes)
-    # Status comes from selection, not from an empty stream: with -o
-    # a zero-width match selects the line and prints nothing, so
-    # emptiness is no longer a proxy for "nothing matched".
+    # Status comes from selection, not from the stream's output, which
+    # under -o -c is a 0 for an inverted selection that holds no match.
     io = IOResult(exit_code=1)
     stream = grep_stream(
         source,
@@ -477,9 +480,10 @@ async def rg(
         count_only=f.count_only,
         io=io,
         byte_offsets=f.byte_offsets,
+        pieces=True,
     )
     if f.count_only:
-        stream = nonzero_count_stream(stream)
+        stream = selected_count_stream(stream, io)
     return stream, io
 
 

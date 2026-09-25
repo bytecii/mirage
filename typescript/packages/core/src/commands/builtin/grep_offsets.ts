@@ -138,6 +138,48 @@ export function matchOffset(lineStart: number, line: string, index: number): num
   return lineStart + byteOffset(line, index)
 }
 
+/**
+ * Every match of a pattern in a line, found as ripgrep finds them.
+ *
+ * ripgrep iterates matches the way Rust's regex crate does: after an empty
+ * match the search resumes one character on, and an empty match where the
+ * previous match ended is skipped, so `b*` on `abc` is three matches. Returns
+ * each match's code-unit index and text. Mirrors Python's rust_matches.
+ */
+export function rustMatches(pat: RegExp, line: string): [number, string][] {
+  const re = new RegExp(pat.source, `${pat.flags.replace(/[gy]/g, '')}g`)
+  const matches: [number, string][] = []
+  let pos = 0
+  let lastEnd = -1
+  while (pos <= line.length) {
+    re.lastIndex = pos
+    const m = re.exec(line)
+    if (m === null) break
+    const end = m.index + m[0].length
+    if (m[0] === '') {
+      // One character on, which a surrogate pair is too.
+      pos = end + ((line.codePointAt(end) ?? 0) > 0xffff ? 2 : 1)
+      if (end === lastEnd) continue
+    } else {
+      pos = end
+    }
+    lastEnd = end
+    matches.push([m.index, m[0]])
+  }
+  return matches
+}
+
+/**
+ * What ripgrep's -o prints for one line, one piece per output line: each
+ * match, empty ones included (`rustMatches`), or the whole line when nothing
+ * in it matches, which is how ripgrep prints an inverted selection and a
+ * context line under -o (14.1.1). Mirrors Python's rg_pieces.
+ */
+export function rgPieces(pat: RegExp, line: string): [number, string][] {
+  const matches = rustMatches(pat, line)
+  return matches.length > 0 ? matches : [[0, line]]
+}
+
 /** Incremental byte offsets for monotonically increasing match indices on one line. */
 export class MatchOffsets {
   private index = 0

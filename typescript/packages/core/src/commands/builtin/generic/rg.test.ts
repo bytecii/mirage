@@ -25,8 +25,13 @@ const FILES: Record<string, string> = {
   '/a.txt': 'hello\nworld\n',
   '/b.txt': 'hello\nworld\nfoo\nbar\nbaz\n',
   '/sub/nested.txt': 'nested\ncontent\n',
+  '/ov/x.txt': 'x\ny\nzz\n',
+  '/oc/x.txt': 'b1\nb22\n',
+  '/ovc/abc.txt': 'abc\n',
+  '/ovc/def.txt': 'def\n',
+  '/octx/x.txt': 'a\nb\nc\n',
 }
-const DIRS = new Set(['/sub'])
+const DIRS = new Set(['/sub', '/ov', '/oc', '/ovc', '/octx'])
 
 function spec(path: string): PathSpec {
   return new PathSpec({ virtual: path, directory: path, resolved: true, vfsPath: path.slice(1) })
@@ -245,5 +250,57 @@ describe('rgGeneric - labelled context', () => {
       '1:hello\n2:world\n',
       0,
     ])
+  })
+})
+
+// ripgrep 14.1.1's -o: a selected line with no match (an inverted selection)
+// and a context line print whole, and -c counts matches. GNU grep -o prints
+// nothing for the first two and counts lines.
+describe('rgGeneric - only matching', () => {
+  const specs = (paths: readonly string[]): PathSpec[] => paths.map(spec)
+  const octx = '/octx/x.txt-1-a\n/octx/x.txt:2:b\n/octx/x.txt-3-c\n'
+
+  it.each([
+    [[], 'x\ny\nzz\n', '1:x\n3:zz\n'],
+    [['/ov/x.txt'], null, '1:x\n3:zz\n'],
+    [['/ov'], null, '/ov/x.txt:1:x\n/ov/x.txt:3:zz\n'],
+  ] as const)('-v prints the unmatched lines whole from %j', async (paths, stdin, want) => {
+    const input = stdin === null ? null : ENC.encode(stdin)
+    expect(await run(specs(paths), 'y', { o: true, v: true, n: true }, input)).toEqual([want, 0])
+  })
+
+  it.each([
+    [[], 'b1\nb22\n', '3\n'],
+    [['/oc/x.txt'], null, '3\n'],
+    [['/oc/x.txt', '/oc/x.txt'], null, '/oc/x.txt:3\n/oc/x.txt:3\n'],
+    [['/oc'], null, '/oc/x.txt:3\n'],
+  ] as const)('-c counts matches, not lines, from %j', async (paths, stdin, want) => {
+    const input = stdin === null ? null : ENC.encode(stdin)
+    expect(await run(specs(paths), '[0-9]', { o: true, c: true }, input)).toEqual([want, 0])
+  })
+
+  it.each([
+    [[], 'abc\ndef\n', '0\n', 0],
+    [[], 'abc\n', '', 1],
+    [['/ovc/abc.txt', '/ovc/def.txt'], null, '/ovc/def.txt:0\n', 0],
+    [['/ovc'], null, '/ovc/def.txt:0\n', 0],
+  ] as const)(
+    '-v -c lists an input that selected with no match, from %j',
+    async (paths, stdin, want, code) => {
+      const input = stdin === null ? null : ENC.encode(stdin)
+      expect(await run(specs(paths), 'abc', { o: true, v: true, c: true }, input)).toEqual([
+        want,
+        code,
+      ])
+    },
+  )
+
+  it.each([
+    [[], 'a\nb\nc\n', '1-a\n2:b\n3-c\n'],
+    [['/octx'], null, octx],
+    [['/octx/x.txt', '/octx/x.txt'], null, `${octx}--\n${octx}`],
+  ] as const)('prints context lines whole from %j', async (paths, stdin, want) => {
+    const input = stdin === null ? null : ENC.encode(stdin)
+    expect(await run(specs(paths), 'b', { o: true, n: true, C: '1' }, input)).toEqual([want, 0])
   })
 })

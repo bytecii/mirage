@@ -1131,3 +1131,81 @@ async def test_rg_m_prints_a_selected_trailing_line_as_selected(paths, stdin):
         "A": "1"
     }, stdin, {"/a.txt": A_TXT})
     assert (out, io.exit_code) == (b"1:hello\n2:world\n", 0)
+
+
+OCTX = b"/octx/x.txt-1-a\n/octx/x.txt:2:b\n/octx/x.txt-3-c\n"
+O_FILES = {
+    "/ov/x.txt": b"x\ny\nzz\n",
+    "/oc/x.txt": b"b1\nb22\n",
+    "/ovc/abc.txt": b"abc\n",
+    "/ovc/def.txt": b"def\n",
+    "/octx/x.txt": b"a\nb\nc\n",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths, stdin, want", [
+    ([], b"x\ny\nzz\n", b"1:x\n3:zz\n"),
+    (["/ov/x.txt"], None, b"1:x\n3:zz\n"),
+    (["/ov"], None, b"/ov/x.txt:1:x\n/ov/x.txt:3:zz\n"),
+])
+async def test_rg_o_v_prints_the_unmatched_lines_whole(paths, stdin, want):
+    # `rg -v -o -n y` over x\ny\nzz\n on ripgrep 14.1.1, where GNU grep
+    # prints nothing: a selected line with no match prints whole.
+    out, io = await _run([_spec(p) for p in paths], ["y"], {
+        "o": True,
+        "v": True,
+        "n": True
+    }, stdin, O_FILES)
+    assert (out, io.exit_code) == (want, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths, stdin, want", [
+    ([], b"b1\nb22\n", b"3\n"),
+    (["/oc/x.txt"], None, b"3\n"),
+    (["/oc/x.txt", "/oc/x.txt"], None, b"/oc/x.txt:3\n/oc/x.txt:3\n"),
+    (["/oc"], None, b"/oc/x.txt:3\n"),
+])
+async def test_rg_o_c_counts_matches_not_lines(paths, stdin, want):
+    # `rg -o -c '[0-9]'` over b1\nb22\n is 3 on ripgrep 14.1.1.
+    out, io = await _run([_spec(p) for p in paths], ["[0-9]"], {
+        "o": True,
+        "c": True
+    }, stdin, O_FILES)
+    assert (out, io.exit_code) == (want, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths, stdin, want, code", [
+    ([], b"abc\ndef\n", b"0\n", 0),
+    ([], b"abc\n", b"", 1),
+    (["/ovc/abc.txt", "/ovc/def.txt"], None, b"/ovc/def.txt:0\n", 0),
+    (["/ovc"], None, b"/ovc/def.txt:0\n", 0),
+])
+async def test_rg_o_v_c_lists_an_input_that_selected_with_no_match(
+        paths, stdin, want, code):
+    # ripgrep 14.1.1 counts the matches an inverted selection holds, none,
+    # and still lists every input that selected a line.
+    out, io = await _run([_spec(p) for p in paths], ["abc"], {
+        "o": True,
+        "v": True,
+        "c": True
+    }, stdin, O_FILES)
+    assert (out, io.exit_code) == (want, code)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths, stdin, want", [
+    ([], b"a\nb\nc\n", b"1-a\n2:b\n3-c\n"),
+    (["/octx"], None, OCTX),
+    (["/octx/x.txt", "/octx/x.txt"], None, OCTX + b"--\n" + OCTX),
+])
+async def test_rg_o_prints_context_lines_whole(paths, stdin, want):
+    # `rg -o -n -C1 b` on ripgrep 14.1.1; GNU grep -o prints no context.
+    out, io = await _run([_spec(p) for p in paths], ["b"], {
+        "o": True,
+        "n": True,
+        "C": "1"
+    }, stdin, O_FILES)
+    assert (out, io.exit_code) == (want, 0)
