@@ -12,6 +12,9 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import re
+
+from mirage.core.github.constants import CODE_SEARCH_SIZE_LIMIT
 from mirage.core.github.tree_entry import TreeEntry
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
@@ -78,3 +81,51 @@ def should_use_search(
     the scope is large enough to bother, is decided by the caller.
     """
     return recursive and on_default_branch
+
+
+_NARROWING = re.compile(r'[:"]|(?:^|[^A-Za-z0-9_])-'
+                        r'|(?:^|[^A-Za-z0-9_])NOT(?:[^A-Za-z0-9_]|$)')
+_WORD = re.compile(r"[A-Za-z0-9_]")
+
+
+def search_safe(query: str) -> bool:
+    """Whether a literal can be sent to code search without rescoping it.
+
+    The literal goes into the query verbatim, so any part of it the search
+    grammar reads as syntax narrows the answer to less than the files that
+    hold it. Measured against api.github.com: a ``name:`` word is a
+    qualifier, a quote opens a phrase, a word-leading ``-`` negates and
+    ``NOT`` is an operator; lowercase ``not`` and ``OR`` are plain terms, and
+    parentheses are refused with a 422, which already falls back. Word
+    characters are ASCII so both hosts gate the same literals, and a literal
+    holding none of them would send a query that is only its scope.
+
+    Args:
+        query (str): the literal grep would push down.
+
+    Returns:
+        bool: True when the search answers for exactly this literal.
+    """
+    return bool(_WORD.search(query)) and not _NARROWING.search(query)
+
+
+def unsearchable_keys(tree: dict[str, TreeEntry], key: str) -> list[str]:
+    """List the files under a scope that code search never indexes.
+
+    A file at or over ``CODE_SEARCH_SIZE_LIMIT`` is not indexed, so no
+    search can name it; a size the tree did not report is counted with them,
+    since nothing vouches for it either.
+
+    Args:
+        tree (dict[str, TreeEntry]): The recursive git tree.
+        key (str): Repo-relative scope key from :func:`scope_relative_key`.
+
+    Returns:
+        list[str]: Sorted repo-relative keys of those files.
+    """
+    norm = key.strip("/")
+    prefix = norm + "/"
+    return sorted(
+        p for p, e in tree.items()
+        if e.type == "blob" and (not norm or p == norm or p.startswith(prefix))
+        and (e.size is None or e.size >= CODE_SEARCH_SIZE_LIMIT))

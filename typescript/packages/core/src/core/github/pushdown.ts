@@ -14,7 +14,9 @@
 
 import { mountPrefixOf } from '../../utils/key_prefix.ts'
 import { stripSlash } from '../../utils/slash.ts'
+import { compareCodePoints } from '../../utils/sort.ts'
 import type { PathSpec } from '../../types.ts'
+import { CODE_SEARCH_SIZE_LIMIT } from './constants.ts'
 import type { TreeEntry } from './tree_entry.ts'
 
 export function scopeRelativeKey(path: PathSpec): string {
@@ -52,4 +54,35 @@ export function shouldUseSearch(recursive: boolean, onDefaultBranch: boolean): b
   // indexes the default branch). Whether a usable literal exists, and whether
   // the scope is large enough to bother, is decided by the caller.
   return recursive && onDefaultBranch
+}
+
+const NARROWING = /[:"]|(?:^|[^A-Za-z0-9_])-|(?:^|[^A-Za-z0-9_])NOT(?:[^A-Za-z0-9_]|$)/
+const WORD = /[A-Za-z0-9_]/
+
+// Whether a literal can be sent to code search without rescoping it. The
+// literal goes into the query verbatim, so any part of it the search grammar
+// reads as syntax narrows the answer to less than the files that hold it.
+// Measured against api.github.com: a `name:` word is a qualifier, a quote
+// opens a phrase, a word-leading `-` negates and `NOT` is an operator;
+// lowercase `not` and `OR` are plain terms, and parentheses are refused with
+// a 422, which already falls back. Word characters are ASCII so both hosts
+// gate the same literals, and a literal holding none of them would send a
+// query that is only its scope.
+export function searchSafe(query: string): boolean {
+  return WORD.test(query) && !NARROWING.test(query)
+}
+
+// The files under a scope that code search never indexes: at or over
+// CODE_SEARCH_SIZE_LIMIT, or of a size the tree did not report, since
+// nothing vouches for those either. Sorted repo-relative keys.
+export function unsearchableKeys(tree: Record<string, TreeEntry>, key: string): string[] {
+  const norm = stripSlash(key)
+  const prefix = `${norm}/`
+  const out: string[] = []
+  for (const [p, entry] of Object.entries(tree)) {
+    if (entry.type !== 'blob') continue
+    if (norm !== '' && p !== norm && !p.startsWith(prefix)) continue
+    if (entry.size === null || entry.size >= CODE_SEARCH_SIZE_LIMIT) out.push(p)
+  }
+  return out.sort(compareCodePoints)
 }

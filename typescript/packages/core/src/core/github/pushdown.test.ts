@@ -16,7 +16,14 @@ import { mountKey } from '../../utils/key_prefix.ts'
 import { describe, expect, it } from 'vitest'
 import { PathSpec } from '../../types.ts'
 import type { TreeEntry } from './tree_entry.ts'
-import { countScopeFiles, isRepoRoot, scopeRelativeKey, shouldUseSearch } from './pushdown.ts'
+import {
+  countScopeFiles,
+  isRepoRoot,
+  scopeRelativeKey,
+  searchSafe,
+  shouldUseSearch,
+  unsearchableKeys,
+} from './pushdown.ts'
 
 const TREE: Record<string, TreeEntry> = {
   docs: { path: 'docs', type: 'tree', sha: 's1', size: null },
@@ -84,5 +91,68 @@ describe('shouldUseSearch', () => {
     expect(shouldUseSearch(true, true)).toBe(true)
     expect(shouldUseSearch(false, true)).toBe(false)
     expect(shouldUseSearch(true, false)).toBe(false)
+  })
+})
+
+// Twin of the search_safe table in python/tests/core/github/test_pushdown.py,
+// measured against api.github.com on 2026-09-25: a `name:` word is a
+// qualifier, a quote starts a phrase, a word-leading `-` negates and `NOT` is
+// an operator, each narrowing the answer; lowercase `not` and `OR` are plain
+// terms. Word characters are ASCII, the rule both hosts apply, so the \x1c,
+// U+FEFF and non-ASCII rows are the ones that would split them.
+describe('searchSafe', () => {
+  it.each([
+    'foo path:docs',
+    'say "hi"',
+    'foo -bar',
+    '-foo',
+    'foo NOT bar',
+    'NOT',
+    'a\tNOT\tb',
+    '   ',
+    '\t',
+    'a\x1c-b',
+    'a\ufeff-b',
+    'x(-y',
+    '\u00e9-b',
+    '\u00e9NOT x',
+    '\u00e9',
+  ])('refuses %j', (query) => {
+    expect(searchSafe(query)).toBe(false)
+  })
+
+  it.each(['foo', 'foo bar', 'foo-bar', 'not', 'OR', 'NOTE', 'NOTHING x', 'a_NOT'])(
+    'accepts %j',
+    (query) => {
+      expect(searchSafe(query)).toBe(true)
+    },
+  )
+})
+
+describe('unsearchableKeys', () => {
+  it('lists what code search never indexes', () => {
+    const limit = 384 * 1024
+    const blob = (path: string, size: number | null): TreeEntry => ({
+      path,
+      type: 'blob',
+      sha: path,
+      size,
+    })
+    const tree: Record<string, TreeEntry> = {
+      src: { path: 'src', type: 'tree', sha: 't', size: null },
+      'src/big.bin': blob('src/big.bin', limit),
+      'src/edge.py': blob('src/edge.py', limit - 1),
+      'src/none.py': blob('src/none.py', null),
+      'docs/big.md': blob('docs/big.md', limit + 1),
+      'srcx/big.bin': blob('srcx/big.bin', limit),
+    }
+    // srcx/ shares src's spelling but is not under it.
+    expect(unsearchableKeys(tree, '/src')).toEqual(['src/big.bin', 'src/none.py'])
+    expect(unsearchableKeys(tree, '/')).toEqual([
+      'docs/big.md',
+      'src/big.bin',
+      'src/none.py',
+      'srcx/big.bin',
+    ])
   })
 })

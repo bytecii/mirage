@@ -16,7 +16,7 @@ from mirage.accessor.github import GitHubAccessor
 from mirage.commands.builtin.generic.rg import RG_NO_PATTERN
 from mirage.commands.builtin.generic.rg import rg as generic_rg
 from mirage.commands.builtin.generic_bind.adapter import bound_op
-from mirage.commands.builtin.github.pushdown import narrow_scope
+from mirage.commands.builtin.github.pushdown import narrow_scope, scope_refusal
 from mirage.commands.builtin.grep_pattern import pattern_arg
 from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
@@ -51,11 +51,9 @@ async def rg(accessor: GitHubAccessor, paths: list[PathSpec], texts: list[str],
             whole_word=fl.as_bool("w"),
         )
         if file_count > SCOPE_ERROR:
-            # Push-down needs -w (see narrow_scope); without it a scope
-            # this large has no complete narrowing strategy, so say so
-            # rather than scanning thousands of blobs.
-            msg = (f"rg: {file_count} files in scope, "
-                   "narrow the path, or use -w to enable code search\n")
+            # A scope this large with no trusted narrowing is refused rather
+            # than scanned blob by blob.
+            msg = scope_refusal("rg", file_count, fl.as_bool("w"))
             return b"", IOResult(exit_code=1, stderr=msg.encode())
 
     return await generic_rg(

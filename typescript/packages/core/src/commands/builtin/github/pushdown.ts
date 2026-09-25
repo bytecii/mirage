@@ -20,6 +20,7 @@ import { GITHUB_IO } from './io.ts'
 import {
   countScopeFiles,
   scopeRelativeKey,
+  searchSafe,
   shouldUseSearch,
 } from '../../../core/github/pushdown.ts'
 import { narrowPaths } from '../../../core/github/search.ts'
@@ -47,6 +48,17 @@ export interface NarrowResult {
 // and any tokenizer disagreement can only over-fetch, which the local scan
 // then filters. A regex narrowed on an extracted literal stays excluded
 // even under -w, because the searched term is then only part of the match.
+// The refusal for a scope too large to scan without a narrowing. Push-down
+// needs -w (see narrowScope), so without it the remedy is -w; with it, code
+// search ran and its answer could not be trusted as the whole set, so only a
+// narrower path is left.
+export function scopeRefusal(command: string, fileCount: number, wholeWord: boolean): string {
+  if (wholeWord) {
+    return `${command}: ${String(fileCount)} files in scope and code search could not narrow them; narrow the path\n`
+  }
+  return `${command}: ${String(fileCount)} files in scope, narrow the path, or use -w to enable code search\n`
+}
+
 export async function narrowScope(
   accessor: GitHubAccessor,
   paths: PathSpec[],
@@ -68,11 +80,12 @@ export async function narrowScope(
     wholeWord &&
     pattern !== null &&
     isLiteralPattern(pattern, fixedString) &&
+    searchSafe(query) &&
     shouldUseSearch(recursive, accessor.isDefaultBranch) &&
     fileCount > SCOPE_WARN
   if (useSearch) {
     const narrowed = await narrowPaths(accessor, query, paths)
-    if (narrowed.length > 0) {
+    if (narrowed !== null && narrowed.length > 0) {
       return { resolved: narrowed, fileCount: narrowed.length, usedSearch: true }
     }
   }
