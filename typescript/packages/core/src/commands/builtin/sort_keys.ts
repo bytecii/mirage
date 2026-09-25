@@ -13,6 +13,7 @@ import { compareCodePoints } from '../../utils/sort.ts'
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { quoteText } from '../quote.ts'
 import { SortKeyError } from './errors.ts'
 
 const HUMAN_SUFFIXES: Record<string, number> = {
@@ -39,11 +40,12 @@ const MONTHS: Record<string, number> = {
 }
 
 const VERSION_RE = /(\d+)|(\D+)/g
-const KEYDEF_RE = /^(\d+)(?:\.(\d+))?([a-zA-Z]*)$/
-// GNU key modifier letters. n/g map to numeric; h/V/M/f/r/b are honored;
-// d/i/R are recognized so they still suppress global options (per GNU
-// key_init) but are not yet applied as filters.
-const ORDER_LETTERS = 'bdfgiMnRrV'
+// The letters sort.c's `set_ordering` takes after a KEYDEF position. R is
+// recognized, so it still keeps a key off the global options and counts
+// against the others it is incompatible with, but it does not shuffle.
+const ORDER_LETTERS = 'bdfghiMnRrV'
+// What strtoumax skips before a number, isspace() in the C locale.
+const BLANKS = ' \t\n\v\f\r'
 
 export interface KeyMods {
   numeric: boolean
@@ -55,6 +57,7 @@ export interface KeyMods {
   reverse: boolean
   dictionary?: boolean
   ignoreNonprinting?: boolean
+  random?: boolean
 }
 
 export interface Key {
@@ -77,69 +80,88 @@ export interface SortConfig {
 
 type SortKey = string | number | (string | number)[]
 
-function parsePos(spec: string, isEnd: boolean): [number, number | null, string] {
-  const match = KEYDEF_RE.exec(spec)
-  if (match === null) throw new SortKeyError(`invalid field specification '${spec}'`)
-  const field = Number.parseInt(match[1] ?? '', 10)
-  if (field === 0) {
-    throw new SortKeyError(`field number is zero: invalid field specification '${spec}'`)
-  }
-  const charGroup = match[2]
-  const letters = match[3] ?? ''
-  for (const letter of letters) {
-    if (!ORDER_LETTERS.includes(letter)) {
-      throw new SortKeyError(`invalid ordering option '${letter}'`)
-    }
-  }
-  let char: number | null
-  if (charGroup === undefined) {
-    char = isEnd ? null : 1
-  } else {
-    char = Number.parseInt(charGroup, 10)
-    if (!isEnd && char === 0) char = 1
-  }
-  return [field, char, letters]
+function isAsciiDigit(char: string): boolean {
+  return char >= '0' && char <= '9'
 }
 
-function modsFromLetters(letterRuns: string): [KeyMods, boolean] {
-  let hasOwn = false
-  for (const letter of letterRuns) {
-    if (ORDER_LETTERS.includes(letter)) hasOwn = true
+// sort.c's `parse_field_count`: the decimal starting at `pos`, with the
+// index just past it. strtoumax's reading, so leading blanks and a `+` are
+// taken and the number ends at the first byte that is not an ASCII digit,
+// which the caller reads on from. A `-`, or no digit at all, is refused
+// with the text from `pos` on. Mirrors _field_count in sort_keys.py.
+function fieldCount(spec: string, pos: number, what: string): [number, number] {
+  let end = pos
+  while (end < spec.length && BLANKS.includes(spec.charAt(end))) end += 1
+  if (spec.charAt(end) === '+') end += 1
+  const digits = end
+  while (end < spec.length && isAsciiDigit(spec.charAt(end))) end += 1
+  if (end === digits) {
+    throw new SortKeyError(`${what}: invalid count at start of '${quoteText(spec.slice(pos))}'`)
   }
-  const numeric = letterRuns.includes('n')
-  return [
-    {
-      numeric,
-      generalNumeric: letterRuns.includes('g'),
-      human: letterRuns.includes('h'),
-      version: letterRuns.includes('V'),
-      month: letterRuns.includes('M'),
-      fold: letterRuns.includes('f'),
-      reverse: letterRuns.includes('r'),
-      dictionary: letterRuns.includes('d'),
-      ignoreNonprinting: letterRuns.includes('i'),
-    },
-    hasOwn,
-  ]
+  return [Number.parseInt(spec.slice(digits, end), 10), end]
 }
 
+function badFieldSpec(spec: string, why: string): SortKeyError {
+  return new SortKeyError(`${why}: invalid field specification '${quoteText(spec)}'`)
+}
+
+function ordering(spec: string, pos: number): [string, number] {
+  let end = pos
+  while (end < spec.length && ORDER_LETTERS.includes(spec.charAt(end))) end += 1
+  return [spec.slice(pos, end), end]
+}
+
+function modsFromLetters(letters: string): KeyMods {
+  return {
+    numeric: letters.includes('n'),
+    generalNumeric: letters.includes('g'),
+    human: letters.includes('h'),
+    version: letters.includes('V'),
+    month: letters.includes('M'),
+    fold: letters.includes('f'),
+    reverse: letters.includes('r'),
+    dictionary: letters.includes('d'),
+    ignoreNonprinting: letters.includes('i'),
+    random: letters.includes('R'),
+  }
+}
+
+// One `-k` KEYDEF, read and refused the way sort.c's option loop does:
+// F[.C][OPTS][,F[.C][OPTS]], taken left to right. Each number is checked
+// as it is read, so `-k0.x` names the zero field and not the bad offset,
+// and ordering letters run until the first byte that is not one, where
+// anything left over is a stray character. A start offset of zero is
+// refused and an end offset of zero means the end of its field. A key
+// that carries any letter of its own, `b` included, takes none of the
+// global options. Mirrors parse_keydef in sort_keys.py.
 export function parseKeydef(spec: string, globalMods: KeyMods, globalSkip: boolean): Key {
-  const commaIdx = spec.indexOf(',')
-  const startSpec = commaIdx === -1 ? spec : spec.slice(0, commaIdx)
-  const endSpec = commaIdx === -1 ? '' : spec.slice(commaIdx + 1)
-  const [startField, startChar, startLetters] = parsePos(startSpec, false)
+  const [startField, afterField] = fieldCount(spec, 0, 'invalid number at field start')
+  if (startField === 0) throw badFieldSpec(spec, 'field number is zero')
+  let pos = afterField
+  let startChar = 1
+  if (spec.charAt(pos) === '.') {
+    ;[startChar, pos] = fieldCount(spec, pos + 1, "invalid number after '.'")
+    if (startChar === 0) throw badFieldSpec(spec, 'character offset is zero')
+  }
+  const [startLetters, afterStart] = ordering(spec, pos)
+  pos = afterStart
   let endField: number | null = null
   let endChar: number | null = null
   let endLetters = ''
-  if (endSpec !== '') {
-    ;[endField, endChar, endLetters] = parsePos(endSpec, true)
+  if (spec.charAt(pos) === ',') {
+    ;[endField, pos] = fieldCount(spec, pos + 1, "invalid number after ','")
+    if (endField === 0) throw badFieldSpec(spec, 'field number is zero')
+    if (spec.charAt(pos) === '.') {
+      ;[endChar, pos] = fieldCount(spec, pos + 1, "invalid number after '.'")
+    }
+    ;[endLetters, pos] = ordering(spec, pos)
   }
-  const [ownMods, hasOwn] = modsFromLetters(startLetters + endLetters)
+  if (pos < spec.length) throw badFieldSpec(spec, 'stray character in field spec')
   let mods: KeyMods
   let startSkip: boolean
   let endSkip: boolean
-  if (hasOwn) {
-    mods = ownMods
+  if (startLetters !== '' || endLetters !== '') {
+    mods = modsFromLetters(startLetters + endLetters)
     startSkip = startLetters.includes('b')
     endSkip = endLetters.includes('b')
   } else {
@@ -149,13 +171,46 @@ export function parseKeydef(spec: string, globalMods: KeyMods, globalSkip: boole
   }
   return {
     startField,
-    startChar: startChar ?? 1,
+    startChar,
     startSkip,
     endField,
     endChar,
     endSkip,
     mods,
   }
+}
+
+// The letters sort.c's `check_ordering_compatibility` refuses, or '' for a
+// compatible key. A key orders by at most one of -n, -g, -h, -M and the
+// group -V, -R, -d, -i, whose members combine with each other but with
+// none of the rest. The refusal spells the key the way `key_to_opts` does,
+// without -b and -r, and -d hides -i because GNU keeps only the stronger
+// of the two filters. Mirrors _incompatible_letters in sort_keys.py.
+function incompatibleLetters(mods: KeyMods): string {
+  const dictionary = mods.dictionary === true
+  const ignoreNonprinting = mods.ignoreNonprinting === true
+  const random = mods.random === true
+  const generalNumeric = mods.generalNumeric === true
+  const textOrders = mods.version || random || dictionary || ignoreNonprinting
+  const orderings = [mods.numeric, generalNumeric, mods.human, mods.month, textOrders].filter(
+    Boolean,
+  ).length
+  if (orderings <= 1) return ''
+  const spelled: [string, boolean][] = [
+    ['d', dictionary],
+    ['f', mods.fold],
+    ['g', generalNumeric],
+    ['h', mods.human],
+    ['i', ignoreNonprinting && !dictionary],
+    ['M', mods.month],
+    ['n', mods.numeric],
+    ['R', random],
+    ['V', mods.version],
+  ]
+  return spelled
+    .filter(([, given]) => given)
+    .map(([letter]) => letter)
+    .join('')
 }
 
 // The already-parsed global ordering options, named the way Python's
@@ -180,6 +235,13 @@ export interface SortGlobals {
   ignoreNonprinting: boolean
 }
 
+// The comparison sort runs, refusing a key that mixes orderings. GNU checks
+// the orderings once the option loop is done, key by key in the order the
+// keys were typed, so a bad KEYDEF, a second -o or a second check mode
+// outranks it and it outranks -c's operand checks. The global options
+// count only through the keys that inherit them, so `sort -n -g -k1,1n`
+// runs; with no -k they are the one key. Mirrors build_config in
+// sort_keys.py.
 export function buildConfig(globals: SortGlobals): SortConfig {
   const globalMods: KeyMods = {
     numeric: globals.numeric,
@@ -209,6 +271,10 @@ export function buildConfig(globals: SortGlobals): SortConfig {
         mods: globalMods,
       },
     ]
+  }
+  for (const key of keys) {
+    const letters = incompatibleLetters(key.mods)
+    if (letters !== '') throw new SortKeyError(`options '-${letters}' are incompatible`)
   }
   return {
     keys,
@@ -365,6 +431,12 @@ function cmpVals(a: SortKey, b: SortKey): number {
   return compareCodePoints(sa, sb)
 }
 
+// GNU sort's `compare`: the keys, then the whole line as a last resort.
+// `-s` and `-u` both stop at the keys, so under `-u` two lines whose keys
+// tie are equal however else they differ, which is what makes `sort -u
+// -k2,2` keep the first of them in input order and what makes `sort -c -u`
+// call the pair a disorder. GNU's own condition is `diff || unique ||
+// stable`. Mirrors compare_lines in sort_keys.py.
 export function compareLines(a: string, b: string, cfg: SortConfig): number {
   const fa = computeFields(a, cfg.fieldSep)
   const fb = computeFields(b, cfg.fieldSep)
@@ -375,7 +447,7 @@ export function compareLines(a: string, b: string, cfg: SortConfig): number {
     if (key.mods.reverse) c = -c
     if (c !== 0) return c
   }
-  if (cfg.stable) return 0
+  if (cfg.stable || cfg.unique) return 0
   let c = compareCodePoints(a, b)
   if (cfg.reverse) c = -c
   return c
@@ -408,4 +480,60 @@ export function sortLines(lines: string[], cfg: SortConfig): string[] {
     }
   }
   return out
+}
+
+function mergeBefore(
+  runs: readonly (readonly string[])[],
+  heads: readonly number[],
+  a: number,
+  b: number,
+  cfg: SortConfig,
+): boolean {
+  const c = compareLines(runs[a]?.[heads[a] ?? 0] ?? '', runs[b]?.[heads[b] ?? 0] ?? '', cfg)
+  return c < 0 || (c === 0 && a < b)
+}
+
+// GNU sort's `mergefps`: merge runs it trusts to be sorted already. The line
+// emitted next is always the smallest head, a tie going to the earlier run,
+// and a run is never reordered, so `sort -m` over an unsorted file hands it
+// back as it found it, the way GNU does. The runs are kept ordered by their
+// heads and a run whose head moves is reinserted by binary search, GNU's own
+// `ord` table, so a merge of `k` runs costs `log k` comparisons a line.
+// Under `-u` a line is dropped when it compares equal to the first line of
+// the series it would extend, so only adjacent duplicates collapse: `a b a`
+// stays three lines. Mirrors merge_lines in sort_keys.py.
+export function mergeLines(runs: readonly (readonly string[])[], cfg: SortConfig): string[] {
+  const heads = runs.map(() => 0)
+  const order: number[] = []
+  for (let run = 0; run < runs.length; run++) {
+    if ((runs[run]?.length ?? 0) === 0) continue
+    let slot = order.length
+    while (slot > 0 && mergeBefore(runs, heads, run, order[slot - 1] ?? 0, cfg)) slot -= 1
+    order.splice(slot, 0, run)
+  }
+  const merged: string[] = []
+  let saved: string | null = null
+  while (order.length > 0) {
+    const run = order[0] ?? 0
+    const lines = runs[run] ?? []
+    const line = lines[heads[run] ?? 0] ?? ''
+    if (!cfg.unique || saved === null || compareLines(saved, line, cfg) !== 0) {
+      merged.push(line)
+      saved = line
+    }
+    heads[run] = (heads[run] ?? 0) + 1
+    if (heads[run] === lines.length) {
+      order.shift()
+      continue
+    }
+    let lo = 1
+    let hi = order.length
+    while (lo < hi) {
+      const probe = Math.floor((lo + hi) / 2)
+      if (mergeBefore(runs, heads, run, order[probe] ?? 0, cfg)) hi = probe
+      else lo = probe + 1
+    }
+    order.splice(0, lo, ...order.slice(1, lo), run)
+  }
+  return merged
 }

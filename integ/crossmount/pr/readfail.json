@@ -25,7 +25,7 @@
       "expect": {
         "exit": 2,
         "stdout": "",
-        "stderr": "sort: /data2/xrf_nope.txt: No such file or directory\n"
+        "stderr": "sort: cannot read: /data2/xrf_nope.txt: No such file or directory\n"
       }
     },
     {
@@ -109,7 +109,7 @@
       "expect": {
         "exit": 2,
         "stdout": "",
-        "stderr": "sort: /data2/xrf_dir: Is a directory\n"
+        "stderr": "sort: read failed: /data2/xrf_dir: Is a directory\n"
       }
     },
     {

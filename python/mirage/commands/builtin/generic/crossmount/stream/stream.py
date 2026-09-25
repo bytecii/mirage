@@ -14,6 +14,9 @@
 
 from mirage.commands.builtin.generic.crossmount.types import (Cmd, CrossResult,
                                                               RunSingle)
+from mirage.commands.builtin.generic.sort import (SortFlags, fetch_refusal,
+                                                  flag_refusal,
+                                                  operand_refusal, parse_flags)
 from mirage.commands.spec.types import FlagValue
 from mirage.commands.spec.usage import read_fail_exit_line
 from mirage.io import IOResult
@@ -38,6 +41,25 @@ def _respell_fetch_stderr(stderr: bytes, cmd_name: str) -> bytes:
         for line in stderr.split(b"\n"))
 
 
+def _fetch_failures(stderr: bytes) -> list[str]:
+    # A failed fetch's lines without the fetch command's prefix, which is
+    # what sort's own refusal is built from.
+    fetch_prefix = f"{Cmd.CAT}: "
+    return [
+        line[len(fetch_prefix):] if line.startswith(fetch_prefix) else line
+        for line in stderr.decode(errors="replace").split("\n") if line
+    ]
+
+
+async def _terminated(source: ByteSource, separator: bytes) -> bytes:
+    # sort ends every input's last line, where cat would run it into the
+    # next input's first.
+    data = await materialize(source)
+    if data and not data.endswith(separator):
+        data += separator
+    return data
+
+
 async def run_stream(cmd_name: str, scopes: list[PathSpec],
                      text_args: list[str], flag_kwargs: dict[str, FlagValue],
                      run_single: RunSingle) -> CrossResult:
@@ -51,6 +73,16 @@ async def run_stream(cmd_name: str, scopes: list[PathSpec],
     ``sed`` address space). A failed operand is skipped and reported on
     stderr, cat-style; the merged exit code is then non-zero.
 
+    ``sort`` is the one stream command whose operands are not simply
+    concatenated, so it answers in the single-mount generic's words: the
+    line's own refusals before any fetch, one refusal for failed inputs
+    ranked the generic's way, and every input's last line ended. Its
+    ``-m`` is dropped from the run over the merged stream, which a merge
+    would only echo back; sorting that stream is the merge whenever each
+    input is sorted, which is what ``-m`` promises. Deliberate
+    divergence: unsorted inputs to a cross-mount ``sort -m`` come out
+    sorted, where GNU emits them merged but unsorted.
+
     Args:
         cmd_name (str): One of the STREAM_COMMANDS.
         scopes (list[PathSpec]): Path operands in command-line order.
@@ -58,8 +90,17 @@ async def run_stream(cmd_name: str, scopes: list[PathSpec],
         flag_kwargs (dict): Flags parsed against the shared command spec.
         run_single (RunSingle): Executor-injected single-mount runner.
     """
+    sort_flags: SortFlags | None = None
+    if cmd_name == Cmd.SORT:
+        refusal = flag_refusal(flag_kwargs)
+        if refusal is None:
+            sort_flags = parse_flags(flag_kwargs)
+            refusal = operand_refusal(scopes, sort_flags)
+        if refusal is not None:
+            return None, refusal
     merged_io = IOResult()
     sources: list[ByteSource] = []
+    sort_failures: list[str] = []
     failed = False
     # The real command's code for the worst failed fetch. The fetch runs
     # as Cmd.CAT, so its own code is cat's 1 whatever went wrong; the
@@ -73,7 +114,10 @@ async def run_stream(cmd_name: str, scopes: list[PathSpec],
             failed = True
             if io.stderr is not None:
                 rendered = await materialize(io.stderr)
-                if cmd_name != Cmd.CAT:
+                if sort_flags is not None:
+                    sort_failures.extend(_fetch_failures(rendered))
+                    io.stderr = None
+                elif cmd_name != Cmd.CAT:
                     rendered = _respell_fetch_stderr(rendered, cmd_name)
                     io.stderr = rendered
                 fail_code = max(fail_code,
@@ -85,11 +129,15 @@ async def run_stream(cmd_name: str, scopes: list[PathSpec],
             merged_io = await merged_io.merge(io)
             continue
         merged_io = await merged_io.merge(io)
-        if out is not None:
+        if out is not None and sort_flags is not None:
+            separator = b"\x00" if sort_flags.zero_terminated else b"\n"
+            sources.append(await _terminated(out, separator))
+        elif out is not None:
             sources.append(out)
     # sort aborts on any failed operand like GNU (it needs every input
     # before emitting anything), matching the single-mount builder.
-    if failed and cmd_name == Cmd.SORT:
+    if failed and sort_flags is not None:
+        merged_io.stderr = fetch_refusal(sort_failures, sort_flags)
         merged_io.exit_code = merged_io.exit_code or fail_code or 1
         return None, merged_io
 
@@ -100,9 +148,12 @@ async def run_stream(cmd_name: str, scopes: list[PathSpec],
             merged_io.exit_code = merged_io.exit_code or fail_code or 1
         return body, merged_io
 
+    tail_flags = flag_kwargs
+    if sort_flags is not None and sort_flags.merge:
+        tail_flags = {k: v for k, v in flag_kwargs.items() if k != "merge"}
     out, io = await run_single(cmd_name, [],
                                list(text_args),
-                               flag_kwargs,
+                               tail_flags,
                                stdin=body,
                                resolve_hint=scopes[0])
     merged_io = await merged_io.merge(io)

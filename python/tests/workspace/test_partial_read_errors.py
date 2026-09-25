@@ -300,11 +300,13 @@ def test_zcat_good_then_missing():
 
 def test_sort_still_aborts_on_missing():
     # GNU sort needs all input before emitting anything, so no partial
-    # output; it reports the operand and exits 2 (coreutils 9.7), which
-    # is sort's code for any failed read, not just a directory.
+    # output; it reports the operand in its own `cannot read:` words and
+    # exits 2 (coreutils 9.7), which is sort's code for any failed read,
+    # not just a directory.
     out, err, code = _run(_make_numbered_ws(), "sort /a/f.txt /a/missing.txt")
     assert out == ""
-    assert err == "sort: /a/missing.txt: No such file or directory\n"
+    assert err == ("sort: cannot read: /a/missing.txt: "
+                   "No such file or directory\n")
     assert code == 2
 
 
@@ -370,5 +372,6 @@ def test_cross_sort_aborts_like_single_mount():
     out, err, code = _run(_make_cross_numbered_ws(),
                           "sort /a/f.txt /b/missing.txt")
     assert out == ""
-    assert err == "sort: /b/missing.txt: No such file or directory\n"
+    assert err == ("sort: cannot read: /b/missing.txt: "
+                   "No such file or directory\n")
     assert code == 2

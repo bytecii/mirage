@@ -106,3 +106,85 @@ def test_failed_operand_is_skipped_and_fails_the_command():
     assert _run(materialize(out)) == b"2\n"
     assert io.exit_code == 1
     assert b"No such file" in (io.stderr or b"")
+
+
+class FetchFailures(FakeRunSingle):
+    """Serves bytes for some operands and a cat-voiced failure for others."""
+
+    def __init__(self, files: dict[str, bytes], failures: dict[str, str]):
+        super().__init__(files)
+        self.failures = failures
+
+    async def __call__(self,
+                       cmd_name,
+                       paths,
+                       texts,
+                       flag_kwargs,
+                       stdin=None,
+                       resolve_hint=None):
+        if cmd_name == "cat" and paths and paths[0].virtual in self.failures:
+            self.calls.append(dict(cmd=cmd_name))
+            path = paths[0].virtual
+            line = f"cat: {path}: {self.failures[path]}"
+            return None, IOResult(exit_code=1, stderr=f"{line}\n".encode())
+        return await super().__call__(cmd_name, paths, texts, flag_kwargs,
+                                      stdin, resolve_hint)
+
+
+def test_sort_answers_one_refusal_ranked_like_the_single_mount_generic():
+    rs = FetchFailures({}, {
+        "/a/dir": "Is a directory",
+        "/b/missing": "No such file or directory",
+    })
+    out, io = _run(
+        run_stream("sort",
+                   [_scope("/a/dir"), _scope("/b/missing")], [], {}, rs))
+    assert out is None
+    assert io.stderr == (b"sort: cannot read: /b/missing: "
+                         b"No such file or directory\n")
+    assert io.exit_code == 2
+    assert [c["cmd"] for c in rs.calls] == ["cat", "cat"]
+
+
+def test_sort_reports_a_directory_it_could_only_fail_to_read():
+    rs = FetchFailures({"/b/y": b"a\n"}, {"/a/dir": "Is a directory"})
+    _, io = _run(
+        run_stream("sort", [_scope("/a/dir"), _scope("/b/y")], [], {}, rs))
+    assert io.stderr == b"sort: read failed: /a/dir: Is a directory\n"
+    assert io.exit_code == 2
+
+
+def test_sort_refuses_its_own_line_before_fetching_anything():
+    rs = FakeRunSingle({"/a/x": b"a\n", "/b/y": b"b\n"})
+    _, io = _run(
+        run_stream("sort", [_scope("/a/x"), _scope("/b/y")], [], {"C": True},
+                   rs))
+    assert io.stderr == b"sort: extra operand '/b/y' not allowed with -C\n"
+    assert io.exit_code == 2
+    _, io = _run(
+        run_stream("sort", [_scope("/a/x"), _scope("/b/y")], [],
+                   {"key": ["0"]}, rs))
+    assert io.exit_code == 2
+    assert b"invalid field specification" in (io.stderr or b"")
+    assert rs.calls == []
+
+
+def test_sort_ends_every_input_before_the_next_begins():
+    rs = FakeRunSingle({"/a/x": b"b", "/b/y": b"a\n"})
+    _run(run_stream("sort", [_scope("/a/x"), _scope("/b/y")], [], {}, rs))
+    assert rs.final_stdin == b"b\na\n"
+    rs = FakeRunSingle({"/a/x": b"b", "/b/y": b"a\x00"})
+    _run(
+        run_stream("sort", [_scope("/a/x"), _scope("/b/y")], [],
+                   {"zero_terminated": True}, rs))
+    assert rs.final_stdin == b"b\x00a\x00"
+
+
+def test_sort_merge_sorts_the_merged_stream_it_cannot_merge():
+    rs = FakeRunSingle({"/a/x": b"a\nc\n", "/b/y": b"b\n"})
+    _run(
+        run_stream("sort", [_scope("/a/x"), _scope("/b/y")], [], {
+            "merge": True,
+            "unique": True
+        }, rs))
+    assert rs.calls[-1]["flags"] == {"unique": True}

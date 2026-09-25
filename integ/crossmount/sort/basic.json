@@ -33,6 +33,108 @@
         "stdout": "10\n2\n30\n4\n5\ncross\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "xm_sort_merge_interleaves",
+      "seq": 708,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "sort -m /data/sorted_b.txt /data2/xm.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "banana\ncross\ndate\nelder\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "xm_sort_ends_each_input",
+      "seq": 708,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "sort /data/no_nl.txt /data2/xm.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "cross\nno trailing newline\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "xm_sort_C_extra_operand",
+      "seq": 708,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "sort -C /data/a.txt /data2/xm.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: extra operand '/data2/xm.txt' not allowed with -C\n"
+      }
     }
   ]
 }
