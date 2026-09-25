@@ -64,6 +64,9 @@ def working_directory(cwd, session=None):
     saved_getcwd, saved_chdir = os.getcwd, os.chdir
     saved_cwd = saved_getcwd()
     entered = False
+    if session is not None:
+        # A vanished cwd still fails this feed, but the next can recover.
+        repl_session_cwds[session] = '/'
     try:
         if cwd:
             saved_chdir(cwd)

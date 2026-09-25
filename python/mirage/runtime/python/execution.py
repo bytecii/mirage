@@ -17,11 +17,11 @@ STDIN_ARGV0 = "-"
 STDIN_FILENAME = "<stdin>"
 
 
-def bootstrap(code: str,
-              prog: str | None,
-              *,
-              script_cli: bool = False,
-              stdin: bytes | None = None) -> str:
+def prepare_source(code: str,
+                   prog: str | None,
+                   *,
+                   script_cli: bool = False,
+                   stdin: bytes | None = None) -> str:
     """Wrap a program so a `-c` subprocess reports the right argv[0].
 
     The subprocess tiers hand CPython the program through `-c`, because

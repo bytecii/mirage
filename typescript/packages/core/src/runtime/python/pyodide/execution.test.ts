@@ -516,6 +516,44 @@ it.each([false, true])(
 )
 
 describe('Pyodide evaluation cwd', { timeout: 120_000 }, () => {
+  it.each([false, true])(
+    'recovers a console after its cwd disappears (eager: %s)',
+    async (eager) => {
+      const rt = new PyodideRuntime({ config: { autoLoadFromImports: false } })
+      if (eager) await rt.eval('pass')
+      const ws = new Workspace(
+        { '/data': new RAMVFS() },
+        { mode: MountMode.EXEC, shellParser: await getTestParser(), runtimes: [rt, 'workspace'] },
+      )
+      const dec = new TextDecoder()
+      try {
+        expect((await ws.shell('cd /data')).exitCode).toBe(0)
+        for (const mutation of ['rmdir /data/sub', 'mv /data/sub /data/moved']) {
+          expect((await ws.shell('mkdir /data/sub')).exitCode).toBe(0)
+          const session = mutation
+          const first = await rt.eval("import os; token = 42; os.chdir('sub')", { session })
+          expect(first.exitCode).toBe(0)
+          expect((await ws.shell(mutation)).exitCode).toBe(0)
+          const missing = await rt.eval("print('must not run')", { session })
+          expect(missing.exitCode).toBe(1)
+          expect(dec.decode(missing.stdout)).toBe('')
+          expect(dec.decode(missing.stderr ?? new Uint8Array())).toContain('FileNotFoundError')
+          const recovered = await rt.eval("print(token, os.getcwd()); os.chdir('/data')", {
+            session,
+          })
+          expect(recovered.exitCode).toBe(0)
+          expect(dec.decode(recovered.stdout)).toBe('42 /\n')
+          const next = await rt.eval('print(os.getcwd())', { session })
+          expect(next.exitCode).toBe(0)
+          expect(dec.decode(next.stdout)).toBe('/data\n')
+          expect((await rt.eval('import os; os.getcwd()')).value).toBe('/data')
+        }
+      } finally {
+        await ws.close()
+      }
+    },
+  )
+
   it.each([false, true])('inherits cwd and isolates consoles (eager: %s)', async (eager) => {
     const rt = new PyodideRuntime({ config: { autoLoadFromImports: false } })
     if (eager) await rt.eval('pass')

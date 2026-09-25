@@ -43,6 +43,11 @@ Each console session starts there on its first feed and retains its own
 consoles and one-shot evaluations remain isolated. The Mirage session and
 host process directories are unchanged.
 
+If a console's saved directory has been removed or renamed, the next
+feed reports the filesystem error without executing its code. The console
+then resets its cwd to `/`, retaining its variables so the following feed
+can choose a new directory.
+
 `os.getxattr`, `os.listxattr`, `os.setxattr` and `os.removexattr` reach
 the attributes the shell's `getfattr` and `setfattr` see. They need the
 worker; the fallback below answers them with `OSError` (`ENOTSUP`).

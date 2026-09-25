@@ -20,7 +20,7 @@ from typing import Any, Callable, ClassVar
 
 from mirage.runtime.config import HomeConfig, RuntimeConfig
 from mirage.runtime.python.base import PythonRuntime
-from mirage.runtime.python.bootstrap import bootstrap
+from mirage.runtime.python.execution import prepare_source
 from mirage.runtime.python.flags import init_argv
 from mirage.runtime.types import (FilesystemOperation, RunArgs, RunResult,
                                   RuntimeContext, RuntimeReach, ScriptSource)
@@ -122,10 +122,10 @@ class WasiRuntime(PythonRuntime):
         core = (RuntimeVFS(context.dispatch, asyncio.get_running_loop(),
                            context.resolver) if context is not None else None)
         fs = WasmVFS(WasmFsConfig(host_root=str(self._root)), core)
-        source = bootstrap(args.code,
-                           args.prog,
-                           script_cli=args.script_cli,
-                           stdin=args.stdin)
+        source = prepare_source(args.code,
+                                args.prog,
+                                script_cli=args.script_cli,
+                                stdin=args.stdin)
         cwd = args.cwd or (context.cwd if context is not None else None)
         if cwd is not None:
             source = (
