@@ -12,15 +12,18 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import heapq
+import math
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from typing import Literal
 
 from dulwich.objects import Commit, ObjectID, Tag
 from dulwich.refs import HEADREF, LOCAL_BRANCH_PREFIX, LOCAL_TAG_PREFIX
 from dulwich.repo import BaseRepo
-from dulwich.walk import Walker
 
-from mirage.commands.cli.builtin.git.errors import (BadDateError,
-                                                    UnrecognizedArgumentError)
+from mirage.commands.cli.builtin.git.errors import (  # yapf: disable
+    BadDateError, IncompatibleLogOptionsError, UnrecognizedArgumentError)
 from mirage.commands.cli.builtin.git.format import (MEDIUM, LogFormat,
                                                     parse_pretty)
 from mirage.commands.cli.builtin.git.pickaxe import touches
@@ -28,6 +31,9 @@ from mirage.commands.spec.flag_view import FlagView
 from mirage.utils.dates import iso_timestamp
 
 REMOTE_PREFIX = b"refs/remotes/"
+# How many hidden commits a limited walk takes past the point where only
+# hidden ones are queued, git's SLOP.
+SLOP = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +52,10 @@ class LogFlags:
             ``--oneline`` or ``--pretty``/``--format`` said otherwise.
         abbrev_commit (bool): print abbreviated ids, which ``--oneline``
             implies and ``--pretty=oneline`` alone does not.
+        graph (bool): ``--graph``, draw the history beside the commits.
+        order (str): the walk order: newest first (``default``),
+            ``topo`` (``--topo-order``, which ``--graph`` implies) or
+            ``date`` (``--date-order``).
     """
     max_count: int | None
     oneline: bool
@@ -62,6 +72,36 @@ class LogFlags:
     min_parents: int | None = None
     max_parents: int | None = None
     first_parent: bool = False
+    graph: bool = False
+    order: Literal["default", "topo", "date"] = "default"
+
+
+@dataclass(frozen=True, slots=True)
+class WalkStep:
+    """One commit of a walk: drawn by ``--graph`` always, printed unless
+    ``-S`` passed it by.
+
+    Args:
+        commit (Commit): the commit.
+        shown (bool): whether the log prints it.
+    """
+    commit: Commit
+    shown: bool
+
+
+@dataclass(frozen=True, slots=True)
+class Walk:
+    """The commits a log walks, in order, and the ones a graph may draw
+    an edge to.
+
+    Args:
+        steps (tuple[WalkStep, ...]): the walked commits.
+        interesting (frozenset[bytes]): every commit in the walk that no
+            filter leaves out, which is what makes it a parent
+            ``--graph`` draws a line to. Filled only for an ordered walk.
+    """
+    steps: tuple[WalkStep, ...]
+    interesting: frozenset[bytes]
 
 
 def _timestamp(value: str | None, flag: str) -> float | None:
@@ -123,6 +163,14 @@ def parse_flags(fl: FlagView) -> LogFlags:
     spelled = pretty_value(fl)
     if spelled is not None:
         pretty = parse_pretty(spelled)
+    graph = fl.as_bool("graph")
+    if graph and fl.as_bool("reverse"):
+        raise IncompatibleLogOptionsError("--graph", "--reverse")
+    order: Literal["default", "topo", "date"] = "topo" if graph else "default"
+    if fl.as_bool("topo_order"):
+        order = "topo"
+    if fl.as_bool("date_order"):
+        order = "date"
     return LogFlags(
         date=fl.as_str("date") or "default",
         decorate=fl.as_bool("decorate"),
@@ -138,10 +186,12 @@ def parse_flags(fl: FlagView) -> LogFlags:
         all_refs=fl.as_bool("all"),
         pretty=pretty,
         abbrev_commit=oneline,
+        graph=graph,
+        order=order,
     )
 
 
-def _peel_to_commit(repo: BaseRepo, sha: bytes) -> Commit | None:
+def peel_to_commit(repo: BaseRepo, sha: bytes) -> Commit | None:
     """Follow tag objects down to the commit a ref ultimately names.
 
     Args:
@@ -168,7 +218,7 @@ def ref_commits(repo: BaseRepo) -> list[Commit]:
         except KeyError:
             # A symref to an unborn branch names nothing yet.
             continue
-        commit = _peel_to_commit(repo, sha)
+        commit = peel_to_commit(repo, sha)
         if commit is not None:
             commits.append(commit)
     return commits
@@ -194,7 +244,7 @@ def decorations(repo: BaseRepo) -> dict[bytes, list[str]]:
             sha = repo.refs[name]
         except KeyError:
             continue
-        commit = _peel_to_commit(repo, sha)
+        commit = peel_to_commit(repo, sha)
         if commit is None:
             continue
         labels.setdefault(commit.id, []).insert(0, _ref_label(name))
@@ -231,7 +281,7 @@ def _decorate_head(repo: BaseRepo, labels: dict[bytes, list[str]]) -> None:
         return
     if sha is None:
         return
-    commit = _peel_to_commit(repo, sha)
+    commit = peel_to_commit(repo, sha)
     if commit is None:
         return
     names = labels.setdefault(commit.id, [])
@@ -244,36 +294,209 @@ def _decorate_head(repo: BaseRepo, labels: dict[bytes, list[str]]) -> None:
         names.insert(0, "HEAD")
 
 
-def _parents(walker: Walker, commit: Commit,
-             first_parent: bool) -> list[ObjectID]:
-    """The parents a walk follows from one commit.
-
-    ``--first-parent`` narrows the commits shown, never the commits
-    hidden: git carries a range's exclusion through every parent, so
-    ``--first-parent side..main`` still hides what ``side`` merged in.
-    dulwich hides through the same parents it walks, so a hidden commit
-    is handed all of them.
+def _load_commit(repo: BaseRepo, sha: bytes) -> Commit:
+    """One commit by id, for a walk that only ever follows parents.
 
     Args:
-        walker (Walker): the walk, whose hidden set grows as it runs.
-        commit (Commit): the commit whose parents to follow.
-        first_parent (bool): ``--first-parent``.
+        repo (BaseRepo): repository holding the object.
+        sha (bytes): hex object id.
     """
-    if first_parent and commit.id not in walker.excluded:
-        return commit.parents[:1]
-    return commit.parents
+    obj = repo.object_store[ObjectID(sha)]
+    if not isinstance(obj, Commit):
+        raise TypeError(f"{sha.decode()} is a {obj.type_name.decode()}, "
+                        "not a commit")
+    return obj
 
 
-def select(repo: BaseRepo,
+def _walk_history(repo: BaseRepo, starts: list[Commit], first_parent: bool,
+                  hidden: tuple[Commit, ...]) -> Iterator[Commit]:
+    """Walk history from a set of commits, newest first, along every
+    parent.
+
+    Ordered by committer time with ties broken by insertion, which is
+    what a git log without ``--topo-order`` prints. Each commit is
+    visited once however many branches reach it.
+
+    A hidden commit takes its whole ancestry out of the walk, through
+    every parent even under ``--first-parent``, which is how git carries
+    a range's exclusion. With anything hidden the walk is git's limited
+    one: it holds what it finds, so a commit that a later hidden one
+    turns out to reach still drops out, and it runs past the point
+    where every queued commit is hidden by git's slop of five hidden
+    commits, restarted whenever one is dated no older than the last
+    shown one. That slack is what keeps a history whose dates run
+    backwards from leaking commits the hidden side reaches late.
+    Synchronous, for a worker thread.
+
+    Args:
+        repo (BaseRepo): repository to walk.
+        starts (list[Commit]): the commits to walk back from.
+        first_parent (bool): ``--first-parent``.
+        hidden (tuple[Commit, ...]): commits whose whole history is
+            left out, the ``A`` of ``A..B``.
+    """
+    seen: set[bytes] = set()
+    excluded: set[bytes] = set()
+    visited: dict[bytes, Commit] = {}
+    queue: list[Commit] = []
+    held: list[Commit] = []
+
+    def hide(shas: Iterable[bytes]) -> None:
+        stack = list(shas)
+        while stack:
+            sha = stack.pop()
+            if sha in excluded:
+                continue
+            excluded.add(sha)
+            known = visited.get(sha)
+            if known is not None:
+                stack.extend(known.parents)
+            elif sha not in seen:
+                seen.add(sha)
+                queue.append(_load_commit(repo, sha))
+
+    for commit in hidden:
+        if commit.id not in seen:
+            seen.add(commit.id)
+            excluded.add(commit.id)
+            queue.append(commit)
+    for commit in starts:
+        if commit.id not in seen:
+            seen.add(commit.id)
+            queue.append(commit)
+    limited = bool(hidden)
+    slop = SLOP
+    date = math.inf
+    while queue:
+        queue.sort(key=lambda commit: -commit.commit_time)
+        commit = queue.pop(0)
+        visited[commit.id] = commit
+        if commit.id in excluded:
+            hide(commit.parents)
+            if not queue:
+                break
+            newest = max(queued.commit_time for queued in queue)
+            if date <= newest or any(queued.id not in excluded
+                                     for queued in queue):
+                slop = SLOP
+            else:
+                slop -= 1
+            if slop == 0:
+                break
+            continue
+        date = commit.commit_time
+        if limited:
+            held.append(commit)
+        else:
+            yield commit
+        for parent in commit.parents[:1] if first_parent else commit.parents:
+            if parent not in seen:
+                seen.add(parent)
+                queue.append(_load_commit(repo, parent))
+    yield from (commit for commit in held if commit.id not in excluded)
+
+
+def _sort_commits(commits: list[Commit],
+                  order: Literal["topo", "date"]) -> list[Commit]:
+    """Order a walk's commits so no parent comes before any of its
+    children.
+
+    git's sort_in_topological_order: a commit is emitted once every child
+    in the list has been, children counted only among the commits listed.
+    ``topo`` keeps a stack, so a merge's second parent's line is followed
+    to its end before the first parent's, and the tips come out in walk
+    order; ``date`` takes the newest ready commit instead, ties in the
+    order they became ready.
+
+    Args:
+        commits (list[Commit]): the walk, newest first.
+        order (str): which of git's two orders.
+    """
+    indegree: dict[bytes, int] = {commit.id: 1 for commit in commits}
+    by_id: dict[bytes, Commit] = {commit.id: commit for commit in commits}
+    for commit in commits:
+        for parent in commit.parents:
+            if indegree.get(parent, 0) > 0:
+                indegree[parent] += 1
+    stack: list[Commit] = []
+    heap: list[tuple[int, int, bytes]] = []
+    seq = 0
+
+    def put(commit: Commit) -> None:
+        nonlocal seq
+        if order == "topo":
+            stack.append(commit)
+        else:
+            heapq.heappush(heap, (-commit.commit_time, seq, commit.id))
+        seq += 1
+
+    def take() -> Commit | None:
+        if order == "topo":
+            return stack.pop() if stack else None
+        return by_id[heapq.heappop(heap)[2]] if heap else None
+
+    for tip in commits:
+        if indegree[tip.id] == 1:
+            put(tip)
+    # The tips come out in the order the walk found them, which a stack
+    # reverses unless it is turned over first.
+    stack.reverse()
+    ordered: list[Commit] = []
+    ready = take()
+    while ready is not None:
+        for parent in ready.parents:
+            count = indegree.get(parent, 0)
+            if count == 0:
+                continue
+            indegree[parent] = count - 1
+            if count - 1 == 1:
+                put(by_id[parent])
+        indegree[ready.id] = 0
+        ordered.append(ready)
+        ready = take()
+    return ordered
+
+
+def _in_window(commit: Commit, flags: LogFlags) -> bool:
+    """Whether a commit's date is inside ``--since``/``--until``.
+
+    Args:
+        commit (Commit): the commit.
+        flags (LogFlags): the parsed invocation.
+    """
+    if flags.since is not None and commit.commit_time < flags.since:
+        return False
+    return flags.until is None or commit.commit_time <= flags.until
+
+
+def _parents_pass(commit: Commit, flags: LogFlags) -> bool:
+    """Whether a commit's parent count passes ``--merges``,
+    ``--no-merges`` and kin.
+
+    Args:
+        commit (Commit): the commit.
+        flags (LogFlags): the parsed invocation.
+    """
+    count = len(commit.parents)
+    if flags.min_parents is not None and count < flags.min_parents:
+        return False
+    return not (flags.max_parents is not None and flags.max_parents >= 0
+                and count > flags.max_parents)
+
+
+def walked(repo: BaseRepo,
            starts: list[Commit],
            flags: LogFlags,
-           hidden: tuple[Commit, ...] = ()) -> list[Commit]:
-    """The commits a log invocation prints, in the order it prints them.
+           hidden: tuple[Commit, ...] = ()) -> Walk:
+    """The commits a log walks, in the order it walks them.
 
     Order of operations is git's: walk history, drop what the filters
-    reject, cut to ``-n``, and only then reverse. Reversing last is what
-    makes ``-S <name> --reverse`` name the commit that introduced a
-    string rather than the most recent one to touch it.
+    reject, and cut at ``-n`` printed commits. A topological or date
+    order needs the whole walk first (git's limited walk), and is taken
+    over the commits inside the date window before the other filters
+    run. The pickaxe is the one filter that leaves a commit in the walk:
+    git still draws it into the graph and only declines to print it,
+    which is why ``--graph -S`` shows ``...`` rows.
 
     ``-n`` cannot be pushed into the walker when a pickaxe is active,
     because the limit counts commits that survive the filter, not
@@ -289,35 +512,53 @@ def select(repo: BaseRepo,
     """
     store = repo.object_store
     needle = flags.search.encode() if flags.search is not None else None
-    include: list[ObjectID] = []
-    for start in starts:
-        if start.id not in include:
-            include.append(ObjectID(start.id))
-    walker = Walker(
-        store,
-        include,
-        exclude=[ObjectID(commit.id) for commit in hidden],
-        max_entries=None,
-        get_parents=lambda c: _parents(walker, c, flags.first_parent),
-        since=int(flags.since) if flags.since is not None else None,
-        until=int(flags.until) if flags.until is not None else None,
-    )
-    selected: list[Commit] = []
     if flags.max_count == 0:
-        return selected
-    for entry in walker:
-        commit = entry.commit
-        if flags.min_parents is not None and len(
-                commit.parents) < flags.min_parents:
+        return Walk((), frozenset())
+    source: Iterator[Commit] = (
+        commit
+        for commit in _walk_history(repo, starts, flags.first_parent, hidden)
+        if _in_window(commit, flags))
+    interesting: frozenset[bytes] = frozenset()
+    if flags.order != "default":
+        window = list(source)
+        interesting = frozenset(commit.id for commit in window
+                                if _parents_pass(commit, flags))
+        source = iter(_sort_commits(window, flags.order))
+    steps: list[WalkStep] = []
+    printed = 0
+    for commit in source:
+        if not _parents_pass(commit, flags):
             continue
-        if flags.max_parents is not None and flags.max_parents >= 0 and len(
-                commit.parents) > flags.max_parents:
-            continue
-        if needle is not None and not touches(store, commit, needle):
-            continue
-        selected.append(commit)
-        if flags.max_count is not None and len(selected) >= flags.max_count:
+        shown = needle is None or touches(store, commit, needle)
+        steps.append(WalkStep(commit, shown))
+        printed += shown
+        if flags.max_count is not None and printed >= flags.max_count:
             break
+    return Walk(tuple(steps), interesting)
+
+
+def select(repo: BaseRepo,
+           starts: list[Commit],
+           flags: LogFlags,
+           hidden: tuple[Commit, ...] = ()) -> list[Commit]:
+    """The commits a log invocation prints, in the order it prints them.
+
+    The walk's printed commits, reversed last when asked: reversing
+    after the cut is what makes ``-S <name> --reverse`` name the commit
+    that introduced a string rather than the most recent one to touch
+    it.
+
+    Args:
+        repo (BaseRepo): repository to walk.
+        starts (list[Commit]): the commits to walk back from.
+        flags (LogFlags): the parsed invocation.
+        hidden (tuple[Commit, ...]): commits whose whole history is
+            left out, the ``A`` of ``A..B``.
+    """
+    selected = [
+        step.commit for step in walked(repo, starts, flags, hidden).steps
+        if step.shown
+    ]
     if flags.reverse:
         selected.reverse()
     return selected

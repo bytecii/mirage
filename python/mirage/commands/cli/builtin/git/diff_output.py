@@ -654,14 +654,38 @@ async def renames_enabled(dispatch: DispatchFn,
     return value.lower() not in (b"false", b"no", b"off", b"0", b"")
 
 
+def separator_line(commit: Commit, kind: str, flags: DiffFlags) -> str | None:
+    """The line git prints between a commit's text and its diff, None
+    for none.
+
+    ``---`` when both a diffstat and a patch follow, otherwise an empty
+    line, and none under oneline, which is log-tree's rule. A combined
+    diff (``-c``, ``--cc``) is printed from its own path, which always
+    writes the empty line, oneline included. Pinned against git 2.50.1.
+
+    Args:
+        commit (Commit): the commit whose diff follows.
+        kind (str): the pretty format's kind.
+        flags (DiffFlags): the diff flags.
+    """
+    if len(commit.parents) > 1 and flags.merge in ("combined",
+                                                   "dense-combined"):
+        return ""
+    if kind == "oneline":
+        return None
+    return "---" if flags.stat and flags.patch else ""
+
+
 def join_output(commit: Commit,
                 header: bytes,
                 bodies: list[bytes],
                 kind: str,
                 width: int,
+                flags: DiffFlags,
                 empty_summary: bool = False) -> bytes:
     if not bodies:
         return header
+    line = separator_line(commit, kind, flags)
     blocks = []
     for index, body in enumerate(bodies):
         head = header
@@ -672,7 +696,8 @@ def join_output(commit: Commit,
                 full, parent = full[:width], parent[:width]
             head = head.replace(full.encode(),
                                 f"{full} (from {parent})".encode(), 1)
-        gap = b"\n" if head and body and kind != "oneline" else b""
+        gap = (f"{line}\n".encode()
+               if head and body and line is not None else b"")
         if not body and head and empty_summary:
             gap = b"\n"
         blocks.append(head + gap + body)

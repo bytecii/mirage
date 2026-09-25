@@ -310,7 +310,7 @@ async function atPath(repo: Repo, rev: string, path: string, revision: string): 
  * that is not a tag object reads as no tag: a lightweight tag names a commit
  * directly, which is why git refuses `^{tag}` on one.
  */
-async function tagObject(repo: Repo, stem: string): Promise<GitObject | null> {
+export async function tagObject(repo: Repo, stem: string): Promise<GitObject | null> {
   let oid: string
   try {
     oid = await git.resolveRef({ ...repoArgs(repo), ref: `${TAG_PREFIX}${stem}` })

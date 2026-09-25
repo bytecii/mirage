@@ -57,9 +57,10 @@ async def test_an_unsupported_log_flag_says_so_rather_than_blaming_the_repo(
 
 @pytest.mark.asyncio
 async def test_an_unsupported_long_log_flag_is_refused_whole(git_ws):
-    result = await git_ws.shell("git -C /repo log --graph")
+    result = await git_ws.shell("git -C /repo log --simplify-by-decoration")
     assert result.exit_code == 128
-    assert result.stderr == b"fatal: unrecognized argument: --graph\n"
+    assert result.stderr == (
+        b"fatal: unrecognized argument: --simplify-by-decoration\n")
 
 
 @pytest.mark.asyncio

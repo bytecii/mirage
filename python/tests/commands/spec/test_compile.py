@@ -14,7 +14,8 @@
 
 import pytest
 
-from mirage.commands.spec.compile import compile_spec, expand_long
+from mirage.commands.spec.compile import (compile_spec, expand_git_long,
+                                          expand_long)
 from mirage.commands.spec.types import CommandSpec, Operand, Option
 
 
@@ -197,3 +198,29 @@ def test_pair_accumulates_like_multiple():
     compiled = compile_spec(spec)
     assert "--arg" in compiled.pair_dests
     assert "--arg" in compiled.multiple_dests
+
+
+# git 2.50.1's `branch` and `show-ref` tables, as far as these cases reach.
+BRANCH = ("[no-]verbose", "[no-]color", "contains", "no-contains", "[no-]move",
+          "merged", "no-merged")
+SHOW_REF = ("[no-]heads", "[no-]head")
+
+
+def test_git_long_lets_an_exact_name_win_over_a_longer_one():
+    assert expand_git_long(SHOW_REF, "--head") == "--head"
+
+
+def test_git_long_expands_a_unique_abbreviation_no_included():
+    assert expand_git_long(BRANCH, "--verb") == "--verbose"
+    assert expand_git_long(BRANCH, "--no-verb") == "--no-verbose"
+    assert expand_git_long(BRANCH, "--no-cont") == "--no-contains"
+
+
+def test_git_long_names_the_last_two_candidates_of_an_ambiguity():
+    assert expand_git_long(BRANCH, "--no-m") == ("--no-move", "--no-merged")
+    assert expand_git_long(SHOW_REF, "--hea") == ("--heads", "--head")
+
+
+def test_git_long_answers_nothing_for_a_word_no_option_starts_with():
+    assert expand_git_long(BRANCH, "--zzz") is None
+    assert expand_git_long((), "--verb") is None
