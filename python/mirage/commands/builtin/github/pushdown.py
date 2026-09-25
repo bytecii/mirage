@@ -19,12 +19,34 @@ from mirage.commands.builtin.grep_pushdown import (is_literal_pattern,
                                                    search_query)
 from mirage.core.github.constants import SCOPE_WARN
 from mirage.core.github.pushdown import (count_scope_files, scope_relative_key,
-                                         should_use_search)
+                                         search_safe, should_use_search)
 from mirage.core.github.repo import ensure_default_branch, ensure_ref
 from mirage.core.github.search import narrow_paths
 from mirage.core.github.tree import ensure_tree
 from mirage.types import PathSpec
 from mirage.utils.key_prefix import mount_prefix_of
+
+
+def scope_refusal(command: str, file_count: int, whole_word: bool) -> str:
+    """The refusal for a scope too large to scan without a narrowing.
+
+    Push-down needs ``-w`` (see :func:`narrow_scope`), so without it the
+    remedy is ``-w``; with it, code search ran and its answer could not be
+    trusted as the whole set, so only a narrower path is left.
+
+    Args:
+        command (str): ``grep`` or ``rg``.
+        file_count (int): files in scope.
+        whole_word (bool): True if -w is set.
+
+    Returns:
+        str: the stderr line.
+    """
+    if whole_word:
+        return (f"{command}: {file_count} files in scope and code search "
+                "could not narrow them; narrow the path\n")
+    return (f"{command}: {file_count} files in scope, "
+            "narrow the path, or use -w to enable code search\n")
 
 
 async def narrow_scope(
@@ -87,7 +109,7 @@ async def narrow_scope(
     # request.
     use_search = (not exact_file_set and query is not None and whole_word
                   and literal and file_count > SCOPE_WARN
-                  and should_use_search(
+                  and search_safe(query) and should_use_search(
                       recursive=recursive,
                       on_default_branch=(await ensure_ref(accessor) == await
                                          ensure_default_branch(accessor)),
@@ -99,6 +121,7 @@ async def narrow_scope(
                                       accessor.repo,
                                       query,
                                       paths,
+                                      accessor.tree,
                                       session=accessor.pool)
         if narrowed:
             return narrowed, len(narrowed), True

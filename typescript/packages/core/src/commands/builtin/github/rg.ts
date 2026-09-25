@@ -23,7 +23,7 @@ import { command, type CommandFnResult, type CommandOpts } from '../../config.ts
 import { specOf } from '../../spec/builtins.ts'
 import { patternArg } from '../grep_pattern.ts'
 import { rgGeneric } from '../generic/rg.ts'
-import { narrowScope } from './pushdown.ts'
+import { narrowScope, scopeRefusal } from './pushdown.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 
 const ENC = new TextEncoder()
@@ -56,9 +56,7 @@ async function rgCommand(
         null,
         new IOResult({
           exitCode: 1,
-          stderr: ENC.encode(
-            `rg: ${String(narrowed.fileCount)} files in scope, narrow the path, or use -w to enable code search\n`,
-          ),
+          stderr: ENC.encode(scopeRefusal('rg', narrowed.fileCount, fl.asBool('w'))),
         }),
       ]
     }

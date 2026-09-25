@@ -13,4 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 export const SCOPE_WARN = 100
+// GitHub's code search does not index a file at or over this size.
+export const CODE_SEARCH_SIZE_LIMIT = 384 * 1024
+// The largest page code search serves.
+export const SEARCH_PAGE_SIZE = 100
 export const SCOPE_ERROR = 5000

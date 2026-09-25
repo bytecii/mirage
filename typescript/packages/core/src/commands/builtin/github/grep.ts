@@ -24,7 +24,7 @@ import { specOf } from '../../spec/builtins.ts'
 import { prefixAggregate } from '../aggregators.ts'
 import { patternArg } from '../grep_pattern.ts'
 import { grepGeneric, labelled } from '../generic/grep.ts'
-import { narrowScope } from './pushdown.ts'
+import { narrowScope, scopeRefusal } from './pushdown.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 
 const ENC = new TextEncoder()
@@ -60,9 +60,7 @@ async function grepCommand(
         null,
         new IOResult({
           exitCode: 1,
-          stderr: ENC.encode(
-            `grep: ${String(narrowed.fileCount)} files in scope, narrow the path, or use -w to enable code search\n`,
-          ),
+          stderr: ENC.encode(scopeRefusal('grep', narrowed.fileCount, fl.asBool('w'))),
         }),
       ]
     }
