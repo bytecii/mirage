@@ -194,7 +194,9 @@ export async function zgrepGeneric(
       stdinData === null || stdinData.byteLength === 0 ? new Uint8Array(0) : await gunzip(stdinData)
     if (filesOnly || filesWithoutMatch) {
       const matched = maxCount !== 0 && anyLineSelected(data, pattern, invert)
-      if (matched === filesOnly) allResults.push('(standard input)')
+      // zgrep lists stdin by the name it hands grep, `-`, while -H labels its
+      // lines `(standard input)` (gzip 1.13).
+      if (matched === filesOnly) allResults.push('-')
       anyMatch ||= matched
     } else {
       // GNU zgrep labels stdin "(standard input)" under -H.

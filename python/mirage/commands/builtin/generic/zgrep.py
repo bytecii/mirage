@@ -209,7 +209,9 @@ async def zgrep(
             matched = f.max_count != 0 and _files_only_match(
                 data, compiled, f.ignore_case, f.invert)
             if matched == f.files_only:
-                all_results.append("(standard input)")
+                # zgrep lists stdin by the name it hands grep, `-`, while
+                # -H labels its lines `(standard input)` (gzip 1.13).
+                all_results.append("-")
             any_match = any_match or matched
         else:
             # GNU zgrep labels stdin "(standard input)" under -H.
