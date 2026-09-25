@@ -61,9 +61,8 @@ export abstract class HfHubVFS extends BoundVFS<HfHubAccessor> implements VFS {
   // be short.
   readonly sizesAlwaysKnown: boolean = true
   readonly supportsSnapshot: boolean = true
-  // stat and read both stamp the tree row's git oid, and a read stamps it only
-  // when the response's ETag names that row, so the gate compares like with
-  // like.
+  // stat and read stamp the tree row's git oid, a read only when its ETag names
+  // that row, so the gate compares like with like.
   readonly readRevalidatable: boolean = true
   // The index is not a cache in front of a listing, it IS the listing: one
   // recursive fetch seeds it whole. A long TTL therefore spares the Hub a

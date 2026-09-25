@@ -122,14 +122,7 @@ import type { MailEntry } from '../../../server/mail/rfc822.ts'
 export interface Open {
   ws: ExecWorkspace
   cleanup: () => Promise<void>
-  // A second workspace over the same backing store, which consistency
-  // scenarios mutate through. Adapters that can build their mounts more than
-  // once expose it; the rest leave it undefined and the runner records their
-  // consistency cases as failed instead of silently dropping them.
   shadow?: () => ExecWorkspace
-  // How a consistency scenario changes a file out of band, for a backend whose
-  // mount cannot take a write: a Hub repo mount is read-only, and a change to
-  // it is a commit. Absent, the scenario writes through the shadow's shell.
   mutate?: (path: string, content: Uint8Array) => Promise<void>
 }
 
@@ -2185,5 +2178,8 @@ export async function openConsistency(
       throw new Error(new TextDecoder().decode(result.stderr))
     }
   }
+  // A mount that cannot take a write (a Hub repo, where a change is a commit)
+  // brings its own out-of-band change; every other one writes through the
+  // shadow's shell.
   return { ws: opened.ws, mutate: opened.mutate ?? tee, cleanup: opened.cleanup }
 }
