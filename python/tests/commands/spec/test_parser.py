@@ -1105,9 +1105,9 @@ def test_tar_old_style_cluster_parses_as_flags():
 
 
 def test_tar_old_style_cluster_word_is_text_not_a_path():
-    # The cluster carries no dash, so without an explicit TEXT kind the
-    # shape heuristic would classify it and dispatch would re-read it as
-    # a resolved path instead of letters.
+    # The cluster carries no dash, so without a TEXT kind the shape
+    # heuristic would classify it and dispatch would re-read it as a
+    # resolved path instead of letters.
     parsed = parse_command(SPECS["tar"], ["xzf", "/data/a.tgz"], "/")
     assert parsed.word_kinds == ["str", "path"]
 
@@ -1148,7 +1148,7 @@ def test_tar_dashed_line_reports_no_old_option():
     parsed = parse_command(SPECS["tar"], ["-x", "-z", "-f", "/data/a.tgz"],
                            "/")
     assert parsed.old_option_needs_value is None
-    assert parsed.word_kinds == [None, None, None, "path"]
+    assert parsed.word_kinds == ["str", "str", "str", "path"]
 
 
 def test_tar_old_style_still_accepts_long_options_after_the_cluster():
@@ -1165,6 +1165,47 @@ def test_old_option_style_is_off_for_every_other_command():
     parsed = parse_command(SPECS["gzip"], ["dkf"], "/")
     assert parsed.paths() == ["/dkf"]
     assert parsed.old_option_needs_value is None
+
+
+@pytest.mark.parametrize("argv", [
+    ["-o/data/s1.txt", "/data/in.txt"],
+    ["-uo/data/s1.txt", "/data/in.txt"],
+    ["--output=/data/s1.txt", "/data/in.txt"],
+])
+def test_option_word_carrying_its_path_is_text(argv):
+    # A None kind sent the word to the shape heuristic, which read
+    # `-o/data/s1.txt` as the relative path <cwd>/-o/data/s1.txt, so sort
+    # got a phantom input file and no output option at all.
+    parsed = parse_command(SPECS["sort"], argv, "/")
+    assert parsed.word_kinds == ["str", "path"]
+    assert parsed.path_flag_values == ["/data/s1.txt"]
+    assert parsed.paths() == ["/data/in.txt"]
+
+
+def test_value_word_keeps_its_option_kind():
+    parsed = parse_command(SPECS["sort"],
+                           ["-o", "/data/s1.txt", "/data/in.txt"], "/")
+    assert parsed.word_kinds == ["str", "path", "path"]
+
+
+def test_invalid_option_word_is_text():
+    # GNU refuses the letter: `sort: invalid option -- '/'`. Read as a
+    # path, the word reached dispatch resolved and was opened instead.
+    parsed = parse_command(SPECS["sort"], ["-/data/x.txt", "/data/in.txt"],
+                           "/")
+    assert parsed.word_kinds == ["str", "path"]
+    assert parsed.invalid_options == ["/"]
+
+
+def test_dash_word_that_is_an_operand_keeps_the_operand_kind():
+    after_end = parse_command(SPECS["head"], ["--", "-o/data/x.txt"], "/")
+    assert after_end.word_kinds == ["str", "path"]
+    # unzip has no long-option parser, so an undeclared `--` word is its
+    # archive operand.
+    lenient = parse_command(SPECS["unzip"], ["--a/b.zip"],
+                            "/",
+                            cmd_name="unzip")
+    assert lenient.word_kinds == ["path"]
 
 
 def test_required_operand_is_reported_not_raised():

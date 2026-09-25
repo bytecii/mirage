@@ -444,7 +444,7 @@ describe('specWordKinds — numericShorthand', () => {
   })
 
   it('treats -3 as a flag value, not a path (head/tail GNU shorthand)', () => {
-    expect(specWordKinds(headSpec, ['-3', '/ram/file'])).toEqual([null, 'path'])
+    expect(specWordKinds(headSpec, ['-3', '/ram/file'])).toEqual(['str', 'path'])
   })
 
   it('falls back to treating -3 as a positional when spec lacks numericShorthand', () => {

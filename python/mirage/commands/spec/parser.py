@@ -511,21 +511,17 @@ def parse_command(
     # raw_indices[k] = argv position of raw_args[k]
     raw_indices: list[int] = []
     # Per-position operand kinds aligned with the caller's argv (None =
-    # flag token or ignored word). Positions, not value sets, so the
-    # same word can be TEXT in one slot and PATH in another:
-    #   grep  *.txt  *.txt               -> [TEXT, PATH]
-    #   find  /data  -name  *.txt        -> [PATH, None, TEXT]
-    #   grep  --cache  /c  pat  f.txt    -> [None, None, TEXT, PATH]
+    # a word the scan never reads, such as a --cache token). Positions,
+    # not value sets, so the same word can be TEXT in one slot and PATH
+    # in another:
+    #   grep  *.txt  *.txt                  -> [TEXT, PATH]
+    #   find  /data  -name  *.txt           -> [PATH, TEXT, TEXT]
+    #   grep  --cache  /c  -e  pat  f.txt   -> [None, None, TEXT, TEXT, PATH]
     # orig_indices/raw_indices map the parser's shrunken views back to
     # argv slots (filtered_argv drops --cache tokens, raw_args keeps
     # only operands); kinds must be written at the original positions
     # or one dropped token shifts every later kind onto the wrong word.
     word_kinds: list[ValueType | None] = [None] * len(argv)
-    if old is not None and old.cluster is not None:
-        # A cluster carries no dash, so leaving it None would send it to
-        # the shape heuristic and a path-shaped one (`tar sub/a.tgz`)
-        # would reach dispatch resolved and unreadable as letters.
-        word_kinds[0] = "str"
     # The directory the next path operand resolves against, and where it
     # was for each word already read. It only ever moves for a spec that
     # declares operand_base, so every other command records None
@@ -598,6 +594,10 @@ def parse_command(
 
     while i < len(filtered_argv):
         tok = filtered_argv[i]
+        # Keep option words literal: the shape heuristic would treat
+        # `-o/data/out` as a relative path. Synthesized tar flags mark the
+        # original cluster here; values and operands receive their own kinds.
+        word_kinds[orig_indices[i]] = "str"
 
         if tok == "--" and not end_of_flags:
             end_of_flags = True

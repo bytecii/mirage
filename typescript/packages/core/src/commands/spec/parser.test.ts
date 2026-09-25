@@ -1364,9 +1364,9 @@ describe("parseCommand — tar's old option style", () => {
   })
 
   it('marks the cluster word TEXT so it is never classified as a path', () => {
-    // The cluster carries no dash, so without an explicit TEXT kind the
-    // shape heuristic would classify it and dispatch would re-read it as
-    // a resolved path instead of letters.
+    // The cluster carries no dash, so without a TEXT kind the shape
+    // heuristic would classify it and dispatch would re-read it as a
+    // resolved path instead of letters.
     const p = parseCommand(specOf('tar'), ['xzf', '/data/a.tgz'], '/')
     expect(p.wordKinds).toEqual(['str', 'path'])
   })
@@ -1406,7 +1406,7 @@ describe("parseCommand — tar's old option style", () => {
   it('reports no old option on a dashed line', () => {
     const p = parseCommand(specOf('tar'), ['-x', '-z', '-f', '/data/a.tgz'], '/')
     expect(p.oldOptionNeedsValue).toBeNull()
-    expect(p.wordKinds).toEqual([null, null, null, 'path'])
+    expect(p.wordKinds).toEqual(['str', 'str', 'str', 'path'])
   })
 
   it('still accepts long options after the cluster', () => {
@@ -1424,6 +1424,45 @@ describe("parseCommand — tar's old option style", () => {
     const p = parseCommand(specOf('gzip'), ['dkf'], '/')
     expect(p.paths()).toEqual(['/dkf'])
     expect(p.oldOptionNeedsValue).toBeNull()
+  })
+})
+
+describe('the kind of a word the scan reads as syntax', () => {
+  // A null kind sent the word to the shape heuristic, which read
+  // `-o/data/s1.txt` as the relative path <cwd>/-o/data/s1.txt, so sort
+  // got a phantom input file and no output option at all.
+  it.each([
+    [['-o/data/s1.txt', '/data/in.txt']],
+    [['-uo/data/s1.txt', '/data/in.txt']],
+    [['--output=/data/s1.txt', '/data/in.txt']],
+  ])('an option word carrying its path is TEXT: %j', (argv) => {
+    const p = parseCommand(specOf('sort'), argv, '/')
+    expect(p.wordKinds).toEqual(['str', 'path'])
+    expect(p.pathFlagValues).toEqual(['/data/s1.txt'])
+    expect(p.paths()).toEqual(['/data/in.txt'])
+  })
+
+  it('a value word keeps its option kind', () => {
+    const p = parseCommand(specOf('sort'), ['-o', '/data/s1.txt', '/data/in.txt'], '/')
+    expect(p.wordKinds).toEqual(['str', 'path', 'path'])
+  })
+
+  it('an invalid option word is TEXT', () => {
+    // GNU refuses the letter: `sort: invalid option -- '/'`. Read as a
+    // path, the word reached dispatch resolved and was opened instead.
+    const p = parseCommand(specOf('sort'), ['-/data/x.txt', '/data/in.txt'], '/')
+    expect(p.wordKinds).toEqual(['str', 'path'])
+    expect(p.invalidOptions).toEqual(['/'])
+  })
+
+  it('a dash word that is an operand keeps the operand kind', () => {
+    expect(parseCommand(specOf('head'), ['--', '-o/data/x.txt'], '/').wordKinds).toEqual([
+      'str',
+      'path',
+    ])
+    // unzip has no long-option parser, so an undeclared `--` word is its
+    // archive operand.
+    expect(parseCommand(specOf('unzip'), ['--a/b.zip'], '/', 'unzip').wordKinds).toEqual(['path'])
   })
 })
 
