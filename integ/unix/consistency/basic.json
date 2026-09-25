@@ -11,7 +11,8 @@
         "onedrive",
         "sharepoint",
         "sharepoint-prefix",
-        "ssh"
+        "ssh",
+        "hf-hub"
       ],
       "read": "bounded",
       "ttl": 600,
@@ -46,7 +47,8 @@
       "seq": 310001,
       "targets": [
         "s3",
-        "s3-prefix"
+        "s3-prefix",
+        "hf-hub"
       ],
       "read": "fresh",
       "scenario": [
@@ -74,7 +76,7 @@
         "stdout": "v1\nv2\n",
         "stderr": ""
       },
-      "note": "Narrowed to the backends that may declare `read: fresh`: the other five cache reads but stamp no comparable content token, so the mount-time verdict refuses the policy and the workspace never constructs. The bounded control keeps the full list."
+      "note": "Narrowed to the backends that may declare `read: fresh` (the S3 family and the Hugging Face Hub repos, whose hf-hub target changes the file by commit): the other five cache reads but stamp no comparable content token, so the mount-time verdict refuses the policy and the workspace never constructs. The bounded control keeps the full list."
     }
   ]
 }

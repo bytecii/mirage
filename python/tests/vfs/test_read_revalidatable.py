@@ -32,12 +32,16 @@ import mirage.core.gridfs.driver as gridfs_driver
 import mirage.core.gridfs.read as gridfs_read
 import mirage.core.gridfs.stream as gridfs_stream
 import mirage.core.gridfs.watch as gridfs_watch
+import mirage.core.hf_hub.read as hf_read
+import mirage.core.hf_hub.stream as hf_stream
 import mirage.core.s3.read as s3_read
 import mirage.core.s3.stream as s3_stream
 from mirage.cache.index import RAMIndexCacheStore
 from mirage.commands.builtin.generic_bind.adapter import CommandIO
 from mirage.commands.builtin.gridfs.io import IO as GRIDFS_IO
+from mirage.commands.builtin.hf_hub.io import IO as HF_IO
 from mirage.commands.builtin.s3.io import IO as S3_IO
+from mirage.core.hf_hub.client import etag_value
 from mirage.io.cachable_iterator import CachableAsyncIterator
 from mirage.io.types import IOResult
 from mirage.observe.context import OpTimer, RecordingScope, active_recorder
@@ -52,12 +56,29 @@ from mirage.workspace import Workspace
 from mirage.workspace.mount import Mount
 from tests.e2e.gdrive_mock import FakeGDrive, patch_gdrive
 from tests.e2e.s3_mock import MultiBucketSession, patch_s3_session
+from tests.fixtures.hf_hub_api import FakeHub, blob_oid, serve, xet_hash
 
 S3_FAMILY = ("s3", "aliyun", "backblaze", "ceph", "digitalocean", "gcs",
              "minio", "oci", "qingstor", "r2", "scaleway", "seaweedfs",
              "supabase", "tencent", "wasabi")
 
-HARNESSES = {**{name: "s3" for name in S3_FAMILY}, "gridfs": "gridfs"}
+HF_FAMILY = {
+    "hf_models": "models",
+    "hf_datasets": "datasets",
+    "hf_spaces": "spaces"
+}
+
+HARNESSES = {
+    **{
+        name: "s3"
+        for name in S3_FAMILY
+    },
+    "gridfs": "gridfs",
+    **{
+        name: "hf_models"
+        for name in HF_FAMILY
+    },
+}
 
 # One document per family, identical in the TypeScript twin. oci is the one
 # alias with a required field beyond these; every other one-of (r2's
@@ -237,8 +258,57 @@ def _gridfs_fake(shape: str, data: bytes,
 
 
 @contextmanager
+def _hf_fake(name: str, shape: str, data: bytes,
+             monkeypatch: pytest.MonkeyPatch) -> Iterator[Fake]:
+    key = KEYS[shape]
+    prefix = PREFIX if shape == "prefixed" else None
+    stored = (prefix or "") + key
+    files = {stored: data}
+    config: dict[str, str] = {"repo_id": "acme/widget"}
+    if prefix is not None:
+        files[key] = DECOY
+        config["key_prefix"] = prefix
+    # Files are served Xet-shaped, so the download's ETag is the xet hash,
+    # not the oid stat stamps: a read that trusted only the oid would stamp
+    # nothing. The repo is filed under the family's own API segment, so a
+    # request built for another repo type gets no answer.
+    hub = FakeHub(repos={(HF_FAMILY[name], "acme/widget"): files})
+    with serve(hub):
+        vfs = build_vfs(name, {**config, "endpoint": hub.url})
+        assert vfs.accessor.key_prefix == (prefix or "")
+        reach: list[str] = []
+        invalidate = RAMIndexCacheStore.invalidate_prefix
+
+        # A whole-tree refill is the one thing that invalidates a store's
+        # prefix. On the mount's own index a cold read does it legitimately;
+        # on any other store it is the reconcile probe walking the tree.
+        async def watched(store, prefix_: str) -> None:
+            if store is not vfs.index:
+                reach.append("tree walk on a throwaway index")
+            await invalidate(store, prefix_)
+
+        monkeypatch.setattr(RAMIndexCacheStore, "invalidate_prefix", watched)
+
+        def rewrite(new: bytes) -> None:
+            files[stored] = new
+
+        yield Fake(vfs=vfs,
+                   key=key,
+                   fetches=lambda: hub.count("resolve"),
+                   rewrite=rewrite,
+                   reach=reach,
+                   io=HF_IO,
+                   read_mod=hf_read,
+                   stream_mod=hf_stream)
+
+
+@contextmanager
 def _fake(name: str, shape: str, data: bytes,
           monkeypatch: pytest.MonkeyPatch) -> Iterator[Fake]:
+    if HARNESSES[name] == "hf_models":
+        with _hf_fake(name, shape, data, monkeypatch) as fake:
+            yield fake
+        return
     if HARNESSES[name] == "gridfs":
         with _gridfs_fake(shape, data, monkeypatch) as fake:
             yield fake
@@ -559,16 +629,30 @@ def test_a_changed_object_is_refetched(name, monkeypatch):
                          ws.cache.is_fresh(virtual, stat.fingerprint))
                 before = fake.fetches()
                 second = await _line(ws, f"cat {virtual}")
-                return stat, fresh, fake.fetches() - before, second
+                refetched = fake.fetches() - before
+                # The refetch has to stamp the new token, or every later
+                # read refetches as well and the backend never serves warm.
+                restat = await _reconcile_stat(ws, virtual)
+                refreshed = (restat.fingerprint is not None
+                             and await ws.cache.is_fresh(
+                                 virtual, restat.fingerprint))
+                before = fake.fetches()
+                third = await _line(ws, f"cat {virtual}")
+                return (stat, fresh, refetched, second, refreshed,
+                        fake.fetches() - before, third)
             finally:
                 await ws.close()
 
-        stat, fresh, refetched, second = asyncio.run(run())
+        (stat, fresh, refetched, second, refreshed, third_fetched,
+         third) = asyncio.run(run())
 
     assert stat.fingerprint is not None
     assert not fresh
     assert refetched == 1
     assert second == CHANGED
+    assert refreshed
+    assert third_fetched == 0
+    assert third == CHANGED
     assert fake.reach == []
 
 
@@ -690,3 +774,35 @@ def test_the_contract_goes_red_on_a_backend_with_two_token_kinds(monkeypatch):
     assert kinds_differ
     assert not fresh
     assert refetched > 0
+
+
+def test_the_contract_goes_red_on_hf_stamping_another_kind(monkeypatch):
+    # hf forced to stamp the download's own ETag (the xet hash) while stat
+    # reports the git oid: both tokens exist and differ, the mismatch the
+    # verified stamp exists to prevent.
+    def raw_etag(_entry, etag: str) -> str:
+        return etag_value(etag)
+
+    with _fake("hf_models", "root", SEED, monkeypatch) as fake:
+        monkeypatch.setitem(vars(hf_read), "row_token", raw_etag)
+        monkeypatch.setitem(vars(hf_stream), "row_token", raw_etag)
+        virtual = "/m/" + fake.key
+
+        async def run():
+            ws = _fresh_workspace(fake.vfs)
+            try:
+                await _line(ws, f"cat {virtual}")
+                holds_read_token = await ws.cache.is_fresh(
+                    virtual, xet_hash(SEED))
+                stat = await _reconcile_stat(ws, virtual)
+                fresh = await ws.cache.is_fresh(virtual, stat.fingerprint)
+                return holds_read_token, stat.fingerprint, fresh
+            finally:
+                await ws.close()
+
+        holds_read_token, fingerprint, fresh = asyncio.run(run())
+
+    assert holds_read_token
+    assert fingerprint == blob_oid(SEED)
+    assert fingerprint != xet_hash(SEED)
+    assert not fresh

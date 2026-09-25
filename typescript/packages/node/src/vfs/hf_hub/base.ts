@@ -61,6 +61,7 @@ export abstract class HfHubVFS extends BoundVFS<HfHubAccessor> implements VFS {
   // be short.
   readonly sizesAlwaysKnown: boolean = true
   readonly supportsSnapshot: boolean = true
+  readonly readRevalidatable: boolean = true
   // The index is not a cache in front of a listing, it IS the listing: one
   // recursive fetch seeds it whole. A long TTL therefore spares the Hub a
   // full re-walk rather than risking a stale row.

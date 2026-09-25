@@ -565,7 +565,7 @@ describe('savedVfsBuild', () => {
     expect(restoresAsFreshRAM(saved('ram', null))).toBe(true)
     expect(restoresAsFreshRAM(saved('disk', null))).toBe(true)
     expect(new RAMVFS().cachesReads).toBe(false)
-    for (const revalidatable of ['s3', 'gridfs']) {
+    for (const revalidatable of ['s3', 'gridfs', 'hf_models', 'hf_datasets', 'hf_spaces']) {
       expect(restoresAsFreshRAM(saved(revalidatable, null))).toBe(false)
     }
   })

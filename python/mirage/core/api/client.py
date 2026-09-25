@@ -31,7 +31,8 @@ from mirage.utils.ranges import ByteWindow, range_header, window_of
 
 logger = logging.getLogger(__name__)
 
-ReadMode = Literal["json", "none", "bytes", "text", "location", "response"]
+ReadMode = Literal["json", "none", "bytes", "bytes_response", "text",
+                   "location", "response"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,6 +345,15 @@ async def _attempt(
             return None
         if read == "bytes":
             return window_of(await resp.read(), resp.status, window)
+        if read == "bytes_response":
+            # A repeated header is joined the way fetch joins it, so a
+            # response carrying two ETags reads as neither on both hosts.
+            return ApiResponse(
+                window_of(await resp.read(), resp.status, window), resp.status,
+                {
+                    key.lower(): ", ".join(resp.headers.getall(key))
+                    for key in resp.headers.keys()
+                })
         if read == "text":
             return await resp.text()
         if read == "location":
@@ -407,7 +417,10 @@ async def api_request(
             None); "none" ignores it; "bytes" returns it raw, trimmed to
             ``window`` when the server ignored the Range; "text" returns it
             as a string; "location" returns the Location header; "response"
-            returns decoded data with status and lower-cased headers.
+            returns decoded data with status and lower-cased headers;
+            "bytes_response" returns the "bytes" body with the same status
+            and headers, for a caller that needs a content token the
+            response carries.
         window (ByteWindow | None): the byte range to request; the Range
             header and the trim-if-unranged guard both come from it.
         session (SessionArg): a live session to reuse across calls, or

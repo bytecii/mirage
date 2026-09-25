@@ -64,9 +64,19 @@ export const NO_RETRY: RetryPolicy = {
  * How to read the reply: 'json' parses the body (an empty one reads as
  * null); 'none' ignores it; 'bytes' returns it raw, trimmed to the window
  * when the server ignored the Range; 'text' returns it as a string;
- * 'location' returns the Location header.
+ * 'location' returns the Location header; 'response' returns the decoded body
+ * with status and lower-cased headers; 'bytes_response' returns the 'bytes'
+ * body with the same status and headers, for a caller that needs a content
+ * token the response carries.
  */
-export type ReadMode = 'json' | 'none' | 'bytes' | 'text' | 'location' | 'response'
+export type ReadMode =
+  | 'json'
+  | 'none'
+  | 'bytes'
+  | 'bytes_response'
+  | 'text'
+  | 'location'
+  | 'response'
 
 /** Decoded body plus the wire metadata cursor pagination reads. Mirrors
  * python's `ApiResponse`; a caller asking for `read: 'response'` gets this
@@ -237,6 +247,18 @@ export async function apiRequest(
     if (read === 'bytes') {
       const data = new Uint8Array(await response.arrayBuffer())
       return windowOf(data, response.status, options.window)
+    }
+    if (read === 'bytes_response') {
+      const headers: Record<string, string> = {}
+      response.headers.forEach((value, name) => {
+        headers[name.toLowerCase()] = value
+      })
+      const data = windowOf(
+        new Uint8Array(await response.arrayBuffer()),
+        response.status,
+        options.window,
+      )
+      return { data, status: response.status, headers } satisfies ApiResponse
     }
     const text = await response.text()
     if (read === 'text') return text

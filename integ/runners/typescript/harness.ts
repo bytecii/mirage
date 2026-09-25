@@ -500,6 +500,56 @@ export async function runScenario(
   return { exitCode, out: outputs.join('') }
 }
 
+/** The two workspaces a consistency scenario runs across, and their teardown. */
+export interface ScenarioOpen {
+  ws: ExecWorkspace
+  mutate: (path: string, content: Uint8Array) => Promise<void>
+  cleanup: () => Promise<void>
+}
+
+// Not an exit any case expects, so a scenario that never ran compares unequal
+// to every golden instead of matching one by accident.
+const NO_SHADOW_EXIT = 125
+
+/**
+ * Run one consistency scenario, or record why it could not run.
+ *
+ * A target a case names but whose adapter cannot build the shadow workspace is
+ * a broken target, not an optional one, so it comes back as a failed result the
+ * caller records like any other rather than a skip it prints and moves past.
+ * Python's runner has no skip arm at all; this keeps the two hosts alike.
+ *
+ * Args:
+ *   opener: builds the read workspace plus its shadow, or null when the
+ *     adapter cannot.
+ *   c: the case being run.
+ *   target: the target it runs against.
+ */
+export async function runConsistencyCase(
+  opener: () => Promise<ScenarioOpen | null>,
+  c: Case,
+  target: Target,
+): Promise<{ exitCode: number; out: string; stderr: string }> {
+  const opened = await opener()
+  if (opened === null) {
+    return {
+      exitCode: NO_SHADOW_EXIT,
+      out: '',
+      stderr: `[${target.id}] ${c.id}: ${target.mounts[0].vfs} adapter has no shadow workspace\n`,
+    }
+  }
+  try {
+    // Same rule as the ordinary path: a target's declared environment reaches
+    // every workspace a case can run against, or a consistency scenario would
+    // silently run under a different one.
+    opened.ws.env = { ...opened.ws.env, ...(target.env ?? {}) }
+    const { exitCode, out } = await runScenario(opened.ws, opened.mutate, c.scenario ?? [])
+    return { exitCode, out, stderr: '' }
+  } finally {
+    await opened.cleanup()
+  }
+}
+
 function checkField(st: HarnessStat, name: string): string {
   let value: string
   if (name === 'mode') {
