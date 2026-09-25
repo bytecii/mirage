@@ -1,14 +1,17 @@
-import gzip as gziplib
 from collections.abc import Awaitable, Callable
 
+from mirage.commands.builtin.utils.constants import STDIN_OPERAND
 from mirage.commands.builtin.utils.operands import (materialized_read,
                                                     merge_split_errors,
                                                     split_readable_coded)
-from mirage.commands.builtin.utils.stream import (read_stdin_async, stdin_stat,
+from mirage.commands.builtin.utils.stream import (operand_label,
+                                                  read_stdin_async, stdin_stat,
                                                   stdin_stream)
 from mirage.commands.config import CommandOpts
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec, PolymorphicReadFn, StatFn
+from mirage.utils.compress import gunzip_checked
+from mirage.utils.errors import GzipDataError
 
 
 async def zcat(
@@ -18,16 +21,21 @@ async def zcat(
     stdin: ByteSource | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     # Each operand decompresses independently and the outputs concatenate
-    # in operand order, like GNU zcat.
-    if paths:
-        parts: list[bytes] = []
-        for p in paths:
-            parts.append(gziplib.decompress(await read_bytes(p)))
-        return b"".join(parts), IOResult()
-    raw = await read_stdin_async(stdin)
-    if raw is None:
-        raise ValueError("zcat: (stdin): unexpected end of file")
-    return gziplib.decompress(raw), IOResult()
+    # in operand order, like GNU zcat. An input with no gzip header is
+    # reported and skipped; a truncated or corrupt one ends the run.
+    parts: list[bytes] = []
+    errors: list[str] = []
+    for p in paths or [STDIN_OPERAND]:
+        raw = (await read_bytes(p)
+               if paths else await read_stdin_async(stdin) or b"")
+        try:
+            parts.append(gunzip_checked(raw))
+        except GzipDataError as exc:
+            errors.append(f"zcat: {operand_label(p, 'stdin')}: {exc}\n")
+            if exc.fatal:
+                break
+    return b"".join(parts), IOResult(exit_code=1 if errors else 0,
+                                     stderr="".join(errors).encode() or None)
 
 
 async def zcat_generic(
@@ -55,10 +63,12 @@ async def zcat_generic(
     readable, err, code = await split_readable_coded(paths, stat, "zcat")
     if err and not readable:
         return None, IOResult(exit_code=code, stderr=err)
-    return await merge_split_errors(
-        await zcat(readable,
-                   read_bytes=materialized_read(stream),
-                   stdin=opts.stdin), err, code)
+    out, io = await zcat(readable,
+                         read_bytes=materialized_read(stream),
+                         stdin=opts.stdin)
+    # A bad archive is gzip's error (1), which outranks a directory's
+    # warning (2).
+    return await merge_split_errors((out, io), err, io.exit_code or code)
 
 
 __all__ = ["zcat", "zcat_generic"]

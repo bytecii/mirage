@@ -14,6 +14,7 @@
 // Mirrors python/tests/commands/builtin/generic/test_gzip.py.
 
 import { describe, expect, it } from 'vitest'
+import { gzip } from '../../../utils/compress.ts'
 import { MountMode, PathSpec } from '../../../types.ts'
 import { RAMVFS } from '../../../vfs/ram/ram.ts'
 import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
@@ -75,3 +76,9 @@ describe('gzip on a dash operand', () => {
   })
 })
 
+describe('gzip -d on inputs gzip refuses', () => {
+  it('calls a truncated stdin an unexpected end', async () => {
+    const cut = (await gzip(new TextEncoder().encode('hi\n'))).subarray(0, 10)
+    expect(await shell('gzip -dc', cut)).toEqual(['', 'gzip: stdin: unexpected end of file\n', 1])
+  })
+})

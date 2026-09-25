@@ -1,4 +1,3 @@
-import gzip as gziplib
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -17,6 +16,8 @@ from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
+from mirage.utils.compress import GZIP_MAGIC, gunzip_checked
+from mirage.utils.errors import GzipDataError
 
 
 async def _read_plain(
@@ -180,9 +181,16 @@ async def zgrep(
     all_results: list[str] = []
     read = stdin_bytes(read_bytes, stdin)
 
+    errors: list[str] = []
     for p in paths or [STDIN_OPERAND]:
         raw = await read(p)
-        data = gziplib.decompress(raw) if raw else b""
+        # zgrep decompresses with `gzip -cdfq`, which passes an input with
+        # no gzip header through as it is; a bad archive is an error.
+        try:
+            data = gunzip_checked(raw) if raw.startswith(GZIP_MAGIC) else raw
+        except GzipDataError as exc:
+            errors.append(f"zgrep: {operand_label(p, 'stdin')}: {exc}\n")
+            continue
         # zgrep hands grep a stdin operand as `-`, so -l and -L list it
         # as `-` while its lines are labelled `(standard input)` (gzip
         # 1.13); /dev/stdin is named as typed either way.
@@ -207,12 +215,13 @@ async def zgrep(
                 any_match = True
             all_results.extend(result)
 
-    if f.quiet:
-        return None, IOResult(exit_code=0 if any_match else 1)
-    exit_code = 0 if any_match else 1
-    if not all_results:
-        return None, IOResult(exit_code=exit_code)
-    return format_records(all_results), IOResult(exit_code=exit_code)
+    # A bad archive is exit 2 even beside a match, -q included (zgrep 3.11).
+    exit_code = 2 if errors else 0 if any_match else 1
+    stderr = "".join(errors).encode() or None
+    if f.quiet or not all_results:
+        return None, IOResult(exit_code=exit_code, stderr=stderr)
+    return format_records(all_results), IOResult(exit_code=exit_code,
+                                                 stderr=stderr)
 
 
 __all__ = ["zgrep"]

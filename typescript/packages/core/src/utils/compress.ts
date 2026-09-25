@@ -12,6 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { GzipDataError } from './errors.ts'
+
+// gzip 1.13's words for the inputs `gzip -d` refuses.
+const GZIP_NOT_GZIP = 'not in gzip format'
+const GZIP_EOF = 'unexpected end of file'
+const GZIP_CORRUPT = 'invalid compressed data--format violated'
+
 async function runThrough(
   bytes: Uint8Array,
   transform: GenericTransformStream,
@@ -28,6 +35,31 @@ export async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
 
 export async function gunzip(bytes: Uint8Array): Promise<Uint8Array> {
   return runThrough(bytes, new DecompressionStream('gzip'))
+}
+
+/** Whether bytes open with the gzip magic. */
+export function hasGzipMagic(bytes: Uint8Array): boolean {
+  return bytes.byteLength >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b
+}
+
+/**
+ * Decompress one gzip input, judged the way `gzip -d` judges it.
+ *
+ * Every member decompresses, so concatenated files read whole. Bytes after the
+ * last member are refused as corrupt, where gzip keeps the output and warns;
+ * Node refuses zero padding there too, which gzip and Python drop, so there the
+ * twins differ. A runtime that gives no error code reads a truncated stream as
+ * corrupt. Mirrors Python's gunzip_checked.
+ */
+export async function gunzipChecked(bytes: Uint8Array): Promise<Uint8Array> {
+  if (bytes.byteLength < 2) throw new GzipDataError(GZIP_EOF, true)
+  if (!hasGzipMagic(bytes)) throw new GzipDataError(GZIP_NOT_GZIP, false)
+  try {
+    return await gunzip(bytes)
+  } catch (err) {
+    const truncated = (err as { code?: unknown }).code === 'Z_BUF_ERROR'
+    throw new GzipDataError(truncated ? GZIP_EOF : GZIP_CORRUPT, true, { cause: err })
+  }
 }
 
 export async function deflateRaw(bytes: Uint8Array): Promise<Uint8Array> {

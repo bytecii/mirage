@@ -114,3 +114,12 @@ def test_a_read_only_mount_runs_gzip_and_gunzip_on_a_dash():
     io = asyncio.run(ws.shell("cd /ro && printf 'x\\n' | gzip - | gunzip -"))
     assert (io.exit_code, io.stdout, io.stderr) == (0, b"x\n", None)
 
+
+@pytest.mark.asyncio
+async def test_d_calls_a_truncated_stdin_an_unexpected_end():
+    ws = Workspace({"/data": (RAMVFS(), MountMode.WRITE)},
+                   mode=MountMode.WRITE)
+    r = await ws.shell("gzip -dc", stdin=zlib.compress(b"hi\n", wbits=31)[:10])
+    assert r.exit_code == 1
+    assert await r.materialize_stderr() == (
+        b"gzip: stdin: unexpected end of file\n")

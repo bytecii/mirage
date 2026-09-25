@@ -150,3 +150,24 @@ def test_zgrep_names_stdin_operands_like_gnu():
                       ("zgrep -l hello /dev/stdin", b"/dev/stdin\n")):
         stdout, io = _run_raw(ws, cmd, stdin=data)
         assert (_bytes(stdout), io.exit_code) == (want, 0), cmd
+
+
+def test_zgrep_searches_a_plain_input_as_it_is():
+    # zgrep decompresses with `gzip -cdfq`, which passes a plain file.
+    ws, _ = _ws()
+    _run_raw(ws, "tee /data/plain.txt", stdin=b"hello\nworld\n")
+    stdout, io = _run_raw(ws, "zgrep -c o /data/plain.txt")
+    assert (_bytes(stdout), io.exit_code) == (b"2\n", 0)
+    stdout, io = _run_raw(ws, "zgrep hello", stdin=b"hello\n")
+    assert (_bytes(stdout), io.exit_code) == (b"hello\n", 0)
+
+
+def test_zgrep_reports_a_bad_archive_and_exits_2_beside_a_match():
+    ws, _ = _ws()
+    _run_raw(ws, "tee /data/cut.gz", stdin=gzip.compress(b"hello\n")[:10])
+    _run_raw(ws, "tee /data/h.gz", stdin=gzip.compress(b"hello\n"))
+    stdout, io = _run_raw(ws, "zgrep hello /data/cut.gz /data/h.gz")
+    assert _bytes(stdout) == b"/data/h.gz:hello\n"
+    assert _bytes(
+        io.stderr) == b"zgrep: /data/cut.gz: unexpected end of file\n"
+    assert io.exit_code == 2

@@ -12,14 +12,15 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { IOResult, type ByteSource } from '../../../io/types.ts'
+import type { ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
-import { gunzip } from '../../../utils/compress.ts'
+import { gunzipChecked } from '../../../utils/compress.ts'
+import { GzipDataError } from '../../../utils/errors.ts'
+import { concat } from '../../../io/cachable_iterator.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
-import { readStdinAsync, stdinStream } from '../utils/stream.ts'
-import { operandsIo, readOperandsCoded } from '../utils/operands.ts'
-
-const ENC = new TextEncoder()
+import { STDIN_OPERAND } from '../utils/constants.ts'
+import { operandLabel, readStdinAsync, stdinStream } from '../utils/stream.ts'
+import { operandsIo, readOperandsCoded, type ReadOperand } from '../utils/operands.ts'
 
 export async function zcatGeneric(
   paths: PathSpec[],
@@ -27,43 +28,35 @@ export async function zcatGeneric(
   stream: (p: PathSpec) => AsyncIterable<Uint8Array>,
 ): Promise<CommandFnResult> {
   stream = stdinStream(stream, opts.stdin)
-  // Each operand decompresses independently and the outputs concatenate
-  // in operand order, like GNU zcat.
+  // Each operand decompresses independently and the outputs concatenate in
+  // operand order, like GNU zcat. A missing operand is reported and skipped.
+  // zcat is gzip's front end, so its exit code is gzip's: a directory is a
+  // warning (2) and a missing file is an error (1), which no other member of
+  // this family distinguishes. Hence the coded read.
+  let ok: ReadOperand[]
+  let err = ''
+  let code = 0
   if (paths.length > 0) {
-    // A missing operand is reported and skipped; the remaining operands
-    // still decompress (GNU zcat).
-    // zcat is gzip's front end, so its exit code is gzip's: a directory
-    // is a warning (2) and a missing file is an error (1), which no other
-    // member of this family distinguishes. Hence the coded read.
-    const [ok, err, code] = await readOperandsCoded(paths, stream, 'zcat')
-    const io = operandsIo(err, { exitCode: code })
-    if (ok.length === 0 && err !== '') return [null, io]
-    const parts: Uint8Array[] = []
-    let total = 0
-    for (const o of ok) {
-      const part = await gunzip(o.data)
-      parts.push(part)
-      total += part.byteLength
-    }
-    const out = new Uint8Array(total)
-    let offset = 0
-    for (const part of parts) {
-      out.set(part, offset)
-      offset += part.byteLength
-    }
-    const result: ByteSource = out
-    return [result, io]
+    ;[ok, err, code] = await readOperandsCoded(paths, stream, 'zcat')
+  } else {
+    const data = (await readStdinAsync(opts.stdin)) ?? new Uint8Array(0)
+    ok = [{ path: STDIN_OPERAND, data }]
   }
-  const stdinBytes = await readStdinAsync(opts.stdin)
-  if (stdinBytes === null) {
-    return [
-      null,
-      new IOResult({
-        exitCode: 1,
-        stderr: ENC.encode('zcat: (stdin): unexpected end of file\n'),
-      }),
-    ]
+  // An input with no gzip header is reported and skipped; a truncated or
+  // corrupt one ends the run. A bad archive is gzip's error (1), which
+  // outranks a directory's warning (2).
+  const parts: Uint8Array[] = []
+  let bad = ''
+  for (const o of ok) {
+    try {
+      parts.push(await gunzipChecked(o.data))
+    } catch (e) {
+      if (!(e instanceof GzipDataError)) throw e
+      bad += `zcat: ${operandLabel(o.path, 'stdin')}: ${e.message}\n`
+      if (e.fatal) break
+    }
   }
-  const result: ByteSource = await gunzip(stdinBytes)
-  return [result, new IOResult()]
+  const io = operandsIo(bad + err, { exitCode: bad === '' ? code : 1 })
+  const result: ByteSource = concat(parts)
+  return [result, io]
 }

@@ -2,7 +2,9 @@ import zlib
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
-from mirage.commands.builtin.utils.stream import resolve_source, stdin_bytes
+from mirage.commands.builtin.utils.constants import STDIN_OPERAND
+from mirage.commands.builtin.utils.stream import (operand_label,
+                                                  resolve_source, stdin_bytes)
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.constants import flag_kwarg_name
@@ -10,7 +12,8 @@ from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.utils.compress import gzip_compress_stream, gzip_decompress_stream
+from mirage.utils.compress import gunzip_checked, gzip_compress_stream
+from mirage.utils.errors import GzipDataError
 from mirage.utils.key_prefix import mounted_path
 
 
@@ -44,55 +47,47 @@ async def gzip(
     to_stdout: bool = False,
     level: int = zlib.Z_DEFAULT_COMPRESSION,
 ) -> tuple[ByteSource | None, IOResult]:
-    if not paths:
-        if decompress:
-            source = resolve_source(stdin,
-                                    "gzip: (stdin): unexpected end of file")
-            return gzip_decompress_stream(source), IOResult()
-        source = resolve_source(stdin)
-        return gzip_compress_stream(source, level=level), IOResult()
-
+    if not paths and not decompress:
+        return gzip_compress_stream(resolve_source(stdin),
+                                    level=level), IOResult()
     read = stdin_bytes(read_bytes, stdin)
-    if to_stdout:
-        chunks: list[bytes] = []
-        for p in paths:
-            raw = await read(p)
-            if decompress:
-                chunks.append(zlib.decompress(raw, zlib.MAX_WBITS | 16))
-            else:
-                chunks.append(
-                    zlib.compress(raw, level=level, wbits=zlib.MAX_WBITS | 16))
-        return b"".join(chunks), IOResult()
-
     writes: dict[str, ByteSource] = {}
-    # A `-` has no file to replace, so it goes to stdout; gzip refuses to
-    # follow /dev/stdin in place, so only `-` does this.
     stdout: list[bytes] = []
-    for p in paths:
-        if p.raw_path == "-":
-            raw = await read(p)
-            if decompress:
-                stdout.append(zlib.decompress(raw, zlib.MAX_WBITS | 16))
-            else:
-                stdout.append(
-                    zlib.compress(raw, level=level, wbits=zlib.MAX_WBITS | 16))
+    errors: list[str] = []
+    # With no operand gzip -d reads stdin. A `-` has no file to replace, so
+    # it goes to stdout; gzip refuses to follow /dev/stdin in place, so
+    # only `-` does this. An input with no gzip header is reported and
+    # skipped; a truncated or corrupt one ends the run.
+    for p in paths or [STDIN_OPERAND]:
+        in_place = not (to_stdout or p.raw_path == "-")
+        raw = await (read_bytes(p) if in_place else read(p))
+        if decompress:
+            try:
+                data = gunzip_checked(raw)
+            except GzipDataError as exc:
+                errors.append(f"gzip: {operand_label(p, 'stdin')}: {exc}\n")
+                if exc.fatal:
+                    break
+                continue
+        else:
+            data = zlib.compress(raw, level=level, wbits=zlib.MAX_WBITS | 16)
+        if not in_place:
+            stdout.append(data)
             continue
-        raw = await read_bytes(p)
         stripped = p.mount_path
         if decompress:
             out_path = stripped.removesuffix(".gz") if stripped.endswith(
                 ".gz") else stripped + ".out"
-            out_data = zlib.decompress(raw, zlib.MAX_WBITS | 16)
         else:
             out_path = stripped + ".gz"
-            out_data = zlib.compress(raw,
-                                     level=level,
-                                     wbits=zlib.MAX_WBITS | 16)
-        await write_bytes(mounted_path(p, out_path), out_data)
-        writes[out_path] = out_data
+        await write_bytes(mounted_path(p, out_path), data)
+        writes[out_path] = data
         if not keep:
             await unlink(p)
-    return b"".join(stdout) or None, IOResult(writes=writes)
+    return b"".join(stdout) or None, IOResult(writes=writes,
+                                              exit_code=1 if errors else 0,
+                                              stderr="".join(errors).encode()
+                                              or None)
 
 
 __all__ = ["gzip", "extract_level"]

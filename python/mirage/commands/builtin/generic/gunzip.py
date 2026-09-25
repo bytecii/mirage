@@ -1,15 +1,16 @@
-import zlib
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
-from mirage.commands.builtin.utils.stream import resolve_source, stdin_bytes
+from mirage.commands.builtin.utils.constants import STDIN_OPERAND
+from mirage.commands.builtin.utils.stream import operand_label, stdin_bytes
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-from mirage.utils.compress import gzip_decompress_stream
+from mirage.utils.compress import gunzip_checked
+from mirage.utils.errors import GzipDataError
 from mirage.utils.key_prefix import mounted_path
 
 
@@ -25,43 +26,40 @@ async def gunzip(
     to_stdout: bool = False,
     test_only: bool = False,
 ) -> tuple[ByteSource | None, IOResult]:
-    if not paths:
-        source = resolve_source(stdin,
-                                "gunzip: (stdin): unexpected end of file")
-        return gzip_decompress_stream(source), IOResult()
     read = stdin_bytes(read_bytes, stdin)
-
-    if test_only:
-        for p in paths:
-            raw = await read(p)
-            zlib.decompress(raw, zlib.MAX_WBITS | 16)
-        return None, IOResult()
-
-    if to_stdout:
-        chunks: list[bytes] = []
-        for p in paths:
-            raw = await read(p)
-            chunks.append(zlib.decompress(raw, zlib.MAX_WBITS | 16))
-        return b"".join(chunks), IOResult()
-
     writes: dict[str, ByteSource] = {}
-    # A `-` has no file to replace, so it decompresses to stdout; gzip
-    # refuses to follow /dev/stdin in place, so only `-` does this.
     stdout: list[bytes] = []
-    for p in paths:
-        if p.raw_path == "-":
-            stdout.append(zlib.decompress(await read(p), zlib.MAX_WBITS | 16))
+    errors: list[str] = []
+    # With no operand gunzip reads stdin. A `-` has no file to replace, so
+    # it decompresses to stdout; gzip refuses to follow /dev/stdin in
+    # place, so only `-` does this. An input with no gzip header is
+    # reported and skipped; a truncated or corrupt one ends the run.
+    for p in paths or [STDIN_OPERAND]:
+        in_place = not (to_stdout or test_only or p.raw_path == "-")
+        raw = await (read_bytes(p) if in_place else read(p))
+        try:
+            data = gunzip_checked(raw)
+        except GzipDataError as exc:
+            errors.append(f"gunzip: {operand_label(p, 'stdin')}: {exc}\n")
+            if exc.fatal:
+                break
             continue
-        raw = await read_bytes(p)
+        if test_only:
+            continue
+        if not in_place:
+            stdout.append(data)
+            continue
         stripped = p.mount_path
         out_path = stripped.removesuffix(".gz") if stripped.endswith(
             ".gz") else stripped + ".out"
-        out_data = zlib.decompress(raw, zlib.MAX_WBITS | 16)
-        await write_bytes(mounted_path(p, out_path), out_data)
-        writes[out_path] = out_data
+        await write_bytes(mounted_path(p, out_path), data)
+        writes[out_path] = data
         if not keep:
             await unlink(p)
-    return b"".join(stdout) or None, IOResult(writes=writes)
+    return b"".join(stdout) or None, IOResult(writes=writes,
+                                              exit_code=1 if errors else 0,
+                                              stderr="".join(errors).encode()
+                                              or None)
 
 
 __all__ = ["gunzip"]

@@ -12,8 +12,17 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import gzip
 import zlib
 from collections.abc import AsyncIterator
+
+from mirage.utils.errors import GzipDataError
+
+GZIP_MAGIC = b"\x1f\x8b"
+# gzip 1.13's words for the inputs ``gzip -d`` refuses.
+GZIP_NOT_GZIP = "not in gzip format"
+GZIP_EOF = "unexpected end of file"
+GZIP_CORRUPT = "invalid compressed data--format violated"
 
 
 async def gzip_compress_stream(
@@ -39,21 +48,28 @@ async def gzip_compress_stream(
         yield tail
 
 
-async def gzip_decompress_stream(
-        source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
-    """Ungzip a byte stream chunk by chunk.
+def gunzip_checked(data: bytes) -> bytes:
+    """Decompress one gzip input, judged the way ``gzip -d`` judges it.
+
+    Every member decompresses, so concatenated files read whole. Bytes
+    after the last member are refused as corrupt, where gzip keeps the
+    output and warns; zero padding is dropped as gzip drops it, which
+    Node's DecompressionStream refuses, so there the twins differ.
 
     Args:
-        source (AsyncIterator[bytes]): gzip member chunks.
+        data (bytes): the whole input.
 
-    Yields:
-        bytes: the decompressed bytes.
+    Raises:
+        GzipDataError: the input is too short to hold a header, holds no
+            gzip header, or is truncated or corrupt.
     """
-    decompressor = zlib.decompressobj(zlib.MAX_WBITS | 16)
-    async for chunk in source:
-        decompressed = decompressor.decompress(chunk)
-        if decompressed:
-            yield decompressed
-    tail = decompressor.flush()
-    if tail:
-        yield tail
+    if len(data) < len(GZIP_MAGIC):
+        raise GzipDataError(GZIP_EOF, fatal=True)
+    if not data.startswith(GZIP_MAGIC):
+        raise GzipDataError(GZIP_NOT_GZIP, fatal=False)
+    try:
+        return gzip.decompress(data)
+    except EOFError as exc:
+        raise GzipDataError(GZIP_EOF, fatal=True) from exc
+    except (OSError, zlib.error) as exc:
+        raise GzipDataError(GZIP_CORRUPT, fatal=True) from exc

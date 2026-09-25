@@ -1,8 +1,8 @@
 {
   "cases": [
     {
-      "id": "gzip_d_no_input",
-      "seq": 564,
+      "id": "zgrep_searches_a_plain_file_as_it_is",
+      "seq": 917100,
       "targets": [
         "ram",
         "disk",
@@ -14,8 +14,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -23,57 +21,18 @@
         "sharepoint-prefix",
         "ssh",
         "nextcloud",
-        "gdrive",
-        "gdrive-folder",
         "box"
       ],
-      "command": "gzip -d",
+      "command": "zgrep hello /data/a.txt",
       "expect": {
-        "exit": 1,
-        "stdout": "",
-        "stderr": "gzip: stdin: unexpected end of file"
-      },
-      "flags": [
-        "d"
-      ]
-    },
-    {
-      "id": "gzip_d_plain_stdin_is_not_in_gzip_format",
-      "seq": 850,
-      "targets": [
-        "ram",
-        "disk",
-        "redis",
-        "opfs",
-        "s3",
-        "databricks",
-        "gridfs",
-        "s3-prefix",
-        "databricks-prefix",
-        "gridfs-prefix",
-        "hf",
-        "hf-prefix",
-        "dropbox",
-        "dropbox-root",
-        "onedrive",
-        "sharepoint",
-        "sharepoint-prefix",
-        "ssh",
-        "nextcloud",
-        "gdrive",
-        "gdrive-folder",
-        "box"
-      ],
-      "command": "printf 'hello\\n' | gzip -d",
-      "expect": {
-        "exit": 1,
-        "stdout": "",
-        "stderr": "gzip: stdin: not in gzip format\n"
+        "exit": 0,
+        "stdout": "hello\n",
+        "stderr": ""
       }
     },
     {
-      "id": "gzip_dc_truncated_stdin_is_an_unexpected_end",
-      "seq": 851,
+      "id": "zgrep_counts_across_plain_files",
+      "seq": 917101,
       "targets": [
         "ram",
         "disk",
@@ -85,8 +44,6 @@
         "s3-prefix",
         "databricks-prefix",
         "gridfs-prefix",
-        "hf",
-        "hf-prefix",
         "dropbox",
         "dropbox-root",
         "onedrive",
@@ -94,15 +51,73 @@
         "sharepoint-prefix",
         "ssh",
         "nextcloud",
-        "gdrive",
-        "gdrive-folder",
         "box"
       ],
-      "command": "printf 'hello\\n' | gzip | head -c 10 | gzip -dc",
+      "command": "zgrep -c o /data/a.txt /data/b.txt",
       "expect": {
-        "exit": 1,
+        "exit": 0,
+        "stdout": "/data/a.txt:3\n/data/b.txt:0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "zgrep_labels_plain_stdin",
+      "seq": 917102,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "printf 'hello\\n' | zgrep -H hello",
+      "expect": {
+        "exit": 0,
+        "stdout": "(standard input):hello\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "zgrep_truncated_stdin_exits_2",
+      "seq": 917103,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "box"
+      ],
+      "command": "printf 'hello\\n' | gzip | head -c 10 | zgrep h",
+      "expect": {
+        "exit": 2,
         "stdout": "",
-        "stderr": "gzip: stdin: unexpected end of file\n"
+        "stderr": "zgrep: stdin: unexpected end of file\n"
       }
     }
   ]

@@ -66,3 +66,17 @@ describe('gunzip on a dash operand', () => {
   })
 })
 
+describe('gunzip on inputs gzip refuses', () => {
+  it('reports a plain file and leaves it in place', async () => {
+    const r = await shell('cd /data && gzip b.txt && gunzip p.gz b.txt.gz; ls', null, {
+      '/data/b.txt': 'file\n',
+      '/data/p.gz': 'plain\n',
+    })
+    expect(r).toEqual(['b.txt\np.gz\n', 'gunzip: p.gz: not in gzip format\n', 0])
+  })
+
+  it('calls plain stdin not in gzip format', async () => {
+    const r = await shell('gunzip', new TextEncoder().encode('hello\n'))
+    expect(r).toEqual(['', 'gunzip: stdin: not in gzip format\n', 1])
+  })
+})

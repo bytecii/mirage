@@ -17,9 +17,11 @@ import { FlagView } from '../../spec/flag_view.ts'
 import { mountedPath } from '../../../utils/key_prefix.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import type { PathSpec } from '../../../types.ts'
-import { gzip, gunzip } from '../../../utils/compress.ts'
+import { gunzipChecked, gzip } from '../../../utils/compress.ts'
+import { GzipDataError } from '../../../utils/errors.ts'
 import type { CommandFnResult, CommandOpts, WritesFn } from '../../config.ts'
-import { resolveSource, stdinStream } from '../utils/stream.ts'
+import { STDIN_OPERAND } from '../utils/constants.ts'
+import { operandLabel, resolveSource, stdinStream } from '../utils/stream.ts'
 
 const ENC = new TextEncoder()
 
@@ -53,57 +55,55 @@ export async function gzipGeneric(
   const keep = fl.asBool('k')
   const stdoutMode = fl.asBool('c')
 
-  if (paths.length === 0) {
-    let source: AsyncIterable<Uint8Array>
-    try {
-      source = decompress
-        ? resolveSource(opts.stdin, 'gzip: (stdin): unexpected end of file')
-        : resolveSource(opts.stdin)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 1, stderr: ENC.encode(`${msg}\n`) })]
-    }
-    const data = await materialize(source)
-    const out = decompress ? await gunzip(data) : await gzip(data)
-    const result: ByteSource = out
+  if (paths.length === 0 && !decompress) {
+    const result: ByteSource = await gzip(await materialize(resolveSource(opts.stdin)))
     return [result, new IOResult()]
   }
-
   const read = stdinStream(stream, opts.stdin)
-  if (stdoutMode) {
-    const chunks: Uint8Array[] = []
-    for (const p of paths) {
-      const raw = await materialize(read(p))
-      const out = decompress ? await gunzip(raw) : await gzip(raw)
-      chunks.push(out)
-    }
-    return [concat(chunks), new IOResult()]
-  }
-
   const writes: Record<string, Uint8Array> = {}
-  // A `-` has no file to replace, so it goes to stdout; gzip refuses to
-  // follow /dev/stdin in place, so only `-` does this.
   const stdout: Uint8Array[] = []
-  for (const p of paths) {
-    if (p.rawPath === '-') {
-      const raw = await materialize(read(p))
-      stdout.push(decompress ? await gunzip(raw) : await gzip(raw))
+  let errors = ''
+  // With no operand gzip -d reads stdin. A `-` has no file to replace, so it
+  // goes to stdout; gzip refuses to follow /dev/stdin in place, so only `-`
+  // does this. An input with no gzip header is reported and skipped; a
+  // truncated or corrupt one ends the run.
+  for (const p of paths.length > 0 ? paths : [STDIN_OPERAND]) {
+    const inPlace = !(stdoutMode || p.rawPath === '-')
+    const raw = await materialize(inPlace ? stream(p) : read(p))
+    let data: Uint8Array
+    if (decompress) {
+      try {
+        data = await gunzipChecked(raw)
+      } catch (err) {
+        if (!(err instanceof GzipDataError)) throw err
+        errors += `gzip: ${operandLabel(p, 'stdin')}: ${err.message}\n`
+        if (err.fatal) break
+        continue
+      }
+    } else {
+      data = await gzip(raw)
+    }
+    if (!inPlace) {
+      stdout.push(data)
       continue
     }
-    const raw = await materialize(stream(p))
     const pStripped = p.mountPath
     let outPath: string
-    let outData: Uint8Array
     if (decompress) {
       outPath = pStripped.endsWith('.gz') ? pStripped.slice(0, -3) : pStripped + '.out'
-      outData = await gunzip(raw)
     } else {
       outPath = pStripped + '.gz'
-      outData = await gzip(raw)
     }
-    await write(mountedPath(p, outPath), outData)
-    writes[outPath] = outData
+    await write(mountedPath(p, outPath), data)
+    writes[outPath] = data
     if (!keep) await unlink(p)
   }
-  return [stdout.length > 0 ? concat(stdout) : null, new IOResult({ writes })]
+  return [
+    stdout.length > 0 ? concat(stdout) : null,
+    new IOResult({
+      writes,
+      exitCode: errors === '' ? 0 : 1,
+      stderr: errors === '' ? null : ENC.encode(errors),
+    }),
+  ]
 }

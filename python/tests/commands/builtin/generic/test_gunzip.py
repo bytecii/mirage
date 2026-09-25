@@ -57,3 +57,24 @@ def test_gunzip_writes_nothing_for_a_dash_operand():
     flags = parse_flags([], SPECS["gunzip"], "gunzip", "/data").flag_kwargs
     assert gunzip_writes(flags, [dash]) is False
 
+
+@pytest.mark.asyncio
+async def test_a_plain_file_is_reported_and_left_in_place():
+    ws = Workspace({"/data": (RAMVFS(), MountMode.WRITE)},
+                   mode=MountMode.WRITE)
+    await ws.shell("tee /data/b.txt > /dev/null", stdin=b"file\n")
+    await ws.shell("tee /data/p.gz > /dev/null", stdin=b"plain\n")
+    r = await ws.shell("cd /data && gzip b.txt && gunzip p.gz b.txt.gz; ls")
+    assert await r.materialize_stdout() == b"b.txt\np.gz\n"
+    assert await r.materialize_stderr(
+    ) == b"gunzip: p.gz: not in gzip format\n"
+
+
+@pytest.mark.asyncio
+async def test_plain_stdin_is_not_in_gzip_format():
+    ws = Workspace({"/data": (RAMVFS(), MountMode.WRITE)},
+                   mode=MountMode.WRITE)
+    r = await ws.shell("gunzip", stdin=b"hello\n")
+    assert r.exit_code == 1
+    assert await r.materialize_stderr(
+    ) == b"gunzip: stdin: not in gzip format\n"

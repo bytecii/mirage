@@ -31,7 +31,69 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "gunzip: (stdin): unexpected end of file"
+        "stderr": "gunzip: stdin: unexpected end of file"
+      }
+    },
+    {
+      "id": "gunzip_c_plain_file_is_not_in_gzip_format",
+      "seq": 843,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "gunzip -c /data/a.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gunzip: /data/a.txt: not in gzip format\n"
+      }
+    },
+    {
+      "id": "gunzip_plain_stdin_is_not_in_gzip_format",
+      "seq": 844,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "gridfs",
+        "s3-prefix",
+        "gridfs-prefix",
+        "hf",
+        "hf-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "printf 'hello\\n' | gunzip",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gunzip: stdin: not in gzip format\n"
       }
     }
   ]
