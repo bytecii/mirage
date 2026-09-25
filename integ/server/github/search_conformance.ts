@@ -65,24 +65,26 @@ export async function searchConformance(endpoint: string): Promise<number> {
   ])
   if (generated.code !== 0) throw new Error(generated.stderr)
   const nativeQueries: string[] = [],
-    mirageQueries: string[] = []
+    mirageQueries: string[] = [],
+    failures: unknown[] = []
   async function forward(
     req: IncomingMessage,
     res: ServerResponse,
     queries: string[],
   ): Promise<void> {
     try {
-      const url = new URL(req.url ?? '/', endpoint)
-      if (url.pathname.includes('/search/')) queries.push(url.searchParams.get('q') ?? '')
-      const response = await fetch(url, { headers: HEADERS })
+      const { pathname, search, searchParams } = new URL(req.url ?? '/', 'http://proxy.invalid')
+      if (pathname.includes('/search/')) queries.push(searchParams.get('q') ?? '')
+      const response = await fetch(`${endpoint}${pathname}${search}`, { headers: HEADERS })
       res.writeHead(response.status, {
         ...Object.fromEntries(response.headers),
         'x-github-enterprise-version': '3.16.0',
       })
       res.end(Buffer.from(await response.arrayBuffer()))
     } catch (error) {
-      res.writeHead(500)
-      res.end(String(error))
+      failures.push(error)
+      res.writeHead(502)
+      res.end()
     }
   }
   const proxy = createServer(
@@ -128,6 +130,15 @@ export async function searchConformance(endpoint: string): Promise<number> {
         }),
       })
       if (!response.ok) throw new Error(await response.text())
+      if (i === 0) {
+        const { number } = (await response.json()) as { number: number }
+        const comment = await fetch(`${endpoint}/repos/${REPO}/issues/${number}/comments`, {
+          method: 'POST',
+          headers: HEADERS,
+          body: JSON.stringify({ body: 'search fixture' }),
+        })
+        if (!comment.ok) throw new Error(await comment.text())
+      }
     }
     const pull = await fetch(`${endpoint}/repos/${REPO}/pulls`, {
       method: 'POST',
@@ -244,6 +255,32 @@ export async function searchConformance(endpoint: string): Promise<number> {
         'author,commit,committer,id,parents,repository,sha,url',
       ],
       ['commits', '--repo', REPO, '--limit', '1'],
+      [
+        'issues',
+        'conformance',
+        '--repo',
+        REPO,
+        '--sort',
+        'comments',
+        '--limit',
+        '2',
+        '--json',
+        'number,commentsCount',
+      ],
+      [
+        'issues',
+        'conformance',
+        '--repo',
+        REPO,
+        '--limit',
+        '2',
+        '--json',
+        'number,title',
+        '--template',
+        '{{range $i, $issue := .}}{{$i}}:{{$issue.number}} {{$issue.title}}{{"\\n"}}{{end}}',
+      ],
+      ['prs', '--repo', REPO, '--checks', 'success', '--json', 'number'],
+      ['code', 'parse_step_1', '--repo', REPO],
     ]
     const env = {
       ...process.env,
@@ -376,6 +413,7 @@ export async function searchConformance(endpoint: string): Promise<number> {
         .map((word) => `'${word.replaceAll("'", "'\\''")}'`)
         .join(' ')
       const result = await ws.shell(line)
+      if (failures.length > 0) throw new Error(line, { cause: failures[0] })
       if (nativeQueries[0] !== mirageQueries[0])
         throw new Error(
           `${line}\nquery native: ${nativeQueries[0]}\nquery mirage: ${mirageQueries[0]}`,

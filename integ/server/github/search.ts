@@ -15,6 +15,7 @@
 import type { Ctx, JsonValue, KitRoute, Reply } from '../kit/typescript/index.ts'
 import { API_PREFIXES } from './config.ts'
 import type { C } from './config.ts'
+import { combinedStatus } from './actions.ts'
 import { issueJson } from './issues.ts'
 import { pullJson } from './pulls.ts'
 import { blobSha, commitJson } from './wire.ts'
@@ -177,6 +178,8 @@ async function searchCode(ctx: Ctx<C>): Promise<Reply> {
     for (const path of searchTree(files, terms, pathFilter)) {
       const data = files.get(path)
       if (data === undefined) continue
+      const text = data.toString(),
+        folded = text.replace(/[A-Z]/g, (c) => c.toLowerCase())
       items.push({
         name: path.slice(path.lastIndexOf('/') + 1),
         path,
@@ -188,20 +191,22 @@ async function searchCode(ctx: Ctx<C>): Promise<Reply> {
           {
             object_type: 'FileContent',
             property: 'content',
-            fragment: data.toString(),
+            fragment: text,
             matches: terms.flatMap((term) => {
-              const at = data.toString().toLowerCase().indexOf(term)
-              return at < 0
-                ? []
-                : [
-                    {
-                      text: term,
-                      indices: [
-                        Buffer.byteLength(data.toString().slice(0, at)),
-                        Buffer.byteLength(data.toString().slice(0, at + term.length)),
-                      ],
-                    },
-                  ]
+              const found: JsonValue[] = []
+              for (
+                let at = folded.indexOf(term);
+                at >= 0;
+                at = folded.indexOf(term, at + term.length)
+              )
+                found.push({
+                  text: text.slice(at, at + term.length),
+                  indices: [
+                    Buffer.byteLength(text.slice(0, at)),
+                    Buffer.byteLength(text.slice(0, at + term.length)),
+                  ],
+                })
+              return found
             }),
           },
         ],
@@ -272,6 +277,34 @@ function dateMatches(value: string, query: string): boolean {
   }
 }
 
+function countMatches(value: number, query: string): boolean {
+  const range = query.split('..')
+  if (range.length === 2)
+    return (
+      (range[0] === '*' || value >= Number(range[0])) &&
+      (range[1] === '*' || value <= Number(range[1]))
+    )
+  const match = /^(>=|<=|>|<)?(\d+)$/.exec(query)
+  const bound = Number(match?.[2])
+  switch (match?.[1]) {
+    case '>':
+      return value > bound
+    case '<':
+      return value < bound
+    case '>=':
+      return value >= bound
+    case '<=':
+      return value <= bound
+    default:
+      return value === bound
+  }
+}
+
+// Every qualifier the fake holds rows for narrows the way GitHub's does, the
+// rolled-up commit status included; nothing here is ever locked, so
+// `is:locked` answers nothing. Milestones, projects, reactions, mentions and
+// reviews have no rows behind them, so those qualifiers are dropped, which
+// only ever widens.
 async function searchIssues(ctx: Ctx<C>): Promise<Reply> {
   const { words, qualifiers: q } = tokens(ctx.query.get('q') ?? '')
   const items: Record<string, JsonValue>[] = []
@@ -286,6 +319,10 @@ async function searchIssues(ctx: Ctx<C>): Promise<Reply> {
       where: { ...scope(ctx.tenant), repo: repo.fullName },
       orderBy: { seq: 'desc' },
     })
+    const comments = await ctx.db.githubComment.findMany({
+      where: { ...scope(ctx.tenant), repo: repo.fullName },
+    })
+    const status = q.has('status') ? (await combinedStatus(ctx, repo)).state : ''
     const candidates: Record<string, JsonValue>[] = [
       ...issues.map((row) => record(issueJson(repo, row))),
       ...pulls.map((row) => {
@@ -298,6 +335,7 @@ async function searchIssues(ctx: Ctx<C>): Promise<Reply> {
     ]
     for (const item of candidates) {
       const pull = item.pull_request !== undefined
+      const thread = comments.filter((row) => row.issueNumber === item.number)
       if (q.get('type')?.includes(pull ? 'issue' : 'pr')) continue
       if (q.has('state') && !q.get('state')?.includes(String(item.state))) continue
       if (q.has('author') && !q.get('author')?.includes(String(record(item.user ?? null).login)))
@@ -331,29 +369,47 @@ async function searchIssues(ctx: Ctx<C>): Promise<Reply> {
       if (q.has('draft') && String(item.draft ?? false) !== q.get('draft')?.[0]) continue
       if (q.get('is')?.includes('merged') && !item.merged_at) continue
       if (q.get('is')?.includes('unmerged') && item.merged_at) continue
+      if (q.get('is')?.includes('locked')) continue
+      if (
+        q.has('merged') &&
+        !q
+          .get('merged')
+          ?.every((date) => item.merged_at && dateMatches(String(item.merged_at), date))
+      )
+        continue
+      if (q.has('status') && (!pull || !q.get('status')?.includes(status))) continue
       if (q.has('base') && record(item.base ?? null).ref !== q.get('base')?.[0]) continue
       if (q.has('head') && record(item.head ?? null).ref !== q.get('head')?.[0]) continue
       if (q.get('no')?.includes('label') && (item.labels as JsonValue[]).length > 0) continue
+      if (q.get('no')?.includes('assignee') && ((item.assignees as JsonValue[]) ?? []).length > 0)
+        continue
+      if (q.has('comments') && !q.get('comments')?.every((n) => countMatches(thread.length, n)))
+        continue
+      if (
+        q.has('commenter') &&
+        !q.get('commenter')?.every((login) => thread.some((row) => row.user === login))
+      )
+        continue
       const haystack = `${String(item.title)} ${String(item.body)}`.toLowerCase()
       if (!words.every((word) => haystack.includes(word))) continue
       items.push({
         ...item,
         repository_url: `https://api.github.com/repos/${repo.fullName}`,
         node_id: `${pull ? 'PR' : 'I'}_${repo.fullName}_${String(item.number)}`,
-        comments: 0,
+        comments: thread.length,
         locked: false,
       })
     }
   }
-  const sort = ctx.query.get('sort')
-  if (sort === 'created' || sort === 'updated' || sort === 'comments') {
-    const key = sort === 'comments' ? sort : `${sort}_at`,
-      sign = ctx.query.get('order') === 'asc' ? 1 : -1
-    items.sort((a, b) => sign * String(a[key]).localeCompare(String(b[key])))
-  }
+  const sort = ctx.query.get('sort'),
+    sign = ctx.query.get('order') === 'asc' ? 1 : -1
+  if (sort === 'comments') items.sort((a, b) => sign * (Number(a.comments) - Number(b.comments)))
+  else if (sort === 'created' || sort === 'updated')
+    items.sort((a, b) => sign * String(a[`${sort}_at`]).localeCompare(String(b[`${sort}_at`])))
   return searchReply(ctx, items)
 }
 
+// Commit search reads only the default branch, as GitHub's does.
 async function searchCommits(ctx: Ctx<C>): Promise<Reply> {
   const { words, qualifiers: q } = tokens(ctx.query.get('q') ?? '')
   const items: Record<string, JsonValue>[] = []

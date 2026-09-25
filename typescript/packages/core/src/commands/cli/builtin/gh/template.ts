@@ -1,5 +1,9 @@
 import { compareCodePoints } from '../../../../utils/sort.ts'
 import type { JsonValue as Value } from '../../../../types.ts'
+import { TEMPLATE_ACTION, TEMPLATE_DECLARATION, TEMPLATE_TOKEN } from './constants.ts'
+
+type Variables = Map<string, { value: Value }>
+
 function text(value: Value | undefined): string {
   if (value == null) return '<no value>'
   if (Array.isArray(value)) return `[${value.map(text).join(' ')}]`
@@ -10,17 +14,24 @@ function text(value: Value | undefined): string {
       .join(' ')}]`
   return String(value)
 }
-function lookup(token: string, dot: Value, root: Value): Value {
+function lookup(token: string, dot: Value, root: Value, variables: Variables): Value {
   if (token.startsWith('"')) return JSON.parse(token) as Value
   if (token.startsWith('`')) return token.slice(1, -1)
   if (token === 'true' || token === 'false') return token === 'true'
   if (/^-?\d+$/.test(token)) return Number(token)
   if (token === '.') return dot
-  let value = token.startsWith('$') ? root : dot
-  for (const key of token
-    .replace(/^\$?\.?/, '')
-    .split('.')
-    .filter(Boolean))
+  let value = dot,
+    path = token.replace(/^\.+/, '')
+  if (token.startsWith('$')) {
+    const at = token.indexOf('.'),
+      name = at < 0 ? token : token.slice(0, at)
+    path = at < 0 ? '' : token.slice(at + 1)
+    const bound = variables.get(name)
+    if (name !== '$' && bound === undefined)
+      throw new Error(`template: undefined variable "${name}"`)
+    value = bound === undefined ? root : bound.value
+  }
+  for (const key of path.split('.').filter(Boolean))
     value =
       typeof value === 'object' && value !== null && !Array.isArray(value)
         ? (value[key] ?? null)
@@ -90,8 +101,8 @@ function call(name: string, args: Value[]): Value {
       throw new Error(`template: function "${name}" not defined`)
   }
 }
-function evaluate(expression: string, dot: Value, root: Value): Value {
-  const tokens = expression.match(/"(?:\\.|[^"\\])*"|`[^`]*`|[^\s|]+|\|/g) ?? []
+function evaluate(expression: string, dot: Value, root: Value, variables: Variables): Value {
+  const tokens = expression.match(TEMPLATE_TOKEN) ?? []
   const parts: string[][] = [[]]
   for (const token of tokens) {
     if (token === '|') parts.push([])
@@ -101,14 +112,24 @@ function evaluate(expression: string, dot: Value, root: Value): Value {
   parts.forEach((part, i) => {
     const head = part[0]
     if (head === undefined) throw new Error('template: empty pipeline')
-    const args = part.slice(1).map((token) => lookup(token, dot, root))
+    const args = part.slice(1).map((token) => lookup(token, dot, root, variables))
     if (i > 0) args.push(value)
     value =
       part.length === 1 && i === 0 && (/^[.$"`]/.test(head) || /^(true|false|-?\d+)$/.test(head))
-        ? lookup(head, dot, root)
+        ? lookup(head, dot, root, variables)
         : call(head, args)
   })
   return value
+}
+
+function declaration(expression: string): [string[], string, boolean] {
+  const match = TEMPLATE_DECLARATION.exec(expression)
+  if (match === null) return [[], expression, false]
+  return [
+    [match[1], match[2]].filter((name): name is string => name !== undefined),
+    match[4] ?? '',
+    match[3] === '=',
+  ]
 }
 
 /** Render selected JSON with Go-style actions, pipelines and blocks. */
@@ -116,7 +137,7 @@ export function renderTemplate(template: string, value: Value): string {
   const tokens: [string, string][] = []
   let end = 0,
     trim = false
-  for (const match of template.matchAll(/{{(-?)\s*(.*?)\s*(-?)}}/gs)) {
+  for (const match of template.matchAll(TEMPLATE_ACTION)) {
     let segment = template.slice(end, match.index)
     if (trim) segment = segment.trimStart()
     if (match[1]) segment = segment.trimEnd()
@@ -125,7 +146,7 @@ export function renderTemplate(template: string, value: Value): string {
     end = match.index + match[0].length
   }
   tokens.push(['text', trim ? template.slice(end).trimStart() : template.slice(end)])
-  function render(start: number, stop: number, dot: Value): string {
+  function render(start: number, stop: number, dot: Value, variables: Variables): string {
     const output: string[] = []
     for (let i = start; i < stop; ) {
       const [tag, action] = tokens[i++] ?? ['', '']
@@ -149,24 +170,47 @@ export function renderTemplate(template: string, value: Value): string {
           } else if (nested === 'else' && depth === 1) alternate = cursor
         }
         if (depth) throw new Error('template: unexpected EOF')
-        const resolved = evaluate(expression, dot, value),
+        const [names, pipeline] = declaration(expression)
+        if (names.length > 1 && command !== 'range')
+          throw new Error(`template: too many declarations in ${command}`)
+        const resolved = evaluate(pipeline, dot, value, variables),
           bodyEnd = alternate ?? cursor
+        const scope = new Map(variables)
+        if (names[0] !== undefined && command !== 'range') scope.set(names[0], { value: resolved })
         const truthy = Boolean(resolved) && (!Array.isArray(resolved) || resolved.length > 0)
         if (command === 'range' && truthy) {
-          const entries = Array.isArray(resolved)
-            ? resolved
+          const entries: [Value, Value][] = Array.isArray(resolved)
+            ? resolved.map((item, index) => [index, item])
             : Object.keys(resolved as Record<string, Value>)
                 .sort(compareCodePoints)
-                .map((key) => (resolved as Record<string, Value>)[key] ?? null)
-          output.push(...entries.map((item) => render(i, bodyEnd, item)))
-        } else if (truthy) output.push(render(i, bodyEnd, command === 'with' ? resolved : dot))
-        else if (alternate !== undefined) output.push(render(alternate + 1, cursor, dot))
+                .map((key) => [key, (resolved as Record<string, Value>)[key] ?? null])
+          for (const [key, item] of entries) {
+            const bound = new Map(variables)
+            if (names.length === 2) bound.set(names[0] ?? '', { value: key })
+            const last = names.at(-1)
+            if (last !== undefined) bound.set(last, { value: item })
+            output.push(render(i, bodyEnd, item, bound))
+          }
+        } else if (truthy)
+          output.push(render(i, bodyEnd, command === 'with' ? resolved : dot, scope))
+        else if (alternate !== undefined) output.push(render(alternate + 1, cursor, dot, scope))
         i = cursor + 1
       } else if (command === 'end' || command === 'else')
         throw new Error(`template: unexpected ${command}`)
-      else output.push(text(evaluate(action, dot, value)))
+      else {
+        const [names, pipeline, assign] = declaration(action)
+        const result = evaluate(pipeline, dot, value, variables),
+          name = names[0]
+        if (name === undefined) output.push(text(result))
+        else if (!assign) variables.set(name, { value: result })
+        else {
+          const bound = variables.get(name)
+          if (bound === undefined) throw new Error(`template: undefined variable "${name}"`)
+          bound.value = result
+        }
+      }
     }
     return output.join('')
   }
-  return render(0, tokens.length, value)
+  return render(0, tokens.length, value, new Map())
 }

@@ -1143,6 +1143,110 @@
         "stdout": "1\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "gh_search_issues_template_variables",
+      "seq": 569101,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues updated --repo integ/repo-cli --json number,title --template '{{range $i, $issue := .}}{{$i}}:{{$issue.number}} {{$issue.title}}{{\"\\n\"}}{{end}}'",
+      "expect": {
+        "exit": 0,
+        "stdout": "0:4 updated\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues_comments",
+      "seq": 569102,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues --repo integ/repo-cli --comments '>0' --json number,commentsCount --jq 'map([.number, .commentsCount])'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[[4,1]]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues_sort_comments",
+      "seq": 569103,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues --repo integ/repo-cli --sort comments --limit 1 --json number --jq '.[0].number'",
+      "expect": {
+        "exit": 0,
+        "stdout": "4\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues_commenter",
+      "seq": 569104,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues --repo integ/repo-cli --commenter integ-user --json number --jq 'map(.number)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[4]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_issues_no_assignee",
+      "seq": 569105,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search issues --repo integ/repo-cli --no-assignee --json assignees --jq 'map(.assignees | length) | unique'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[0]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_prs_merged_at",
+      "seq": 569106,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search prs --repo integ/repo-cli --merged-at '>2025-12-31' --json number --jq 'map(.number)'",
+      "expect": {
+        "exit": 0,
+        "stdout": "[5]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_prs_checks",
+      "seq": 569107,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search prs --repo integ/repo-cli --checks failure --json number",
+      "expect": {
+        "exit": 0,
+        "stdout": "[]\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "gh_search_code_repeated_matches",
+      "seq": 569108,
+      "targets": [
+        "cli-gh"
+      ],
+      "command": "gh search code parse_step_1 --repo integ/repo-cli",
+      "expect": {
+        "exit": 0,
+        "stdout": "integ/repo-cli:src/parse/step_1.py: def parse_step_1(value: int) -> int:\ninteg/repo-cli:tests/test_parse.py: from src.parse.step_1 import parse_step_1\ninteg/repo-cli:tests/test_parse.py: def test_parse_step_1() -> None:\ninteg/repo-cli:tests/test_parse.py: assert parse_step_1(1) == 2\n",
+        "stderr": ""
+      }
     }
   ]
 }

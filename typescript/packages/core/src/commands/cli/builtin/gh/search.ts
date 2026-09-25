@@ -1,6 +1,15 @@
 import { compareCodePoints } from '../../../../utils/sort.ts'
 import type { JsonValue } from '../../../../types.ts'
 import { csvValues, ghTransport, jsonFields, typedOut, textOut } from './accessor.ts'
+import {
+  SEARCH_ALIASES,
+  SEARCH_BOOLEAN,
+  SEARCH_FIELDS,
+  SEARCH_FLAGS,
+  SEARCH_MULTIPLE,
+  SEARCH_SHAPES,
+  SEARCH_SORTS,
+} from './constants.ts'
 import { renderTemplate } from './template.ts'
 import { CLISpec, type CLIInvocation } from '../../types.ts'
 import type { CommandFnResult } from '../../../config.ts'
@@ -8,242 +17,6 @@ import { UsageError } from '../../../errors.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
 import { Option, Operand } from '../../../spec/types.ts'
 import { search } from '../../../../core/github/search.ts'
-
-const FLAGS: Record<string, string[]> = {
-  issues: [
-    'app',
-    'archived',
-    'assignee',
-    'author',
-    'closed',
-    'commenter',
-    'comments',
-    'created',
-    'interactions',
-    'involves',
-    'label',
-    'language',
-    'locked',
-    'match',
-    'mentions',
-    'milestone',
-    'no-assignee',
-    'no-label',
-    'no-milestone',
-    'no-project',
-    'owner',
-    'project',
-    'reactions',
-    'repo',
-    'state',
-    'team-mentions',
-    'updated',
-    'visibility',
-    'include-prs',
-  ],
-  prs: [
-    'app',
-    'archived',
-    'assignee',
-    'author',
-    'closed',
-    'commenter',
-    'comments',
-    'created',
-    'interactions',
-    'involves',
-    'label',
-    'language',
-    'locked',
-    'match',
-    'mentions',
-    'milestone',
-    'no-assignee',
-    'no-label',
-    'no-milestone',
-    'no-project',
-    'owner',
-    'project',
-    'reactions',
-    'repo',
-    'state',
-    'team-mentions',
-    'updated',
-    'visibility',
-    'base',
-    'checks',
-    'draft',
-    'head',
-    'merged',
-    'merged-at',
-    'review',
-    'review-requested',
-    'reviewed-by',
-  ],
-  repos: [
-    'archived',
-    'created',
-    'followers',
-    'forks',
-    'good-first-issues',
-    'help-wanted-issues',
-    'include-forks',
-    'language',
-    'license',
-    'match',
-    'number-topics',
-    'owner',
-    'size',
-    'stars',
-    'topic',
-    'updated',
-    'visibility',
-  ],
-  code: ['extension', 'filename', 'language', 'match', 'owner', 'repo', 'size'],
-  commits: [
-    'author',
-    'author-date',
-    'author-email',
-    'author-name',
-    'committer',
-    'committer-date',
-    'committer-email',
-    'committer-name',
-    'hash',
-    'merge',
-    'owner',
-    'parent',
-    'repo',
-    'tree',
-    'visibility',
-  ],
-}
-const MULTIPLE: string[] = ['label', 'match', 'owner', 'repo', 'visibility', 'license', 'topic']
-const BOOLEAN: string[] = [
-  'archived',
-  'draft',
-  'merge',
-  'locked',
-  'merged',
-  'include-prs',
-  'no-assignee',
-  'no-label',
-  'no-milestone',
-  'no-project',
-]
-const ALIASES: Record<string, string> = {
-  owner: 'user',
-  match: 'in',
-  visibility: 'is',
-  'team-mentions': 'team',
-  checks: 'status',
-  'merged-at': 'merged',
-  'number-topics': 'topics',
-  'include-forks': 'fork',
-}
-const SORTS: Record<string, string[]> = {
-  issues: [
-    'comments',
-    'created',
-    'interactions',
-    'reactions',
-    'reactions-+1',
-    'reactions--1',
-    'reactions-heart',
-    'reactions-smile',
-    'reactions-tada',
-    'reactions-thinking_face',
-    'updated',
-  ],
-  prs: [
-    'comments',
-    'created',
-    'interactions',
-    'reactions',
-    'reactions-+1',
-    'reactions--1',
-    'reactions-heart',
-    'reactions-smile',
-    'reactions-tada',
-    'reactions-thinking_face',
-    'updated',
-  ],
-  repos: ['forks', 'help-wanted-issues', 'stars', 'updated'],
-  commits: ['author-date', 'committer-date'],
-}
-const FIELDS: Record<string, string[]> = {
-  issues: [
-    'assignees',
-    'author',
-    'authorAssociation',
-    'body',
-    'closedAt',
-    'commentsCount',
-    'createdAt',
-    'id',
-    'isLocked',
-    'isPullRequest',
-    'labels',
-    'number',
-    'repository',
-    'state',
-    'title',
-    'updatedAt',
-    'url',
-  ],
-  prs: [
-    'assignees',
-    'author',
-    'authorAssociation',
-    'body',
-    'closedAt',
-    'commentsCount',
-    'createdAt',
-    'id',
-    'isLocked',
-    'isPullRequest',
-    'labels',
-    'number',
-    'repository',
-    'state',
-    'title',
-    'updatedAt',
-    'url',
-    'isDraft',
-  ],
-  repos: [
-    'createdAt',
-    'defaultBranch',
-    'description',
-    'forksCount',
-    'fullName',
-    'hasDownloads',
-    'hasIssues',
-    'hasPages',
-    'hasProjects',
-    'hasWiki',
-    'homepage',
-    'id',
-    'isArchived',
-    'isDisabled',
-    'isFork',
-    'isPrivate',
-    'language',
-    'license',
-    'name',
-    'openIssuesCount',
-    'owner',
-    'pushedAt',
-    'size',
-    'stargazersCount',
-    'updatedAt',
-    'url',
-    'visibility',
-    'watchersCount',
-  ],
-  code: ['path', 'repository', 'sha', 'textMatches', 'url'],
-  commits: ['author', 'commit', 'committer', 'sha', 'id', 'parents', 'repository', 'url'],
-}
 
 function quote(value: string): string {
   return /[\s"]/.test(value) ? JSON.stringify(value) : value
@@ -255,7 +28,7 @@ function boolean(fl: FlagView, name: string): boolean {
 
 function query(kind: string, words: readonly string[], fl: FlagView): string {
   const qualifiers: Partial<Record<string, string[]>> = {}
-  for (const name of FLAGS[kind] ?? []) {
+  for (const name of SEARCH_FLAGS[kind] ?? []) {
     const value = fl.raw(name.replaceAll('-', '_'))
     if (
       value === undefined ||
@@ -263,12 +36,12 @@ function query(kind: string, words: readonly string[], fl: FlagView): string {
       name.startsWith('no-')
     )
       continue
-    let key = ALIASES[name] ?? name
+    let key = SEARCH_ALIASES[name] ?? name
     if (name === 'review-requested' && typeof value === 'string' && value.includes('/'))
       key = 'team-review-requested'
-    const values = BOOLEAN.includes(name)
+    const values = SEARCH_BOOLEAN.includes(name)
       ? [String(boolean(fl, name))]
-      : MULTIPLE.includes(name)
+      : SEARCH_MULTIPLE.includes(name)
         ? csvValues(fl.asList(name.replaceAll('-', '_')))
         : [fl.asStr(name.replaceAll('-', '_')) ?? '']
     ;(qualifiers[key] ??= []).push(...values.filter(Boolean))
@@ -313,9 +86,9 @@ function option(name: string): Option {
     long: `--${name}`,
     ...(shorts[name] === undefined ? {} : { short: shorts[name] }),
     type: 'str',
-    multiple: MULTIPLE.includes(name),
-    valueOptional: BOOLEAN.includes(name),
-    choices: BOOLEAN.includes(name) ? ['true', 'false'] : (choices[name] ?? []),
+    multiple: SEARCH_MULTIPLE.includes(name),
+    valueOptional: SEARCH_BOOLEAN.includes(name),
+    choices: SEARCH_BOOLEAN.includes(name) ? ['true', 'false'] : (choices[name] ?? []),
   })
 }
 
@@ -323,7 +96,7 @@ export function searchSpec(): CLISpec {
   return new CLISpec({
     name: 'search',
     description: 'Search GitHub',
-    subcommands: Object.entries(FLAGS).map(
+    subcommands: Object.entries(SEARCH_FLAGS).map(
       ([kind, names]) =>
         new CLISpec({
           name: kind,
@@ -336,10 +109,10 @@ export function searchSpec(): CLISpec {
             new Option({ long: '--jq', short: '-q', type: 'str' }),
             new Option({ long: '--template', short: '-t', type: 'str' }),
             new Option({ long: '--limit', short: '-L', type: 'int', default: '30' }),
-            ...(SORTS[kind] === undefined
+            ...(SEARCH_SORTS[kind] === undefined
               ? []
               : [
-                  new Option({ long: '--sort', type: 'str', choices: SORTS[kind] }),
+                  new Option({ long: '--sort', type: 'str', choices: SEARCH_SORTS[kind] }),
                   new Option({ long: '--order', type: 'str', choices: ['asc', 'desc'] }),
                 ]),
           ],
@@ -350,7 +123,7 @@ export function searchSpec(): CLISpec {
 
 async function searchCmd(kind: string, inv: CLIInvocation): Promise<CommandFnResult> {
   const fl = new FlagView(inv.flags, inv.spec)
-  const fields = jsonFields(fl, FIELDS[kind] ?? [])
+  const fields = jsonFields(fl, SEARCH_FIELDS[kind] ?? [])
   const limit = fl.asInt('limit')
   if (limit === undefined || limit < 1 || limit > 1000)
     throw new UsageError('`--limit` must be between 1 and 1000', 1)
@@ -365,8 +138,8 @@ async function searchCmd(kind: string, inv: CLIInvocation): Promise<CommandFnRes
     ({ repos: 'repositories', prs: 'issues' } as Record<string, string>)[kind] ?? kind,
     query(kind, inv.texts, fl),
     limit,
-    SORTS[kind] ? fl.asStr('sort') : undefined,
-    SORTS[kind] ? fl.asStr('order') : undefined,
+    SEARCH_SORTS[kind] ? fl.asStr('sort') : undefined,
+    SEARCH_SORTS[kind] ? fl.asStr('order') : undefined,
   )
   const rows = values.map((value) => exported(kind, value))
   const template = fl.asStr('template')
@@ -381,117 +154,8 @@ async function searchCmd(kind: string, inv: CLIInvocation): Promise<CommandFnRes
     rows,
     fl,
     human(kind, rows, values, kind === 'issues' && boolean(fl, 'include_prs')),
-    FIELDS[kind] ?? [],
+    SEARCH_FIELDS[kind] ?? [],
   )
-}
-
-const SHAPES: Record<string, [string, string, string][]> = {
-  Repository: [
-    ['createdAt', 'created_at', 'time.Time'],
-    ['defaultBranch', 'default_branch', 'string'],
-    ['description', 'description', 'string'],
-    ['forksCount', 'forks_count', 'int'],
-    ['fullName', 'full_name', 'string'],
-    ['hasDownloads', 'has_downloads', 'bool'],
-    ['hasIssues', 'has_issues', 'bool'],
-    ['hasPages', 'has_pages', 'bool'],
-    ['hasProjects', 'has_projects', 'bool'],
-    ['hasWiki', 'has_wiki', 'bool'],
-    ['homepage', 'homepage', 'string'],
-    ['id', 'node_id', 'string'],
-    ['isArchived', 'archived', 'bool'],
-    ['isDisabled', 'disabled', 'bool'],
-    ['isFork', 'fork', 'bool'],
-    ['isPrivate', 'private', 'bool'],
-    ['language', 'language', 'string'],
-    ['license', 'license', 'License'],
-    ['masterBranch', 'master_branch', 'string'],
-    ['name', 'name', 'string'],
-    ['openIssuesCount', 'open_issues_count', 'int'],
-    ['owner', 'owner', 'User'],
-    ['pushedAt', 'pushed_at', 'time.Time'],
-    ['size', 'size', 'int'],
-    ['stargazersCount', 'stargazers_count', 'int'],
-    ['url', 'html_url', 'string'],
-    ['updatedAt', 'updated_at', 'time.Time'],
-    ['visibility', 'visibility', 'string'],
-    ['watchersCount', 'watchers_count', 'int'],
-  ],
-  User: [
-    ['gravatarID', 'gravatar_id', 'string'],
-    ['id', 'node_id', 'string'],
-    ['login', 'login', 'string'],
-    ['siteAdmin', 'site_admin', 'bool'],
-    ['type', 'type', 'string'],
-    ['url', 'html_url', 'string'],
-  ],
-  CommitInfo: [
-    ['author', 'author', 'CommitUser'],
-    ['commentCount', 'comment_count', 'int'],
-    ['committer', 'committer', 'CommitUser'],
-    ['message', 'message', 'string'],
-    ['tree', 'tree', 'Tree'],
-  ],
-  CommitUser: [
-    ['date', 'date', 'time.Time'],
-    ['email', 'email', 'string'],
-    ['name', 'name', 'string'],
-  ],
-  Tree: [['sha', 'sha', 'string']],
-  Parent: [
-    ['sha', 'sha', 'string'],
-    ['url', 'html_url', 'string'],
-  ],
-  License: [
-    ['key', 'key', 'string'],
-    ['name', 'name', 'string'],
-    ['url', 'url', 'string'],
-  ],
-  Label: [
-    ['color', 'color', 'string'],
-    ['description', 'description', 'string'],
-    ['id', 'node_id', 'string'],
-    ['name', 'name', 'string'],
-  ],
-  Issue: [
-    ['assignees', 'assignees', '[]User'],
-    ['author', 'user', 'User'],
-    ['authorAssociation', 'author_association', 'string'],
-    ['body', 'body', 'string'],
-    ['closedAt', 'closed_at', 'time.Time'],
-    ['commentsCount', 'comments', 'int'],
-    ['createdAt', 'created_at', 'time.Time'],
-    ['id', 'node_id', 'string'],
-    ['labels', 'labels', '[]Label'],
-    ['isDraft', 'draft', '*bool'],
-    ['isLocked', 'locked', 'bool'],
-    ['number', 'number', 'int'],
-    ['pullRequest', 'pull_request', 'PullRequest'],
-    ['repositoryURL', 'repository_url', 'string'],
-    ['stateInternal', 'state', 'string'],
-    ['stateReason', 'state_reason', 'string'],
-    ['title', 'title', 'string'],
-    ['url', 'html_url', 'string'],
-    ['updatedAt', 'updated_at', 'time.Time'],
-  ],
-  Code: [
-    ['name', 'name', 'string'],
-    ['path', 'path', 'string'],
-    ['repository', 'repository', 'Repository'],
-    ['sha', 'sha', 'string'],
-    ['textMatches', 'text_matches', '[]TextMatch'],
-    ['url', 'html_url', 'string'],
-  ],
-  Commit: [
-    ['author', 'author', 'User'],
-    ['committer', 'committer', 'User'],
-    ['id', 'node_id', 'string'],
-    ['info', 'commit', 'CommitInfo'],
-    ['parents', 'parents', '[]Parent'],
-    ['repo', 'repository', 'Repository'],
-    ['sha', 'sha', 'string'],
-    ['url', 'html_url', 'string'],
-  ],
 }
 
 type Row = Record<string, JsonValue>
@@ -508,7 +172,7 @@ function shape(kind: string, value: JsonValue | undefined): JsonValue {
   if (kind === 'int') return value ?? 0
   const row = record(value)
   return Object.fromEntries(
-    (SHAPES[kind] ?? []).map(([name, key, type]) => [name, shape(type, row[key])]),
+    (SEARCH_SHAPES[kind] ?? []).map(([name, key, type]) => [name, shape(type, row[key])]),
   )
 }
 function user(value: unknown): Row {

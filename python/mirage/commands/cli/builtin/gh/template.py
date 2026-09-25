@@ -2,8 +2,11 @@ import json
 import re
 from typing import Any
 
-_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|`[^`]*`|[^\s|]+|\|')
-_ACTION = re.compile(r'{{(-?)\s*(.*?)\s*(-?)}}', re.S)
+from mirage.commands.cli.builtin.gh.constants import (TEMPLATE_ACTION,
+                                                      TEMPLATE_DECLARATION,
+                                                      TEMPLATE_TOKEN)
+
+Variables = dict[str, list[Any]]
 
 
 def _text(value: Any) -> str:
@@ -19,7 +22,7 @@ def _text(value: Any) -> str:
     return str(value)
 
 
-def _value(token: str, dot: Any, root: Any) -> Any:
+def _value(token: str, dot: Any, root: Any, variables: Variables) -> Any:
     if token.startswith('"'):
         return json.loads(token)
     if token.startswith('`'):
@@ -30,8 +33,14 @@ def _value(token: str, dot: Any, root: Any) -> Any:
         return int(token)
     if token == ".":
         return dot
-    value = root if token.startswith("$") else dot
-    for key in token.lstrip("$").lstrip(".").split("."):
+    path = token.lstrip(".")
+    value = dot
+    if token.startswith("$"):
+        name, _, path = token.partition(".")
+        if name != "$" and name not in variables:
+            raise ValueError(f'template: undefined variable "{name}"')
+        value = root if name == "$" else variables[name][0]
+    for key in path.split("."):
         if not key:
             continue
         value = value.get(key) if isinstance(value, dict) else None
@@ -91,8 +100,8 @@ def _call(name: str, args: list[Any]) -> Any:
     raise ValueError(f'template: function "{name}" not defined')
 
 
-def _eval(expression: str, dot: Any, root: Any) -> Any:
-    tokens = _TOKEN.findall(expression)
+def _eval(expression: str, dot: Any, root: Any, variables: Variables) -> Any:
+    tokens = TEMPLATE_TOKEN.findall(expression)
     parts: list[list[str]] = [[]]
     for token in tokens:
         if token == "|":
@@ -103,14 +112,23 @@ def _eval(expression: str, dot: Any, root: Any) -> Any:
     for i, part in enumerate(parts):
         if not part:
             raise ValueError("template: empty pipeline")
-        args = [_value(token, dot, root) for token in part[1:]]
+        args = [_value(token, dot, root, variables) for token in part[1:]]
         if i:
             args.append(value)
-        value = _value(part[0], dot, root) if len(part) == 1 and not i and (
-            part[0].startswith(
-                ('.', '$', '"', '`')) or part[0] in ('true', 'false')
-            or re.fullmatch(r'-?\d+', part[0])) else _call(part[0], args)
+        value = _value(
+            part[0], dot, root, variables) if len(part) == 1 and not i and (
+                part[0].startswith(
+                    ('.', '$', '"', '`')) or part[0] in ('true', 'false')
+                or re.fullmatch(r'-?\d+', part[0])) else _call(part[0], args)
     return value
+
+
+def _declaration(expression: str) -> tuple[list[str], str, bool]:
+    match = TEMPLATE_DECLARATION.fullmatch(expression)
+    if match is None:
+        return [], expression, False
+    return [name for name in match.group(1, 2)
+            if name], match[4], match[3] == "="
 
 
 def render_template(template: str, value: Any) -> str:
@@ -123,7 +141,7 @@ def render_template(template: str, value: Any) -> str:
     tokens: list[tuple[str, str]] = []
     end = 0
     trim = False
-    for match in _ACTION.finditer(template):
+    for match in TEMPLATE_ACTION.finditer(template):
         text = template[end:match.start()]
         if trim:
             text = text.lstrip()
@@ -136,7 +154,7 @@ def render_template(template: str, value: Any) -> str:
     tokens.append(
         ("text", template[end:].lstrip() if trim else template[end:]))
 
-    def render(start: int, stop: int, dot: Any) -> str:
+    def render(start: int, stop: int, dot: Any, variables: Variables) -> str:
         output = []
         i = start
         while i < stop:
@@ -162,24 +180,47 @@ def render_template(template: str, value: Any) -> str:
                     cursor += 1
                 if depth:
                     raise ValueError("template: unexpected EOF")
-                resolved = _eval(expression, dot, value)
+                names, pipeline, _ = _declaration(expression)
+                if len(names) > 1 and command != "range":
+                    raise ValueError(
+                        f"template: too many declarations in {command}")
+                resolved = _eval(pipeline, dot, value, variables)
                 body_end = alternate if alternate is not None else cursor
+                scope = dict(variables)
+                if names and command != "range":
+                    scope[names[0]] = [resolved]
                 if command == "range" and resolved:
-                    entries = [resolved[k] for k in sorted(resolved)
-                               ] if isinstance(resolved, dict) else resolved
-                    output.extend(
-                        render(i, body_end, item) for item in entries)
+                    entries = [
+                        (k, resolved[k]) for k in sorted(resolved)
+                    ] if isinstance(resolved, dict) else enumerate(resolved)
+                    for key, item in entries:
+                        bound = dict(variables)
+                        if len(names) == 2:
+                            bound[names[0]] = [key]
+                        if names:
+                            bound[names[-1]] = [item]
+                        output.append(render(i, body_end, item, bound))
                 elif resolved:
                     output.append(
                         render(i, body_end,
-                               resolved if command == "with" else dot))
+                               resolved if command == "with" else dot, scope))
                 elif alternate is not None:
-                    output.append(render(alternate + 1, cursor, dot))
+                    output.append(render(alternate + 1, cursor, dot, scope))
                 i = cursor + 1
             elif command in ("end", "else"):
                 raise ValueError(f"template: unexpected {command}")
             else:
-                output.append(_text(_eval(action, dot, value)))
+                names, pipeline, assign = _declaration(action)
+                result = _eval(pipeline, dot, value, variables)
+                if not names:
+                    output.append(_text(result))
+                elif not assign:
+                    variables[names[0]] = [result]
+                elif names[0] in variables:
+                    variables[names[0]][0] = result
+                else:
+                    raise ValueError(
+                        f'template: undefined variable "{names[0]}"')
         return "".join(output)
 
-    return render(0, len(tokens), value)
+    return render(0, len(tokens), value, {})
