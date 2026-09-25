@@ -28,6 +28,8 @@ import {
   pushdownOperand,
   searchPushdownOk,
   searchQuery,
+  textCandidates,
+  wholeWordLiteral,
 } from './grep_pushdown.ts'
 
 describe('classifyPattern', () => {
@@ -351,4 +353,36 @@ it.each([{ ignore_case: 'true' }, { typo: true }, null])(
 it('leaves resource namespaces opaque and treats plain queries as literal', () => {
   expect(grepSearchOptions({ query: 'a.*b', options: { limit: 20 } }).fixedString).toBe(true)
   expect(grepSearchMeta({ search: () => Promise.resolve([]), meta: { semantic: true } })).toBeNull()
+})
+
+// Twins of test_whole_word_literal_is_the_term_a_word_index_answers_for and
+// test_text_candidates_drops_what_a_walk_never_reads in
+// python/tests/commands/builtin/test_grep_pushdown.py.
+describe('wholeWordLiteral', () => {
+  it.each<[string | null, boolean, boolean, string | null]>([
+    ['import', false, true, 'import'],
+    ['import', true, true, 'import'],
+    ['import os', false, true, 'import os'],
+    ['import', false, false, null],
+    ['import.*os', false, true, null],
+    ['import.*os', true, true, 'import.*os'],
+    ['foo|bar', false, true, null],
+    ['a\nb', true, true, null],
+    [null, false, true, null],
+  ])('answers %j (fixed=%s, -w=%s) with %j', (pattern, fixed, wholeWord, expected) => {
+    // Only a whole-word literal is what the index is asked for: without -w
+    // a word index under-fetches substrings, a regex narrows on a term that
+    // is only part of the match, and a pattern list has no required term.
+    expect(wholeWordLiteral(pattern, fixed, wholeWord)).toBe(expected)
+  })
+})
+
+describe('textCandidates', () => {
+  it('drops what a walk never reads', () => {
+    const paths = ['/a.py', '/m.gguf', '/b.txt', '/w.bin', '/README'].map((p) =>
+      PathSpec.fromStrPath(p),
+    )
+    expect(textCandidates(paths).map((p) => p.virtual)).toEqual(['/a.py', '/b.txt', '/README'])
+    expect(textCandidates([])).toEqual([])
+  })
 })

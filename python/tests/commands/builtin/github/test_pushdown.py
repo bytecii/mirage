@@ -405,10 +405,22 @@ async def test_a_named_file_is_always_read(mock_github_api, github_env,
 
 
 @pytest.mark.asyncio
-async def test_a_narrowing_left_empty_falls_back_instead_of_reading_stdin(
-        mock_github_api, github_env, counting_read, monkeypatch):
-    # Every candidate here is a binary a walk skips; an empty path list
-    # would make grep read standard input instead.
+@pytest.mark.parametrize("command, flags", [
+    (grep, {
+        "r": True,
+        "w": True
+    }),
+    (rg, {
+        "w": True
+    }),
+])
+async def test_a_narrowing_left_empty_matches_nothing_and_never_reads_stdin(
+        mock_github_api, github_env, counting_read, monkeypatch, command,
+        flags):
+    # Every candidate here is a binary a walk skips, so the scan the
+    # narrowing stands in for reads nothing and matches nothing, as on a
+    # Dropbox or Box mount; handed on as an empty operand list it would
+    # instead read standard input.
     accessor, index = github_env
     monkeypatch.setitem(_NGLOBALS, "SCOPE_WARN", 1)
     big = dict(MOCK_TREE)
@@ -422,15 +434,9 @@ async def test_a_narrowing_left_empty_falls_back_instead_of_reading_stdin(
 
     monkeypatch.setattr("mirage.core.github.tree.fetch_tree", _fetch_tree)
     _answer(monkeypatch, [])
-    stdout, _ = await grep(
+    stdout, io = await command(
         accessor, [_root()], ["import"],
-        CommandOpts(index=index,
-                    stdin=b"import from stdin\n",
-                    flags={
-                        "r": True,
-                        "w": True
-                    }))
-    body = (await materialize(stdout)).decode()
-    assert "import from stdin" not in body
-    assert sorted({line.split(":", 1)[0]
-                   for line in body.splitlines()}) == _IMPORT_FILES
+        CommandOpts(index=index, stdin=b"import from stdin\n", flags=flags))
+    assert (await materialize(stdout)).decode() == ""
+    assert io.exit_code == 1
+    assert counting_read == []

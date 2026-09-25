@@ -225,15 +225,17 @@ describe('narrowScope trusts only a complete, own-repository answer', () => {
     expect(calls).toHaveLength(0)
   })
 
-  it('falls back when the binary filter leaves nothing', async () => {
-    // An empty path list would make grep read standard input instead.
+  it('narrows to nothing when the binary filter leaves nothing', async () => {
+    // Every candidate is a binary a walk skips, so the scan the narrowing
+    // stands in for reads nothing; grep and rg answer that as no match
+    // rather than handing an empty operand list on, which would read
+    // standard input.
     const tree = bigTree()
     tree['src/model.gguf'] = { path: 'src/model.gguf', type: 'blob', sha: 'g', size: 400_000 }
     const calls: SearchCall[] = []
     const acc = makeAccessor([], calls, { tree })
     const res = await narrowScope(acc, [subdir()], 'import', false, true, true)
-    expect(res.usedSearch).toBe(false)
-    expect(res.resolved.map((p) => p.virtual)).toEqual(['/src'])
+    expect(res).toEqual({ resolved: [], fileCount: 0, usedSearch: true })
   })
 
   it('still reads a file code search never indexes', async () => {

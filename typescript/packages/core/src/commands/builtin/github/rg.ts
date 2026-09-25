@@ -51,6 +51,9 @@ async function rgCommand(
       opts.index ?? undefined,
     )
     resolved = narrowed.resolved
+    if (narrowed.usedSearch && resolved.length === 0) {
+      return [new Uint8Array(), new IOResult({ exitCode: 1 })]
+    }
     if (narrowed.fileCount > SCOPE_ERROR) {
       return [
         null,

@@ -40,7 +40,6 @@ async def rg(accessor: GitHubAccessor, paths: list[PathSpec], texts: list[str],
         raise UsageError(RG_NO_PATTERN)
 
     if paths:
-        paths[0]
         paths, file_count, used_search = await narrow_scope(
             accessor,
             opts.index,
@@ -50,6 +49,8 @@ async def rg(accessor: GitHubAccessor, paths: list[PathSpec], texts: list[str],
             recursive=True,
             whole_word=fl.as_bool("w"),
         )
+        if used_search and not paths:
+            return b"", IOResult(exit_code=1)
         if file_count > SCOPE_ERROR:
             # A scope this large with no trusted narrowing is refused rather
             # than scanned blob by blob.

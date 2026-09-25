@@ -12,10 +12,11 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from mirage.accessor.github import GitHubAccessor
 from mirage.core.github.config import GitHubConfig
 from mirage.core.github.search import SearchResult, narrow_paths, search_code
 from mirage.core.github.tree_entry import TreeEntry
@@ -48,6 +49,11 @@ def _blob(path: str, size: int | None) -> TreeEntry:
 SEARCH_LIMIT = 384 * 1024
 
 _SMALL_TREE = {"src/a.py": _blob("src/a.py", 10)}
+
+
+def _accessor(config: GitHubConfig, tree: dict[str,
+                                               TreeEntry]) -> GitHubAccessor:
+    return GitHubAccessor(config, "acme", "proj", "main", "main", tree=tree)
 
 
 @pytest.mark.asyncio
@@ -106,12 +112,7 @@ async def test_narrow_paths_strips_leading_slash_in_filter(
     mock_search.return_value = ([SearchResult(path="src/main.py",
                                               sha="aaa")], False)
     paths = [PathSpec(vfs_path="src", virtual="/src", directory="/src")]
-    await narrow_paths(config,
-                       "acme",
-                       "proj",
-                       "import",
-                       paths,
-                       tree=_SMALL_TREE)
+    await narrow_paths(_accessor(config, _SMALL_TREE), "import", paths)
     _, kwargs = mock_search.await_args
     assert kwargs["path_filter"] == "src"
 
@@ -122,12 +123,7 @@ async def test_narrow_paths_root_uses_no_filter(mock_search, config):
     mock_search.return_value = ([SearchResult(path="src/main.py",
                                               sha="aaa")], False)
     paths = [PathSpec(vfs_path="", virtual="/", directory="/")]
-    await narrow_paths(config,
-                       "acme",
-                       "proj",
-                       "import",
-                       paths,
-                       tree=_SMALL_TREE)
+    await narrow_paths(_accessor(config, _SMALL_TREE), "import", paths)
     _, kwargs = mock_search.await_args
     assert kwargs["path_filter"] is None
 
@@ -145,12 +141,7 @@ async def test_narrow_paths_normalizes_results_with_leading_slash(
                  virtual="/gh",
                  directory="/gh")
     ]
-    out = await narrow_paths(config,
-                             "acme",
-                             "proj",
-                             "import",
-                             paths,
-                             tree=_SMALL_TREE)
+    out = await narrow_paths(_accessor(config, _SMALL_TREE), "import", paths)
     assert [p.virtual for p in out] == ["/gh/src/main.py", "/gh/src/utils.py"]
     assert [p.vfs_path for p in out] == ["src/main.py", "src/utils.py"]
 
@@ -162,12 +153,8 @@ async def test_narrow_paths_voids_the_narrowing_on_error(
     mock_search.side_effect = RuntimeError("boom")
     paths = [PathSpec(vfs_path="src", virtual="/src", directory="/src")]
     with caplog.at_level("WARNING"):
-        out = await narrow_paths(config,
-                                 "acme",
-                                 "proj",
-                                 "import",
-                                 paths,
-                                 tree=_SMALL_TREE)
+        out = await narrow_paths(_accessor(config, _SMALL_TREE), "import",
+                                 paths)
     assert out is None
     assert "falling back to per-file scan" in caplog.text
 
@@ -178,14 +165,9 @@ async def test_narrow_paths_forwards_the_session_pool(mock_get, config):
     # The mount's grep push-down passes its accessor pool; a search that
     # dropped it opened an aiohttp session per code-search request.
     mock_get.return_value = _body([])
-    pool = MagicMock()
-    await narrow_paths(config,
-                       "acme",
-                       "proj",
-                       "needle", [PathSpec.from_str_path("/")],
-                       tree={},
-                       session=pool)
-    assert mock_get.await_args.kwargs["session"] is pool
+    accessor = _accessor(config, {})
+    await narrow_paths(accessor, "needle", [PathSpec.from_str_path("/")])
+    assert mock_get.await_args.kwargs["session"] is accessor.pool
 
 
 @pytest.mark.asyncio
@@ -331,11 +313,8 @@ async def test_search_code_judges_completeness_before_filtering(
 @patch("mirage.core.github.search.search_code", new_callable=AsyncMock)
 async def test_narrow_paths_truncated_answer_returns_none(mock_search, config):
     mock_search.return_value = ([SearchResult(path="src/a.py", sha="a")], True)
-    out = await narrow_paths(config,
-                             "acme",
-                             "proj",
-                             "needle", [PathSpec.from_str_path("/")],
-                             tree=_SMALL_TREE)
+    out = await narrow_paths(_accessor(config, _SMALL_TREE), "needle",
+                             [PathSpec.from_str_path("/")])
     assert out is None
 
 
@@ -349,12 +328,7 @@ async def test_narrow_paths_stops_at_the_first_truncated_scope(
         PathSpec(vfs_path="src", virtual="/src", directory="/src"),
         PathSpec(vfs_path="docs", virtual="/docs", directory="/docs"),
     ]
-    out = await narrow_paths(config,
-                             "acme",
-                             "proj",
-                             "needle",
-                             scopes,
-                             tree=_SMALL_TREE)
+    out = await narrow_paths(_accessor(config, _SMALL_TREE), "needle", scopes)
     assert out is None
     assert mock_search.await_count == 1
 
@@ -373,12 +347,7 @@ async def test_narrow_paths_a_failed_scope_voids_the_others(
         PathSpec(vfs_path="src", virtual="/src", directory="/src"),
         PathSpec(vfs_path="docs", virtual="/docs", directory="/docs"),
     ]
-    out = await narrow_paths(config,
-                             "acme",
-                             "proj",
-                             "needle",
-                             scopes,
-                             tree=_SMALL_TREE)
+    out = await narrow_paths(_accessor(config, _SMALL_TREE), "needle", scopes)
     assert out is None
 
 
@@ -397,11 +366,8 @@ async def test_narrow_paths_adds_the_files_search_never_indexes(
         mock_search.return_value = ([
             SearchResult(path=h, sha=h) for h in hits
         ], False)
-        out = await narrow_paths(config,
-                                 "acme",
-                                 "proj",
-                                 "needle", [PathSpec.from_str_path("/")],
-                                 tree=tree)
+        out = await narrow_paths(_accessor(config, tree), "needle",
+                                 [PathSpec.from_str_path("/")])
         assert out is not None
         assert [p.virtual for p in out] == ["/src/a.py", "/src/big.bin"]
 
@@ -420,11 +386,8 @@ async def test_narrow_paths_adds_big_files_only_from_the_scope(
     mock_search.return_value = ([SearchResult(path="src/a.py",
                                               sha="a")], False)
     out = await narrow_paths(
-        config,
-        "acme",
-        "proj",
-        "needle", [PathSpec(vfs_path="src", virtual="/src", directory="/src")],
-        tree=tree)
+        _accessor(config, tree), "needle",
+        [PathSpec(vfs_path="src", virtual="/src", directory="/src")])
     assert out is not None
     assert [p.virtual for p in out] == ["/src/a.py", "/src/big.bin"]
 
@@ -435,9 +398,6 @@ async def test_narrow_paths_big_files_do_not_rescue_a_truncated_answer(
         mock_search, config):
     mock_search.return_value = ([], True)
     tree = {"src/big.bin": _blob("src/big.bin", SEARCH_LIMIT)}
-    out = await narrow_paths(config,
-                             "acme",
-                             "proj",
-                             "needle", [PathSpec.from_str_path("/")],
-                             tree=tree)
+    out = await narrow_paths(_accessor(config, tree), "needle",
+                             [PathSpec.from_str_path("/")])
     assert out is None
