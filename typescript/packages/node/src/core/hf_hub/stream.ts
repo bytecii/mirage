@@ -17,6 +17,8 @@ import { recordStream } from '@struktoai/mirage-core/observe/context'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import type { HfHubAccessor } from '../../accessor/hf_hub.ts'
 import { hubStream, resolveUrl } from './client.ts'
+import { REFUSED_STATUSES } from './constants.ts'
+import { asRefusal } from './lookup.ts'
 import { read, resolveEntry, rowToken } from './read.ts'
 
 /** Read a byte range, in the VFS API's end-exclusive spelling. */
@@ -47,8 +49,12 @@ export async function* stream(
   const stamp = (headers: Record<string, string>): void => {
     if (rec !== null) rec.fingerprint = rowToken(entry, headers.etag ?? '')
   }
-  for await (const chunk of hubStream(accessor.token, url, stamp)) {
-    if (rec !== null) rec.bytes += chunk.length
-    yield chunk
+  try {
+    for await (const chunk of hubStream(accessor.token, url, stamp)) {
+      if (rec !== null) rec.bytes += chunk.length
+      yield chunk
+    }
+  } catch (err) {
+    throw asRefusal(path, err, REFUSED_STATUSES)
   }
 }

@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
+from mirage.core.hf_hub.client import HfHubError
 from mirage.core.hf_hub.stream import range_read, read_stream
 from mirage.observe.context import RecordingScope
 from tests.core.hf_hub.conftest import file_row, ps, seed
@@ -71,7 +72,11 @@ def _answering(etag: str, *payload: bytes):
     """A hub_stream stand-in that reports its headers the way the real one
     does: once, before the first chunk."""
 
-    async def fake(_token, _url, _chunk_size, *, session=None,
+    async def fake(_token,
+                   _url,
+                   _chunk_size,
+                   *,
+                   session=None,
                    on_response=None):
         if on_response is not None:
             on_response({"etag": etag})
@@ -120,3 +125,25 @@ async def test_stream_with_no_recorder_still_reads(accessor, monkeypatch):
     monkeypatch.setattr("mirage.core.hf_hub.stream.hub_stream",
                         _answering('"oid-a.txt"', b"ab"))
     assert [c async for c in read_stream(accessor, ps("a.txt"))] == [b"ab"]
+
+
+def _refusing(status: int):
+
+    async def fake(_token,
+                   _url,
+                   _chunk_size,
+                   *,
+                   session=None,
+                   on_response=None):
+        raise HfHubError("gated", status)
+        yield b""
+
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_a_stream_the_hub_refuses_is_permission_denied(
+        loaded, monkeypatch):
+    monkeypatch.setattr("mirage.core.hf_hub.stream.hub_stream", _refusing(403))
+    with pytest.raises(PermissionError):
+        [c async for c in read_stream(loaded, ps("a.txt"))]

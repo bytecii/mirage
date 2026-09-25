@@ -21,6 +21,7 @@ import { mountPrefixOf } from '@struktoai/mirage-core/utils/key_prefix'
 import type { ByteWindow } from '@struktoai/mirage-core/utils/ranges'
 import type { HfHubAccessor } from '../../accessor/hf_hub.ts'
 import { etagValue, hubBytesTagged, resolveUrl } from './client.ts'
+import { REFUSED_STATUSES } from './constants.ts'
 import { isDir, keyOf, lookupRetrying, refusalsDenied } from './lookup.ts'
 
 export interface HfHubReadOptions {
@@ -93,7 +94,11 @@ export async function read(
     ? { offset: options.offset ?? 0, size: options.size ?? null }
     : undefined
   const timer = startOp()
-  const [data, etag] = await hubBytesTagged(accessor.token, url, window)
+  const [data, etag] = await refusalsDenied(
+    path,
+    () => hubBytesTagged(accessor.token, url, window),
+    REFUSED_STATUSES,
+  )
   record('read', path.virtual, accessor.vfsName, data.length, timer, {
     fingerprint: rowToken(entry, etag),
   })

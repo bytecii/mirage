@@ -190,3 +190,22 @@ async def test_a_read_of_a_repo_the_hub_refuses_is_permission_denied(accessor):
     with patch("mirage.core.hf_hub.tree.hub_get_response", refused):
         with pytest.raises(PermissionError):
             await read_bytes(accessor, ps("a.txt"), RAMIndexCacheStore())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403])
+async def test_a_download_the_hub_refuses_is_permission_denied(loaded, status):
+    # A gated repo lists its tree but refuses the file itself.
+    refused = AsyncMock(side_effect=HfHubError("gated", status))
+    with patch("mirage.core.hf_hub.read.hub_bytes_tagged", refused):
+        with pytest.raises(PermissionError):
+            await read_bytes(loaded, ps("a.txt"))
+
+
+@pytest.mark.asyncio
+async def test_a_download_of_a_vanished_file_stays_a_hub_error(loaded):
+    # One file 404ing is not a refusal to show the repo.
+    missing = AsyncMock(side_effect=HfHubError("gone", 404, "EntryNotFound"))
+    with patch("mirage.core.hf_hub.read.hub_bytes_tagged", missing):
+        with pytest.raises(HfHubError, match="gone"):
+            await read_bytes(loaded, ps("a.txt"))

@@ -145,13 +145,25 @@ export async function pointLookup(
  * raw Hub error would stop a walk across other mounts. It is never absence,
  * which reconcile would turn into a delete.
  */
-export async function refusalsDenied<T>(pathSpec: PathSpec, run: () => Promise<T>): Promise<T> {
+export async function refusalsDenied<T>(
+  pathSpec: PathSpec,
+  run: () => Promise<T>,
+  statuses: ReadonlySet<number> = ABSENT_STATUSES,
+): Promise<T> {
   try {
     return await run()
   } catch (err) {
-    if (err instanceof HfHubError && ABSENT_STATUSES.has(err.status)) throw eacces(pathSpec)
-    throw err
+    throw asRefusal(pathSpec, err, statuses)
   }
+}
+
+/** The error to rethrow for `err`: EACCES for a refusal, `err` itself otherwise. */
+export function asRefusal(
+  pathSpec: PathSpec,
+  err: unknown,
+  statuses: ReadonlySet<number> = ABSENT_STATUSES,
+): unknown {
+  return err instanceof HfHubError && statuses.has(err.status) ? eacces(pathSpec) : err
 }
 
 /** The mount-absolute key for a mount-local path. */

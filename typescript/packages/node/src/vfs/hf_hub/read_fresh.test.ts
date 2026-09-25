@@ -168,6 +168,24 @@ describe('hf_hub under read: fresh', () => {
     }
   })
 
+  it('does not let a gated download hide the other mounts', async () => {
+    // The tree lists but the file download is refused, as for a gated repo.
+    const fake = await hub({ 'a.txt': ENC.encode('needle\n') })
+    fake.fail.set('resolve', [403, ''])
+    const w = new Workspace({
+      '/h': [await vfsOf(fake), MountMode.READ],
+      '/r': [new RAMVFS(), MountMode.WRITE],
+    })
+    try {
+      await w.shell('tee /r/n.txt', { stdin: ENC.encode('needle\n') })
+      const grep = await w.shell('grep -r needle /')
+      expect(DEC.decode(grep.stdout)).toBe('/r/n.txt:needle\n')
+      expect(DEC.decode(grep.stderr)).toContain('Permission denied')
+    } finally {
+      await w.close()
+    }
+  })
+
   it('keeps the overlay when the token expires', async () => {
     const fake = await hub({ 'a.txt': OLD })
     const w = ws(await vfsOf(fake))

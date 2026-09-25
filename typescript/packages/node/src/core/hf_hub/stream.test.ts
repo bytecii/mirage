@@ -95,3 +95,17 @@ describe('hf_hub stream stamp', () => {
     expect(parts).toEqual(['ab'])
   })
 })
+
+describe('a stream the Hub refuses', () => {
+  it('is permission denied', async () => {
+    vi.spyOn(client, 'hubStream').mockImplementation(async function* () {
+      await Promise.resolve()
+      throw new client.HfHubError('gated', 403)
+      yield new Uint8Array()
+    })
+    const err = await (async () => {
+      for await (const chunk of stream(loaded(), PATH)) void chunk
+    })().catch((e: unknown) => e)
+    expect((err as { code?: string }).code).toBe('EACCES')
+  })
+})

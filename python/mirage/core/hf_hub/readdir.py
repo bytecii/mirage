@@ -50,12 +50,12 @@ async def readdir(
     path = (path_spec.dir if path_spec.pattern else path_spec).mount_path
     with refusals_denied(path_spec):
         found = await lookup(accessor, index, prefix, key_of(prefix, path))
-    if found.children is not None:
-        return found.children
-    # A git tree implies every directory above a path it holds, so this
-    # store cannot hold an orphan and the one-probe form is the right
-    # one; both probes are dictionary lookups against a listing already
-    # in memory, so the walk costs no requests.
-    raise await listing_error(path_spec, path,
-                              partial(probe_file, accessor, index, prefix),
-                              partial(probe_dir, accessor, index, prefix))
+        if found.children is not None:
+            return found.children
+        # A git tree implies every directory above a path it holds, so this
+        # store cannot hold an orphan and the one-probe form is the right
+        # one; both probes are dictionary lookups against a listing
+        # already in memory, so the walk costs no requests.
+        raise await listing_error(path_spec, path,
+                                  partial(probe_file, accessor, index, prefix),
+                                  partial(probe_dir, accessor, index, prefix))

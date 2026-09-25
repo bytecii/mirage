@@ -177,7 +177,9 @@ async def point_lookup(
 
 
 @contextmanager
-def refusals_denied(path_spec: PathSpec) -> Iterator[None]:
+def refusals_denied(
+        path_spec: PathSpec,
+        statuses: frozenset[int] = ABSENT_STATUSES) -> Iterator[None]:
     """Report a repository the Hub will not show as permission denied.
 
     A 401, 403 or 404 for the repository or revision is the Hub declining
@@ -188,11 +190,13 @@ def refusals_denied(path_spec: PathSpec) -> Iterator[None]:
 
     Args:
         path_spec (PathSpec): the path the operation was asked about.
+        statuses (frozenset[int]): the refusal statuses; a download narrows
+            them to REFUSED_STATUSES.
     """
     try:
         yield
     except HfHubError as exc:
-        if exc.status not in ABSENT_STATUSES:
+        if exc.status not in statuses:
             raise
         log.debug("hf %s refused: %s", path_spec.virtual, exc)
         raise eacces(path_spec) from exc

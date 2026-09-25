@@ -163,6 +163,25 @@ async def test_a_refused_mount_does_not_hide_the_other_mounts():
 
 
 @pytest.mark.asyncio
+async def test_a_gated_download_does_not_hide_the_other_mounts():
+    # The tree lists but the file download is refused, as for a gated repo.
+    with serve(_hub({"a.txt": b"needle\n"}, fail={"resolve":
+                                                  (403, "")})) as hub:
+        ws = Workspace({
+            "/h": (_vfs(hub), MountMode.READ),
+            "/r": (RAMVFS(), MountMode.WRITE),
+        })
+        try:
+            await (await ws.shell("tee /r/n.txt",
+                                  stdin=b"needle\n")).materialize_stdout()
+            grep = await ws.shell("grep -r needle /")
+            assert await grep.materialize_stdout() == b"/r/n.txt:needle\n"
+            assert "Permission denied" in await grep.stderr_str()
+        finally:
+            await ws.close()
+
+
+@pytest.mark.asyncio
 async def test_an_expired_token_keeps_the_overlay():
     with serve(_hub({"a.txt": OLD})) as hub:
         ws = _ws(_vfs(hub))

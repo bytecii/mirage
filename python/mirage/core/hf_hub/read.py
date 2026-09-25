@@ -15,6 +15,7 @@
 from mirage.accessor.hf_hub import HfHubAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore, IndexEntry
 from mirage.core.hf_hub.client import etag_value, hub_bytes_tagged, resolve_url
+from mirage.core.hf_hub.constants import REFUSED_STATUSES
 from mirage.core.hf_hub.lookup import key_of, lookup_retrying, refusals_denied
 from mirage.observe.context import record, start_op
 from mirage.types import PathSpec
@@ -111,10 +112,11 @@ async def read_bytes(accessor: HfHubAccessor,
     window = ByteWindow(offset=offset,
                         size=size) if offset or size is not None else None
     timer = start_op()
-    data, etag = await hub_bytes_tagged(accessor.token,
-                                        url,
-                                        window,
-                                        session=accessor.pool)
+    with refusals_denied(path, REFUSED_STATUSES):
+        data, etag = await hub_bytes_tagged(accessor.token,
+                                            url,
+                                            window,
+                                            session=accessor.pool)
     record("read",
            path.virtual,
            accessor.VFS_NAME,

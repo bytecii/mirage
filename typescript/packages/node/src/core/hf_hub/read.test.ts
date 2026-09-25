@@ -130,3 +130,21 @@ describe('a read the Hub refuses', () => {
     vi.restoreAllMocks()
   })
 })
+
+describe('a download the Hub refuses', () => {
+  it.each([401, 403])('is permission denied for %i', async (status) => {
+    // A gated repo lists its tree but refuses the file itself.
+    vi.spyOn(client, 'hubBytesTagged').mockRejectedValue(new client.HfHubError('gated', status))
+    const err = await read(loaded(), PATH).catch((e: unknown) => e)
+    expect((err as { code?: string }).code).toBe('EACCES')
+  })
+
+  it('keeps a vanished file a hub error', async () => {
+    // One file 404ing is not a refusal to show the repo.
+    vi.spyOn(client, 'hubBytesTagged').mockRejectedValue(
+      new client.HfHubError('gone', 404, 'EntryNotFound'),
+    )
+    const err = await read(loaded(), PATH).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(client.HfHubError)
+  })
+})
