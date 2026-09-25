@@ -100,25 +100,41 @@ pnpm add @pydantic/monty
 Without it, selecting monty makes `python3` exit with code 127 and an
 install hint.
 
+### Working directory
+
+Monty commands start in the Mirage shell's current directory. Relative
+`open()` and `pathlib` paths reach the workspace dispatcher as absolute
+virtual paths, so `cd /data; python3 -c "print(open('a.txt').read())"`
+reads `/data/a.txt` through the same mount and policy checks as `cat`.
+`os.getcwd()` and `Path.cwd()` report that virtual directory. Monty 1.0.0's
+JavaScript binding cannot return the native named-tuple stat result that
+`os.chdir()` requires, so changing directories inside the guest raises a
+`RuntimeError` on this host. Use shell `cd` before a command or an explicit
+`RunArgs.cwd` instead; neither changes the host process directory.
+
+A console evaluation session inherits the workspace cwd on its first
+feed and keeps it across later feeds, even if the shell changes directory.
+A new session or one-shot evaluation starts from the current workspace cwd.
+
 ### Differences from CPython
 
-The pinned Monty 0.0.23 lacks `dir()`, `json.load()` and `json.dump()`.
+The pinned Monty 1.0.0 lacks `dir()`, `json.load()` and `json.dump()`.
 Use `hasattr(value, 'name')` to check a specific attribute, `json.loads(f.read())` to read JSON, and
 `f.write(json.dumps(value))` to write it. Mirage does not automatically
 switch interpreters when an API is missing. The shared
 `integ/runtime/monty.json` suite records these gaps and the working forms
 so a dependency update can revisit them.
 
-- The importable stdlib is `asyncio`, `base64`, `binascii`, `collections`, `dataclasses`,
+- The importable stdlib is `asyncio`, `base64`, `binascii`, `collections`, `copy`, `dataclasses`,
   `datetime`, `functools`, `itertools`, `json`, `math`, `os`, `pathlib`,
-  `re`, `sys`, `typing` and `unicodedata`, and each is
+  `random`, `re`, `sys`, `time`, `typing` and `unicodedata`, and each is
   itself partial (`json` has `loads`/`dumps` but no `load`/`dump`).
 - The parser refuses class inheritance and metaclasses, the
   `classmethod`/`staticmethod`/`property` method decorators, and `yield`.
   Plain classes, function decorators, `with`, f-strings and
   comprehensions all work.
-- Introspection builtins are absent: `dir`, `vars`, `globals`, `locals`,
-  `help`, `callable`, `issubclass`, `super`, `eval`, `exec` and
+- Introspection builtins are absent: `dir`, `vars`, `globals`,
+  `help`, `callable`, `issubclass`, `super` and
   `compile`. There is no `__dict__` on any object, so none of them can
   be written by hand either.
 - Command-line arguments are the `argv` global; `sys.argv` does not exist.
