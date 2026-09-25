@@ -253,6 +253,24 @@ def test_programs_follows_the_allow_list():
     assert programs(narrow, ws._registry) == ["cat"]
 
 
+# An interpreter is a program only where a language runtime runs it; a
+# workspace without one answers `python3: command not found`, as a system
+# that never installed it does, so neither `which` nor `ls /usr/bin`
+# finds it.
+def test_program_has_no_file_for_an_interpreter_no_language_runtime_runs():
+    session = SessionState(session_id="t")
+    ws = Workspace({"/": RAMVFS()}, runtimes=["workspace"])
+    for name in ("python3", "python", "node"):
+        assert program(name, session, ws._registry) is None
+        assert name not in programs(session, ws._registry)
+
+
+def test_program_keeps_the_file_for_an_interpreter_a_runtime_runs():
+    session, ws = _fixture()
+    assert program("python3", session, ws._registry) is Consumer.SESSION
+    assert "python3" in programs(session, ws._registry)
+
+
 def test_program_has_no_file_for_a_shell_word_a_mount_also_registers():
     session, ws = _fixture()
     assert lookup_all("history", session,

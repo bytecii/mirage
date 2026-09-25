@@ -154,9 +154,9 @@ describe('git log', () => {
   })
 
   it('refuses an option this build lacks rather than reading it as a revision', async () => {
-    const [code, , err] = await run('log --graph')
+    const [code, , err] = await run('log --simplify-by-decoration')
     expect(code).toBe(128)
-    expect(err).toBe('fatal: unrecognized argument: --graph\n')
+    expect(err).toBe('fatal: unrecognized argument: --simplify-by-decoration\n')
   })
 
   it('matches --all byte for byte, topic branch included', async () => {

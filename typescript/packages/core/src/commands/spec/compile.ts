@@ -147,6 +147,11 @@ export class CompiledSpec {
 
 const CACHE = new WeakMap<CommandSpec, CompiledSpec>()
 
+// git's notation for an option parse-options also answers as `--no-<name>`,
+// and the prefix itself.
+const NEGATABLE = '[no-]'
+const NO = 'no-'
+
 /** Lower a CommandSpec into parser lookup tables, cached per spec. */
 export function compileSpec(spec: CommandSpec): CompiledSpec {
   const cached = CACHE.get(spec)
@@ -324,6 +329,67 @@ export function compileSpec(spec: CommandSpec): CompiledSpec {
  * ambiguous (every matching spelling in declaration order, the order GNU
  * lists possibilities, synonyms included like GNU's own listing).
  */
+/**
+ * git's parse-options resolution of one long option against the program's own
+ * table, which lists each option in git's `--[no-]` notation.
+ *
+ * An exact name wins at once, a negatable option answering to its `--no-`
+ * form too. Otherwise the word may abbreviate one option, `--no-` abbreviating
+ * a negation, and a word that abbreviates two is ambiguous: git names the last
+ * two it found, each with the `no-` it was matched under. A word matching
+ * nothing is null, and the caller decides what that is. The result is the
+ * spelling the table resolves to, which the spec may or may not declare.
+ *
+ * @param table the program's long options, e.g. `['[no-]verbose', 'contains']`
+ * @param typed the word as typed, `--` included and any `=value` removed
+ */
+export function expandGitLong(
+  table: readonly string[],
+  typed: string,
+): { spelling: string } | { ambiguous: [string, string] } | null {
+  const arg = typed.slice(2)
+  let found: [string, boolean] | null = null
+  let earlier: [string, boolean] | null = null
+  for (const entry of table) {
+    const negatable = entry.startsWith(NEGATABLE)
+    const long = negatable ? entry.slice(NEGATABLE.length) : entry
+    const inverted = !arg.startsWith(NO) && negatable && long.startsWith(NO)
+    const name = inverted ? long.slice(NO.length) : long
+    let unset = false
+    let exact = arg === name
+    let abbreviated = !exact && name.startsWith(arg)
+    if (!exact && !abbreviated && negatable) {
+      if (NO.startsWith(arg)) {
+        unset = true
+        abbreviated = true
+      } else if (arg.startsWith(NO)) {
+        unset = true
+        exact = arg.slice(NO.length) === name
+        abbreviated = !exact && name.startsWith(arg.slice(NO.length))
+      }
+    }
+    if (exact) return { spelling: gitSpelling(long, unset !== inverted) }
+    if (abbreviated) {
+      earlier = found
+      found = [long, unset !== inverted]
+    }
+  }
+  if (found === null) return null
+  if (earlier !== null) return { ambiguous: [gitShown(...earlier), gitShown(...found)] }
+  return { spelling: gitSpelling(...found) }
+}
+
+/** How git names a candidate in its ambiguity refusal. */
+function gitShown(long: string, unset: boolean): string {
+  return `--${unset ? NO : ''}${long}`
+}
+
+/** The long spelling one of git's options answers to, negated or not. */
+function gitSpelling(long: string, unset: boolean): string {
+  if (!unset) return `--${long}`
+  return long.startsWith(NO) ? `--${long.slice(NO.length)}` : `--${NO}${long}`
+}
+
 export function expandLong(
   cs: CompiledSpec,
   spelling: string,

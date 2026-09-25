@@ -12,7 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,7 +21,7 @@ from mirage.commands.spec.argmatch import (ArgmatchChoices, ArgmatchMatch,
                                            argmatch, value_classes)
 from mirage.commands.spec.builtin_specs import SPECS, is_builtin_grammar
 from mirage.commands.spec.compile import (CompiledSpec, compile_spec,
-                                          expand_long)
+                                          expand_git_long, expand_long)
 from mirage.commands.spec.constants import (ARG_PLACEHOLDER,
                                             ARGMATCH_CHOICE_OPTIONS,
                                             FLOAT_VALUE, INT_VALUE,
@@ -442,6 +442,7 @@ def parse_command(
     env: Mapping[str, str] | None = None,
     *,
     unknown_is_operand: bool = False,
+    abbreviations: Sequence[str] | None = None,
 ) -> ParsedArgs:
     """Read one command line against a spec.
 
@@ -471,6 +472,16 @@ def parse_command(
             declaring the set is one of the builtin ARGMATCH
             declarations -- an identity the spec itself settles, so
             it is not a fact about the caller at all.
+        abbreviations (Sequence[str] | None): the same kind of fact
+            about the program reading the line: its own full table of
+            long options (git's ``--[no-]`` notation), when it resolves
+            an abbreviated long option against that table the way git's
+            parse-options does. A partial spec cannot answer whether
+            ``--no-m`` is ambiguous, since the option git would also
+            match is one mirage never declared, so the program's table
+            is what is asked; an empty table is a program that takes
+            whole words only (git's revision walkers). None leaves the
+            getopt_long reading against the spec.
 
     Returns:
         ParsedArgs: the flag bag, operands, and every refusal the line
@@ -632,7 +643,16 @@ def parse_command(
             eq = tok.find("=")
             typed = tok if eq == -1 else tok[:eq]
             spelling = typed
-            if typed not in cs.dest and not no_long_option_parser:
+            if typed not in cs.dest and abbreviations is not None:
+                resolved = expand_git_long(abbreviations, typed)
+                if isinstance(resolved, tuple):
+                    ambiguous_options.append((tok, resolved))
+                    option_error_kinds.append("ambiguous")
+                    i += 1
+                    continue
+                if resolved is not None and resolved in cs.dest:
+                    spelling = resolved
+            elif typed not in cs.dest and not no_long_option_parser:
                 expansions = expand_long(cs, typed, synonyms)
                 if len(expansions) == 1:
                     spelling = expansions[0]

@@ -322,6 +322,27 @@ describe('program', () => {
     expect(programs(narrow, ws.registry)).toEqual(['cat'])
   })
 
+  // An interpreter is a program only where a language runtime runs it; a
+  // workspace without one answers `python3: command not found`, as a system
+  // that never installed it does, so neither `which` nor `ls /usr/bin` finds it.
+  it('has no file for an interpreter no language runtime runs', () => {
+    const ws = new Workspace(
+      { '/ram': new RAMVFS() },
+      { mode: MountMode.WRITE, runtimes: ['workspace'] },
+    )
+    const session = new SessionState({ sessionId: 't' })
+    for (const name of ['python3', 'python', 'node', 'js']) {
+      expect(program(name, session, ws.registry)).toBeNull()
+      expect(programs(session, ws.registry)).not.toContain(name)
+    }
+  })
+
+  it('keeps the file for an interpreter a language runtime runs', () => {
+    const { session, ws } = fixture()
+    expect(program('python3', session, ws.registry)).toBe(Consumer.SESSION)
+    expect(programs(session, ws.registry)).toContain('python3')
+  })
+
   it('has no file for a shell word a mount also registers', () => {
     const { session, ws } = fixture()
     expect(lookupAll('history', session, ws.registry)).toEqual([Consumer.SESSION, Consumer.MOUNT])

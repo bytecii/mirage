@@ -16,7 +16,7 @@ import { resolvePath } from '../../utils/path.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import { type ArgmatchChoices, argmatch, valueClasses } from './argmatch.ts'
 import { BUILTIN_SPECS, isBuiltinGrammar } from './builtins.ts'
-import { type CompiledSpec, compileSpec, expandLong } from './compile.ts'
+import { type CompiledSpec, compileSpec, expandGitLong, expandLong } from './compile.ts'
 import {
   ARG_PLACEHOLDER,
   ARGMATCH_CHOICE_OPTIONS,
@@ -451,6 +451,15 @@ function matchDigitCluster(
  * declarations -- an identity the spec itself settles, so it is not a fact
  * about the caller at all.
  *
+ * `abbreviations` is the same kind of fact about the program reading the
+ * line: its own full table of long options (git's `--[no-]` notation), when it
+ * resolves an abbreviated long option against that table the way git's
+ * parse-options does. A partial spec cannot answer whether `--no-m` is
+ * ambiguous, since the option git would also match is one mirage never
+ * declared, so the program's table is what is asked; an empty table is a
+ * program that takes whole words only (git's revision walkers). Undefined
+ * leaves the getopt_long reading against the spec.
+ *
  * `parse_command` in parser.py is the twin.
  */
 export function parseCommand(
@@ -460,6 +469,7 @@ export function parseCommand(
   cmdName = '',
   env?: Readonly<Record<string, string>>,
   unknownIsOperand = false,
+  abbreviations?: readonly string[],
 ): ParsedArgs {
   const cs = compileSpec(spec)
   const argmatchDestSet = argmatchDests(spec)
@@ -642,7 +652,16 @@ export function parseCommand(
       const eqPos = tok.indexOf('=')
       const typed = eqPos === -1 ? tok : tok.slice(0, eqPos)
       let spelling = typed
-      if (!cs.dest.has(typed) && !noLongOptionParser) {
+      if (!cs.dest.has(typed) && abbreviations !== undefined) {
+        const resolved = expandGitLong(abbreviations, typed)
+        if (resolved !== null && 'ambiguous' in resolved) {
+          ambiguousOptions.push([tok, resolved.ambiguous])
+          optionErrorKinds.push('ambiguous')
+          i += 1
+          continue
+        }
+        if (resolved !== null && cs.dest.has(resolved.spelling)) spelling = resolved.spelling
+      } else if (!cs.dest.has(typed) && !noLongOptionParser) {
         const candidates = expandLong(cs, typed, synonyms)
         if (candidates.length === 1) {
           spelling = candidates[0] ?? typed

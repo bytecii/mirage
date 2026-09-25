@@ -16,9 +16,11 @@ import pytest
 from dulwich.objects import Commit
 from dulwich.repo import Repo
 
+from mirage.commands.cli.builtin.git import GIT
 from mirage.commands.cli.builtin.git.errors import BadDateError
 from mirage.commands.cli.builtin.git.format import subject
 from mirage.commands.cli.builtin.git.history import parse_flags, select
+from mirage.commands.spec import parse_command, parse_to_kwargs
 from mirage.commands.spec.flag_view import FlagView
 
 NO_FLAGS: dict[str, object] = {}
@@ -112,3 +114,17 @@ def test_since_drops_everything_older(repo_path):
     with Repo(str(repo_path)) as repo:
         newest = head_of(repo).commit_time
     assert subjects(repo_path, {"since": str(newest + 60)}) == []
+
+
+@pytest.mark.parametrize("argv,expected", [
+    (["--date-order", "--topo-order"], "topo"),
+    (["--topo-order", "--date-order"], "date"),
+    (["--topo-order", "--date-order", "--topo-order"], "topo"),
+    (["--graph", "--date-order", "--topo-order"], "topo"),
+    (["--date-order", "--graph"], "date"),
+    (["-S", "--topo-order", "--date-order"], "date"),
+])
+def test_order_options_follow_the_last_typed_occurrence(argv, expected):
+    spec = next(node for node in GIT.subcommands if node.name == "log")
+    parsed = parse_command(spec, argv, "/")
+    assert parse_flags(FlagView(parse_to_kwargs(parsed))).order == expected

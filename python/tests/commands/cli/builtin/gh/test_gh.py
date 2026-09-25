@@ -20,13 +20,15 @@ from mirage.commands.cli.builtin.gh import GH
 from mirage.commands.cli.builtin.gh.accessor import body_value, repo_number
 from mirage.commands.cli.builtin.gh.api import api
 from mirage.commands.cli.builtin.gh.issue import comments_for, comments_text
-from mirage.commands.cli.builtin.gh.repo import fork, rename, summary, view
+from mirage.commands.cli.builtin.gh.repo import (fork, list_cmd, rename,
+                                                 summary, view)
 from mirage.commands.cli.specs import cli_spec_for
 from mirage.commands.cli.types import CLIDoors, CLIInvocation
+from mirage.commands.errors import UsageError
 from mirage.commands.spec.flag_view import FlagView
 from mirage.core.api.client import ApiResponse
 from mirage.core.github.config import GhConfig
-from mirage.core.github.repo import RepoRef
+from mirage.core.github.repo import RepoRef, repository_fields
 from mirage.io.types import materialize
 from mirage.types import PathSpec
 
@@ -202,16 +204,191 @@ async def test_views_the_repository_the_operand_names():
     assert CALLS == [{"method": "GET", "path": "/repos/o/r"}]
 
 
+def _graphql(monkeypatch) -> None:
+    """Answer the core GraphQL client from REPLY, recording each call."""
+
+    async def fake_request(token, method, path, body=_MISSING, **_kwargs):
+        return _record(method=method, path=path, body=body)
+
+    monkeypatch.setitem(repository_fields.__globals__, "github_request",
+                        fake_request)
+
+
 @pytest.mark.asyncio
-async def test_json_repo_view_does_not_fetch_the_readme(monkeypatch):
+async def test_json_repo_view_asks_graphql_for_the_fields_named(monkeypatch):
 
     async def unexpected_readme(config, ref):
         raise AssertionError("JSON output must not fetch README content")
 
     monkeypatch.setitem(view.__globals__, "read_readme", unexpected_readme)
-    _reset({"name": "r", "full_name": "o/r"})
-    await view(_inv(["o/r"], {"json": "name"}))
-    assert CALLS == [{"method": "GET", "path": "/repos/o/r"}]
+    _graphql(monkeypatch)
+    _reset({"data": {"repository": {"parent": None, "name": "r"}}})
+    out, _io = await view(_inv(["o/r"], {"json": "parent,name"}))
+    assert CALLS == [{
+        "method": "POST",
+        "path": "/graphql",
+        "body": {
+            "query":
+            "query RepositoryInfo($owner: String!, $name: String!) {\n"
+            "    repository(owner: $owner, name: $name) "
+            "{parent{id,name,owner{id,login}},name}\n  }",
+            "variables": {
+                "owner": "o",
+                "name": "r"
+            },
+        },
+    }]
+    assert await materialize(out
+                             ) == b'{\n  "name": "r",\n  "parent": null\n}\n'
+
+
+# gh decodes the answer into Go structs and prints those: a null string
+# is "", a struct keeps every field (a user's databaseId is 0), a
+# repository with no topics prints null, and projectsV2 prints its
+# untagged `Nodes`.
+@pytest.mark.asyncio
+async def test_json_repo_view_prints_the_shape_gh_decodes(monkeypatch):
+    _graphql(monkeypatch)
+    _reset({
+        "data": {
+            "repository": {
+                "description": None,
+                "assignableUsers": {
+                    "nodes": [{
+                        "id": "U1",
+                        "login": "ada",
+                        "name": None
+                    }]
+                },
+                "repositoryTopics": {
+                    "nodes": []
+                },
+                "projectsV2": {
+                    "nodes": []
+                },
+                "latestRelease": None,
+                "watchers": {
+                    "totalCount": 3
+                },
+                "owner": {
+                    "id": "O1",
+                    "login": "o"
+                },
+                "parent": {
+                    "id": "R0",
+                    "name": "up",
+                    "owner": {
+                        "id": "O0",
+                        "login": "u"
+                    }
+                },
+            }
+        }
+    })
+    fields = ("watchers,parent,owner,latestRelease,projectsV2,"
+              "repositoryTopics,assignableUsers,description")
+    out, _io = await view(_inv(["o/r"], {"json": fields}))
+    printed = json.loads(await materialize(out))
+    assert printed == {
+        "assignableUsers": [{
+            "id": "U1",
+            "login": "ada",
+            "name": "",
+            "databaseId": 0
+        }],
+        "description":
+        "",
+        "latestRelease":
+        None,
+        "owner": {
+            "id": "O1",
+            "login": "o"
+        },
+        "parent": {
+            "id": "R0",
+            "name": "up",
+            "owner": {
+                "id": "O0",
+                "login": "u"
+            }
+        },
+        "projectsV2": {
+            "Nodes": []
+        },
+        "repositoryTopics":
+        None,
+        "watchers": {
+            "totalCount": 3
+        },
+    }
+    assert list(printed) == sorted(printed)
+
+
+@pytest.mark.asyncio
+async def test_json_repo_view_refuses_an_unknown_field_before_asking(
+        monkeypatch):
+    _graphql(monkeypatch)
+    with pytest.raises(UsageError) as caught:
+        await view(_inv(["o/r"], {"json": "isFork,bogus"}))
+    assert caught.value.exit_code == 1
+    assert str(caught.value).startswith(
+        'Unknown JSON field: "bogus"\nAvailable fields:\n  archivedAt\n'
+        '  assignableUsers\n')
+    assert CALLS == []
+
+
+@pytest.mark.asyncio
+async def test_json_repo_view_words_a_graphql_error_as_gh_does(monkeypatch):
+    _graphql(monkeypatch)
+    _reset({
+        "data": {
+            "repository": None
+        },
+        "errors": [{
+            "message":
+            "Could not resolve to a Repository with the name 'o/r'.",
+            "path": ["repository"]
+        }],
+    })
+    with pytest.raises(ValueError,
+                       match=r"^GraphQL: Could not resolve to a Repository "
+                       r"with the name 'o/r'\. \(repository\)$"):
+        await view(_inv(["o/r"], {"json": "name"}))
+
+
+@pytest.mark.asyncio
+async def test_json_repo_list_asks_graphql_for_the_owner(monkeypatch):
+    _graphql(monkeypatch)
+    _reset({
+        "data": {
+            "repositoryOwner": {
+                "repositories": {
+                    "nodes": [{
+                        "name": "a",
+                        "isFork": True
+                    }],
+                    "pageInfo": {
+                        "hasNextPage": False,
+                        "endCursor": None
+                    },
+                }
+            }
+        }
+    })
+    out, _io = await list_cmd(
+        _inv(["acme"], {
+            "json": "name,isFork",
+            "limit": 5
+        }))
+    assert len(CALLS) == 1
+    body = CALLS[0]["body"]
+    assert "repositoryOwner(login: $owner)" in body["query"]
+    assert "nodes{name,isFork}" in body["query"]
+    assert body["variables"] == {"perPage": 5, "owner": "acme"}
+    assert json.loads(await materialize(out)) == [{
+        "isFork": True,
+        "name": "a"
+    }]
 
 
 @pytest.mark.asyncio

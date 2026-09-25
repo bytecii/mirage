@@ -127,6 +127,15 @@ LOG_OPTIONS = (
            description="Limit the number of commits shown"),
     Option(long="--oneline", description="One abbreviated line per commit"),
     Option(long="--reverse", description="Print commits oldest first"),
+    Option(long="--graph",
+           description="Draw the commit history beside the log "
+           "(implies --topo-order)"),
+    Option(long="--topo-order",
+           description="Show no parent before all its children, one line "
+           "of history at a time"),
+    Option(long="--date-order",
+           description="Show no parent before all its children, otherwise "
+           "newest first"),
     Option(long="--all",
            description="Start from every ref as well as the revision"),
     PRETTY_OPTION,
@@ -149,6 +158,50 @@ LOG_OPTIONS = (
 SHOW_OPTIONS = (*DIFF_OPTIONS, *MERGE_OPTIONS, DATE_OPTION, PRETTY_OPTION,
                 FORMAT_OPTION)
 
+# git's ref-filter options, which `branch` and `tag` share. The four
+# commit filters take the next word as their commit, whatever it looks
+# like (`--merged --no-merged` names a commit called `--no-merged`),
+# except as the line's last word, where they read HEAD: parse-options'
+# LASTARG_DEFAULT. The spec has no word for that, so they are declared
+# with an optional value (a bare one is HEAD, `--merged=main` is main)
+# and `filter_words` reattaches a detached value from the verbatim argv.
+# `--points-at` always takes a value.
+REF_FILTER_OPTIONS = (
+    Option(long="--contains",
+           type="str",
+           value_optional=True,
+           multiple=True,
+           metavar="commit",
+           description="List only refs that contain the commit (HEAD if "
+           "omitted)"),
+    Option(long="--no-contains",
+           type="str",
+           value_optional=True,
+           multiple=True,
+           metavar="commit",
+           description="List only refs that don't contain the commit "
+           "(HEAD if omitted)"),
+    Option(long="--merged",
+           type="str",
+           value_optional=True,
+           multiple=True,
+           metavar="commit",
+           description="List only refs reachable from the commit (HEAD if "
+           "omitted)"),
+    Option(long="--no-merged",
+           type="str",
+           value_optional=True,
+           multiple=True,
+           metavar="commit",
+           description="List only refs not reachable from the commit (HEAD "
+           "if omitted)"),
+    Option(long="--points-at",
+           type="str",
+           multiple=True,
+           metavar="object",
+           description="List only refs that point at the object"),
+)
+
 BRANCH_OPTIONS = (
     Option(short="-v",
            long="--verbose",
@@ -160,6 +213,10 @@ BRANCH_OPTIONS = (
            long="--delete",
            description="Delete a fully merged branch"),
     Option(short="-D", description="Delete a branch even if not merged"),
+    Option(short="-l",
+           long="--list",
+           description="List branches matching the patterns"),
+    *REF_FILTER_OPTIONS,
 )
 
 PATHSPEC = Operand(type="str")
@@ -258,6 +315,7 @@ TAG_OPTIONS = (
            description="Tag message (repeatable, one paragraph each)"),
     Option(short="-f", long="--force",
            description="Replace the tag if exists"),
+    *REF_FILTER_OPTIONS,
 )
 
 STATUS_OPTIONS = (

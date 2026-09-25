@@ -124,3 +124,18 @@ blob=$(printf 'odd\n' | git hash-object -w --stdin)
 tree=$({ git ls-tree main; printf '100644 blob %s\t\377.txt\n' "$blob"; } | git mktree)
 at 2025-05-05T10:00:00Z
 git update-ref refs/heads/odd "$(git commit-tree "$tree" -p main -m 'odd name')"
+git tag light side
+at 2025-06-03T10:00:00Z
+git tag -a annotated -m 'release two' main~1
+# A hidden side whose path back to a shared root runs through a commit
+# dated before that root: once the shown side is used up only hidden
+# commits are queued, and the limited walk has to keep going past that
+# point, or the shared root leaks into the range.
+at 2025-07-01T10:00:00Z
+shared=$(git commit-tree "$(git rev-parse main^{tree})" -m 'skew shared')
+at 2025-07-02T10:00:00Z
+git update-ref refs/heads/skew-shown "$(git commit-tree "$(git rev-parse main^{tree})" -p "$shared" -m 'skew shown')"
+at 2025-06-01T10:00:00Z
+early=$(git commit-tree "$(git rev-parse main^{tree})" -p "$shared" -m 'skew early')
+at 2025-07-03T10:00:00Z
+git update-ref refs/heads/skew-hidden "$(git commit-tree "$(git rev-parse main^{tree})" -p "$early" -m 'skew hidden')"

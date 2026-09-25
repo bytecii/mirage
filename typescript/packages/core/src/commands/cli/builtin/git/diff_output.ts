@@ -476,15 +476,37 @@ export async function renamesEnabled(repo: Repo): Promise<boolean> {
   )
 }
 
+/**
+ * The line git prints between a commit's text and its diff, null for none.
+ *
+ * `---` when both a diffstat and a patch follow, otherwise an empty line,
+ * and none under oneline, which is log-tree's rule. A combined diff (`-c`,
+ * `--cc`) is printed from its own path, which always writes the empty line,
+ * oneline included. Pinned against git 2.50.1.
+ *
+ * @param commit the commit whose diff follows
+ * @param kind the pretty format's kind
+ * @param flags the diff flags
+ */
+export function separatorLine(commit: CommitFacts, kind: string, flags: DiffFlags): string | null {
+  const combined =
+    commit.parents.length > 1 && (flags.merge === 'combined' || flags.merge === 'dense-combined')
+  if (combined) return ''
+  if (kind === 'oneline') return null
+  return flags.stat && flags.patch ? '---' : ''
+}
+
 export function joinOutput(
   commit: CommitFacts,
   head: string,
   bodies: string[],
   kind: string,
   width: number,
+  flags: DiffFlags,
   emptySummary = false,
 ): string {
   if (!bodies.length) return head
+  const line = separatorLine(commit, kind, flags)
   const blocks = bodies.map((body, index) => {
     let text = head
     if (bodies.length > 1 && !['format', 'tformat'].includes(kind)) {
@@ -493,7 +515,7 @@ export function joinOutput(
         parent = (commit.parents[index] ?? '').slice(0, length)
       text = text.replace(id, `${id} (from ${parent})`)
     }
-    let gap = text && body && kind !== 'oneline' ? '\n' : ''
+    let gap = text && body && line !== null ? `${line}\n` : ''
     if (!body && text && emptySummary) gap = '\n'
     return text + gap + body
   })
