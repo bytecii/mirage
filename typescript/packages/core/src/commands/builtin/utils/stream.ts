@@ -57,6 +57,15 @@ export function isStdin(path: PathSpec): boolean {
   return path.rawPath === '-' || path.virtual === '/dev/stdin'
 }
 
+/**
+ * The name a command's output gives an operand. Only a literal `-` is stdin by
+ * name: /dev/stdin reads the same bytes, but GNU grep, head and tail name it as
+ * the path it is.
+ */
+export function operandLabel(path: PathSpec, stdinName: string): string {
+  return path.rawPath === '-' ? stdinName : path.rawPath
+}
+
 export function stdinStream(
   read: (path: PathSpec) => AsyncIterable<Uint8Array>,
   stdin: ByteSource | null,

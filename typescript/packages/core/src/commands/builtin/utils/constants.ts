@@ -36,6 +36,9 @@ export const DEFAULT_BACKUP_SUFFIX = '~'
 
 export const CHAR_DEVICE_MAX_BYTES = 8 << 20
 
+// GNU head and tail's name for stdin in a `==> name <==` header.
+export const STDIN_HEADER_NAME = 'standard input'
+
 export const TYPE_CHARS: Partial<Record<FileType, string>> = {
   [FileType.DIRECTORY]: 'd',
   [FileType.SYMLINK]: 'l',

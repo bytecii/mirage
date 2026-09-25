@@ -933,3 +933,41 @@ async def test_grep_l_and_L_are_one_mode_the_later_wins():
         "files_without_match": True,
         "args_l": True
     }) == ("/m.txt\n", 0)
+
+
+def _stdin_operand(raw: str) -> PathSpec:
+    virtual = "/dev/stdin" if raw == "/dev/stdin" else "/-"
+    return PathSpec(vfs_path=virtual.strip("/"),
+                    virtual=virtual,
+                    directory="/",
+                    resolved=True,
+                    raw_path=raw)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw, flags, want", [
+    ("/dev/stdin", {
+        "H": True
+    }, b"/dev/stdin:b\n"),
+    ("/dev/stdin", {
+        "args_l": True
+    }, b"/dev/stdin\n"),
+    ("-", {
+        "H": True
+    }, b"(standard input):b\n"),
+    ("-", {
+        "args_l": True
+    }, b"(standard input)\n"),
+])
+async def test_grep_names_only_a_dash_stdin(raw, flags, want):
+    # GNU grep 3.11 calls only `-` "(standard input)": /dev/stdin reads the
+    # same bytes and is named as the path it is.
+    readdir, stat, rb, rs = _make_backend({})
+    output, io = await grep([_stdin_operand(raw)], ["b"],
+                            CommandOpts(flags=flags),
+                            readdir=readdir,
+                            stat=stat,
+                            read_bytes=rb,
+                            read_stream=rs,
+                            stdin=b"b\n")
+    assert (await _drain_async(output), io.exit_code) == (want, 0)

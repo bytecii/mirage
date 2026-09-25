@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { isStdin } from '../utils/stream.ts'
+import { isStdin, operandLabel } from '../utils/stream.ts'
 import { stdinStream, stdinStat } from '../utils/stream.ts'
 import { guardInput } from '../utils/limit.ts'
 import { specOf } from '../../spec/builtins.ts'
@@ -242,7 +242,7 @@ export async function grepGeneric(
           source,
           pat,
           f,
-          isStdin(first) ? '(standard input)' : first.rawPath,
+          operandLabel(first, '(standard input)'),
           f.withFilename && !f.noFilename,
           singleIO,
           false,
@@ -314,7 +314,7 @@ export async function grepGeneric(
         stream(p),
         pat,
         f,
-        isStdin(p) ? '(standard input)' : p.rawPath,
+        operandLabel(p, '(standard input)'),
         show,
         fileIO,
         printed,
