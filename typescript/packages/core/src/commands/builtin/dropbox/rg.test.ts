@@ -15,9 +15,13 @@
 // Mirror of python/tests/commands/builtin/dropbox/test_rg_search.py.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as RgModule from '../generic/rg.ts'
 
 vi.mock('./pushdown.ts', () => ({ narrowScope: vi.fn() }))
-vi.mock('../generic/rg.ts', () => ({ rgGeneric: vi.fn() }))
+vi.mock('../generic/rg.ts', async () => {
+  const actual = await vi.importActual<typeof RgModule>('../generic/rg.ts')
+  return { ...actual, rgGeneric: vi.fn() }
+})
 
 import { DropboxAccessor } from '../../../accessor/dropbox.ts'
 import type { DropboxTokenManager } from '../../../core/dropbox/client.ts'
@@ -26,7 +30,7 @@ import { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { rgGeneric } from '../generic/rg.ts'
 import { narrowScope } from './pushdown.ts'
-import { DROPBOX_RG, keepVisible } from './rg.ts'
+import { DROPBOX_RG } from './rg.ts'
 
 const STUB_TM = {} as DropboxTokenManager
 const narrow = vi.mocked(narrowScope)
@@ -68,32 +72,6 @@ beforeEach(() => {
   generic.mockReset()
   narrow.mockResolvedValue({ resolved: [], usedSearch: false })
   generic.mockResolvedValue([new Uint8Array(), new IOResult()])
-})
-
-describe('keepVisible', () => {
-  it('drops dotfiles below the scope', () => {
-    const kept = keepVisible(
-      [spec('/data/.env'), spec('/data/.git/config'), spec('/data/a.txt')],
-      [scope()],
-      false,
-    )
-    expect(kept.map((p) => p.virtual)).toEqual(['/data/a.txt'])
-  })
-
-  it('keeps everything under --hidden', () => {
-    const paths = [spec('/data/.env'), spec('/data/a.txt')]
-    expect(keepVisible(paths, [scope()], true)).toEqual(paths)
-  })
-
-  it('ignores dots in the scope itself', () => {
-    const hiddenScope = new PathSpec({
-      virtual: '/data/.cfg',
-      directory: '/data/.cfg',
-      vfsPath: '.cfg',
-    })
-    const kept = keepVisible([spec('/data/.cfg/a.txt')], [hiddenScope], false)
-    expect(kept.map((p) => p.virtual)).toEqual(['/data/.cfg/a.txt'])
-  })
 })
 
 describe('dropbox rg push-down', () => {

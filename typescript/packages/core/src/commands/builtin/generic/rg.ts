@@ -19,6 +19,7 @@ import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import { FileStat, FileType, PathSpec } from '../../../types.ts'
 import { fsStrerror, isFsError, isWalkError } from '../../../utils/errors.ts'
 import { respellRaw } from '../../../utils/path.ts'
+import { rstripSlash } from '../../../utils/slash.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
@@ -458,4 +459,42 @@ export async function rgGeneric(
   }
   const io = new IOResult({ exitCode: 1 })
   return [grepStream(stream(first), pat, streamOptionsOf(flags, io, opts.signal)), io]
+}
+
+// Ask for the filename a walk would have printed on its own. A content
+// search hands the generic explicit files where the user named a directory,
+// and the generic labels explicit operands only when there are several, so
+// -H is requested here; an explicit -I still wins, since forcing -H under it
+// would defeat the suppression in the delegated scan.
+export function labelled(opts: CommandOpts): CommandOpts {
+  if (new FlagView(opts.flags, specOf('rg')).asBool('args_I')) return opts
+  return { ...opts, flags: { ...opts.flags, H: true } }
+}
+
+// Reproduce rg's dotfile pruning for search-narrowed candidates: the walk
+// skips hidden files and never descends into hidden directories, but
+// explicit file operands bypass that pruning, so narrowed candidates are
+// filtered on every path segment below their (longest-matching) scope. A dot
+// in the scope's own spelling is the caller's choice and stays.
+export function visibleCandidates(
+  narrowed: PathSpec[],
+  scopes: readonly PathSpec[],
+  hidden: boolean,
+): PathSpec[] {
+  if (hidden) return narrowed
+  const kept: PathSpec[] = []
+  for (const p of narrowed) {
+    let rel = p.virtual
+    let best = -1
+    for (const scope of scopes) {
+      const base = rstripSlash(scope.virtual)
+      if (base.length > best && (p.virtual === base || p.virtual.startsWith(`${base}/`))) {
+        rel = p.virtual.slice(base.length)
+        best = base.length
+      }
+    }
+    if (rel.split('/').some((s) => s.startsWith('.'))) continue
+    kept.push(p)
+  }
+  return kept
 }

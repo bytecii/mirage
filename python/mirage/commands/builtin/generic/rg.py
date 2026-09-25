@@ -1,6 +1,6 @@
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 
 from mirage.cache.read_through import (cache_aware_bound_bytes,
@@ -483,3 +483,60 @@ async def _wrap_bytes(data: bytes) -> AsyncIterator[bytes]:
 
 
 __all__ = ["rg"]
+
+
+def labelled(opts: CommandOpts) -> CommandOpts:
+    """Ask for the filename a walk would have printed on its own.
+
+    A content search hands the generic explicit files where the user
+    named a directory, and the generic labels explicit operands only when
+    there are several, so ``-H`` is requested here; an explicit ``-I``
+    still wins, since forcing ``-H`` under it would defeat the suppression
+    in the delegated scan.
+
+    Args:
+        opts (CommandOpts): the narrowing wrapper's options.
+    """
+    flags = opts.flags or {}
+    if FlagView(flags, spec=SPECS["rg"]).as_bool("args_I"):
+        return opts
+    return replace(opts, flags={**flags, "H": True})
+
+
+def visible_candidates(
+    narrowed: list[PathSpec],
+    scopes: list[PathSpec],
+    hidden: bool,
+) -> list[PathSpec]:
+    """Reproduce rg's dotfile pruning for search-narrowed candidates.
+
+    The walk skips hidden files and never descends into hidden
+    directories, but explicit file operands bypass that pruning, so
+    narrowed candidates are filtered on every path segment below their
+    (longest-matching) scope. A dot in the scope's own spelling is the
+    caller's choice and stays.
+
+    Args:
+        narrowed (list[PathSpec]): search-narrowed candidate files.
+        scopes (list[PathSpec]): the original scope operands.
+        hidden (bool): True if --hidden is set (no pruning).
+
+    Returns:
+        list[PathSpec]: the candidates the walk would have visited.
+    """
+    if hidden:
+        return narrowed
+    kept: list[PathSpec] = []
+    for p in narrowed:
+        rel = p.virtual
+        best = -1
+        for scope in scopes:
+            base = scope.virtual.rstrip("/")
+            if len(base) > best and (p.virtual == base
+                                     or p.virtual.startswith(base + "/")):
+                rel = p.virtual[len(base):]
+                best = len(base)
+        if any(seg.startswith(".") for seg in rel.split("/") if seg):
+            continue
+        kept.append(p)
+    return kept

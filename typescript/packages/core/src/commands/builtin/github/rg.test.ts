@@ -12,43 +12,63 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-// Mirror of python/tests/commands/builtin/box/test_rg_search.py.
+// Mirror of the narrowed-run tests in
+// python/tests/commands/builtin/github/test_rg_search.py, at the seam
+// between narrowScope and the generic scan.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as RgModule from '../generic/rg.ts'
 
-vi.mock('./pushdown.ts', () => ({ narrowScope: vi.fn() }))
+vi.mock('./pushdown.ts', async () => {
+  const actual = await vi.importActual<typeof PushdownModule>('./pushdown.ts')
+  return { ...actual, narrowScope: vi.fn() }
+})
 vi.mock('../generic/rg.ts', async () => {
   const actual = await vi.importActual<typeof RgModule>('../generic/rg.ts')
   return { ...actual, rgGeneric: vi.fn() }
 })
 
-import { BoxAccessor } from '../../../accessor/box.ts'
-import type { BoxTokenManager } from '../../../core/box/client.ts'
+import { GitHubAccessor } from '../../../accessor/github.ts'
+import type { GitHubTransport } from '../../../core/github/client.ts'
 import { IOResult } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { rgGeneric } from '../generic/rg.ts'
+import type * as PushdownModule from './pushdown.ts'
 import { narrowScope } from './pushdown.ts'
-import { BOX_RG } from './rg.ts'
+import { GITHUB_RG } from './rg.ts'
 
-const STUB_TM = {} as BoxTokenManager
 const narrow = vi.mocked(narrowScope)
 const generic = vi.mocked(rgGeneric)
 
-function makeAccessor(): BoxAccessor {
-  return new BoxAccessor({ tokenManager: STUB_TM, contentSearch: true })
+function makeAccessor(): GitHubAccessor {
+  const transport: GitHubTransport = {
+    get(path: string): Promise<unknown> {
+      throw new Error(`unexpected transport call: ${path}`)
+    },
+    request(method: string, path: string): Promise<unknown> {
+      throw new Error(`unexpected transport call: ${method} ${path}`)
+    },
+  }
+  return new GitHubAccessor({
+    transport,
+    owner: 'o',
+    repo: 'r',
+    ref: 'main',
+    defaultBranch: 'main',
+    tree: {},
+  })
 }
 
 function scope(): PathSpec {
-  return new PathSpec({ virtual: '/data', directory: '/data', vfsPath: '' })
+  return new PathSpec({ virtual: '/src', directory: '/src', vfsPath: 'src' })
 }
 
 function spec(virtual: string): PathSpec {
   return new PathSpec({
     virtual,
     directory: '',
-    vfsPath: virtual.replace(/^\/data\//, ''),
+    vfsPath: virtual.replace(/^\//, ''),
     resolved: true,
   })
 }
@@ -56,71 +76,65 @@ function spec(virtual: string): PathSpec {
 async function runRg(
   flags: Record<string, string | boolean | number | string[]>,
 ): Promise<CommandFnResult> {
-  const cmd = BOX_RG[0]
+  const cmd = GITHUB_RG[0]
   if (cmd === undefined) throw new Error('rg not registered')
-  const opts: CommandOpts = {
-    stdin: null,
-    flags,
-    filetypeFns: null,
-    cwd: '/',
-  }
+  const opts: CommandOpts = { stdin: null, flags, filetypeFns: null, cwd: '/' }
   return cmd.fn(makeAccessor(), [scope()], ['needle'], opts)
 }
 
 beforeEach(() => {
   narrow.mockReset()
   generic.mockReset()
-  narrow.mockResolvedValue({ resolved: [], usedSearch: false })
+  narrow.mockResolvedValue({ resolved: [scope()], fileCount: 3, usedSearch: false })
   generic.mockResolvedValue([new Uint8Array(), new IOResult()])
 })
 
-describe('box rg push-down', () => {
-  it('allows narrowing for a plain rg', async () => {
-    await runRg({})
-    const opts = narrow.mock.calls[0]?.[3]
-    expect(opts?.recursive).toBe(true)
-    expect(opts?.exactFileSet).toBe(false)
-  })
-
-  it('forces the full walk for -v, --type, and --glob', async () => {
-    await runRg({ v: true })
-    expect(narrow.mock.calls[0]?.[3]?.exactFileSet).toBe(true)
-    await runRg({ type: 'py' })
-    expect(narrow.mock.calls[1]?.[3]?.exactFileSet).toBe(true)
-    await runRg({ glob: '*.py' })
-    expect(narrow.mock.calls[2]?.[3]?.exactFileSet).toBe(true)
-  })
-
+describe('github rg push-down', () => {
   it('forces filename labels for a narrowed run', async () => {
-    narrow.mockResolvedValue({ resolved: [spec('/data/a.txt')], usedSearch: true })
-    await runRg({})
+    // A walk labels every file it finds; one narrowed candidate arrives as
+    // a lone explicit operand, which the generic scan would print bare.
+    narrow.mockResolvedValue({ resolved: [spec('/src/a.py')], fileCount: 1, usedSearch: true })
+    await runRg({ w: true })
     expect(generic.mock.calls[0]?.[2]?.flags.H).toBe(true)
   })
 
   it('keeps -I suppression instead of forcing labels', async () => {
-    narrow.mockResolvedValue({ resolved: [spec('/data/a.txt')], usedSearch: true })
-    await runRg({ args_I: true })
+    narrow.mockResolvedValue({ resolved: [spec('/src/a.py')], fileCount: 1, usedSearch: true })
+    await runRg({ w: true, args_I: true })
     expect('H' in (generic.mock.calls[0]?.[2]?.flags ?? {})).toBe(false)
   })
 
   it('leaves flags alone on the walk fallback', async () => {
-    narrow.mockResolvedValue({ resolved: [scope()], usedSearch: false })
-    await runRg({})
+    await runRg({ w: true })
     expect('H' in (generic.mock.calls[0]?.[2]?.flags ?? {})).toBe(false)
   })
 
   it('prunes hidden candidates', async () => {
     narrow.mockResolvedValue({
-      resolved: [spec('/data/.env'), spec('/data/a.txt')],
+      resolved: [spec('/src/.env'), spec('/src/.github/ci.yml'), spec('/src/a.py')],
+      fileCount: 3,
       usedSearch: true,
     })
-    await runRg({})
-    expect((generic.mock.calls[0]?.[0] ?? []).map((p) => p.virtual)).toEqual(['/data/a.txt'])
+    await runRg({ w: true })
+    expect((generic.mock.calls[0]?.[0] ?? []).map((p) => p.virtual)).toEqual(['/src/a.py'])
+  })
+
+  it('keeps hidden candidates under --hidden', async () => {
+    narrow.mockResolvedValue({
+      resolved: [spec('/src/.env'), spec('/src/a.py')],
+      fileCount: 2,
+      usedSearch: true,
+    })
+    await runRg({ w: true, hidden: true })
+    expect((generic.mock.calls[0]?.[0] ?? []).map((p) => p.virtual)).toEqual([
+      '/src/.env',
+      '/src/a.py',
+    ])
   })
 
   it('exits 1 when every narrowed candidate is hidden', async () => {
-    narrow.mockResolvedValue({ resolved: [spec('/data/.env')], usedSearch: true })
-    const result = await runRg({})
+    narrow.mockResolvedValue({ resolved: [spec('/src/.env')], fileCount: 1, usedSearch: true })
+    const result = await runRg({ w: true })
     expect(result).not.toBeNull()
     const [out, io] = result as [Uint8Array, IOResult]
     expect(out).toEqual(new Uint8Array())

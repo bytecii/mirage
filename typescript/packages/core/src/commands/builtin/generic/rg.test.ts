@@ -16,7 +16,7 @@ import { describe, expect, it } from 'vitest'
 import { materialize, type ByteSource, type IOResult } from '../../../io/types.ts'
 import { FileStat, FileType, PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
-import { rgGeneric } from './rg.ts'
+import { labelled, rgGeneric, visibleCandidates } from './rg.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
@@ -166,5 +166,74 @@ describe('rgGeneric - operand', () => {
       '/dev/stdin:world\n/a.txt:world\n',
       0,
     ])
+  })
+})
+
+// Twins of the visible_candidates and labelled tests in
+// python/tests/commands/builtin/generic/test_rg.py: the pruning and the
+// label every search-narrowed rg (GitHub, Dropbox, Box) applies.
+function narrowedSpec(virtual: string): PathSpec {
+  return new PathSpec({
+    virtual,
+    directory: '',
+    vfsPath: virtual.replace(/^\/data\//, ''),
+    resolved: true,
+  })
+}
+
+function dataScope(): PathSpec {
+  return new PathSpec({ virtual: '/data', directory: '/data', vfsPath: '' })
+}
+
+describe('visibleCandidates', () => {
+  it('drops dotfiles below the scope', () => {
+    const kept = visibleCandidates(
+      [narrowedSpec('/data/.env'), narrowedSpec('/data/.git/config'), narrowedSpec('/data/a.txt')],
+      [dataScope()],
+      false,
+    )
+    expect(kept.map((p) => p.virtual)).toEqual(['/data/a.txt'])
+  })
+
+  it('keeps everything under --hidden', () => {
+    const paths = [narrowedSpec('/data/.env'), narrowedSpec('/data/a.txt')]
+    expect(visibleCandidates(paths, [dataScope()], true)).toEqual(paths)
+  })
+
+  it('ignores dots in the scope itself', () => {
+    const hiddenScope = new PathSpec({
+      virtual: '/data/.cfg',
+      directory: '/data/.cfg',
+      vfsPath: '.cfg',
+    })
+    const kept = visibleCandidates([narrowedSpec('/data/.cfg/a.txt')], [hiddenScope], false)
+    expect(kept.map((p) => p.virtual)).toEqual(['/data/.cfg/a.txt'])
+  })
+
+  it('prunes below the longest matching scope', () => {
+    // /data/.cfg was named, so its dot is not hidden; a dotfile under it is.
+    const scopes = [
+      dataScope(),
+      new PathSpec({ virtual: '/data/.cfg', directory: '/data', vfsPath: '.cfg' }),
+    ]
+    const kept = visibleCandidates(
+      [narrowedSpec('/data/.cfg/a.txt'), narrowedSpec('/data/.cfg/.secret')],
+      scopes,
+      false,
+    )
+    expect(kept.map((p) => p.virtual)).toEqual(['/data/.cfg/a.txt'])
+  })
+})
+
+describe('labelled', () => {
+  const base: CommandOpts = { stdin: null, flags: {}, filetypeFns: null, cwd: '/' }
+
+  it('asks for the filename a walk would have printed', () => {
+    expect(labelled(base).flags).toEqual({ H: true })
+  })
+
+  it('lets -I win', () => {
+    const opts = { ...base, flags: { args_I: true } }
+    expect(labelled(opts)).toBe(opts)
   })
 })

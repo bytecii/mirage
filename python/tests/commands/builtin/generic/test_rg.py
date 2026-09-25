@@ -1,6 +1,7 @@
 import pytest
 
-from mirage.commands.builtin.generic.rg import parse_flags, rg
+from mirage.commands.builtin.generic.rg import (labelled, parse_flags, rg,
+                                                visible_candidates)
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec.flag_view import FlagView
 from mirage.types import ContentType, FileStat, FileType, PathSpec
@@ -975,3 +976,63 @@ async def test_rg_dash_stops_reading_at_max_count(flags, paths, want):
                          _pipe_that_goes_on(b"a\nb\nc\n"),
                          {"/a.txt": b"hello\nworld\n"})
     assert (out, io.exit_code) == (want, 0)
+
+
+# The pruning and the label every search-narrowed rg (GitHub, Dropbox, Box)
+# applies; the TypeScript twins sit in generic/rg.test.ts.
+def _narrowed(virtual: str) -> PathSpec:
+    return PathSpec(vfs_path=virtual.removeprefix("/data/"),
+                    virtual=virtual,
+                    directory="",
+                    resolved=True)
+
+
+def _data_scope() -> PathSpec:
+    return PathSpec(vfs_path="", virtual="/data", directory="/data")
+
+
+def test_visible_candidates_drops_dotfiles_below_the_scope():
+    kept = visible_candidates([
+        _narrowed("/data/.env"),
+        _narrowed("/data/.git/config"),
+        _narrowed("/data/a.txt")
+    ], [_data_scope()],
+                              hidden=False)
+    assert [p.virtual for p in kept] == ["/data/a.txt"]
+
+
+def test_visible_candidates_hidden_flag_keeps_everything():
+    paths = [_narrowed("/data/.env"), _narrowed("/data/a.txt")]
+    assert visible_candidates(paths, [_data_scope()], hidden=True) == paths
+
+
+def test_visible_candidates_ignores_dots_in_the_scope_itself():
+    hidden_scope = PathSpec(vfs_path=".cfg",
+                            virtual="/data/.cfg",
+                            directory="/data/.cfg")
+    kept = visible_candidates([_narrowed("/data/.cfg/a.txt")], [hidden_scope],
+                              hidden=False)
+    assert [p.virtual for p in kept] == ["/data/.cfg/a.txt"]
+
+
+def test_visible_candidates_prunes_below_the_longest_matching_scope():
+    # /data/.cfg was named, so its dot is not hidden; a dotfile under it is.
+    scopes = [
+        _data_scope(),
+        PathSpec(vfs_path=".cfg", virtual="/data/.cfg", directory="/data"),
+    ]
+    kept = visible_candidates(
+        [_narrowed("/data/.cfg/a.txt"),
+         _narrowed("/data/.cfg/.secret")],
+        scopes,
+        hidden=False)
+    assert [p.virtual for p in kept] == ["/data/.cfg/a.txt"]
+
+
+def test_labelled_asks_for_the_filename_a_walk_would_have_printed():
+    assert labelled(CommandOpts(flags={})).flags == {"H": True}
+
+
+def test_labelled_lets_dash_upper_i_win():
+    opts = CommandOpts(flags={"args_I": True})
+    assert labelled(opts) is opts

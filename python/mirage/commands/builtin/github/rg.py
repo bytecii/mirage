@@ -13,8 +13,9 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.github import GitHubAccessor
-from mirage.commands.builtin.generic.rg import RG_NO_PATTERN
+from mirage.commands.builtin.generic.rg import RG_NO_PATTERN, labelled
 from mirage.commands.builtin.generic.rg import rg as generic_rg
+from mirage.commands.builtin.generic.rg import visible_candidates
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.github.pushdown import narrow_scope, scope_refusal
 from mirage.commands.builtin.grep_pattern import pattern_arg
@@ -39,8 +40,9 @@ async def rg(accessor: GitHubAccessor, paths: list[PathSpec], texts: list[str],
     if pattern_str is None:
         raise UsageError(RG_NO_PATTERN)
 
+    run_opts = opts
     if paths:
-        paths, file_count, used_search = await narrow_scope(
+        narrowed, file_count, used_search = await narrow_scope(
             accessor,
             opts.index,
             paths,
@@ -49,18 +51,25 @@ async def rg(accessor: GitHubAccessor, paths: list[PathSpec], texts: list[str],
             recursive=True,
             whole_word=fl.as_bool("w"),
         )
-        if used_search and not paths:
-            return b"", IOResult(exit_code=1)
+        if used_search:
+            # The walk a narrowing stands in for prunes hidden entries and
+            # labels every file it finds.
+            narrowed = visible_candidates(narrowed, paths,
+                                          fl.as_bool("hidden"))
+            if not narrowed:
+                return b"", IOResult(exit_code=1)
+            run_opts = labelled(opts)
         if file_count > SCOPE_ERROR:
             # A scope this large with no trusted narrowing is refused rather
             # than scanned blob by blob.
             msg = scope_refusal("rg", file_count, fl.as_bool("w"))
             return b"", IOResult(exit_code=1, stderr=msg.encode())
+        paths = narrowed
 
     return await generic_rg(
         paths,
         texts,
-        opts,
+        run_opts,
         readdir=bound_op(_readdir, accessor, opts.index),
         stat=bound_op(_stat, accessor, opts.index),
         read_bytes=bound_op(github_read, accessor, opts.index),
