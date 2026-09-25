@@ -128,7 +128,10 @@ export async function handlePipe(
     throw error
   } finally {
     parentSignal?.removeEventListener('abort', onAbort)
-    abort.abort()
+    // Completed segments may leave cache streams for background drains.
+    // Python only cancels unfinished tasks here; aborting a successful
+    // pipeline would also cancel those streams after ownership passed on.
+    if (failed) abort.abort()
     for (const pipe of pipes) pipe.closeReader()
     const settled = Promise.allSettled(tasks)
     if (!failed) await settled

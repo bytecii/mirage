@@ -341,23 +341,27 @@ it('keeps a cache read drainable after a normal early pipeline exit', async () =
   const { CachableAsyncIterator } = await import('../../io/cachable_iterator.ts')
   const { asyncChain } = await import('../../io/stream.ts')
   let closed = false
+  let readSignal: AbortSignal | null = null
   async function* source() {
     await Promise.resolve()
     try {
       yield encode('first')
       yield encode('rest')
+      readSignal?.throwIfAborted()
     } finally {
       closed = true
     }
   }
   const input = new CachableAsyncIterator(source())
-  const execute: ExecuteNodeFn = async (nd, _session, stdin) => {
-    if (nd.text === 'cat')
+  const execute: ExecuteNodeFn = async (nd, child, stdin) => {
+    if (nd.text === 'cat') {
+      readSignal = child.abortSignal
       return [
         asyncChain(input),
         new IOResult({ reads: { '/remote': input }, cache: ['/remote'] }),
         new ExecutionNode({ command: 'cat' }),
       ]
+    }
     if (stdin === null || stdin instanceof Uint8Array) throw new Error('expected stream')
     await stdin[Symbol.asyncIterator]().next()
     return [encode('first'), new IOResult(), new ExecutionNode({ command: 'head' })]
