@@ -136,9 +136,6 @@ class HfHubAccessor(SessionAccessor):
         # `tree` clears it.
         self.rows_cache: tuple[str, dict[str, IndexEntry],
                                dict[str, list[str]]] | None = None
-        # How many times an index has been refilled from the Hub. A lookup
-        # that misses while this moved knows a clear and a reseed ran under
-        # it, so its miss says nothing about the path.
         self.refills: int = 0
 
     @property
