@@ -23,6 +23,7 @@ import { command, type CommandFnResult, type CommandOpts } from '../../config.ts
 import { specOf } from '../../spec/builtins.ts'
 import { patternArg } from '../grep_pattern.ts'
 import { rgGeneric } from '../generic/rg.ts'
+import { walkCandidates } from '../rg_scan.ts'
 import { narrowScope, scopeRefusal } from './pushdown.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 
@@ -66,6 +67,18 @@ async function rgCommand(
           stderr: ENC.encode(scopeRefusal('rg', narrowed.fileCount, fl.asBool('w'))),
         }),
       ]
+    }
+    if (narrowed.usedSearch) {
+      // The candidates stand in for the walk, so they pass its filters; none
+      // left means nothing matched, not a stdin run.
+      resolved = walkCandidates(
+        resolved,
+        paths,
+        fl.asStr('type') ?? null,
+        fl.asStr('glob') ?? null,
+        fl.asBool('hidden'),
+      )
+      if (resolved.length === 0) return [new Uint8Array(), new IOResult({ exitCode: 1 })]
     }
   }
   const stat = (p: PathSpec): Promise<FileStat> => githubStat(accessor, p, opts.index ?? undefined)

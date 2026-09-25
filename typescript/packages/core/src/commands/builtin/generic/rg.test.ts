@@ -21,7 +21,12 @@ import { rgGeneric } from './rg.ts'
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
 
-const FILES: Record<string, string> = { '/a.txt': 'hello\nworld\n' }
+const FILES: Record<string, string> = {
+  '/a.txt': 'hello\nworld\n',
+  '/b.txt': 'hello\nworld\nfoo\nbar\nbaz\n',
+  '/sub/nested.txt': 'nested\ncontent\n',
+}
+const DIRS = new Set(['/sub'])
 
 function spec(path: string): PathSpec {
   return new PathSpec({ virtual: path, directory: path, resolved: true, vfsPath: path.slice(1) })
@@ -40,13 +45,19 @@ function stdinOperand(raw = '-'): PathSpec {
   })
 }
 
-const stat = (p: PathSpec): Promise<FileStat> =>
-  FILES[p.virtual] === undefined
+const stat = (p: PathSpec): Promise<FileStat> => {
+  if (DIRS.has(p.virtual)) {
+    return Promise.resolve(new FileStat({ name: p.virtual.slice(1), type: FileType.DIRECTORY }))
+  }
+  return FILES[p.virtual] === undefined
     ? Promise.reject(new Error(`ENOENT: ${p.virtual}`))
     : Promise.resolve(new FileStat({ name: p.virtual.slice(1), type: FileType.FILE }))
+}
 
 const readdir = (p: PathSpec): Promise<string[]> =>
-  Promise.reject(new Error(`ENOTDIR: ${p.virtual}`))
+  DIRS.has(p.virtual)
+    ? Promise.resolve(Object.keys(FILES).filter((f) => f.startsWith(`${p.virtual}/`)))
+    : Promise.reject(new Error(`ENOTDIR: ${p.virtual}`))
 
 async function* stream(p: PathSpec): AsyncIterable<Uint8Array> {
   await Promise.resolve()
@@ -59,7 +70,7 @@ async function run(
   paths: PathSpec[],
   pattern: string,
   flags: Record<string, string | boolean | number | string[]>,
-  stdin: ByteSource,
+  stdin: ByteSource | null,
 ): Promise<[string, number]> {
   const opts = { stdin, flags, filetypeFns: null, cwd: '/' } as unknown as CommandOpts
   const [out, io] = (await rgGeneric(paths, [pattern], opts, stat, readdir, stream)) as [
@@ -164,6 +175,74 @@ describe('rgGeneric - operand', () => {
     const paths = [stdinOperand('/dev/stdin'), spec('/a.txt')]
     expect(await run(paths, 'world', {}, ENC.encode('world\n'))).toEqual([
       '/dev/stdin:world\n/a.txt:world\n',
+      0,
+    ])
+  })
+})
+
+describe('rgGeneric - no operand', () => {
+  it.each([
+    [{ args_l: true }, 'b\n', ['<stdin>\n', 0]],
+    [{ H: true }, 'b\n', ['<stdin>:b\n', 0]],
+    [{ H: true, c: true }, 'b\n', ['<stdin>:1\n', 0]],
+    [{ C: '1' }, 'a\nb\nc\n', ['a\nb\nc\n', 0]],
+    [{ type: 'rust' }, 'b\n', ['b\n', 0]],
+    [{ args_l: true, m: '0' }, 'b\n', ['', 1]],
+  ])('searches stdin as an implicit `-`: %j', async (flags, data, want) => {
+    // ripgrep 14.1.1 searches a piped stdin as an implicit `-` when the line
+    // names no path, so every flag answers as it does for a typed one:
+    // `printf 'b\n' | rg -l b` prints `<stdin>`.
+    expect(await run([], 'b', flags, ENC.encode(data))).toEqual(want)
+  })
+
+  it.each([
+    [{ args_l: true }, '<stdin>\n'],
+    [{ m: '1', C: '1' }, 'a\nb\nc\n'],
+    [{ m: '1', H: true }, '<stdin>:b\n'],
+  ])('stops reading at the answer: %j', async (flags, want) => {
+    expect(await run([], 'b', flags, pipeThatGoesOn('a\nb\nc\n'))).toEqual([want, 0])
+  })
+})
+
+describe('rgGeneric - labelled context', () => {
+  it.each([
+    [{ A: '1' }, ['/b.txt', '/b.txt'], '/b.txt:world\n/b.txt-foo\n--\n/b.txt:world\n/b.txt-foo\n'],
+    [{ H: true, n: true, C: '1' }, ['/b.txt'], '/b.txt-1-hello\n/b.txt:2:world\n/b.txt-3-foo\n'],
+    [{ args_I: true, A: '1' }, ['/b.txt', '/b.txt'], 'world\nfoo\n--\nworld\nfoo\n'],
+  ])('prints context under labels: %j %j', async (flags, paths, want) => {
+    // ripgrep 14.1.1 leads a context line with `name-` and a match with
+    // `name:`, and puts `--` between one file's context and the next file's,
+    // labelled or not.
+    expect(await run(paths.map(spec), 'world', flags, null)).toEqual([want, 0])
+  })
+
+  it('prints stdin context beside a file', async () => {
+    // `printf 'a\nb\nc\n' | rg -C1 b - b.txt` on ripgrep 14.1.1.
+    const paths = [stdinOperand(), spec('/b.txt')]
+    expect(await run(paths, 'b', { C: '1' }, ENC.encode('a\nb\nc\n'))).toEqual([
+      '<stdin>-a\n<stdin>:b\n<stdin>-c\n--\n/b.txt-foo\n/b.txt:bar\n/b.txt:baz\n',
+      0,
+    ])
+  })
+
+  it.each([
+    [{}, '/sub/nested.txt:content\n'],
+    [{ c: true }, '/sub/nested.txt:1\n'],
+  ])('walks a directory named after a file: %j', async (flags, want) => {
+    // `rg content b.txt sub` on ripgrep 14.1.1. Only the first operand was
+    // probed, so a later directory was read as a file and reported.
+    expect(await run([spec('/b.txt'), spec('/sub')], 'content', flags, null)).toEqual([want, 0])
+  })
+
+  it.each([
+    [['/b.txt'], null],
+    [[], ENC.encode('hello\nworld\nfoo\nbar\nbaz\n')],
+  ])('prints a selected line past -m as selected: %j', async (paths, stdin) => {
+    // `rg -n -m1 -A1 o b.txt` prints `2:world` on ripgrep 14.1.1, where GNU
+    // grep prints `2-world`: past -m, a trailing line that would be selected
+    // still prints as selected.
+    expect(await run(paths.map(spec), 'o', { n: true, m: '1', A: '1' }, stdin)).toEqual([
+      '1:hello\n2:world\n',
       0,
     ])
   })

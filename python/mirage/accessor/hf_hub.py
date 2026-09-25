@@ -136,6 +136,7 @@ class HfHubAccessor(SessionAccessor):
         # `tree` clears it.
         self.rows_cache: tuple[str, dict[str, IndexEntry],
                                dict[str, list[str]]] | None = None
+        self.refills: int = 0
 
     @property
     def repo_type(self) -> str:

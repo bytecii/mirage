@@ -704,6 +704,37 @@ def selftest_plan_run() -> None:
         f"{proc.stderr[-200:]}")
 
 
+# A consistency case whose target cannot build a shadow workspace used to be
+# skipped with one stderr line and exit 0 on the typescript host only; python
+# has no skip arm. The seam is probed directly because no committed case/target
+# pair lacks a shadow any more, which is exactly when a regression would hide.
+NO_SHADOW_PROBE = (
+    "import('./runners/typescript/harness.ts').then(async (m) => {\n"
+    "  const c = { id: 'probe', targets: ['t'], read: 'fresh', scenario: [],\n"
+    "    expect: { exit: 0, stdout: '', stderr: '' } }\n"
+    "  const t = { id: 't', hosts: [], mounts: [{ path: '/', vfs: 'ram' }] }\n"
+    "  const run = await m.runConsistencyCase(async () => null, c, t)\n"
+    "  const diffs = m.compare(c, run.exitCode, run.out, run.stderr, 0)\n"
+    "  console.log(`${String(diffs.length > 0)}|${run.stderr.trim()}`)\n"
+    "})\n")
+
+
+def selftest_no_shadow_fails() -> None:
+    """A consistency case with no shadow workspace is a recorded failure.
+
+    Args:
+        None: probes the typescript harness directly.
+    """
+    proc = subprocess.run([str(TSX), "--eval", NO_SHADOW_PROBE],
+                          capture_output=True,
+                          text=True,
+                          cwd=ROOT)
+    failed, _, line = proc.stdout.strip().partition("|")
+    check("consistency (ts): a target with no shadow workspace fails the case",
+          failed == "true" and "no shadow workspace" in line,
+          f"got {proc.stdout.strip()!r} {proc.stderr[-200:]}")
+
+
 def selftest_typescript_gates(require: bool) -> None:
     """The same two exits on the typescript host, so the gate is symmetric.
 
@@ -739,6 +770,7 @@ def selftest_typescript_gates(require: bool) -> None:
           f"exit {code}: {err}")
     selftest_run_ids()
     selftest_plan_run()
+    selftest_no_shadow_fails()
 
     code, err = run_typescript(["--target", "ram", "--target-jobs=0"], {})
     check("--target-jobs=0 is refused (ts)", code == 2, f"exit {code}: {err}")

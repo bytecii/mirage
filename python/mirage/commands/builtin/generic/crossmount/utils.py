@@ -16,8 +16,17 @@ import dataclasses
 import functools
 from typing import Any
 
-from mirage.commands.builtin.generic.crossmount.types import (OperandRun,
+from mirage.commands.builtin.generic.crossmount.types import (Cmd, OperandRun,
                                                               RunSingle)
+from mirage.commands.builtin.generic.grep import \
+    parse_flags as parse_grep_flags
+from mirage.commands.builtin.generic.grep import \
+    prints_context as grep_prints_context
+from mirage.commands.builtin.generic.rg import parse_flags as parse_rg_flags
+from mirage.commands.builtin.generic.rg import \
+    prints_context as rg_prints_context
+from mirage.commands.spec import SPECS
+from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.commands.spec.usage import read_fail_exit
 from mirage.io import IOResult
@@ -116,6 +125,25 @@ async def merge_operand_ios(results: list[OperandRun],
     io.matched_runs = ([r for run_rows in known for r in run_rows]
                        if len(known) == len(runs) else None)
     return io
+
+
+def context_separated(cmd_name: str, flags: dict[str, FlagValue]) -> bool:
+    """Whether one run's grep or rg output is set off from the next by ``--``.
+
+    Both print the separator between one file's context and the next
+    file's, so the runs a line splits into join the way one run would.
+
+    Args:
+        cmd_name (str): the command the runs ran.
+        flags (dict[str, FlagValue]): its flags.
+    """
+    if cmd_name == Cmd.RG:
+        fl = FlagView(flags, spec=SPECS[Cmd.RG])
+        return rg_prints_context(parse_rg_flags(fl, never_match=False))
+    if cmd_name == Cmd.GREP:
+        fl = FlagView(flags, spec=SPECS[Cmd.GREP])
+        return grep_prints_context(parse_grep_flags(fl, never_match=False))
+    return False
 
 
 def flat_scopes(scopes: list[PathSpec]) -> list[PathSpec]:

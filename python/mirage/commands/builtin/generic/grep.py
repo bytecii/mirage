@@ -164,6 +164,20 @@ def parse_flags(fl: FlagView, never_match: bool) -> GrepFlags:
     )
 
 
+def prints_context(f: GrepFlags) -> bool:
+    """Whether grep's output shows -A/-B/-C context.
+
+    Only printed lines carry it: -c, -l, -L and -q print none, and -o
+    drops it.
+
+    Args:
+        f (GrepFlags): the parsed flags.
+    """
+    if f.count_only or f.files_only or f.files_without_match or f.quiet:
+        return False
+    return bool(f.after_context or f.before_context) and not f.only_matching
+
+
 async def grep(
     paths: list[PathSpec],
     texts: Sequence[str],

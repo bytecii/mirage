@@ -758,3 +758,27 @@ def test_synthesize_honors_the_time_window():
     stats.clear()
     assert _shown_mount_entries("/", mounts, ["-newermt", "2020-01-01"], "/",
                                 stat_path) == ""
+
+
+def _context_workspace() -> Workspace:
+    parent = RAMVFS()
+    parent._store.files["/top.txt"] = b"x\nhit\ny\n"
+    parent._store.dirs.add("/inner")
+    child = RAMVFS()
+    child._store.files["/real.txt"] = b"hit\nz\n"
+    return Workspace(
+        mounts={
+            "/base/": (parent, MountMode.EXEC),
+            "/base/inner/": (child, MountMode.EXEC),
+        })
+
+
+@pytest.mark.parametrize("line", ["rg -A1 hit /base", "grep -r -A1 hit /base"])
+def test_context_across_a_nested_mount_is_separated(line):
+    """A walk into a nested mount sets each file's context off with `--`,
+    as one run does: ripgrep 14.1.1 and GNU grep 3.11 both separate one
+    file's context from the next file's."""
+    io = asyncio.run(_context_workspace().shell(line))
+    assert _stdout(io) == ("/base/top.txt:hit\n/base/top.txt-y\n--\n"
+                           "/base/inner/real.txt:hit\n"
+                           "/base/inner/real.txt-z\n")

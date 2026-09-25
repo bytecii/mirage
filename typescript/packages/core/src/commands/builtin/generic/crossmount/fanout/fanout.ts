@@ -19,7 +19,7 @@ import { combinedExit } from './exit.ts'
 import { duTotal } from './du.ts'
 import { combineWc } from './wc.ts'
 import { Cmd, type CrossResult, type OperandRun, type RunSingle } from '../types.ts'
-import { mergeOperandIos, runOperands } from '../utils.ts'
+import { contextSeparated, mergeOperandIos, runOperands } from '../utils.ts'
 import { FlagView } from '../../../../spec/flag_view.ts'
 import { type FlagValue } from '../../../../spec/types.ts'
 import { specOf } from '../../../../spec/builtins.ts'
@@ -38,9 +38,9 @@ function concatRuns(results: OperandRun[]): Uint8Array {
   return out
 }
 
-function joinRunsWithBlankLine(results: OperandRun[]): Uint8Array {
+function joinRuns(results: OperandRun[], separator: string): Uint8Array {
   const parts = results.map((r) => r.data).filter((d) => d.byteLength > 0)
-  const sep = ENC.encode('\n')
+  const sep = ENC.encode(separator)
   const size =
     parts.reduce((n, d) => n + d.byteLength, 0) + sep.byteLength * Math.max(0, parts.length - 1)
   const out = new Uint8Array(size)
@@ -132,7 +132,11 @@ export async function runFanout(
   ) {
     // Blank line between per-operand blocks, like one native run separates
     // its own file blocks.
-    body = joinRunsWithBlankLine(results)
+    body = joinRuns(results, '\n')
+  } else if (contextSeparated(cmdName, flags)) {
+    // grep and ripgrep put `--` between one file's context and the next
+    // file's, as one native run separates its own files.
+    body = joinRuns(results, '--\n')
   } else {
     body = concatRuns(results)
   }

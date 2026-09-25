@@ -22,37 +22,9 @@ import { command, type CommandFnResult, type CommandOpts } from '../../config.ts
 import { specOf } from '../../spec/builtins.ts'
 import { patternArg } from '../grep_pattern.ts'
 import { rgGeneric } from '../generic/rg.ts'
+import { walkCandidates } from '../rg_scan.ts'
 import { narrowScope } from './pushdown.ts'
 import { FlagView } from '../../spec/flag_view.ts'
-
-// Reproduce rg's dotfile pruning for search-narrowed candidates: the
-// generic rg walk skips hidden files and never descends into hidden
-// directories, but explicit file operands bypass that pruning, so narrowed
-// candidates are filtered on every path segment below their
-// (longest-matching) scope.
-export function keepVisible(
-  narrowed: PathSpec[],
-  scopes: readonly PathSpec[],
-  hidden: boolean,
-): PathSpec[] {
-  if (hidden) return narrowed
-  const kept: PathSpec[] = []
-  for (const p of narrowed) {
-    let rel = p.virtual
-    let best = -1
-    for (const scope of scopes) {
-      const base = scope.virtual.replace(/\/+$/, '')
-      if (base.length > best && (p.virtual === base || p.virtual.startsWith(base + '/'))) {
-        rel = p.virtual.slice(base.length)
-        best = base.length
-      }
-    }
-    const segments = rel.split('/').filter((s) => s !== '')
-    if (segments.some((s) => s.startsWith('.'))) continue
-    kept.push(p)
-  }
-  return kept
-}
 
 async function rgCommand(
   accessor: DropboxAccessor,
@@ -77,7 +49,13 @@ async function rgCommand(
       ...(opts.index !== null ? { index: opts.index } : {}),
     })
     if (narrowed.usedSearch) {
-      const visible = keepVisible(narrowed.resolved, paths, fl.asBool('hidden'))
+      const visible = walkCandidates(
+        narrowed.resolved,
+        paths,
+        fl.asStr('type') ?? null,
+        fl.asStr('glob') ?? null,
+        fl.asBool('hidden'),
+      )
       if (visible.length === 0) return [new Uint8Array(), new IOResult({ exitCode: 1 })]
       resolved = visible
       // ripgrep labels every file a walk finds; narrowed candidates

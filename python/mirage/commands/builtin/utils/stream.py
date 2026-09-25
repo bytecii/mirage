@@ -107,8 +107,22 @@ def operand_label(path: PathSpec, stdin_name: str) -> str:
 
 
 def stdin_stream(
-        read: PolymorphicReadFn, stdin: ByteSource | None
+    read: PolymorphicReadFn,
+    stdin: ByteSource | None,
+    sole: bool = False,
 ) -> Callable[[PathSpec], AsyncIterator[bytes]]:
+    """Read each operand from its backend, or from stdin for a stdin one.
+
+    Every stdin operand shares one cursor, so a later ``-`` never replays
+    bytes an earlier one read, and the cursor never closes the input a
+    later one may still read.
+
+    Args:
+        read (PolymorphicReadFn): the backend reader.
+        stdin (ByteSource | None): the invocation's input.
+        sole (bool): stdin has exactly one reader, which takes the input
+            itself, so a scan that stops early closes it.
+    """
     backend = normalized_read(read)
     source = resolve_source(stdin)
 
@@ -119,7 +133,9 @@ def stdin_stream(
     def stream(path: PathSpec) -> AsyncIterator[bytes]:
         # Bind the backend stream while its mount cache context is active.
         # Byte consumption stays lazy; only stdin needs a shared cursor.
-        return input_stream() if is_stdin(path) else backend(path)
+        if not is_stdin(path):
+            return backend(path)
+        return source if sole else input_stream()
 
     return stream
 

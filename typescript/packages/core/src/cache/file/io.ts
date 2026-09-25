@@ -57,6 +57,18 @@ function latestFingerprint(
   if (records === undefined) return null
   for (let i = records.length - 1; i >= 0; i--) {
     const rec = records[i]
+    if (
+      rec !== undefined &&
+      READ_FINGERPRINT_OPS.has(rec.op) &&
+      ops.has(rec.op) &&
+      rec.path === path &&
+      !rec.fingerprint
+    ) {
+      // The newest read is the one whose bytes are stored, and the backend did
+      // not vouch for them: an older read's token would label bytes it never
+      // described, which a later revert to that token serves as fresh.
+      return null
+    }
     if (rec !== undefined && ops.has(rec.op) && rec.path === path && rec.fingerprint) {
       if (WRITE_FINGERPRINT_OPS.has(rec.op) && rec.bytes !== nbytes) {
         // Direction is not identity: a line can hold several ops for one

@@ -34,6 +34,9 @@ import { type FileStat, MountMode, PathSpec } from '@struktoai/mirage-core/types
 import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
 import { Mount } from '@struktoai/mirage-core/workspace/mount/spec'
 import type { GridFSAccessor } from '../accessor/gridfs.ts'
+import type { HfHubAccessor } from '../accessor/hf_hub.ts'
+import { HF_HUB_IO } from '../commands/builtin/hf_hub/io.ts'
+import { FakeHub, blobOid, serveHub, xetHash } from '../core/hf_hub/_test_util.ts'
 import { GRIDFS_IO } from '../commands/builtin/gridfs/io.ts'
 import { Workspace } from '../workspace.ts'
 import { buildVfs, knownVfsNames } from './registry.ts'
@@ -77,6 +80,9 @@ const H = vi.hoisted(() => ({
   gridfs: new Map<string, GridFSDoc>(),
   opened: 0,
   reach: [] as string[],
+  // Replaces the token a read records, to stage a backend stamping a token of
+  // another kind than its stat's.
+  stampOverride: null as string | null,
 }))
 
 // One seam for both contracts. A spies on which read slot recorded, and
@@ -114,6 +120,8 @@ vi.mock('@struktoai/mirage-core/observe/context', async (importOriginal) => {
       options: ContextModule.RecordOptions = {},
     ): void => {
       if (op === 'read') H.slots.push(['bytes', path])
+      if (op === 'read' && H.stampOverride !== null)
+        options = { ...options, fingerprint: H.stampOverride }
       if (!H.unrecorded) {
         actual.record(op, path, source, nbytes, timer, options)
         return
@@ -274,9 +282,16 @@ const S3_FAMILY = [
   'wasabi',
 ]
 
-const HARNESSES: Record<string, 's3' | 'gridfs'> = {
+const HF_FAMILY: Record<string, string> = {
+  hf_models: 'models',
+  hf_datasets: 'datasets',
+  hf_spaces: 'spaces',
+}
+
+const HARNESSES: Record<string, 's3' | 'gridfs' | 'hf_models'> = {
   ...Object.fromEntries(S3_FAMILY.map((name) => [name, 's3' as const])),
   gridfs: 'gridfs',
+  ...Object.fromEntries(Object.keys(HF_FAMILY).map((name) => [name, 'hf_models' as const])),
 }
 
 // One document per family, identical in the python twin. oci is the one
@@ -355,11 +370,60 @@ function md5Hex(data: Uint8Array): string {
 }
 
 let s3: S3Mock
+let hubs: FakeHub[] = []
 
 async function makeFake(name: string, shape: Shape, data: Uint8Array): Promise<Fake> {
   const key = KEYS[shape]
   const prefix = shape === 'prefixed' ? PREFIX : null
   const stored = (prefix ?? '') + key
+  if (HARNESSES[name] === 'hf_models') {
+    // Files are served Xet-shaped, so the download's ETag is the xet hash, not
+    // the oid stat stamps: a read that trusted only the oid would stamp
+    // nothing. The repo is filed under the family's own API segment, so a
+    // request built for another repo type gets no answer.
+    const hub = await serveHub(new FakeHub())
+    hubs.push(hub)
+    const files = hub.files(HF_FAMILY[name], 'acme/widget')
+    files.set(stored, data)
+    if (prefix !== null) files.set(key, DECOY)
+    const vfs = await buildVfs(name, {
+      repo_id: 'acme/widget',
+      endpoint: hub.url,
+      ...(prefix === null ? {} : { key_prefix: prefix }),
+    })
+    const accessor = vfs.accessor as HfHubAccessor
+    expect(readRevalidatable(vfs)).toBe(true)
+    expect(accessor.keyPrefix).toBe(prefix ?? '')
+    // A whole-tree refill is the one thing that invalidates a store's prefix.
+    // On the mount's own index a cold read does it legitimately; on any other
+    // store it is the reconcile probe walking the tree.
+    // The original, taken before the spy replaces it and typed with its `this`,
+    // so the spy can forward to it for every store.
+    const invalidate = Object.getOwnPropertyDescriptor(
+      RAMIndexCacheStore.prototype,
+      'invalidatePrefix',
+    )?.value as (this: RAMIndexCacheStore, path: string) => Promise<void>
+    vi.spyOn(RAMIndexCacheStore.prototype, 'invalidatePrefix').mockImplementation(function (
+      this: RAMIndexCacheStore,
+      path: string,
+    ) {
+      if (this !== vfs.index) H.reach.push('tree walk on a throwaway index')
+      return invalidate.call(this, path)
+    })
+    const before = hub.count('resolve')
+    return {
+      vfs,
+      accessor,
+      key,
+      fetches: () => hub.count('resolve') - before,
+      rewrite: (next) => {
+        files.set(stored, next)
+      },
+      readBytes: (p) => HF_HUB_IO.readBytes(accessor, p),
+      readStream: (p) => HF_HUB_IO.readStream(accessor, p),
+      stat: (p) => HF_HUB_IO.stat(accessor, p),
+    }
+  }
   if (HARNESSES[name] === 'gridfs') {
     // _id is neither the md5 nor the uploadDate, so a stat or a read that
     // moved to either kind of token no longer matches the other side.
@@ -510,10 +574,13 @@ describe('the read-token contract', () => {
     H.captured.length = 0
     H.gridfs.clear()
     H.reach.length = 0
+    H.stampOverride = null
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks()
+    await Promise.all(hubs.map((hub) => hub.close()))
+    hubs = []
   })
 
   /**
@@ -641,9 +708,17 @@ describe('the read-token contract', () => {
         const stat = await reconcileStat(ws, fake, virtual)
         expect(stat.fingerprint).not.toBeNull()
         expect(await ws.cache.isFresh(virtual, stat.fingerprint ?? '')).toBe(false)
-        const before = fake.fetches()
+        let before = fake.fetches()
         expect(await line(ws, `cat ${virtual}`)).toEqual(CHANGED)
         expect(fake.fetches() - before).toBe(1)
+        // The refetch has to stamp the new token, or every later read
+        // refetches as well and the backend never serves warm.
+        const restat = await reconcileStat(ws, fake, virtual)
+        expect(restat.fingerprint).not.toBeNull()
+        expect(await ws.cache.isFresh(virtual, restat.fingerprint ?? '')).toBe(true)
+        before = fake.fetches()
+        expect(await line(ws, `cat ${virtual}`)).toEqual(CHANGED)
+        expect(fake.fetches() - before).toBe(0)
         expect(H.reach).toEqual([])
       } finally {
         await ws.close()
@@ -678,6 +753,26 @@ describe('the read-token contract', () => {
       expect(await ws.cache.isFresh(virtual, stat.fingerprint ?? '')).toBe(false)
       await line(ws, `cat ${virtual}`)
       expect(fake.fetches()).toBeGreaterThan(1)
+    } finally {
+      await ws.close()
+    }
+  })
+
+  it('the contract goes red on hf stamping another kind', async () => {
+    // hf forced to stamp the download's own ETag (the xet hash) while stat
+    // reports the git oid: both tokens exist and differ, the mismatch the
+    // verified stamp exists to prevent.
+    const fake = await makeFake('hf_models', 'root', SEED)
+    H.stampOverride = xetHash(SEED)
+    const virtual = '/m/a.txt'
+    const ws = freshWorkspace(fake.vfs)
+    try {
+      await line(ws, `cp ${virtual} /r/a.txt`)
+      expect(await ws.cache.isFresh(virtual, xetHash(SEED))).toBe(true)
+      const stat = await reconcileStat(ws, fake, virtual)
+      expect(stat.fingerprint).toBe(blobOid(SEED))
+      expect(stat.fingerprint).not.toBe(xetHash(SEED))
+      expect(await ws.cache.isFresh(virtual, stat.fingerprint ?? '')).toBe(false)
     } finally {
       await ws.close()
     }

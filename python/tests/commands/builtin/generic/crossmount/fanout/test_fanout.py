@@ -14,6 +14,8 @@
 
 import asyncio
 
+import pytest
+
 from mirage.commands.builtin.generic.crossmount.fanout import run_fanout
 from mirage.commands.builtin.generic.crossmount.types import OperandRun
 from mirage.io import IOResult
@@ -95,6 +97,36 @@ def test_run_fanout_forces_rg_filenames_unless_suppressed():
         run_fanout("rg", [_scope("/a/x"), _scope("/b/y")], ["pat"],
                    {"args_I": True}, rs2))
     assert all("H" not in c["flags"] for c in rs2.calls)
+
+
+@pytest.mark.parametrize("cmd", ["grep", "rg"])
+def test_run_fanout_separates_context_runs(cmd):
+    # GNU grep 3.11 and ripgrep 14.1.1 put `--` between one file's context
+    # and the next file's, so runs on different mounts join the same way;
+    # a run that printed nothing adds no separator.
+    rs = FakeRunSingle({
+        "/a/x": (b"/a/x:hit\n/a/x-next\n", 0),
+        "/c/w": (b"", 1),
+        "/b/y": (b"/b/y:hit\n/b/y-next\n", 0),
+    })
+    out, _ = _run(
+        run_fanout(
+            cmd,
+            [_scope("/a/x"), _scope("/c/w"),
+             _scope("/b/y")], ["hit"], {"A": "1"}, rs))
+    assert _run(materialize(out)) == (b"/a/x:hit\n/a/x-next\n--\n"
+                                      b"/b/y:hit\n/b/y-next\n")
+
+
+@pytest.mark.parametrize("cmd", ["grep", "rg"])
+def test_run_fanout_joins_counts_without_a_separator(cmd):
+    rs = FakeRunSingle({"/a/x": (b"/a/x:1\n", 0), "/b/y": (b"/b/y:1\n", 0)})
+    out, _ = _run(
+        run_fanout(cmd, [_scope("/a/x"), _scope("/b/y")], ["hit"], {
+            "A": "1",
+            "c": True
+        }, rs))
+    assert _run(materialize(out)) == b"/a/x:1\n/b/y:1\n"
 
 
 def test_run_fanout_forces_head_headers_and_blank_line_joins():
