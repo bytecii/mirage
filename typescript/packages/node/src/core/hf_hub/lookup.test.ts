@@ -515,6 +515,16 @@ describe('stat on an index that holds no tree', () => {
     expect(walk).not.toHaveBeenCalled()
   })
 
+  it.each([null, {}, { error: 'unavailable' }, ''])(
+    'does not treat a malformed response %j as absence',
+    async (answer) => {
+      vi.spyOn(client, 'hubPost').mockResolvedValue(answer)
+      await expect(stat(loaded(), ps('a.txt'), new RAMIndexCacheStore())).rejects.toThrow(
+        client.HfHubError,
+      )
+    },
+  )
+
   it('refuses rows for another path', async () => {
     // An answer about some other path is not an answer about this one; it
     // must not read as absence, which reconcile would turn into a delete.

@@ -204,6 +204,14 @@ async def test_a_point_stat_of_a_directory(loaded):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("answer", [None, {}, {"error": "unavailable"}, ""])
+async def test_a_malformed_point_stat_is_not_absence(loaded, answer):
+    with _point(answer):
+        with pytest.raises(HfHubError):
+            await stat(loaded, ps("a.txt"), RAMIndexCacheStore())
+
+
+@pytest.mark.asyncio
 async def test_a_point_stat_refuses_rows_for_another_path(loaded):
     # An answer about some other path is not an answer about this one; it
     # must not read as absence, which reconcile would turn into a delete.
