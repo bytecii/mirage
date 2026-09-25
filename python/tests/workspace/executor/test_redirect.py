@@ -545,3 +545,16 @@ async def test_an_earlier_failed_open_wins_over_a_later_refusal():
     assert (await ws.shell("test -e /data/nodir")).exit_code == 1
     assert (await ws.shell("test -e /data/missing")).exit_code == 1
     assert await _out(ws, "cat /data/reg") == "y"
+
+
+@pytest.mark.asyncio
+async def test_stdin_from_a_character_device_leaves_rg_the_cwd():
+    # ripgrep 14.1.1 searches stdin only when a file, FIFO or socket is
+    # attached: /dev/null is neither, so `rg` searches the cwd, while an
+    # empty regular file is still the stdin it searches.
+    ws = await _workspace()
+    await ws.shell("printf 'hit\\n' > /data/x.txt && printf '' > /data/e")
+    assert await _out(ws, "cd /data && rg hit < /dev/null") == "x.txt:hit\n"
+    io = await ws.shell("cd /data && rg hit < /data/e")
+    assert (io.stdout or b"", io.exit_code) == (b"", 1)
+    assert await _out(ws, "cat < /dev/null") == ""

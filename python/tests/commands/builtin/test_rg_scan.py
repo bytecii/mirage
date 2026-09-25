@@ -397,12 +397,16 @@ class TestWarnings:
 
     @pytest.mark.anyio
     async def test_warnings_on_missing_file(self, backend):
+        # The path as walked, for the caller to respell the way the
+        # operand was typed.
         warnings = []
         result = await rg(backend,
                           "/tmp/nonexistent.txt",
                           "foo",
                           warnings=warnings)
         assert result == []
+        assert warnings == [("/tmp/nonexistent.txt",
+                             "No such file or directory")]
 
     @pytest.mark.anyio
     async def test_warnings_none_does_not_error(self, backend):
@@ -417,6 +421,7 @@ class TestWarnings:
         warnings = []
         result = await rg(backend, "/tmp/nodir", "foo", warnings=warnings)
         assert result == []
+        assert warnings == [("/tmp/nodir", "No such file or directory")]
 
 
 class TestOnlyMatchingDirectoryWalk:

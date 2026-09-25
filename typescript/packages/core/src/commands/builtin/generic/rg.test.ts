@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest'
 import { materialize, type ByteSource, type IOResult } from '../../../io/types.ts'
 import { FileStat, FileType, PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
+import { eacces, enoent } from '../../../utils/errors.ts'
 import { rgGeneric } from './rg.ts'
 
 const ENC = new TextEncoder()
@@ -302,5 +303,80 @@ describe('rgGeneric - only matching', () => {
   ] as const)('prints context lines whole from %j', async (paths, stdin, want) => {
     const input = stdin === null ? null : ENC.encode(stdin)
     expect(await run(specs(paths), 'b', { o: true, n: true, C: '1' }, input)).toEqual([want, 0])
+  })
+})
+
+// ripgrep 14.1.1 names a path it could not read the way the line spelled it:
+// `cd /data && rg hit sub nope` reports `nope`, as it prints `sub/ok.txt:hit`.
+describe('rgGeneric - unreadable paths are named as typed', () => {
+  const files: Record<string, string> = { '/d/sub/locked.txt': 'hit\n', '/d/sub/ok.txt': 'hit\n' }
+  const typed = (virtual: string, raw: string): PathSpec =>
+    new PathSpec({
+      virtual,
+      directory: virtual,
+      resolved: true,
+      vfsPath: virtual.slice(1),
+      rawPath: raw,
+    })
+  const statOf = (p: PathSpec): Promise<FileStat> => {
+    if (p.virtual === '/d/sub') {
+      return Promise.resolve(new FileStat({ name: 'sub', type: FileType.DIRECTORY }))
+    }
+    return files[p.virtual] === undefined
+      ? Promise.reject(enoent(p.virtual))
+      : Promise.resolve(new FileStat({ name: p.virtual.slice(1), type: FileType.FILE }))
+  }
+  const readdirOf = (p: PathSpec): Promise<string[]> =>
+    p.virtual === '/d/sub' ? Promise.resolve(Object.keys(files)) : Promise.reject(enoent(p.virtual))
+  async function* streamOf(p: PathSpec): AsyncIterable<Uint8Array> {
+    await Promise.resolve()
+    if (p.virtual === '/d/sub/locked.txt') throw eacces(p.virtual)
+    const content = files[p.virtual]
+    if (content === undefined) throw enoent(p.virtual)
+    yield ENC.encode(content)
+  }
+  async function runTyped(
+    paths: PathSpec[],
+    flags: Record<string, string | boolean>,
+  ): Promise<[string, string, number]> {
+    const opts = { stdin: null, flags, filetypeFns: null, cwd: '/d' } as unknown as CommandOpts
+    const [out, io] = (await rgGeneric(paths, ['hit'], opts, statOf, readdirOf, streamOf)) as [
+      ByteSource,
+      IOResult,
+    ]
+    return [
+      DEC.decode(await materialize(out)),
+      DEC.decode(await materialize(io.stderr)),
+      io.exitCode,
+    ]
+  }
+  const missing = 'rg: nope: No such file or directory\n'
+
+  it.each([
+    [
+      'beside a directory',
+      [typed('/d/sub', 'sub'), typed('/d/nope', 'nope')],
+      {},
+      'sub/ok.txt:hit\n',
+    ],
+    ['under --type', [typed('/d/nope', 'nope')], { type: 'txt' }, ''],
+    [
+      'under -l',
+      [typed('/d/nope', 'nope'), typed('/d/sub', 'sub')],
+      { args_l: true },
+      'sub/ok.txt\n',
+    ],
+  ] as const)('names a missing operand %s', async (_, paths, flags, want) => {
+    const [out, err, code] = await runTyped([...paths], flags)
+    expect([out, code]).toEqual([want, 2])
+    expect(err).toContain(missing)
+  })
+
+  it('names a walked file it could not read', async () => {
+    expect(await runTyped([typed('/d/sub', 'sub')], {})).toEqual([
+      'sub/ok.txt:hit\n',
+      'rg: sub/locked.txt: Permission denied\n',
+      2,
+    ])
   })
 })

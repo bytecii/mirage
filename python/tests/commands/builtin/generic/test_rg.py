@@ -1,4 +1,6 @@
 import asyncio
+import errno
+import os
 
 import pytest
 
@@ -1209,3 +1211,58 @@ async def test_rg_o_prints_context_lines_whole(paths, stdin, want):
         "C": "1"
     }, stdin, O_FILES)
     assert (out, io.exit_code) == (want, 0)
+
+
+def _typed(virtual: str, raw: str) -> PathSpec:
+    return PathSpec(vfs_path=virtual.strip("/"),
+                    virtual=virtual,
+                    directory=virtual,
+                    resolved=True,
+                    raw_path=raw)
+
+
+async def _run_locked(paths: list[PathSpec], flags: dict):
+    files = {"/d/sub/locked.txt": b"hit\n", "/d/sub/ok.txt": b"hit\n"}
+    readdir, stat, rb, rs = _make_backend(files)
+
+    async def read_bytes(path):
+        virtual = path.virtual if isinstance(path, PathSpec) else path
+        if virtual == "/d/sub/locked.txt":
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES),
+                                  virtual)
+        return await rb(path)
+
+    output, io = await rg(paths, ["hit"],
+                          CommandOpts(flags=flags),
+                          readdir=readdir,
+                          stat=stat,
+                          read_bytes=read_bytes,
+                          read_stream=rs)
+    return await _drain_async(output), await _drain_async(io.stderr), io
+
+
+TYPE_TXT = {"type": "txt"}
+LISTING = {"args_l": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths, flags, want", [
+    ([("/d/sub", "sub"), ("/d/nope", "nope")], {}, b"sub/ok.txt:hit\n"),
+    ([("/d/nope", "nope")], TYPE_TXT, b""),
+    ([("/d/nope", "nope"), ("/d/sub", "sub")], LISTING, b"sub/ok.txt\n"),
+])
+async def test_rg_walk_names_a_missing_operand_as_typed(paths, flags, want):
+    # ripgrep 14.1.1: `cd /data && rg hit sub nope` reports `nope`, spelled
+    # as the line spelled it, the way it prints `sub/ok.txt:hit`.
+    out, err, io = await _run_locked([_typed(v, r) for v, r in paths], flags)
+    assert out == want
+    assert b"rg: nope: No such file or directory\n" in err
+    assert io.exit_code == 2
+
+
+@pytest.mark.asyncio
+async def test_rg_walk_names_a_file_it_could_not_read_as_typed():
+    out, err, io = await _run_locked([_typed("/d/sub", "sub")], {})
+    assert out == b"sub/ok.txt:hit\n"
+    assert err == b"rg: sub/locked.txt: Permission denied\n"
+    assert io.exit_code == 2

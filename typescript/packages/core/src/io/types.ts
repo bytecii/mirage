@@ -18,6 +18,15 @@ import { chunks } from './cooperative.ts'
 
 export type ByteSource = Uint8Array | AsyncIterable<Uint8Array>
 
+/**
+ * Standard input redirected from a character device (`< /dev/null`). It reads
+ * as the bytes it holds, like any other stdin, and tells a command that asks
+ * whether a file, FIFO or socket is attached that none is: ripgrep asks before
+ * it searches stdin rather than the working directory
+ * (grep_cli::is_readable_stdin). Mirrors Python's DeviceInput.
+ */
+export class DeviceInput extends Uint8Array {}
+
 export async function materialize(source: ByteSource | null | undefined): Promise<Uint8Array> {
   if (source === null || source === undefined) return new Uint8Array()
   if (source instanceof Uint8Array) return source

@@ -18,7 +18,7 @@ import { mountParentReaddir, mountParentStat } from '../utils/operands.ts'
 import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import { FileStat, FileType, PathSpec } from '../../../types.ts'
 import { fsStrerror, isFsError, isWalkError } from '../../../utils/errors.ts'
-import { respellRaw } from '../../../utils/path.ts'
+import { respellOne, respellRaw } from '../../../utils/path.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
@@ -320,23 +320,36 @@ export async function rgGeneric(
     // labelled or not.
     const context = printsContext(flags)
     for (const p of paths) {
-      const records = isStdin(p)
-        ? await operandRecords(stream(p), operandName(p), pat, flags, label, fullIO, opts.signal)
-        : respellRaw(
-            await rgFull(
-              readdirFn,
-              statFn,
-              readBytesFn,
-              p.virtual,
-              exprText,
-              fullOpts,
-              warnings,
-              label ? p.rawPath : null,
-              fullIO,
-            ),
-            p.virtual,
-            p.rawPath,
-          )
+      let records: string[]
+      if (isStdin(p)) {
+        records = await operandRecords(
+          stream(p),
+          operandName(p),
+          pat,
+          flags,
+          label,
+          fullIO,
+          opts.signal,
+        )
+      } else {
+        const unread: [string, string][] = []
+        const hits = await rgFull(
+          readdirFn,
+          statFn,
+          readBytesFn,
+          p.virtual,
+          exprText,
+          fullOpts,
+          unread,
+          label ? p.rawPath : null,
+          fullIO,
+        )
+        records = respellRaw(hits, p.virtual, p.rawPath)
+        // ripgrep names an unreadable path as typed, the way it spells a hit.
+        for (const [path, err] of unread) {
+          warnings.push(`rg: ${respellOne(path, p.virtual, p.rawPath)}: ${err}`)
+        }
+      }
       if (context && results.length > 0 && records.length > 0) results.push('--')
       results.push(...records)
     }

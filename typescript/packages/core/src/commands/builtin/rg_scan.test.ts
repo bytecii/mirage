@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest'
 import { IOResult } from '../../io/types.ts'
 import { ContentType, FileStat, FileType, PathSpec } from '../../types.ts'
+import { enoent } from '../../utils/errors.ts'
 import { rgFull, walkCandidates, type RgFullOptions } from './rg_scan.ts'
 
 const ENC = new TextEncoder()
@@ -871,5 +872,16 @@ describe('rgFull named operands', () => {
       null,
     )
     expect(out).toEqual([])
+  })
+})
+
+describe('rgFull warnings', () => {
+  it('records a path it could not read as walked', async () => {
+    // The caller respells the path the way its operand was typed.
+    const warnings: [string, string][] = []
+    const missing = (p: string): Promise<Uint8Array> => Promise.reject(enoent(p))
+    const out = await rgFull(readdirFn, statFn, missing, '/db/nope.txt', 'Graph', opts(), warnings)
+    expect(out).toEqual([])
+    expect(warnings).toEqual([['/db/nope.txt', 'No such file or directory']])
   })
 })

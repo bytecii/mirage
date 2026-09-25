@@ -250,7 +250,7 @@ async def rg_full(
     file_type: str | None,
     glob_pattern: str | None,
     hidden: bool,
-    warnings: list[str] | None,
+    warnings: list[tuple[str, str]] | None,
     file_prefix: str | None = None,
     no_filename: bool = False,
     byte_offsets: bool = False,
@@ -279,7 +279,9 @@ async def rg_full(
         file_type (str | None): --type, restrict by extension set.
         glob_pattern (str | None): --glob, restrict by basename glob.
         hidden (bool): --hidden, walk dot-entries too.
-        warnings (list[str] | None): collects per-operand errors.
+        warnings (list[tuple[str, str]] | None): collects ``(path, error)``
+            for each path that could not be read, the path as walked, for
+            the caller to respell and name.
         file_prefix (str | None): the label a single-file run carries.
         no_filename (bool): -I, drop per-file labels in a walk.
         byte_offsets (bool): -b, prefix each line with the byte offset of
@@ -319,7 +321,7 @@ async def rg_full(
             data = split_lines(decode_line(await read_bytes_fn(path)))
         except WALK_ERRORS as exc:
             if warnings is not None:
-                warnings.append(f"rg: {path}: {fs_strerror(exc) or exc}")
+                warnings.append((path, fs_strerror(exc) or str(exc)))
             return []
         return search_file(path, data, compiled, invert, line_numbers,
                            count_only, files_only, only_matching, max_count,
@@ -331,7 +333,7 @@ async def rg_full(
         entries = await readdir_fn(path)
     except WALK_ERRORS as exc:
         if warnings is not None:
-            warnings.append(f"rg: {path}: {fs_strerror(exc) or exc}")
+            warnings.append((path, fs_strerror(exc) or str(exc)))
         return results
 
     for entry in entries:
@@ -339,7 +341,7 @@ async def rg_full(
             s = await stat_fn(entry)
         except WALK_ERRORS as exc:
             if warnings is not None:
-                warnings.append(f"rg: {entry}: {fs_strerror(exc) or exc}")
+                warnings.append((entry, fs_strerror(exc) or str(exc)))
             continue
 
         if s.type == FileType.DIRECTORY:
@@ -381,7 +383,7 @@ async def rg_full(
                 data = split_lines(decode_line(await read_bytes_fn(entry)))
             except WALK_ERRORS as exc:
                 if warnings is not None:
-                    warnings.append(f"rg: {entry}: {fs_strerror(exc) or exc}")
+                    warnings.append((entry, fs_strerror(exc) or str(exc)))
                 continue
             # ripgrep -I drops per-file labels in directory walks; -l
             # keeps paths (they are the output).

@@ -29,7 +29,7 @@ from mirage.io.types import ByteSource, IOResult, materialize
 from mirage.types import FileStat, FileType, PathSpec
 from mirage.utils.errors import FS_ERRORS, WALK_ERRORS, fs_strerror
 from mirage.utils.key_prefix import mount_prefix_of
-from mirage.utils.path import respell_raw
+from mirage.utils.path import respell_one, respell_raw
 
 # ripgrep's own words for a line with no pattern, exit 2 (14.1.1).
 RG_NO_PATTERN = "rg: ripgrep requires at least one pattern to execute a search"
@@ -356,6 +356,7 @@ async def rg(
                                                 operand_name(p), pat, f, label,
                                                 full_io)
             else:
+                unread: list[tuple[str, str]] = []
                 hits_full = await rg_full(
                     rd,
                     st,
@@ -377,13 +378,18 @@ async def rg(
                     file_type=f.file_type,
                     glob_pattern=f.glob_pattern,
                     hidden=f.hidden,
-                    warnings=warnings_f,
+                    warnings=unread,
                     file_prefix=p.raw_path if label else None,
                     no_filename=f.no_filename,
                     byte_offsets=f.byte_offsets,
                     io=full_io,
                 )
                 records = respell_raw(hits_full, p.virtual, p.raw_path)
+                # ripgrep names an unreadable path as typed, the way it
+                # spells a hit.
+                warnings_f.extend(
+                    f"rg: {respell_one(path, p.virtual, p.raw_path)}: {err}"
+                    for path, err in unread)
             if context and results and records:
                 results.append("--")
             results.extend(records)

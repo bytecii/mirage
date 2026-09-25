@@ -18,7 +18,7 @@ import { readFailExitCode } from '../../commands/spec/usage.ts'
 import { concatBytes } from '../../core/jq/format.ts'
 import { stripSlash } from '../../utils/slash.ts'
 import type { ByteSource } from '../../io/types.ts'
-import { IOResult, materialize } from '../../io/types.ts'
+import { DeviceInput, IOResult, materialize } from '../../io/types.ts'
 import { applyBarrier, BarrierPolicy } from '../../shell/barrier.ts'
 import { encodeText } from '../../shell/bytes.ts'
 import type { CallStack } from '../../shell/call_stack.ts'
@@ -179,6 +179,11 @@ export async function handleRedirect(
       } catch (err) {
         if (!isFsError(err)) throw err
         return redirectFailure(scope, err)
+      }
+      // Only an empty read is probed: the device worth telling apart
+      // (/dev/null) reads empty, so a file with content costs no stat.
+      if (data instanceof Uint8Array && data.length === 0 && (await isDevice(dispatch, scope))) {
+        data = new DeviceInput(0)
       }
       inputs[r.fd] = data as ByteSource | null
     } else if (r.kind === RedirectKind.HEREDOC) {
@@ -422,6 +427,18 @@ function redirectFailure(scope: PathSpec, err: unknown): Result {
 function shellFailure(line: Uint8Array): Result {
   const io = new IOResult({ exitCode: 1, stderr: line })
   return [null, io, new ExecutionNode({ command: 'redirect', exitCode: 1 })]
+}
+
+/** Whether a redirect target is a character device (`/dev/null`). */
+async function isDevice(dispatch: DispatchFn, scope: PathSpec): Promise<boolean> {
+  let stat: unknown
+  try {
+    ;[stat] = await dispatch('stat', scope)
+  } catch (err) {
+    if (!isFsError(err)) throw err
+    return false
+  }
+  return stat instanceof FileStat && stat.type === FileType.CHAR_DEVICE
 }
 
 /**

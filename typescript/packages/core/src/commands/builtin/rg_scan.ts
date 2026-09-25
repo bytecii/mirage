@@ -227,6 +227,11 @@ function searchFile(
   return results
 }
 
+/**
+ * Search one operand, returning the lines ripgrep would print. `warnings`
+ * collects `[path, error]` for each path that could not be read, the path as
+ * walked, for the caller to respell and name. Mirrors Python's rg_full.
+ */
 export async function rgFull(
   readdirFn: AsyncReaddirFn,
   statFn: AsyncStatFn,
@@ -234,7 +239,7 @@ export async function rgFull(
   path: string,
   pattern: string,
   opts: RgFullOptions,
-  warnings: string[] | null,
+  warnings: [string, string][] | null,
   filePrefix: string | null = null,
   io: IOResult | null = null,
 ): Promise<string[]> {
@@ -264,7 +269,7 @@ export async function rgFull(
     try {
       data = splitLines(decodeLine(await readBytesFn(path)))
     } catch (err) {
-      if (warnings !== null) warnings.push(`rg: ${path}: ${fsStrerror(err) ?? String(err)}`)
+      if (warnings !== null) warnings.push([path, fsStrerror(err) ?? String(err)])
       return []
     }
     return searchFile(path, data, compiled, opts, filePrefix, io)
@@ -278,7 +283,7 @@ export async function rgFull(
   try {
     entries = await readdirFn(path)
   } catch (err) {
-    if (warnings !== null) warnings.push(`rg: ${path}: ${fsStrerror(err) ?? String(err)}`)
+    if (warnings !== null) warnings.push([path, fsStrerror(err) ?? String(err)])
     return results
   }
 
@@ -287,7 +292,7 @@ export async function rgFull(
     try {
       s = await statFn(entry)
     } catch (err) {
-      if (warnings !== null) warnings.push(`rg: ${entry}: ${fsStrerror(err) ?? String(err)}`)
+      if (warnings !== null) warnings.push([entry, fsStrerror(err) ?? String(err)])
       continue
     }
 
@@ -321,7 +326,7 @@ export async function rgFull(
     try {
       data = splitLines(decodeLine(await readBytesFn(entry)))
     } catch (err) {
-      if (warnings !== null) warnings.push(`rg: ${entry}: ${fsStrerror(err) ?? String(err)}`)
+      if (warnings !== null) warnings.push([entry, fsStrerror(err) ?? String(err)])
       continue
     }
     // ripgrep -I drops per-file labels in directory walks; -l keeps

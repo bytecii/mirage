@@ -15,6 +15,7 @@
 import pytest
 
 from mirage.commands.cli.specs import cli_spec_for
+from mirage.io.types import DeviceInput
 from mirage.types import MountMode, PathSpec
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
@@ -100,5 +101,21 @@ async def test_rg_searches_the_cwd_once_dash_f_takes_stdin():
                                    "/ram", b"a\n") is None
         assert default_cwd_operand(["rg", "a"], "rg", reg, "/ram",
                                    b"a\n") is None
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_rg_searches_the_cwd_when_stdin_is_a_device():
+    # ripgrep 14.1.1 searches stdin only when a file, FIFO or socket is
+    # attached (grep_cli::is_readable_stdin): `rg a < /dev/null` searches
+    # the cwd, while an empty file or pipe is still searched.
+    ws = Workspace(mounts={"/ram": (RAMVFS(), MountMode.WRITE)})
+    try:
+        reg = ws._registry
+        operand = default_cwd_operand(["rg", "a"], "rg", reg, "/ram",
+                                      DeviceInput())
+        assert operand is not None and operand.raw_path == ""
+        assert default_cwd_operand(["rg", "a"], "rg", reg, "/ram", b"") is None
     finally:
         await ws.close()
