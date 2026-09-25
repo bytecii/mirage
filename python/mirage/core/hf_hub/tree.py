@@ -173,7 +173,7 @@ async def fetch_path(accessor: HfHubAccessor,
         if isinstance(row, dict) and row.get("path") == asked
     ]
     if rows and not matching:
-        raise HfHubError(f"paths-info answered no row for {asked}", 200,
+        raise HfHubError(f"paths-info answered no row for {asked}", 0,
                          "PathMismatch")
     into: dict[str, TreeEntry] = {}
     collect(matching, accessor.key_prefix, into)
@@ -307,7 +307,8 @@ async def fetch_tree(accessor: HfHubAccessor) -> dict[str, TreeEntry]:
         mount's key_prefix, with the prefix stripped.
 
     Raises:
-        HfHubError: the Hub refused for a reason that is not absence.
+        HfHubError: the Hub refused for any reason but a missing subtree
+            on the first page, or the listing ran past the page ceiling.
     """
     url = tree_url(accessor)
     expand = accessor.expand_commits
@@ -449,6 +450,7 @@ async def refill_index(
     accessor.tree = tree
     accessor.tree_loaded = True
     accessor.rows_cache = None
+    accessor.refills += 1
     # Refilling replaces the snapshot; merging would retain deleted paths.
     await index.invalidate_prefix(prefix.rstrip("/") or "/")
     seed_index(accessor, index, prefix)

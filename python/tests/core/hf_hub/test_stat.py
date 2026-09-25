@@ -105,8 +105,7 @@ LFS_ROW = {
 
 def _point(rows):
     return patch("mirage.core.hf_hub.tree.hub_post",
-                 AsyncMock(return_value=rows),
-                 create=True)
+                 AsyncMock(return_value=rows))
 
 
 def _walk(*rows):
@@ -133,8 +132,9 @@ async def test_a_point_stat_writes_nothing(loaded):
     index = RAMIndexCacheStore()
     with _point([LFS_ROW]):
         await stat(loaded, ps("a.txt"), index)
-    # find and du read accessor.tree directly; a one-path answer that
-    # reseated or edited it would shrink the listing they see to one file.
+    # No-index readers (local_rows) and the watch walk read accessor.tree
+    # directly; a one-path answer that reseated or edited it would shrink the
+    # listing they see to one file.
     assert loaded.tree is tree
     assert loaded.tree == before
     assert loaded.tree_loaded is True
@@ -184,8 +184,7 @@ async def test_no_index_answers_from_the_loaded_tree(loaded):
 
 
 @pytest.mark.asyncio
-async def test_a_point_stat_of_a_missing_path_is_enoent_without_a_walk(
-        loaded):
+async def test_a_point_stat_of_a_missing_path_is_enoent_without_a_walk(loaded):
     tree = copy.deepcopy(loaded.tree)
     with _point([]) as post, _walk() as walk:
         with pytest.raises(FileNotFoundError):
@@ -218,8 +217,7 @@ async def test_a_point_stat_refuses_rows_for_another_path(loaded):
 async def test_a_refused_point_stat_raises_rather_than_reading_absent(
         loaded, status):
     refused = AsyncMock(side_effect=HfHubError("nope", status))
-    with patch("mirage.core.hf_hub.tree.hub_post", refused,
-               create=True), _walk() as walk:
+    with patch("mirage.core.hf_hub.tree.hub_post", refused), _walk() as walk:
         with pytest.raises(HfHubError):
             await stat(loaded, ps("a.txt"), RAMIndexCacheStore())
     walk.assert_not_awaited()

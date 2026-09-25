@@ -41,6 +41,7 @@ from pymongo import AsyncMongoClient
 from qdrant_client import AsyncQdrantClient, models
 
 from mirage import MountMode, Workspace
+from mirage.accessor.hf_hub import HfHubAccessor
 from mirage.accessor.onedrive import OneDriveConfig
 from mirage.accessor.sharepoint import SharePointConfig
 from mirage.commands.cli.specs import cli_spec_for
@@ -2802,7 +2803,9 @@ async def mutate_commit(shadow_ws: Workspace, path: str,
         content (bytes): the new content.
     """
     mount = shadow_ws.mount(path)
-    accessor = mount.vfs.accessor
+    accessor = getattr(mount.vfs, "accessor", None)
+    if not isinstance(accessor, HfHubAccessor):
+        raise ValueError(f"hf-hub cannot commit {path}")
     rel = path[len(mount.prefix.rstrip("/")):]
     await commit(accessor,
                  additions=[Addition(accessor.repo_path(rel), content)])

@@ -22,6 +22,7 @@ import { toStateDict } from '@struktoai/mirage-core/workspace/snapshot/state'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { HfHubAccessor } from '../../accessor/hf_hub.ts'
 import { FakeHub, blobOid, serveHub } from '../../core/hf_hub/_test_util.ts'
+import { HfHubError } from '../../core/hf_hub/client.ts'
 import { read } from '../../core/hf_hub/read.ts'
 import { Workspace } from '../../workspace.ts'
 import { buildVfs } from '../registry.ts'
@@ -90,11 +91,33 @@ describe('hf_hub under read: fresh', () => {
     }
   })
 
+  it('never serves other bytes as fresh after a revert through cp', async () => {
+    // The same revert through the bytes door: a cross-mount cp reads with
+    // read, where cat reads with the stream.
+    const fake = await hub({ 'a.txt': NEW })
+    fake.listed.set('a.txt', OLD)
+    const w = ws(await vfsOf(fake))
+    try {
+      await out(w, 'cp /m/a.txt /r/one')
+      expect(await out(w, 'cat /r/one')).toEqual(NEW)
+      fake.files().set('a.txt', OLD)
+      const before = fake.count('resolve')
+      await out(w, 'cp /m/a.txt /r/two')
+      expect(await out(w, 'cat /r/two')).toEqual(OLD)
+      expect(fake.count('resolve')).toBe(before + 1)
+    } finally {
+      await w.close()
+    }
+  })
+
   it('leaves find its whole listing after a probe', async () => {
     const fake = await hub({ 'a.txt': OLD, 'd/b.txt': NEW })
     const w = ws(await vfsOf(fake))
     try {
       await out(w, 'cat /m/a.txt')
+      // The warm read's probes answer through paths-info; a probe that seeded
+      // its one row as the mount's listing would leave find seeing a single
+      // file, or walking again to recover.
       await out(w, 'cat /m/a.txt')
       const walks = fake.count('tree')
       const listed = DEC.decode(await out(w, 'find /m -type f'))
@@ -131,7 +154,9 @@ describe('hf_hub under read: fresh', () => {
       // file" drops the overlay; a plain cat never reaches it.
       const cp = await w.shell('cp /m/a.txt /r/x')
       expect(cp.exitCode).toBe(1)
-      expect(DEC.decode(cp.stderr)).toContain('fake')
+      // The refusal, not "No such file": the tree the cold read rebuilt was
+      // refused outright rather than read as empty.
+      expect(DEC.decode(cp.stderr).endsWith('fake tree refused\n')).toBe(true)
       expect(w.namespace.metaFor('/m/a.txt')?.mode).toBe(0o600)
     } finally {
       await w.close()
@@ -184,7 +209,7 @@ describe('hf_hub snapshot pins', () => {
     const state = await pinnedState(fake)
     fake.fail.set('tree', [401, ''])
     const err = await load(state, await vfsOf(fake)).catch((e: unknown) => e)
-    expect(err).not.toBeInstanceOf(ContentDriftError)
+    expect(err).toBeInstanceOf(HfHubError)
     expect(String(err)).toContain('fake tree refused')
   })
 
@@ -198,13 +223,13 @@ describe('hf_hub snapshot pins', () => {
       // The live mount is handed over, so it has loaded its tree and the check
       // asks for the one path rather than walking again.
       fake.files().set('a.txt', NEW)
-      const walks = fake.count('tree')
+      fake.log.length = 0
       await expect(load(state, vfs)).rejects.toBeInstanceOf(ContentDriftError)
-      expect(fake.count('tree')).toBe(walks)
-      expect(fake.count('paths_info')).toBeGreaterThanOrEqual(1)
+      expect([fake.count('paths_info'), fake.count('tree')]).toEqual([1, 0])
       fake.fail.set('paths_info', [401, ''])
       const err = await load(state, vfs).catch((e: unknown) => e)
-      expect(err).not.toBeInstanceOf(ContentDriftError)
+      expect(err).toBeInstanceOf(HfHubError)
+      expect(String(err)).toContain('fake paths_info refused')
     } finally {
       await w.close()
     }
@@ -213,7 +238,7 @@ describe('hf_hub snapshot pins', () => {
 
 // Measured on the first green run, then pinned (test plan T31): each number is
 // one reconcile probe, and a warm read makes no tree walk and no download.
-const WARM: [string, number | null][] = [
+const WARM: [string, number][] = [
   ['cat /m/a.txt', 2],
   ['cat /m/a.txt | head -c 1', 2],
   // Cross-mount cp skips routing's probe; only the cache door asks.
@@ -261,9 +286,15 @@ describe('hf_hub ranged read', () => {
     if (override !== null) fake.etags.set('a.txt', override)
     const vfs = await vfsOf(fake)
     const spec = new PathSpec({ virtual: '/a.txt', directory: '/', vfsPath: 'a.txt' })
-    const [data, records] = await runWithRecording(() =>
-      read(vfs.accessor as HfHubAccessor, spec, undefined, { offset: 2, size: 3 }),
-    )
+    let data: Uint8Array
+    let records: { fingerprint: string | null }[]
+    try {
+      ;[data, records] = await runWithRecording(() =>
+        read(vfs.accessor as HfHubAccessor, spec, undefined, { offset: 2, size: 3 }),
+      )
+    } finally {
+      await vfs.close()
+    }
     expect(data).toEqual(OLD.slice(2, 5))
     expect(records.map((r) => r.fingerprint)).toEqual(expected ? [blobOid(OLD)] : [null])
   })

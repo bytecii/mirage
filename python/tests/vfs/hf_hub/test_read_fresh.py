@@ -14,6 +14,7 @@
 
 import pytest
 
+from mirage.core.hf_hub.client import HfHubError
 from mirage.core.hf_hub.read import read_bytes
 from mirage.observe.context import RecordingScope
 from mirage.types import MountMode, PathSpec, ReadPolicy, ReadSpec
@@ -88,11 +89,32 @@ async def test_a_revert_never_serves_other_bytes_as_fresh():
 
 
 @pytest.mark.asyncio
+async def test_a_revert_through_cp_never_serves_other_bytes_as_fresh():
+    # The same revert through the bytes door: a cross-mount cp reads with
+    # read_bytes, where cat reads with the stream.
+    with serve(_hub({"a.txt": NEW}, listed={"a.txt": OLD})) as hub:
+        ws = _ws(_vfs(hub))
+        try:
+            await _out(ws, "cp /m/a.txt /r/one")
+            assert await _out(ws, "cat /r/one") == NEW
+            _files(hub)["a.txt"] = OLD
+            before = hub.count("resolve")
+            await _out(ws, "cp /m/a.txt /r/two")
+            assert await _out(ws, "cat /r/two") == OLD
+            assert hub.count("resolve") == before + 1
+        finally:
+            await ws.close()
+
+
+@pytest.mark.asyncio
 async def test_a_probe_leaves_find_its_whole_listing():
     with serve(_hub({"a.txt": OLD, "d/b.txt": NEW})) as hub:
         ws = _ws(_vfs(hub))
         try:
             await _out(ws, "cat /m/a.txt")
+            # The warm read's probes answer through paths-info; a probe that
+            # seeded its one row as the mount's listing would leave find
+            # seeing a single file, or walking again to recover.
             await _out(ws, "cat /m/a.txt")
             walks = hub.count("tree")
             listed = await _out(ws, "find /m -type f")
@@ -129,7 +151,9 @@ async def test_an_expired_token_keeps_the_overlay():
             # "no such file" drops the overlay; a plain cat never reaches it.
             cp = await ws.shell("cp /m/a.txt /r/x")
             assert cp.exit_code == 1
-            assert "fake" in await cp.stderr_str()
+            # The refusal, not "No such file": the tree the cold read rebuilt
+            # was refused outright rather than read as empty.
+            assert (await cp.stderr_str()).endswith("fake tree refused\n")
             meta = ws.namespace.meta_for("/m/a.txt")
             assert meta is not None and meta.mode == 0o600
         finally:
@@ -180,10 +204,8 @@ async def test_a_drift_check_the_hub_refuses_is_not_drift():
     with serve(_hub({"a.txt": OLD})) as hub:
         state = await _pinned_state(hub)
         hub.fail["tree"] = (401, "")
-        with pytest.raises(Exception) as caught:
+        with pytest.raises(HfHubError, match="fake tree refused"):
             await _load(state, _vfs(hub))
-        assert not isinstance(caught.value, ContentDriftError)
-        assert "fake tree refused" in str(caught.value)
 
 
 @pytest.mark.asyncio
@@ -197,15 +219,13 @@ async def test_a_drift_check_on_a_loaded_mount_asks_one_path():
             # The live mount is handed over, so it has loaded its tree and
             # the check asks for the one path rather than walking again.
             _files(hub)["a.txt"] = NEW
-            walks = hub.count("tree")
+            hub.log.clear()
             with pytest.raises(ContentDriftError):
                 await _load(state, vfs)
-            assert hub.count("tree") == walks
-            assert hub.count("paths_info") >= 1
+            assert (hub.count("paths_info"), hub.count("tree")) == (1, 0)
             hub.fail["paths_info"] = (401, "")
-            with pytest.raises(Exception) as caught:
+            with pytest.raises(HfHubError, match="fake paths_info refused"):
                 await _load(state, vfs)
-            assert not isinstance(caught.value, ContentDriftError)
         finally:
             await ws.close()
 

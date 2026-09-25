@@ -108,8 +108,20 @@ ROW = IndexEntry(id="O",
                      "last_commit": "C"
                  })
 # The common case: a plain git file carries its oid and nothing else.
-PLAIN = IndexEntry(id="P", name="a.txt", resource_type="file",
+PLAIN = IndexEntry(id="P",
+                   name="a.txt",
+                   resource_type="file",
                    extra={"oid": "P"})
+# A row that carries the LFS and Xet keys empty: a missing ETag must not match
+# one of them.
+BLANK = IndexEntry(id="P",
+                   name="a.txt",
+                   resource_type="file",
+                   extra={
+                       "oid": "P",
+                       "lfs_oid": "",
+                       "xet_hash": ""
+                   })
 
 
 @pytest.mark.parametrize("entry,etag,expected", [
@@ -122,6 +134,7 @@ PLAIN = IndexEntry(id="P", name="a.txt", resource_type="file",
     (PLAIN, '"P"', "P"),
     (PLAIN, "", None),
     (PLAIN, '"Z"', None),
+    (BLANK, "", None),
 ])
 def test_row_token_stamps_the_oid_only_when_the_etag_names_the_row(
         entry, etag, expected):
@@ -131,7 +144,9 @@ def test_row_token_stamps_the_oid_only_when_the_etag_names_the_row(
 def test_row_token_never_stamps_an_empty_id():
     # The ETag matches, so this takes the match branch; an empty id must
     # still come back as no token rather than "".
-    entry = IndexEntry(id="", name="f", resource_type="file",
+    entry = IndexEntry(id="",
+                       name="f",
+                       resource_type="file",
                        extra={"lfs_oid": "L"})
     assert row_token(entry, '"L"') is None
 

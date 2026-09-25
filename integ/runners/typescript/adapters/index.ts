@@ -124,8 +124,8 @@ export interface Open {
   cleanup: () => Promise<void>
   // A second workspace over the same backing store, which consistency
   // scenarios mutate through. Adapters that can build their mounts more than
-  // once expose it; the rest leave it undefined and the runner reports their
-  // consistency cases as skipped instead of silently dropping them.
+  // once expose it; the rest leave it undefined and the runner records their
+  // consistency cases as failed instead of silently dropping them.
   shadow?: () => ExecWorkspace
   // How a consistency scenario changes a file out of band, for a backend whose
   // mount cannot take a write: a Hub repo mount is read-only, and a change to
@@ -2162,8 +2162,8 @@ export const ADAPTERS: Record<string, (target: Target, options?: OpenOptions) =>
  * from the first one's caches.
  *
  * Returns null when the target's adapter cannot build its mounts twice, which
- * the runner reports as a skip -- a scenario that quietly never ran is worse
- * than one that says it did not.
+ * the runner records as a failed case -- a scenario that quietly never ran is
+ * worse than one that says it did not.
  */
 export async function openConsistency(
   target: Target,

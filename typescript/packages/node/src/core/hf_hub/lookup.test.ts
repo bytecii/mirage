@@ -438,8 +438,9 @@ describe('stat on an index that holds no tree', () => {
     const index = new RAMIndexCacheStore()
     vi.spyOn(client, 'hubPost').mockResolvedValue([LFS_ROW])
     await stat(accessor, ps('a.txt'), index)
-    // find and du read accessor.tree directly; a one-path answer that
-    // reseated or edited it would shrink the listing they see to one file.
+    // No-index readers (localRows) and the watch walk read accessor.tree
+    // directly; a one-path answer that reseated or edited it would shrink the
+    // listing they see to one file.
     expect(accessor.tree).toBe(before)
     expect([...accessor.tree]).toEqual(snapshot)
     expect(accessor.treeLoaded).toBe(true)
@@ -465,7 +466,7 @@ describe('stat on an index that holds no tree', () => {
     const accessor = loaded()
     const index = new RAMIndexCacheStore()
     await seedIndex(accessor, index, '')
-    const post = vi.spyOn(client, 'hubPost')
+    const post = vi.spyOn(client, 'hubPost').mockResolvedValue([])
     const walk = vi.spyOn(client, 'hubGetResponse').mockResolvedValue(page([]))
     expect((await stat(accessor, ps('a.txt'), index)).fingerprint).toBe('oid-a')
     expect(post).not.toHaveBeenCalled()
@@ -477,7 +478,7 @@ describe('stat on an index that holds no tree', () => {
     const index = new RAMIndexCacheStore()
     await seedIndex(accessor, index, '')
     await index.invalidate()
-    const post = vi.spyOn(client, 'hubPost')
+    const post = vi.spyOn(client, 'hubPost').mockResolvedValue([])
     const walk = vi
       .spyOn(client, 'hubGetResponse')
       .mockResolvedValue(page([{ type: 'file', oid: 'oid-a', size: 7, path: 'a.txt' }]))
@@ -487,7 +488,7 @@ describe('stat on an index that holds no tree', () => {
   })
 
   it('answers from the loaded tree with no index', async () => {
-    const post = vi.spyOn(client, 'hubPost')
+    const post = vi.spyOn(client, 'hubPost').mockResolvedValue([])
     expect((await stat(loaded(), ps('a.txt'))).fingerprint).toBe('oid-a')
     expect(post).not.toHaveBeenCalled()
   })
@@ -527,10 +528,10 @@ describe('stat on an index that holds no tree', () => {
 
   it.each([401, 403, 404])('raises a refused %i rather than reading absent', async (status) => {
     vi.spyOn(client, 'hubPost').mockRejectedValue(new client.HfHubError('nope', status))
-    const err = await stat(loaded(), ps('a.txt'), new RAMIndexCacheStore()).catch(
-      (e: unknown) => e,
-    )
+    const walk = vi.spyOn(client, 'hubGetResponse').mockResolvedValue(page([]))
+    const err = await stat(loaded(), ps('a.txt'), new RAMIndexCacheStore()).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(client.HfHubError)
+    expect(walk).not.toHaveBeenCalled()
   })
 
   it('carries no token for an empty oid', async () => {
@@ -600,6 +601,42 @@ describe('a lookup the index is cleared under', () => {
     const rows = vi.spyOn(tree, 'localRows')
     expect(await codeOf(() => resolveEntry(loaded(), ps('nope'), undefined))).toBe('ENOENT')
     expect(rows).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * An index cleared and then reseeded by another op between this lookup's read
+ * and its root check, so the root alone reads live.
+ */
+class ClearedAndReseeded extends RAMIndexCacheStore {
+  raced = false
+
+  constructor(private readonly accessor: HfHubAccessor) {
+    super()
+  }
+
+  override async get(key: string) {
+    if (this.raced) return super.get(key)
+    this.raced = true
+    await this.clear()
+    const missed = await super.get(key)
+    await tree.refillIndex(this.accessor, this, '')
+    return missed
+  }
+}
+
+describe('a lookup a reseed hides the clear from', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('retries at the read door', async () => {
+    const accessor = new HfHubAccessor({ repoId: 'acme/widget' } as never)
+    vi.spyOn(client, 'hubGetResponse').mockResolvedValue(
+      page([{ type: 'file', oid: 'oid-a', size: 7, path: 'a.txt' }]),
+    )
+    const entry = await resolveEntry(accessor, ps('a.txt'), new ClearedAndReseeded(accessor))
+    expect(entry.size).toBe(7)
   })
 })
 

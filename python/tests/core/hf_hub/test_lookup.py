@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fakeredis.aioredis import FakeRedis
 
+import mirage.core.hf_hub.lookup as lookup_mod
 from mirage.cache.index import NULL_INDEX, IndexEntry
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.cache.index.redis import RedisIndexCacheStore
@@ -24,7 +25,7 @@ from mirage.core.hf_hub.lookup import (dir_stat_entry, key_of, lookup,
                                        probe_dir, probe_file)
 from mirage.core.hf_hub.read import read_bytes, resolve_entry
 from mirage.core.hf_hub.stat import stat
-from mirage.core.hf_hub.tree import parse_entry, seed_index
+from mirage.core.hf_hub.tree import parse_entry, refill_index, seed_index
 from tests.core.hf_hub.conftest import file_row, ps
 
 
@@ -163,12 +164,10 @@ async def test_parallel_snapshot_readers_share_one_replacement(
         await client.aclose()
 
 
+# An index a concurrent probe clears between the refill and the read: the
+# first get clears the store, as a reconcile verdict landing in that window
+# would, and then answers from the now-empty store.
 class _ClearedMidLookup(RAMIndexCacheStore):
-    """An index a concurrent probe clears between the refill and the read.
-
-    The first ``get`` clears the store, as a reconcile verdict landing in
-    that window would, and then answers from the now-empty store.
-    """
 
     def __init__(self) -> None:
         super().__init__(ttl=600)
@@ -230,7 +229,6 @@ async def test_a_genuine_miss_on_a_live_index_asks_once(accessor):
 
 @pytest.mark.asyncio
 async def test_a_miss_without_an_index_is_not_retried(accessor, monkeypatch):
-    import mirage.core.hf_hub.lookup as lookup_mod
     accessor.tree = _tree(file_row("a.txt", 7))
     accessor.tree_loaded = True
     calls = []
@@ -246,3 +244,32 @@ async def test_a_miss_without_an_index_is_not_retried(accessor, monkeypatch):
     with pytest.raises(FileNotFoundError):
         await resolve_entry(accessor, ps("nope"), NULL_INDEX)
     assert len(calls) == 1
+
+
+class _ClearedAndReseeded(RAMIndexCacheStore):
+
+    def __init__(self, accessor) -> None:
+        super().__init__(ttl=600)
+        self.accessor = accessor
+        self.raced = False
+
+    # The miss is read from the cleared store, and another op reseeds it
+    # before this lookup looks at the root, so the root alone reads live.
+    async def get(self, key):
+        if self.raced:
+            return await super().get(key)
+        self.raced = True
+        await self.clear()
+        missed = await super().get(key)
+        await refill_index(self.accessor, self, "")
+        return missed
+
+
+@pytest.mark.asyncio
+async def test_a_read_retries_when_a_reseed_hides_the_clear(
+        accessor, monkeypatch):
+    fetch = AsyncMock(return_value=_tree(file_row("a.txt", 7)))
+    monkeypatch.setattr("mirage.core.hf_hub.tree.fetch_tree", fetch)
+    index = _ClearedAndReseeded(accessor)
+    entry = await resolve_entry(accessor, ps("a.txt"), index)
+    assert entry.size == 7

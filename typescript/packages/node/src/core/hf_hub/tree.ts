@@ -29,10 +29,6 @@ import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 // backtrack quadratically.
 const NEXT_LINK = /<([^>]{1,4096})>\s*;\s*rel="next"/
 
-// A repository the mount cannot see reads as an empty tree rather than as an
-// error: 404 is a revision or subtree that does not exist, and the Hub answers
-// 401 rather than 404 for a repo an anonymous caller may not know about, so
-// both mean "nothing to list here" to a mount.
 // The one refusal that means "nothing to list": the mount's key_prefix names
 // no folder. Every other refusal (401 for a bad token or an unknown repo, 403
 // for a gated one, 404 for a missing repo or revision) is an error, because
@@ -131,7 +127,7 @@ export async function fetchPath(
       typeof row === 'object' && row !== null && (row as Record<string, unknown>).path === asked,
   )
   if (rows.length > 0 && matching.length === 0) {
-    throw new HfHubError(`paths-info answered no row for ${asked}`, 200, 'PathMismatch')
+    throw new HfHubError(`paths-info answered no row for ${asked}`, 0, 'PathMismatch')
   }
   const into = new Map<string, TreeEntry>()
   collect(matching, accessor.keyPrefix, into)
@@ -345,6 +341,7 @@ export async function refillIndex(
   accessor.tree = await fetchTree(accessor)
   accessor.treeLoaded = true
   accessor.rowsCache = null
+  accessor.refills += 1
   // Refilling replaces the snapshot; merging would retain deleted paths.
   await index.invalidatePrefix(prefix.replace(/\/+$/, '') || '/')
   await seedIndex(accessor, index, prefix)

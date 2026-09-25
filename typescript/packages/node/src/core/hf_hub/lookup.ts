@@ -86,8 +86,10 @@ export async function lookup(
  * A reconcile verdict clears the mount index, and one landing between the
  * refill and the read leaves a miss that only says the store is empty. Read as
  * absence, that miss reaches `onOpMissing` through a dispatcher door and drops
- * the path's overlay for good. The root listing tells the two apart: a live
- * index always has one.
+ * the path's overlay for good. Two signs tell that miss from a real one: the
+ * root listing is gone (a live index always has one), or the accessor refilled
+ * an index while the lookup ran, which is a clear followed by a concurrent
+ * reseed.
  */
 export async function lookupRetrying(
   accessor: HfHubAccessor,
@@ -95,10 +97,11 @@ export async function lookupRetrying(
   prefix: string,
   key: string,
 ): Promise<Found> {
+  const refills = accessor.refills
   const found = await lookup(accessor, index, prefix, key)
   if (exists(found) || index === undefined) return found
   const root = await index.listDir(keyOf(prefix, ''))
-  if (root.status !== LookupStatus.NOT_FOUND) return found
+  if (root.status !== LookupStatus.NOT_FOUND && accessor.refills === refills) return found
   return lookup(accessor, index, prefix, key)
 }
 

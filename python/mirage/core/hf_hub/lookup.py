@@ -105,8 +105,10 @@ async def lookup_retrying(
     A reconcile verdict clears the mount index, and one landing between
     the refill and the read leaves a miss that only says the store is
     empty. Read as absence, that miss reaches ``on_op_missing`` through a
-    dispatcher door and drops the path's overlay for good. The root
-    listing tells the two apart: a live index always has one.
+    dispatcher door and drops the path's overlay for good. Two signs tell
+    that miss from a real one: the root listing is gone (a live index
+    always has one), or the accessor refilled an index while the lookup
+    ran, which is a clear followed by a concurrent reseed.
 
     Args:
         accessor (HfHubAccessor): the mount's accessor.
@@ -117,11 +119,13 @@ async def lookup_retrying(
     Returns:
         Found: the row and/or listing at that key.
     """
+    refills = accessor.refills
     found = await lookup(accessor, index, prefix, key)
     if found.exists or index is NULL_INDEX:
         return found
-    root = await index.list_dir(prefix.rstrip("/") or "/")
-    if root.status is not LookupStatus.NOT_FOUND:
+    root = await index.list_dir(key_of(prefix, ""))
+    if (root.status is not LookupStatus.NOT_FOUND
+            and accessor.refills == refills):
         return found
     return await lookup(accessor, index, prefix, key)
 
@@ -156,7 +160,7 @@ async def point_lookup(
     """
     if index is NULL_INDEX or not accessor.tree_loaded:
         return None
-    root = await index.list_dir(prefix.rstrip("/") or "/")
+    root = await index.list_dir(key_of(prefix, ""))
     if root.status is not LookupStatus.NOT_FOUND:
         return None
     entries, _ = index_rows(await fetch_path(accessor, rel), prefix)

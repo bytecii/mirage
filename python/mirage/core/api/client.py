@@ -346,11 +346,13 @@ async def _attempt(
         if read == "bytes":
             return window_of(await resp.read(), resp.status, window)
         if read == "bytes_response":
+            # A repeated header is joined the way fetch joins it, so a
+            # response carrying two ETags reads as neither on both hosts.
             return ApiResponse(
                 window_of(await resp.read(), resp.status, window), resp.status,
                 {
-                    key.lower(): value
-                    for key, value in resp.headers.items()
+                    key.lower(): ", ".join(resp.headers.getall(key))
+                    for key in resp.headers.keys()
                 })
         if read == "text":
             return await resp.text()

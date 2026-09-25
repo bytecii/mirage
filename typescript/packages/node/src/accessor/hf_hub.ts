@@ -50,6 +50,10 @@ export class HfHubAccessor extends Accessor {
    * wired. Derivation is O(tree), so a readdir loop over a large repo would
    * be quadratic without a memo; every reseat of `tree` clears it. */
   rowsCache: { prefix: string; rows: RowTables } | null = null
+  /** How many times an index has been refilled from the Hub. A lookup that
+   * misses while this moved knows a clear and a reseed ran under it, so its
+   * miss says nothing about the path. */
+  refills = 0
   /** Guards the lazy hydration so concurrent first reads make one request
    * rather than one per caller. */
   hydrating: Promise<void> | null = null

@@ -448,8 +448,8 @@ async def hub_stream(
                 raise _error_of(resp, await resp.text())
             if on_response is not None:
                 on_response({
-                    key.lower(): value
-                    for key, value in resp.headers.items()
+                    key.lower(): ", ".join(resp.headers.getall(key))
+                    for key in resp.headers.keys()
                 })
             async for chunk in resp.content.iter_chunked(chunk_size):
                 yield chunk

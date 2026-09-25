@@ -58,6 +58,14 @@ const ROW = new IndexEntry({
 })
 // The common case: a plain git file carries its oid and nothing else.
 const PLAIN = new IndexEntry({ id: 'P', name: 'a.txt', resourceType: 'file', extra: { oid: 'P' } })
+// A row that carries the LFS and Xet keys empty: a missing ETag must not match
+// one of them.
+const BLANK = new IndexEntry({
+  id: 'P',
+  name: 'a.txt',
+  resourceType: 'file',
+  extra: { oid: 'P', lfs_oid: '', xet_hash: '' },
+})
 
 describe('rowToken', () => {
   it.each([
@@ -70,6 +78,7 @@ describe('rowToken', () => {
     [PLAIN, '"P"', 'P'],
     [PLAIN, '', null],
     [PLAIN, '"Z"', null],
+    [BLANK, '', null],
   ])('stamps the oid only when the etag names the row (%#)', (entry, etag, expected) => {
     expect(rowToken(entry, etag)).toBe(expected)
   })
@@ -77,7 +86,12 @@ describe('rowToken', () => {
   it('never stamps an empty id', () => {
     // The ETag matches, so this takes the match branch; an empty id must
     // still come back as no token rather than ''.
-    const entry = new IndexEntry({ id: '', name: 'f', resourceType: 'file', extra: { lfs_oid: 'L' } })
+    const entry = new IndexEntry({
+      id: '',
+      name: 'f',
+      resourceType: 'file',
+      extra: { lfs_oid: 'L' },
+    })
     expect(rowToken(entry, '"L"')).toBeNull()
   })
 })
