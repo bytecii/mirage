@@ -38,7 +38,9 @@ from mirage.cache.index import RAMIndexCacheStore
 from mirage.commands.builtin.generic_bind.adapter import CommandIO
 from mirage.commands.builtin.gridfs.io import IO as GRIDFS_IO
 from mirage.commands.builtin.s3.io import IO as S3_IO
-from mirage.observe.context import OpTimer, active_recorder
+from mirage.io.cachable_iterator import CachableAsyncIterator
+from mirage.io.types import IOResult
+from mirage.observe.context import OpTimer, RecordingScope, active_recorder
 from mirage.observe.record import OpRecord
 from mirage.types import FileStat, MountMode, PathSpec, ReadPolicy, ReadSpec
 from mirage.vfs.base import BaseVFS
@@ -85,13 +87,13 @@ SEED = b"name,age\nalice,30\n"
 CHANGED = b"name,age\nalice,31\n"
 DECOY = b"decoy at the unprefixed key\n"
 # Several download chunks, so the background drain has bytes left to pull
-# after `head -c 1` stops reading.
+# after the first chunk is consumed.
 BIG = (b"x" * 1023 + b"\n") * 300
 
 COMMANDS = {
     "bytes": "cp {v} /r/a.txt",
     "stream": "cat {v}",
-    "drain": "cat {v} | head -c 1",
+    "drain": "cat {v}",
 }
 SLOTS = {"bytes": "bytes", "stream": "stream", "drain": "stream"}
 
@@ -283,6 +285,24 @@ async def _line(ws: Workspace, line: str) -> bytes:
     return out
 
 
+async def _partial_read(ws: Workspace, fake: Fake, virtual: str) -> bytes:
+    # Exercise the cache handoff directly, independent of pipe cancellation.
+    spec = PathSpec(virtual=virtual,
+                    directory=virtual.rsplit("/", 1)[0] + "/",
+                    vfs_path=fake.key)
+    scope = RecordingScope()
+    try:
+        source = CachableAsyncIterator(
+            fake.io.read_stream(fake.vfs.accessor, spec))
+        first = await anext(source)
+        assert not source.exhausted
+        await ws.apply_io(IOResult(reads={virtual: source}, cache=[virtual]),
+                          records=scope.records)
+        return first[:1]
+    finally:
+        scope.close()
+
+
 async def _reconcile_stat(ws: Workspace, virtual: str) -> FileStat:
     # Reconcile stats through a fresh index (workspace/reconcile.py), so a
     # listing's index row, which carries no token, cannot answer for it.
@@ -377,7 +397,8 @@ def test_a_read_leaves_an_entry_reconcile_calls_fresh(name, shape, row,
                     await _line(ws, "ls /m")
                 cached_before = await ws.cache.exists(virtual)
                 before = fake.fetches()
-                first = await _line(ws, line)
+                first = await (_partial_read(ws, fake, virtual)
+                               if row == "drain" else _line(ws, line))
                 drained = len(drains)
                 for done in drains:
                     await done.wait()
@@ -391,8 +412,7 @@ def test_a_read_leaves_an_entry_reconcile_calls_fresh(name, shape, row,
                 middle = fake.fetches()
                 # The drain row's second run reads the whole entry back, so
                 # a drain that cached a truncated buffer cannot pass.
-                second = await _line(
-                    ws, f"cat {virtual}" if row == "drain" else line)
+                second = await _line(ws, line)
                 if row == "bytes":
                     second = await _line(ws, "cat /r/a.txt")
                 return (cached_before, first, drained, fetched, taken, stat,
