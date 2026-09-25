@@ -65,6 +65,19 @@ class AsyncLineIterator:
         data, found = await self.read_until(b"\n")
         return data if found or data else None
 
+    def skip_empty_lines(self, limit: int | None = None) -> int:
+        """Consume buffered empty lines without pulling more input.
+
+        Args:
+            limit (int | None): maximum lines to consume, or all buffered.
+        """
+        end = len(self._buf) if limit is None else min(limit, len(self._buf))
+        count = 0
+        while count < end and self._buf[count] == 10:
+            count += 1
+        self._buf = self._buf[count:]
+        return count
+
     async def read_until(self, delim: bytes) -> tuple[bytes, bool]:
         """Read up to (not including) ``delim``, or to EOF.
 

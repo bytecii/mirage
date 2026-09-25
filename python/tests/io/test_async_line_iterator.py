@@ -138,3 +138,20 @@ async def test_read_chars_reports_a_short_read_at_eof():
     it = AsyncLineIterator(_chunks([b"ab"]))
     data, complete = await it.read_chars(5, None)
     assert (data, complete) == (b"ab", False)
+
+
+@pytest.mark.asyncio
+async def test_skip_only_buffered_empty_lines_with_limit():
+    reader = AsyncLineIterator(_chunks([b"\n\n\nx\n\n", b"\nend"]))
+    assert reader.skip_empty_lines() == 0
+    assert await reader.readline() == b""
+    assert reader.skip_empty_lines(0) == 0
+    assert reader.skip_empty_lines(1) == 1
+    assert reader.skip_empty_lines() == 1
+    assert await reader.readline() == b"x"
+    assert reader.skip_empty_lines() == 1
+    assert reader.skip_empty_lines() == 0
+    assert await reader.readline() == b""
+    assert await reader.readline() == b"end"
+    assert reader.skip_empty_lines() == 0
+    assert await reader.readline() is None

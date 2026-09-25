@@ -179,8 +179,9 @@ async def grep_input(source: AsyncIterator[bytes],
     # final line with no newline is never read.
     byte_pos = 0
     input_stream = binary.read(source)
+    lines = AsyncLineIterator(input_stream)
     try:
-        async for raw in AsyncLineIterator(input_stream):
+        async for raw in lines:
             if binary.nul and f.binary_mode == "without-match":
                 break
             number += 1
@@ -203,6 +204,16 @@ async def grep_input(source: AsyncIterator[bytes],
                     # A selected line is all -L needs to know: the file
                     # is not listed, and the status still says it matched.
                     return
+            # NUL runs become empty lines. Batch decisions only when no
+            # per-line output or context must be retained.
+            if not raw and (f.count_only or (not hit and not has_context)):
+                limit = (f.max_count -
+                         count if hit and f.max_count is not None else None)
+                skipped = lines.skip_empty_lines(limit)
+                number += skipped
+                byte_pos += skipped
+                if hit:
+                    count += skipped
             if f.count_only:
                 if f.max_count is not None and count >= f.max_count:
                     break

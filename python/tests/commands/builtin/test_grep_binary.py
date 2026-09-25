@@ -12,6 +12,7 @@ from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.parser import parse_command, parse_to_kwargs
+from mirage.io.async_line_iterator import AsyncLineIterator
 from mirage.io.types import IOResult, materialize
 
 
@@ -701,3 +702,77 @@ async def test_cancellation_during_single_line_matches(monkeypatch, scanner):
             pass
     assert closed
     assert calls < 100000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags,pattern,stdout,code", [
+    ({
+        "c": True
+    }, "needle", b"0\n", 1),
+    ({
+        "c": True,
+        "v": True
+    }, "needle", b"100003\n", 0),
+    ({
+        "c": True
+    }, "^$", b"100003\n", 0),
+    ({
+        "c": True,
+        "m": 17000
+    }, "^$", b"17000\n", 0),
+    ({
+        "c": True,
+        "B": 2,
+        "A": 2
+    }, "^$", b"100003\n", 0),
+    ({
+        "files_without_match": True
+    }, "needle", b"binary.so\n", 1),
+    ({}, "needle", b"", 1),
+])
+async def test_batch_nul_runs_preserves_selection(flags, pattern, stdout, code,
+                                                  monkeypatch):
+    data = b"\0" * 100003
+    reads = 0
+    readline = AsyncLineIterator.readline
+
+    async def counted_readline(self):
+        nonlocal reads
+        reads += 1
+        return await readline(self)
+
+    monkeypatch.setattr(AsyncLineIterator, "readline", counted_readline)
+
+    async def source():
+        yield data
+
+    f = parse_flags(FlagView(flags, spec=SPECS["grep"]), False)
+    io = IOResult()
+    out = await materialize(
+        grep_input(source(), re.compile(pattern), f, "binary.so", False, io))
+    assert (out, io.exit_code) == (stdout, code)
+    assert not io.stderr
+    assert reads < 20
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags", [{}, {"B": 2}, {"o": True}])
+async def test_offsets_and_context_after_empty_lines(flags):
+    data = b"\n" * 17003 + "é needle\n".encode()
+
+    async def source():
+        yield data
+
+    f = parse_flags(
+        FlagView({
+            **flags, "n": True,
+            "byte_offset": True
+        }, spec=SPECS["grep"]), False)
+    io = IOResult()
+    out = await materialize(
+        grep_input(source(), re.compile("needle"), f, "text", False, io))
+    expected = ("17004:17006:needle\n" if "o" in flags else
+                ("17002-17001-\n17003-17002-\n" if "B" in flags else "") +
+                "17004:17003:é needle\n")
+    assert out == expected.encode()
+    assert io.exit_code == 0
