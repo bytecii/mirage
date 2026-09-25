@@ -90,21 +90,21 @@ describe('single-mount partial output on missing operands', () => {
   it('head good then missing keeps banner and content', async () => {
     const [out, err, code] = await run('head -n 1 /a/f.txt /a/missing.txt')
     expect(out).toBe('==> /a/f.txt <==\naaa\n')
-    expect(err).toBe('head: /a/missing.txt: No such file or directory\n')
+    expect(err).toBe("head: cannot open '/a/missing.txt' for reading: No such file or directory\n")
     expect(code).toBe(1)
   })
 
   it('head missing first has no leading blank line', async () => {
     const [out, err, code] = await run('head -n 1 /a/missing.txt /a/f.txt')
     expect(out).toBe('==> /a/f.txt <==\naaa\n')
-    expect(err).toBe('head: /a/missing.txt: No such file or directory\n')
+    expect(err).toBe("head: cannot open '/a/missing.txt' for reading: No such file or directory\n")
     expect(code).toBe(1)
   })
 
   it('tail good then missing keeps banner and content', async () => {
     const [out, err, code] = await run('tail -n 1 /a/f.txt /a/missing.txt')
     expect(out).toBe('==> /a/f.txt <==\naaa\n')
-    expect(err).toBe('tail: /a/missing.txt: No such file or directory\n')
+    expect(err).toBe("tail: cannot open '/a/missing.txt' for reading: No such file or directory\n")
     expect(code).toBe(1)
   })
 
@@ -188,14 +188,14 @@ describe('cross-mount partial output matches single-mount bytes', () => {
   it('head good then missing keeps banner and content', async () => {
     const [out, err, code] = await run('head -n 1 /a/f.txt /b/missing.txt')
     expect(out).toBe('==> /a/f.txt <==\naaa\n')
-    expect(err).toBe('head: /b/missing.txt: No such file or directory\n')
+    expect(err).toBe("head: cannot open '/b/missing.txt' for reading: No such file or directory\n")
     expect(code).toBe(1)
   })
 
   it('tail good then missing keeps banner and content', async () => {
     const [out, err, code] = await run('tail -n 1 /a/f.txt /b/missing.txt')
     expect(out).toBe('==> /a/f.txt <==\naaa\n')
-    expect(err).toBe('tail: /b/missing.txt: No such file or directory\n')
+    expect(err).toBe("tail: cannot open '/b/missing.txt' for reading: No such file or directory\n")
     expect(code).toBe(1)
   })
 })

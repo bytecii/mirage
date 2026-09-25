@@ -22,16 +22,29 @@ import {
   type CommandFnResult,
   type CommandOpts,
   type RegisteredCommand,
+  type WritesFn,
 } from '../../config.ts'
+import { UsageError } from '../../errors.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
-import { resolveGlobOf, type CommandIO } from '../generic_bind/index.ts'
-import { withWriteGuards } from '../generic_bind/adapter.ts'
+import { resolveGlobOf, withWriteGuards, type CommandIO } from '../generic_bind/adapter.ts'
 import { formatRecords } from '../utils/output.ts'
 
 const ENC = new TextEncoder()
 
 type UnlinkFn<A> = (accessor: A, path: PathSpec, index?: IndexCacheStore) => Promise<void>
+
+// Whether an rm invocation writes: it removes its operands, and with none it
+// removes nothing. Mirrors Python's rm_writes.
+export const rmWrites: WritesFn = (_flags, paths) => paths.length > 0
+
+// rm's answer to a line with no operand, in GNU's words: nothing at all under
+// -f, and a missing-operand usage error otherwise (coreutils 9.7). Mirrors
+// Python's rm_without_operands.
+export function rmWithoutOperands(force: boolean): CommandFnResult {
+  if (force) return [null, new IOResult()]
+  throw new UsageError("rm: missing operand\nTry 'rm --help' for more information.", 1)
+}
 
 /**
  * Build a backend's `rm` from its glob resolver and its unlink.
@@ -54,19 +67,18 @@ export function makeRm<A extends Accessor>(
     vfs,
     spec: specOf('rm'),
     write: true,
+    writes: rmWrites,
     fn: async (
       accessor: A,
       paths: PathSpec[],
       _texts: string[],
       opts: CommandOpts,
     ): Promise<CommandFnResult> => {
-      if (paths.length === 0) {
-        return [null, new IOResult({ exitCode: 1, stderr: ENC.encode('rm: missing operand\n') })]
-      }
-      const resolved = await resolveGlob(accessor, paths, opts.index ?? undefined)
       const fl = new FlagView(opts.flags, specOf('rm'))
       const force = fl.asBool('f')
       const verbose = fl.asBool('v')
+      if (paths.length === 0) return rmWithoutOperands(force)
+      const resolved = await resolveGlob(accessor, paths, opts.index ?? undefined)
       const verboseParts: string[] = []
       const errors: string[] = []
       const writes: Record<string, Uint8Array> = {}

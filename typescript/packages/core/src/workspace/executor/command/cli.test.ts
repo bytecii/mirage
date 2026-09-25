@@ -16,7 +16,7 @@ import { varsFromEnv } from '../../../workspace/session/session.ts'
 import { describe, expect, it, vi } from 'vitest'
 
 import { CLISpec, type CLIInvocation, type CLIVerbFn } from '../../../commands/cli/types.ts'
-import { Operand, Option } from '../../../commands/spec/types.ts'
+import { Operand, Option, UsageStyle } from '../../../commands/spec/types.ts'
 import { IOResult, materialize } from '../../../io/types.ts'
 import { Limit } from '../../../types.ts'
 import type { CLIInstall } from '../../cli/types.ts'
@@ -735,4 +735,22 @@ describe('dropsMountCaches', () => {
     ).toBe(true)
     expect(dropsMountCaches(new CLISpec({ name: 'tool', fn: send }))).toBe(false)
   })
+})
+
+it('keeps a custom CLI grammar when it uses Git usage formatting', async () => {
+  const spec = new CLISpec({
+    name: 'custom',
+    usageStyle: UsageStyle.GIT,
+    subcommands: [
+      new CLISpec({ name: 'branch', fn: send, options: [new Option({ long: '--topic' })] }),
+    ],
+  })
+  const install = { name: 'custom', spec, config: { token: 'tok' } }
+  const [stdout, io] = await handleCli(
+    install,
+    ['custom', 'branch', '--top'],
+    new SessionState({ sessionId: 't' }),
+  )
+  expect(io.exitCode).toBe(0)
+  expect(dec.decode(await materialize(stdout))).toBe('sent[tok]\n')
 })

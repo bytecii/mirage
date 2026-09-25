@@ -337,5 +337,6 @@ def make_generic_commands(
                     spec=SPECS[b.name],
                     provision=provision,
                     aggregate=agg,
-                    write=b.write)(bound))
+                    write=b.write,
+                    writes=b.writes)(bound))
     return commands

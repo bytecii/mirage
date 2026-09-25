@@ -20,6 +20,7 @@ import { authedRoute, fail, param, route, withRepo } from './http.ts'
 import { repoRoutes } from './repos.ts'
 import { contentRoutes } from './contents.ts'
 import { gitRoutes } from './git.ts'
+import { graphqlRoutes } from './graphql.ts'
 import { issueRoutes } from './issues.ts'
 import { pullRoutes } from './pulls.ts'
 import { releaseRoutes } from './releases.ts'
@@ -52,6 +53,7 @@ async function rawContent(ctx: Ctx<C>, repo: RepoRow): Promise<Reply> {
 export function githubRoutes(): KitRoute<C>[] {
   return [
     ...repoRoutes(),
+    ...graphqlRoutes(),
     // Before contentRoutes, and that is load-bearing. The kit router takes the
     // first registered match, not the most specific one, and contents claims
     // `commits/*ref` for a commit whose ref may itself contain a slash. That

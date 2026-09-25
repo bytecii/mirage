@@ -277,7 +277,7 @@ async def test_follow_name_with_retry_waits_for_a_directory_to_be_replaced():
     stream, io = await tail_generic(_paths("/d/dir"), [], _follow_opts(F=True),
                                     fs.stat, fs.read, fs.read_range)
     assert stream is not None
-    assert io.stderr == (b"tail: /d/dir: Is a directory\n"
+    assert io.stderr == (b"tail: error reading '/d/dir': Is a directory\n"
                          b"tail: /d/dir: cannot follow end of this type of "
                          b"file\n")
 
@@ -312,7 +312,7 @@ async def test_follow_gives_up_on_a_directory_without_name_retry(
                                     fs.read_range)
     assert stream is None
     assert io.exit_code == 1
-    assert io.stderr.endswith(b"tail: /d/dir: Is a directory\n"
+    assert io.stderr.endswith(b"tail: error reading '/d/dir': Is a directory\n"
                               b"tail: /d/dir: cannot follow end of this "
                               b"type of file" + suffix +
                               b"\ntail: no files remaining\n")
@@ -603,7 +603,8 @@ async def test_retry_waits_for_an_operand_whose_first_read_fails(flags):
     assert io.exit_code == 1
     assert io.stderr == (
         (b"tail: warning: --retry only effective for the initial open\n"
-         if "f" in flags else b"") + b"tail: /d/f: No such file or directory\n"
+         if "f" in flags else b"") +
+        b"tail: cannot open '/d/f' for reading: No such file or directory\n"
         b"tail: '/d/f' has appeared;  following new file\n")
 
 
@@ -616,8 +617,9 @@ async def test_follow_without_retry_gives_up_on_a_failed_first_read():
     assert stream is not None
     chunks = await _drain_for(stream, 0.3)
     assert chunks == []
-    assert io.stderr == (b"tail: /d/f: No such file or directory\n"
-                         b"tail: no files remaining\n")
+    assert io.stderr == (
+        b"tail: cannot open '/d/f' for reading: No such file or directory\n"
+        b"tail: no files remaining\n")
     assert io.exit_code == 1
 
 

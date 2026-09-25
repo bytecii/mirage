@@ -16,11 +16,12 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Literal, cast
 
-from mirage.commands.builtin.constants import PatternType
+from mirage.commands.builtin.constants import BINARY_EXTENSIONS, PatternType
 from mirage.commands.builtin.grep_pattern import bre_source
 from mirage.commands.builtin.types import GrepSearchMeta, GrepSearchOptions
 from mirage.commands.builtin.utils.paths import has_unresolved_glob
 from mirage.commands.builtin.utils.stream import is_stdin
+from mirage.commands.resolve import get_extension
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.types import PathSpec
@@ -175,6 +176,54 @@ def is_literal_pattern(pattern: str, fixed_string: bool) -> bool:
     pt = classify_pattern(pattern, fixed_string)
     return pt == PatternType.EXACT or (pt == PatternType.SIMPLE
                                        and "." not in pattern)
+
+
+def whole_word_literal(pattern: str | None, fixed_string: bool,
+                       whole_word: bool) -> str | None:
+    """The term a whole-word search index may narrow a scan on, or None.
+
+    A word-based index (GitHub code search, Dropbox and Box file search)
+    matches whole words while grep matches substrings, so for a bare
+    literal its answer is a strict subset of the grep matches: a file
+    holding the literal only inside a longer word (``quokka`` in
+    ``quokkabuild``) never comes back and would be silently dropped from
+    the scan. Under ``-w`` both sides mean the same thing, and any
+    tokenizer disagreement can only over-fetch, which the local scan
+    filters. A regex narrowed on an extracted literal stays excluded even
+    under ``-w`` (``is_literal_pattern``), and a newline-joined pattern
+    list is a set of alternatives no one literal is required by.
+
+    Args:
+        pattern (str | None): the search pattern, or None for -f-only runs.
+        fixed_string (bool): True if -F is set.
+        whole_word (bool): True if -w is set.
+
+    Returns:
+        str | None: the pattern itself when the index is asked for exactly
+            it, or None when no narrowing is complete.
+    """
+    if pattern is None or not whole_word or "\n" in pattern:
+        return None
+    return pattern if is_literal_pattern(pattern, fixed_string) else None
+
+
+def text_candidates(paths: list[PathSpec]) -> list[PathSpec]:
+    """Drop the candidates a recursive walk would never have read.
+
+    A narrowing stands in for the walk it replaces, and that walk skips
+    binary extensions, so a candidate with one is dropped rather than
+    downloaded. The result may be empty, which a caller must not hand to
+    grep as its operand list: no operands means standard input.
+
+    Args:
+        paths (list[PathSpec]): search-narrowed candidate files.
+
+    Returns:
+        list[PathSpec]: the candidates in order, without binary extensions.
+    """
+    return [
+        p for p in paths if get_extension(p.virtual) not in BINARY_EXTENSIONS
+    ]
 
 
 def search_query(pattern: str,

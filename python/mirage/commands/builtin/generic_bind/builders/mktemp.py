@@ -13,7 +13,8 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.base import Accessor
-from mirage.commands.builtin.generic.mktemp import mktemp_generic
+from mirage.commands.builtin.generic.mktemp import (mktemp_generic,
+                                                    mktemp_writes)
 from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
                                                           Operation)
 from mirage.commands.config import CommandOpts
@@ -51,4 +52,5 @@ async def mktemp(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
 BUILDER = Builder('mktemp',
                   mktemp,
                   write=True,
+                  writes=mktemp_writes,
                   requirements=frozenset({Operation.MKDIR, Operation.WRITE}))

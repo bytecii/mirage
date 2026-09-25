@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { CLAP_EXIT, CLI_CONFIG_ENV } from '../../../commands/cli/constants.ts'
+import { CLAP_EXIT, CLI_CONFIG_ENV, GIT_LONG_OPTIONS } from '../../../commands/cli/constants.ts'
 import { clapMissingOperands, leafRefusal } from '../../../commands/cli/refusal.ts'
 import { CLISpec, type CLIInvocation, type CLIDoors } from '../../../commands/cli/types.ts'
 import { ownsArgv, walk } from '../../../commands/cli/walk.ts'
@@ -246,6 +246,10 @@ export async function handleCli(
   // The environment goes into the parse, not on top of it: an option
   // declaring one is coerced, choice-checked, path-resolved and credited
   // against required exactly as a typed value is.
+  // git resolves an abbreviated long option against the verb's own full table
+  // (parse-options), and its revision walkers take whole words only.
+  const abbreviations =
+    install.spec.name === 'git' ? (GIT_LONG_OPTIONS.get(result.path.join(' ')) ?? []) : undefined
   const parsed = parseFlags(
     [...result.argv],
     parseSpec,
@@ -253,6 +257,7 @@ export async function handleCli(
     session.cwd,
     envSnapshot(session),
     true,
+    abbreviations,
   )
   const { paths, texts, flagKwargs, warnings } = parsed
   if (mirageHelp && flagKwargs.help === true) {
@@ -264,7 +269,7 @@ export async function handleCli(
   let msg: Uint8Array | null = null
   let code = 0
   if (refusal !== null) {
-    ;[msg, code] = leafRefusal(style, refusal[0], parsed.invalidOptions)
+    ;[msg, code] = leafRefusal(style, refusal[0], parsed)
   } else if (parsed.missingRequiredOperands.length > 0 && style === UsageStyle.CLAP) {
     // Only clap names the empty slots. Under every other style a required
     // operand stays the leaf's own business, worded by the command, which is

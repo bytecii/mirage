@@ -3667,6 +3667,174 @@
         "stdout": "A\t\u00f1.txt\n M \u00f1.txt\nfatal: bad boolean config value 'junk' for 'core.quotepath'\n128\n M \"\\303\\261.txt\"\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "git_log_graph_draws_a_linear_history",
+      "seq": 568408,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo log --graph --oneline 225f39c",
+      "expect": {
+        "exit": 0,
+        "stdout": "* 225f39c add docs\n* 265ec3a add delta\n* 98b4ffe first commit\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_log_graph_keeps_the_column_beside_every_text_line",
+      "seq": 568409,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo log --graph -n 2 --format='%h%n%s' 225f39c",
+      "expect": {
+        "exit": 0,
+        "stdout": "* 225f39c\n| add docs\n* 265ec3a\n| add delta\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_log_graph_refuses_reverse",
+      "seq": 568410,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo log --graph --reverse",
+      "expect": {
+        "exit": 128,
+        "stdout": "",
+        "stderr": "fatal: options '--graph' and '--reverse' cannot be used together\n"
+      }
+    },
+    {
+      "id": "git_branch_ref_filters_list_only_what_they_name",
+      "seq": 568411,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo branch rf-old 265ec3a && git -C /repo branch rf-new 225f39c && git -C /repo branch --contains 265ec3a --list 'rf-*' && git -C /repo branch --merged 225f39c --list 'rf-*' && git -C /repo branch --no-merged 265ec3a --list 'rf-*' && git -C /repo branch --points-at 265ec3a --list 'rf-*'; git -C /repo branch -D rf-old rf-new > /dev/null",
+      "expect": {
+        "exit": 0,
+        "stdout": "  rf-new\n  rf-old\n  rf-new\n  rf-old\n  rf-new\n  rf-old\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_branch_contains_makes_the_operand_a_pattern",
+      "seq": 568412,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo branch --contains 98b4ffe rf-none; echo \"exit=$?\"; git -C /repo branch --list 'rf-*'",
+      "expect": {
+        "exit": 0,
+        "stdout": "exit=0\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_branch_contains_refuses_an_unknown_commit",
+      "seq": 568413,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo branch --contains nosuch",
+      "expect": {
+        "exit": 129,
+        "stdout": "",
+        "stderr": "error: malformed object name nosuch\n"
+      }
+    },
+    {
+      "id": "git_branch_merged_dies_on_an_unknown_commit",
+      "seq": 568414,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo branch --merged nosuch",
+      "expect": {
+        "exit": 128,
+        "stdout": "",
+        "stderr": "fatal: malformed object name nosuch\n"
+      }
+    },
+    {
+      "id": "git_tag_ref_filters_list_only_what_they_name",
+      "seq": 568415,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo tag rf-t1 98b4ffe && git -C /repo tag rf-t2 225f39c && git -C /repo tag --contains 265ec3a -l 'rf-*' && git -C /repo tag --no-contains 265ec3a -l 'rf-*' && git -C /repo tag --merged 265ec3a -l 'rf-*'; git -C /repo tag -d rf-t1 rf-t2 > /dev/null",
+      "expect": {
+        "exit": 0,
+        "stdout": "rf-t2\nrf-t1\nrf-t1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_tag_ref_filter_refuses_to_delete",
+      "seq": 568416,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo tag rf-keep 98b4ffe && git -C /repo tag -d rf-keep --contains 98b4ffe; echo \"exit=$?\"; git -C /repo tag -l 'rf-*'; git -C /repo tag -d rf-keep > /dev/null",
+      "expect": {
+        "exit": 0,
+        "stdout": "exit=128\nrf-keep\n",
+        "stderr": "fatal: the '--contains' option is only allowed in list mode\n"
+      }
+    },
+    {
+      "id": "git_branch_resolves_an_abbreviated_option_as_git_does",
+      "seq": 568417,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo branch ab-fix 98b4ffe && git -C /repo branch --lis 'ab-*' && git -C /repo branch --verb --lis 'ab-*' | cut -c1-17; git -C /repo branch -D ab-fix > /dev/null",
+      "expect": {
+        "exit": 0,
+        "stdout": "  ab-fix\n  ab-fix 98b4ffe \n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "git_branch_refuses_an_ambiguous_abbreviation",
+      "seq": 568418,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo branch --no-m 98b4ffe",
+      "expect": {
+        "exit": 129,
+        "stdout": "",
+        "stderr": "error: ambiguous option: no-m (could be --no-move or --no-merged)\n"
+      }
+    },
+    {
+      "id": "git_log_takes_whole_words_only",
+      "seq": 568419,
+      "targets": [
+        "git-disk",
+        "git-ram"
+      ],
+      "command": "git -C /repo log --onel -1",
+      "expect": {
+        "exit": 128,
+        "stdout": "",
+        "stderr": "fatal: unrecognized argument: --onel\n"
+      }
     }
   ]
 }

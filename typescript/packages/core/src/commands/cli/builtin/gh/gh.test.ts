@@ -24,7 +24,7 @@ import { issueComments } from '../../../../core/github/issue.ts'
 import { commentsFor, commentsText } from './issue.ts'
 import { GH } from './index.ts'
 import { api } from './api.ts'
-import { fork, rename, summary, view } from './repo.ts'
+import { fork, listCmd, rename, summary, view } from './repo.ts'
 
 const DEC = new TextDecoder()
 
@@ -158,10 +158,109 @@ describe('gh repo', () => {
     ])
   })
 
-  it('does not fetch README content for JSON output', async () => {
-    reset({ name: 'r', full_name: 'o/r' })
-    await view(inv(['o/r'], { json: 'name' }))
-    expect(CALLS).toEqual([{ method: 'GET', path: '/repos/o/r' }])
+  it('asks GraphQL for exactly the JSON fields named, and no README', async () => {
+    reset({ data: { repository: { parent: null, name: 'r' } } })
+    const out = text(await view(inv(['o/r'], { json: 'parent,name' })))
+    expect(CALLS).toEqual([
+      {
+        method: 'POST',
+        path: '/graphql',
+        body: {
+          query:
+            'query RepositoryInfo($owner: String!, $name: String!) {\n' +
+            '    repository(owner: $owner, name: $name) {parent{id,name,owner{id,login}},name}\n  }',
+          variables: { owner: 'o', name: 'r' },
+        },
+      },
+    ])
+    expect(out).toBe('{\n  "name": "r",\n  "parent": null\n}\n')
+  })
+
+  // gh decodes the answer into Go structs and prints those: a null string is
+  // "", a struct keeps every field (a user's databaseId is 0), a repository
+  // with no topics prints null, and projectsV2 prints its untagged `Nodes`.
+  it('prints each field in the shape gh decodes it into', async () => {
+    reset({
+      data: {
+        repository: {
+          description: null,
+          assignableUsers: { nodes: [{ id: 'U1', login: 'ada', name: null }] },
+          repositoryTopics: { nodes: [] },
+          projectsV2: { nodes: [] },
+          latestRelease: null,
+          watchers: { totalCount: 3 },
+          owner: { id: 'O1', login: 'o' },
+          parent: { id: 'R0', name: 'up', owner: { id: 'O0', login: 'u' } },
+        },
+      },
+    })
+    const fields =
+      'watchers,parent,owner,latestRelease,projectsV2,repositoryTopics,assignableUsers,description'
+    const out = text(await view(inv(['o/r'], { json: fields })))
+    expect(JSON.parse(out)).toStrictEqual({
+      assignableUsers: [{ id: 'U1', login: 'ada', name: '', databaseId: 0 }],
+      description: '',
+      latestRelease: null,
+      owner: { id: 'O1', login: 'o' },
+      parent: { id: 'R0', name: 'up', owner: { id: 'O0', login: 'u' } },
+      projectsV2: { Nodes: [] },
+      repositoryTopics: null,
+      watchers: { totalCount: 3 },
+    })
+    expect(Object.keys(JSON.parse(out) as object)).toEqual([
+      'assignableUsers',
+      'description',
+      'latestRelease',
+      'owner',
+      'parent',
+      'projectsV2',
+      'repositoryTopics',
+      'watchers',
+    ])
+  })
+
+  it('refuses an unknown field before asking, listing every field gh exports', async () => {
+    reset()
+    const refusal = view(inv(['o/r'], { json: 'isFork,bogus' }))
+    await expect(refusal).rejects.toMatchObject({
+      exitCode: 1,
+      message: expect.stringMatching(
+        /^Unknown JSON field: "bogus"\nAvailable fields:\n {2}archivedAt\n {2}assignableUsers\n/,
+      ) as unknown,
+    })
+    expect(CALLS).toEqual([])
+  })
+
+  it('words a GraphQL error the way gh does', async () => {
+    reset({
+      data: { repository: null },
+      errors: [
+        { message: "Could not resolve to a Repository with the name 'o/r'.", path: ['repository'] },
+      ],
+    })
+    await expect(view(inv(['o/r'], { json: 'name' }))).rejects.toThrow(
+      "GraphQL: Could not resolve to a Repository with the name 'o/r'. (repository)",
+    )
+  })
+
+  it("lists an owner's repositories over GraphQL for JSON output", async () => {
+    reset({
+      data: {
+        repositoryOwner: {
+          repositories: {
+            nodes: [{ name: 'a', isFork: true }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      },
+    })
+    const out = text(await listCmd(inv(['acme'], { json: 'name,isFork', limit: 5 })))
+    expect(CALLS).toHaveLength(1)
+    const body = CALLS[0]?.body as { query: string; variables: unknown }
+    expect(body.query).toContain('repositoryOwner(login: $owner)')
+    expect(body.query).toContain('nodes{name,isFork}')
+    expect(body.variables).toEqual({ perPage: 5, owner: 'acme' })
+    expect(JSON.parse(out)).toEqual([{ isFork: true, name: 'a' }])
   })
 
   it('falls back to the install repo when no operand is given', async () => {

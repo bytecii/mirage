@@ -22,12 +22,22 @@ import { FileStat, FileType, LINK_TARGET_KEY, PathSpec } from '../../../types.ts
 import { CycleError } from '../../../utils/path.ts'
 import { readTar } from '../tar_helper.ts'
 import { UsageError } from '../../errors.ts'
+import { parseFlags } from '../../../workspace/executor/command/flags.ts'
+import { specOf } from '../../spec/builtins.ts'
 const RAM_TAR = RAM_COMMANDS.filter((c) => c.name === 'tar' && c.filetype == null)
 const RAM_ZIP = RAM_COMMANDS.filter((c) => c.name === 'zip' && c.filetype == null)
 const RAM_UNZIP = RAM_COMMANDS.filter((c) => c.name === 'unzip' && c.filetype == null)
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
+
+// What a registered command's writes predicate answers for a typed line,
+// read through the same parse the executor hands the mount.
+function writesFor(cmd: RegisteredCommand | undefined, argv: string[]): boolean {
+  if (cmd?.writes == null) throw new Error('the command declares no writes predicate')
+  const parsed = parseFlags(argv, specOf(cmd.name), cmd.name, '/data')
+  return cmd.writes(parsed.flagKwargs, parsed.paths)
+}
 
 // An operand carrying the spelling the user typed, which is what the
 // member names are built from.
@@ -1323,5 +1333,33 @@ describe('unzip -Zm, -Zs and -x', () => {
     expect(DEC.decode(r.out)).toBe('b')
     expect(r.exitCode).toBe(0)
     expect(DEC.decode(r.stderr)).toBe('caution: excluded filename not matched:  nomatch\n')
+  })
+})
+
+describe('tar and unzip say which invocations write', () => {
+  it.each([
+    [['-tf', 'a.tar'], false],
+    [['tf', 'a.tar'], false],
+    [['-xOf', 'a.tar'], false],
+    [['-x', '--to-stdout', '-f', 'a.tar'], false],
+    [['-xf', 'a.tar'], true],
+    [['xf', 'a.tar'], true],
+    [['-cf', 'a.tar', 'f.txt'], true],
+  ])('tar %j writes: %s', (argv, writes) => {
+    expect(writesFor(RAM_TAR[0], argv)).toBe(writes)
+  })
+
+  it.each([
+    [[], false],
+    [['a.zip'], true],
+    [['-o', 'a.zip'], true],
+    [['-d', 'out', 'a.zip'], true],
+    [['-l', 'a.zip'], false],
+    [['-t', 'a.zip'], false],
+    [['-p', 'a.zip', 'f.txt'], false],
+    [['-Z', 'a.zip'], false],
+    [['-Z', '-1', 'a.zip'], false],
+  ])('unzip %j writes: %s', (argv, writes) => {
+    expect(writesFor(RAM_UNZIP[0], argv)).toBe(writes)
   })
 })

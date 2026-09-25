@@ -15,4 +15,8 @@
 API_BASE = "https://api.github.com"
 API_VERSION = "2022-11-28"
 SCOPE_WARN = 100
+# GitHub's code search does not index a file at or over this size.
+CODE_SEARCH_SIZE_LIMIT = 384 * 1024
+# The largest page code search serves.
+SEARCH_PAGE_SIZE = 100
 SCOPE_ERROR = 5000

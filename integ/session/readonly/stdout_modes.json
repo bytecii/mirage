@@ -1,0 +1,346 @@
+{
+  "cases": [
+    {
+      "id": "sro_prep",
+      "seq": 1231020,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "command": "mkdir -p /res/sro && printf 'hello\\n' > /res/sro/f.txt && cd /res/sro && gzip -k f.txt && tar -cf a.tar f.txt && zip -q a.zip f.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "sro_gunzip_c_reads_a_read_only_archive",
+      "seq": 1231021,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "session": "narrowed",
+      "command": "gunzip -c /res/sro/f.txt.gz",
+      "expect": {
+        "exit": 0,
+        "stdout": "hello\n",
+        "stderr": ""
+      },
+      "flags": [
+        "c"
+      ]
+    },
+    {
+      "id": "sro_gunzip_t_tests_a_read_only_archive",
+      "seq": 1231022,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "session": "narrowed",
+      "command": "gunzip -t /res/sro/f.txt.gz && echo ok",
+      "expect": {
+        "exit": 0,
+        "stdout": "ok\n",
+        "stderr": ""
+      },
+      "flags": [
+        "t"
+      ]
+    },
+    {
+      "id": "sro_gzip_c_compresses_to_stdout",
+      "seq": 1231023,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "session": "narrowed",
+      "command": "gzip -c /res/sro/f.txt | gunzip",
+      "expect": {
+        "exit": 0,
+        "stdout": "hello\n",
+        "stderr": ""
+      },
+      "flags": [
+        "c"
+      ]
+    },
+    {
+      "id": "sro_gzip_filters_stdin_in_a_read_only_cwd",
+      "seq": 1231024,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "session": "narrowed",
+      "command": "cd /res/sro && printf 'x\\n' | gzip | gunzip",
+      "expect": {
+        "exit": 0,
+        "stdout": "x\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "sro_tar_lists_a_read_only_archive",
+      "seq": 1231025,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "session": "narrowed",
+      "command": "tar -tf /res/sro/a.tar",
+      "expect": {
+        "exit": 0,
+        "stdout": "f.txt\n",
+        "stderr": ""
+      },
+      "flags": [
+        "t",
+        "f"
+      ]
+    },
+    {
+      "id": "sro_tar_extracts_to_stdout",
+      "seq": 1231026,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "session": "narrowed",
+      "command": "tar -xOf /res/sro/a.tar",
+      "expect": {
+        "exit": 0,
+        "stdout": "hello\n",
+        "stderr": ""
+      },
+      "flags": [
+        "x",
+        "to_stdout",
+        "f"
+      ]
+    },
+    {
+      "id": "sro_unzip_pipes_a_member",
+      "seq": 1231027,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "session": "narrowed",
+      "command": "unzip -p /res/sro/a.zip f.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "hello\n",
+        "stderr": ""
+      },
+      "flags": [
+        "p"
+      ]
+    },
+    {
+      "id": "sro_unzip_lists_member_names",
+      "seq": 1231028,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "session": "narrowed",
+      "command": "unzip -Z1 /res/sro/a.zip",
+      "expect": {
+        "exit": 0,
+        "stdout": "f.txt\n",
+        "stderr": ""
+      },
+      "flags": [
+        "Z",
+        "1"
+      ]
+    },
+    {
+      "id": "sro_iconv_converts_to_stdout",
+      "seq": 1231029,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "session": "narrowed",
+      "command": "iconv -f utf-8 -t utf-8 /res/sro/f.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "hello\n",
+        "stderr": ""
+      },
+      "flags": [
+        "f",
+        "t"
+      ]
+    },
+    {
+      "id": "sro_mktemp_dry_run_names_a_file",
+      "seq": 1231030,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "session": "narrowed",
+      "command": "cd /res/sro && mktemp -u > /dev/null && echo ok",
+      "expect": {
+        "exit": 0,
+        "stdout": "ok\n",
+        "stderr": ""
+      },
+      "flags": [
+        "dry_run"
+      ]
+    },
+    {
+      "id": "sro_gzip_in_place_is_still_refused",
+      "seq": 1231031,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "session": "narrowed",
+      "command": "gzip /res/sro/f.txt",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "gzip: read-only mount at /res/\n"
+      }
+    },
+    {
+      "id": "sro_tar_extract_to_files_is_still_refused",
+      "seq": 1231032,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "session": "narrowed",
+      "command": "tar -xf /res/sro/a.tar -C /res/sro",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "tar: read-only mount at /res/\n"
+      },
+      "flags": [
+        "x",
+        "f",
+        "C"
+      ]
+    },
+    {
+      "id": "sro_unzip_extract_is_still_refused",
+      "seq": 1231033,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "session": "narrowed",
+      "command": "unzip -o /res/sro/a.zip -d /res/sro",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "unzip: read-only mount at /res/\n"
+      },
+      "flags": [
+        "o",
+        "d"
+      ]
+    },
+    {
+      "id": "sro_refusals_wrote_nothing",
+      "seq": 1231034,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "command": "ls /res/sro",
+      "expect": {
+        "exit": 0,
+        "stdout": "a.tar\na.zip\nf.txt\nf.txt.gz\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "sro_cleanup",
+      "seq": 1231035,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "s3",
+        "s3-prefix",
+        "gridfs"
+      ],
+      "command": "rm -r /res/sro",
+      "expect": {
+        "exit": 0,
+        "stdout": "",
+        "stderr": ""
+      }
+    }
+  ]
+}

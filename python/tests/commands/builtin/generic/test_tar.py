@@ -6,12 +6,14 @@ import pytest
 
 from mirage.commands.builtin.generic.archive.types import Walked
 from mirage.commands.builtin.generic.tar import (excluded, member_name, pruned,
-                                                 strip_prefix, tar)
+                                                 strip_prefix, tar, tar_writes)
+from mirage.commands.spec import SPECS
 from mirage.ops.types import LinkView, MountView
 from mirage.types import (LINK_TARGET_KEY, ContentType, FileStat, FileType,
                           PathSpec)
 from mirage.utils.key_prefix import mount_key
 from mirage.utils.path import CycleError
+from mirage.workspace.executor.command.flags import parse_flags
 
 
 def _spec(path: str, prefix: str = "") -> PathSpec:
@@ -574,3 +576,18 @@ async def test_create_reports_what_it_may_not_open_and_exits_two():
     assert _names(io_res.writes["/out.tar"]) == [
         "d/", "d/a.txt", "d/locked/", "d/sealed/"
     ]
+
+
+@pytest.mark.parametrize("argv,writes", [
+    (["-tf", "a.tar"], False),
+    (["tf", "a.tar"], False),
+    (["-xOf", "a.tar"], False),
+    (["-x", "--to-stdout", "-f", "a.tar"], False),
+    (["-xf", "a.tar"], True),
+    (["xf", "a.tar"], True),
+    (["-cf", "a.tar", "f.txt"], True),
+])
+def test_tar_writes_only_when_its_mode_makes_files(argv: list[str],
+                                                   writes: bool):
+    parsed = parse_flags(argv, SPECS["tar"], "tar", "/data")
+    assert tar_writes(parsed.flag_kwargs, parsed.paths) is writes

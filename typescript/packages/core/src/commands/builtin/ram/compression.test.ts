@@ -19,11 +19,24 @@ import { materialize } from '../../../io/types.ts'
 import { RAMVFS } from '../../../vfs/ram/ram.ts'
 import { PathSpec } from '../../../types.ts'
 import { gzip as gzipUtil, gunzip as gunzipUtil } from '../../../utils/compress.ts'
+import { MountMode } from '../../../types.ts'
+import { parseFlags } from '../../../workspace/executor/command/flags.ts'
+import { getTestParser } from '../../../workspace/fixtures/workspace_fixture.ts'
+import { Workspace } from '../../../workspace/workspace/workspace.ts'
+import { specOf } from '../../spec/builtins.ts'
 const RAM_GZIP = RAM_COMMANDS.filter((c) => c.name === 'gzip' && c.filetype == null)
 const RAM_GUNZIP = RAM_COMMANDS.filter((c) => c.name === 'gunzip' && c.filetype == null)
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
+
+// What a registered command's writes predicate answers for a typed line,
+// read through the same parse the executor hands the mount.
+function writesFor(cmd: RegisteredCommand | undefined, argv: string[]): boolean {
+  if (cmd?.writes == null) throw new Error('the command declares no writes predicate')
+  const parsed = parseFlags(argv, specOf(cmd.name), cmd.name, '/data')
+  return cmd.writes(parsed.flagKwargs, parsed.paths)
+}
 
 async function runCmd(
   reg: readonly RegisteredCommand[],
@@ -86,5 +99,56 @@ describe('gzip / gunzip', () => {
     const { writes } = await runCmd(RAM_GUNZIP, vfs, [PathSpec.fromStrPath('/f.txt.gz')], {}, null)
     expect(writes['/f.txt']).toBeDefined()
     expect(DEC.decode(writes['/f.txt'])).toBe('original data')
+  })
+})
+
+describe('gzip and gunzip say which invocations write', () => {
+  it.each([
+    [[], false],
+    [['-d'], false],
+    [['-c', 'f.txt'], false],
+    [['-dc', 'f.txt.gz'], false],
+    [['f.txt'], true],
+    [['-k', 'f.txt'], true],
+    [['-d', 'f.txt.gz'], true],
+  ])('gzip %j writes: %s', (argv, writes) => {
+    expect(writesFor(RAM_GZIP[0], argv)).toBe(writes)
+  })
+
+  it.each([
+    [[], false],
+    [['-c', 'f.txt.gz'], false],
+    [['-t', 'f.txt.gz'], false],
+    [['f.txt.gz'], true],
+    [['-k', 'f.txt.gz'], true],
+  ])('gunzip %j writes: %s', (argv, writes) => {
+    expect(writesFor(RAM_GUNZIP[0], argv)).toBe(writes)
+  })
+})
+
+describe('gzip on a read-only mount', () => {
+  it('runs where it writes nothing and refuses an in-place write', async () => {
+    const vfs = new RAMVFS()
+    vfs.store.files.set('/f.txt', ENC.encode('hello\n'))
+    const ws = new Workspace(
+      { '/ro/': [vfs, MountMode.READ] },
+      { shellParser: await getTestParser() },
+    )
+    try {
+      const piped = await ws.shell("cd /ro && printf 'x\\n' | gzip | gunzip")
+      expect([piped.exitCode, DEC.decode(piped.stdout), DEC.decode(piped.stderr)]).toEqual([
+        0,
+        'x\n',
+        '',
+      ])
+      const toStdout = await ws.shell('gzip -c /ro/f.txt | gunzip')
+      expect([toStdout.exitCode, DEC.decode(toStdout.stdout)]).toEqual([0, 'hello\n'])
+      const inPlace = await ws.shell('gzip /ro/f.txt')
+      expect(inPlace.exitCode).toBe(1)
+      expect(DEC.decode(inPlace.stderr)).toBe('gzip: read-only mount at /ro/\n')
+      expect([...vfs.store.files.keys()].sort()).toEqual(['/f.txt'])
+    } finally {
+      await ws.close()
+    }
   })
 })

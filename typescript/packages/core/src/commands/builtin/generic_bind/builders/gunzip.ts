@@ -12,12 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { gunzipGeneric } from '../../generic/gunzip.ts'
+import { gunzipGeneric, gunzipWrites } from '../../generic/gunzip.ts'
 import { type Builder, resolveGlobOf } from '../adapter.ts'
 
 export const GUNZIP_BUILDER: Builder = {
   name: 'gunzip',
   write: true,
+  writes: gunzipWrites,
   requirements: ['write', 'unlink'],
   fn: async (ops, accessor, paths, _texts, opts) => {
     const idx = opts.index ?? undefined

@@ -269,7 +269,7 @@
       "expect": {
         "exit": 1,
         "stdout": "==> /data/pr/one.txt <==\n1\n",
-        "stderr": "head: /data/pr/missing.txt: No such file or directory\n"
+        "stderr": "head: cannot open '/data/pr/missing.txt' for reading: No such file or directory\n"
       }
     },
     {
@@ -303,7 +303,7 @@
       "expect": {
         "exit": 1,
         "stdout": "==> /data/pr/one.txt <==\n2\n",
-        "stderr": "tail: /data/pr/missing.txt: No such file or directory\n"
+        "stderr": "tail: cannot open '/data/pr/missing.txt' for reading: No such file or directory\n"
       }
     },
     {
@@ -949,7 +949,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "head: /data/pr: Is a directory\n"
+        "stderr": "head: error reading '/data/pr': Is a directory\n"
       }
     },
     {

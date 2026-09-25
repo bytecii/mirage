@@ -54,7 +54,13 @@ import {
 import { norm, parent } from '../../../utils/path.ts'
 import { stripSlash } from '../../../utils/slash.ts'
 
-import type { AggregateFn, CommandFnResult, CommandOpts, ProvisionFn } from '../../config.ts'
+import type {
+  AggregateFn,
+  CommandFnResult,
+  CommandOpts,
+  ProvisionFn,
+  WritesFn,
+} from '../../config.ts'
 
 export function makeResolveGlob<A extends Accessor = Accessor>(
   readdir: ReaddirOp<A>,
@@ -1301,4 +1307,5 @@ export interface Builder<A extends Accessor = Accessor> {
    * can have `write` without either.
    */
   requirements?: readonly Operation[]
+  writes?: WritesFn
 }
