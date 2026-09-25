@@ -60,8 +60,6 @@ class HfHubVFS(BoundVFS, Generic[A]):
     # this off the source, and an imported name reads as unresolvable.
     index_ttl: float = 86_400
     SUPPORTS_SNAPSHOT: bool = True
-    # stat and read stamp the tree row's git oid, a read only when its ETag
-    # names that row, so the gate compares like with like.
     READ_REVALIDATABLE: bool = True
 
     def __init__(self, config: Any) -> None:
