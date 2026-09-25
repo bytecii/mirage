@@ -90,4 +90,15 @@ describe('zgrep', () => {
     expect(r.exitCode).toBe(0)
     expect(r.out).toBe('(standard input):bar\n')
   })
+
+  it('lists stdin as "-" under -l and -L', async () => {
+    // zgrep (gzip 1.13) lists stdin by the name it hands grep, `-`, while -H
+    // labels its lines `(standard input)`.
+    const vfs = new RAMVFS()
+    const compressed = await gzip(ENC.encode('foo\nbar\n'))
+    const listed = await runZgrep(vfs, [], ['bar'], { args_l: true }, compressed)
+    expect([listed.out, listed.exitCode]).toEqual(['-\n', 0])
+    const unlisted = await runZgrep(vfs, [], ['zzz'], { files_without_match: true }, compressed)
+    expect([unlisted.out, unlisted.exitCode]).toEqual(['-\n', 1])
+  })
 })

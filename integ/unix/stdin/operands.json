@@ -430,7 +430,7 @@
       "command": "(echo file > /data/stdin-file; printf 'a\\nb\\n' | head -n1 /data/stdin-file -)",
       "expect": {
         "exit": 0,
-        "stdout": "==> /data/stdin-file <==\nfile\n\n==> (standard input) <==\na\n",
+        "stdout": "==> /data/stdin-file <==\nfile\n\n==> standard input <==\na\n",
         "stderr": ""
       }
     },
@@ -444,7 +444,7 @@
       "command": "(echo file > /data/stdin-file; printf 'a\\nb\\n' | tail -n1 /data/stdin-file -)",
       "expect": {
         "exit": 0,
-        "stdout": "==> /data/stdin-file <==\nfile\n\n==> (standard input) <==\nb\n",
+        "stdout": "==> /data/stdin-file <==\nfile\n\n==> standard input <==\nb\n",
         "stderr": ""
       }
     },
@@ -501,6 +501,118 @@
       "expect": {
         "exit": 0,
         "stdout": "exists\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_operand_grep_names_dev_stdin_by_path",
+      "seq": 916903,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "printf 'b\\n' | grep -H b /dev/stdin",
+      "expect": {
+        "exit": 0,
+        "stdout": "/dev/stdin:b\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_operand_grep_lists_dev_stdin_by_path",
+      "seq": 916904,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "printf 'b\\n' | grep -l b /dev/stdin",
+      "expect": {
+        "exit": 0,
+        "stdout": "/dev/stdin\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_operand_grep_dev_stdin_beside_a_file",
+      "seq": 916905,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "printf 'b\\n' | grep b /dev/stdin /data/a.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "/dev/stdin:b\n/data/a.txt:bar\n/data/a.txt:baz\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_operand_head_heads_dev_stdin_by_path",
+      "seq": 916906,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "printf 'b\\n' | head -v /dev/stdin",
+      "expect": {
+        "exit": 0,
+        "stdout": "==> /dev/stdin <==\nb\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_operand_tail_heads_dev_stdin_by_path",
+      "seq": 916907,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "printf 'b\\n' | tail -v /dev/stdin",
+      "expect": {
+        "exit": 0,
+        "stdout": "==> /dev/stdin <==\nb\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_operand_tail_heads_dash_standard_input",
+      "seq": 916908,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "printf 'b\\n' | tail -v -",
+      "expect": {
+        "exit": 0,
+        "stdout": "==> standard input <==\nb\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_stdin_head_v_heads_standard_input",
+      "seq": 916909,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "printf 'b\\n' | head -v",
+      "expect": {
+        "exit": 0,
+        "stdout": "==> standard input <==\nb\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "shell_stdin_tail_v_heads_standard_input",
+      "seq": 916910,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "printf 'b\\n' | tail -v",
+      "expect": {
+        "exit": 0,
+        "stdout": "==> standard input <==\nb\n",
         "stderr": ""
       }
     }

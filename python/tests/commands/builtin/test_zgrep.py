@@ -126,3 +126,14 @@ def test_zgrep_m0_lists_every_archive_under_L_and_none_under_l():
     stdout, io = _run_raw(ws, "zgrep -m0 -l hello /data/m.gz /data/o.gz")
     assert _bytes(stdout) == b""
     assert io.exit_code == 1
+
+
+def test_zgrep_lists_stdin_as_dash():
+    # zgrep (gzip 1.13) lists stdin by the name it hands grep, `-`, while -H
+    # labels its lines `(standard input)`.
+    ws, _ = _ws()
+    compressed = gzip.compress(b"foo\nbar\n")
+    stdout, io = _run_raw(ws, "zgrep -l bar", stdin=compressed)
+    assert (_bytes(stdout), io.exit_code) == (b"-\n", 0)
+    stdout, io = _run_raw(ws, "zgrep -L zzz", stdin=compressed)
+    assert (_bytes(stdout), io.exit_code) == (b"-\n", 1)

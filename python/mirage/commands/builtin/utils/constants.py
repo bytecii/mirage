@@ -28,6 +28,9 @@ DEFAULT_BACKUP_SUFFIX = "~"
 # workspace materialization. Regular files keep the ordinary line-only cap.
 CHAR_DEVICE_MAX_BYTES = 8 << 20
 
+# GNU head and tail's name for stdin in a ``==> name <==`` header.
+STDIN_HEADER_NAME = "standard input"
+
 TYPE_CHARS = {
     FileType.DIRECTORY: "d",
     FileType.SYMLINK: "l",
