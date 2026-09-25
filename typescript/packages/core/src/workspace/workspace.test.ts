@@ -713,7 +713,7 @@ describe('Workspace.unmount', () => {
         await expect(ws.vfs.stat('/')).resolves.toMatchObject({ type: FileType.DIRECTORY })
         const result = await ws.shell('ls /')
         expect(result.exitCode).toBe(0)
-        expect(result.stdoutText).toBe('dev\n')
+        expect(result.stdoutText).toBe('dev\nusr\n')
         expect(result.stderrText).toBe('')
       } finally {
         await ws.close()

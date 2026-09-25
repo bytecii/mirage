@@ -12,32 +12,29 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { BoundVFS } from '../bound.ts'
+import { GSLIDES_IO } from '../../commands/builtin/gslides/io.ts'
 import { GSlidesAccessor } from '../../accessor/gslides.ts'
-import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+
 import { GSLIDES_COMMANDS } from '../../commands/builtin/gslides/index.ts'
 import type { RegisteredCommand } from '../../commands/config.ts'
 import { TokenManager } from '../../core/google/client.ts'
-import { read as gslidesRead } from '../../core/gslides/read.ts'
-import { readdir as gslidesReaddir } from '../../core/gslides/readdir.ts'
-import { stat as gslidesStat } from '../../core/gslides/stat.ts'
+
 import { GSLIDES_OPS } from '../../ops/gslides/index.ts'
 import type { RegisteredOp } from '../../ops/registry.ts'
-import { BaseVFS } from '../base.ts'
+
 import type { VFS } from '../base.ts'
 import { GSLIDES_PROMPT, GSLIDES_WRITE_PROMPT } from './prompt.ts'
-import { PathSpec, VFSName } from '../../types.ts'
-import type { FileStat } from '../../types.ts'
-import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
-import { redactGSlidesConfig, type GSlidesConfig, type GSlidesConfigRedacted } from './config.ts'
+import { VFSName } from '../../types.ts'
 
-const gslidesResolveGlob = makeResolveGlob(gslidesReaddir)
+import { redactGSlidesConfig, type GSlidesConfig, type GSlidesConfigRedacted } from './config.ts'
 
 export interface GSlidesVFSState {
   type: string
   config: GSlidesConfigRedacted
 }
 
-export class GSlidesVFS extends BaseVFS implements VFS {
+export class GSlidesVFS extends BoundVFS<GSlidesAccessor> implements VFS {
   readonly kind: string = VFSName.GSLIDES
   readonly cachesReads: boolean = true
   override readonly indexTtl: number = 86_400
@@ -47,7 +44,7 @@ export class GSlidesVFS extends BaseVFS implements VFS {
   readonly accessor: GSlidesAccessor
 
   constructor(config: GSlidesConfig) {
-    super()
+    super(GSLIDES_IO)
     this.config = config
     const tm = new TokenManager(config)
     this.accessor = new GSlidesAccessor({ tokenManager: tm })
@@ -59,36 +56,6 @@ export class GSlidesVFS extends BaseVFS implements VFS {
 
   ops(): readonly RegisteredOp[] {
     return GSLIDES_OPS
-  }
-
-  readFile(p: PathSpec): Promise<Uint8Array> {
-    return gslidesRead(this.accessor, p, this.index)
-  }
-
-  readdir(p: PathSpec): Promise<string[]> {
-    return gslidesReaddir(this.accessor, p, this.index)
-  }
-
-  stat(p: PathSpec): Promise<FileStat> {
-    return gslidesStat(this.accessor, p, this.index)
-  }
-
-  glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {
-    const effective =
-      prefix !== ''
-        ? paths.map((p) =>
-            mountPrefixOf(p.virtual, p.vfsPath) !== ''
-              ? p
-              : new PathSpec({
-                  virtual: p.virtual,
-                  directory: p.directory,
-                  ...(p.pattern !== null ? { pattern: p.pattern } : {}),
-                  resolved: p.resolved,
-                  vfsPath: mountKey(p.virtual, prefix),
-                }),
-          )
-        : paths
-    return gslidesResolveGlob(this.accessor, effective, this.index)
   }
 
   override getState(): Promise<GSlidesVFSState> {

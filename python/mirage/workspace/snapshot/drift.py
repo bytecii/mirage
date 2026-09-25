@@ -299,7 +299,7 @@ def live_only_mount_prefixes(ws: "Workspace", ) -> list[str]:
     """
     out: list[str] = []
     for m in ws._registry.mounts():
-        if m.prefix in {"/dev/", "/.bash_history/"}:
+        if m.prefix in {"/dev/", "/.bash_history/", "/usr/bin/"}:
             continue
         if ws._implicit_root and m.prefix == "/":
             continue

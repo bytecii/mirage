@@ -1,5 +1,13 @@
 {
   "services": {
+    "airtable": {
+      "python": [
+        "AIRTABLE_URL"
+      ],
+      "typescript": [
+        "AIRTABLE_URL"
+      ]
+    },
     "box": {
       "python": [
         "BOX_URL"
@@ -2086,6 +2094,30 @@
       ]
     },
     {
+      "id": "cli-airtable",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "airtable",
+      "facet": "cli",
+      "clis": [
+        "airtable"
+      ],
+      "mounts": [
+        {
+          "path": "/airtable",
+          "vfs": "airtable",
+          "mode": "read"
+        },
+        {
+          "path": "/scratch",
+          "vfs": "ram",
+          "backend": "memory"
+        }
+      ]
+    },
+    {
       "id": "slack",
       "hosts": [
         "python",
@@ -2119,6 +2151,32 @@
           "path": "/scratch",
           "vfs": "ram",
           "backend": "ram"
+        }
+      ]
+    },
+    {
+      "id": "airtable",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "service": "airtable",
+      "facet": "project",
+      "mounts": [
+        {
+          "path": "/airtable",
+          "vfs": "airtable",
+          "backend": "airtable",
+          "mode": "read"
+        },
+        {
+          "path": "/roadmap",
+          "vfs": "airtable",
+          "backend": "airtable",
+          "mode": "read",
+          "base_ids": [
+            "appRoadmapBase001"
+          ]
         }
       ]
     },
@@ -2399,6 +2457,22 @@
           "path": "/langfuse",
           "vfs": "arg_error",
           "backend": "langfuse",
+          "mode": "read"
+        }
+      ]
+    },
+    {
+      "id": "argerr-airtable",
+      "facet": "argerr",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "mounts": [
+        {
+          "path": "/airtable",
+          "vfs": "arg_error",
+          "backend": "airtable",
           "mode": "read"
         }
       ]

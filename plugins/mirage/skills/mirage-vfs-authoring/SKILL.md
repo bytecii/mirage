@@ -8,6 +8,19 @@ description: Build or extend a custom Mirage VFS adapter for a user's API, datab
 Deliver an adapter in the user's project, a working mount configuration, and
 tests of its filesystem behavior. Use `GenericVFS` with a `VFSAdapter` built from resource capabilities. A normal custom backend needs no Mirage fork.
 
+## Start from the bundled adapter
+
+For a new backend, run `python scripts/new_adapter.py --language python --output <project>/resource.py` from this skill directory, or select `typescript` and a
+`.ts` output. The script refuses to overwrite an existing file. The generated
+adapter uses only an in-memory fixture and includes a read-contract check plus a
+mounted shell smoke test. Run Python with the project's Mirage environment, or
+TypeScript with its `tsx` runner and `@struktoai/mirage-node` dependency.
+
+Replace the fixture client with the resource API, then update the fixture paths
+and expected bytes. Keep credentials in the application's configuration. The
+self-contained templates are [Python](assets/adapter.py) and
+[TypeScript](assets/adapter.ts); no repository checkout is needed to scaffold.
+
 ## Establish the resource contract
 
 Inspect the project's Mirage version, language, runtime, and existing client.
@@ -69,7 +82,8 @@ Add capabilities independently as the resource needs them:
   passes its booleans in `options.grep` using snake_case keys in both languages.
   It requires complete rendered output lines. `meta.grep.stream` opts into native
   streams for fallback scans. Semantic queries can use the same callback through
-  a custom command with its own options. The hierarchy kit can adapt scope-specific
+  a custom command with its own options. Supply optional `search_many` /
+  `searchMany` when ranking and limits must apply once across several scopes. The hierarchy kit can adapt scope-specific
   callbacks via `make_search_op` / `makeSearchOp`.
 - `WriteOps` supplies individual mutations. A write callback does not imply
   deletion, rename, append, or directory support. Mount mode still enforces
@@ -93,7 +107,7 @@ listing cannot prove an unlisted resource absent. Use Mirage's existing
 hierarchy/index helpers when their documented contract fits; do not import
 private helpers merely to shorten the adapter.
 
-Search optimizations must return the same matches as searching the rendered
+Grep/rg optimizations must return the same matches as searching the rendered
 bytes. Fall back to scanning when equivalence is uncertain. Respect read
 budgets before eagerly materializing results, and report incomplete output.
 
@@ -138,3 +152,15 @@ and add shared integration cases for observable shell behavior.
 Deliver the adapter, exact mount configuration, and verification results.
 State which operations and state behavior are supported, and identify any
 live-service checks that could not be run.
+
+## Reuse the conformance check
+
+Run `check_read_contract` / `checkReadContract` with a `ReadFixture` describing a
+small known file, its parent, an absent sibling, and expected bytes. This checks
+listing, stat, byte reads, streams, native ranges, existence, and missing-path
+errors without mutating the resource. It accepts either a `VFSAdapter` or its
+compiled table, so the same probe works for builtins and external adapters.
+
+Add backend-specific tests for pagination, authorization errors, and query options.
+Use disposable fixtures for mutation tests. Verify a read-only mount refuses
+writes and preserves the fixture. Do not run write probes against production data.

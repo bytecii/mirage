@@ -695,6 +695,7 @@ class VFSName(str, Enum):
     QDRANT = "qdrant"
     SHAREPOINT = "sharepoint"
     BOX = "box"
+    AIRTABLE = "airtable"
 
 
 @dataclass(frozen=True, init=False)

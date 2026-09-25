@@ -25,6 +25,7 @@ from mirage.observe.log_entry import EVENT_CLEAR, EVENT_COMMAND, EVENT_DELETE
 from mirage.runtime.types import Language, ScriptSource
 from mirage.shell.console import (KILLED_OUTCOME, Channel, ConsoleChunk,
                                   JobConsole, RAMConsoleStore, exit_outcome)
+from mirage.shell.constants import BIN_PREFIX
 from mirage.shell.job_table import Job, JobStatus
 from mirage.shell.variable import ShellVar
 from mirage.types import JsonValue, MountMode, ReadSpec, VFSName
@@ -151,7 +152,11 @@ def cli_spec_from_entry(entry: dict[str, Any]) -> str | CLISpec:
 
 
 async def to_state_dict(ws) -> dict[str, Any]:
-    auto_prefixes = {"/dev/", norm_mount_prefix(HISTORY_PREFIX)}
+    auto_prefixes = {
+        "/dev/",
+        norm_mount_prefix(HISTORY_PREFIX),
+        norm_mount_prefix(BIN_PREFIX)
+    }
 
     mounted = ws._registry.mounts()
     for mount in mounted:
@@ -740,7 +745,11 @@ def reusable_mounts(mounts: list[Any], state: dict[str,
         mounts (list[Any]): the origin's mount entries.
         state (dict[str, Any]): the origin's state dict.
     """
-    auto = {"/dev/", norm_mount_prefix(HISTORY_PREFIX)}
+    auto = {
+        "/dev/",
+        norm_mount_prefix(HISTORY_PREFIX),
+        norm_mount_prefix(BIN_PREFIX)
+    }
     live = {m.prefix: m.vfs for m in mounts if m.prefix not in auto}
     return {
         m[MountKey.PREFIX]: live[m[MountKey.PREFIX]]

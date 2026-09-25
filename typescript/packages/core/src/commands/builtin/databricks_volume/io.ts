@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { VFSAdapter } from '../../../vfs/adapter.ts'
+import { VFSAdapter, appendFromRead } from '../../../vfs/adapter.ts'
 
 import type { DatabricksVolumeAccessor } from '../../../accessor/databricks_volume.ts'
 import { copy as dbxCopy } from '../../../core/databricks_volume/copy.ts'
@@ -35,6 +35,7 @@ export const DATABRICKS_VOLUME_IO: CommandIO<DatabricksVolumeAccessor> =
     read: { readdir: dbxReaddir, readBytes: dbxRead, stat: dbxStat },
     native: { readRange: rangeOf(dbxRead), readStream: dbxStream, exists: dbxExists },
     writes: {
+      append: appendFromRead(dbxRead, dbxWrite),
       write: dbxWrite,
       mkdir: (accessor, path, parents) => dbxMkdir(accessor, path, undefined, parents === true),
       unlink: dbxUnlink,

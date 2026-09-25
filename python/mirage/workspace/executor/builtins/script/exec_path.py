@@ -16,13 +16,20 @@ import shlex
 from collections.abc import Callable
 from typing import Any
 
+from mirage.context import clear_program_invocation, reset_program_invocation
 from mirage.io import IOResult
 from mirage.io.types import ByteSource
 from mirage.runtime.types import DispatchFn
 from mirage.utils.errors import FS_ERRORS, fs_strerror
+from mirage.utils.path import resolve_path
+from mirage.vfs.bin import BinViewVFS
+from mirage.workspace.executor.builtins.command.command import \
+    handle_command_builtin
 from mirage.workspace.executor.builtins.script.bash import handle_bash
 from mirage.workspace.executor.builtins.script.script import (read_script_text,
                                                               script_error)
+from mirage.workspace.mount import MountRegistry
+from mirage.workspace.mount.namespace import Namespace
 from mirage.workspace.session import SessionState
 from mirage.workspace.types import ExecutionNode
 
@@ -77,6 +84,8 @@ async def handle_exec_path(
     path: str,
     args: list[str],
     session: SessionState,
+    registry: MountRegistry,
+    namespace: Namespace,
     stdin: ByteSource | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     """Run a slash-carrying head word as a program, bash's loader rule.
@@ -103,6 +112,8 @@ async def handle_exec_path(
         path (str): the head word, as typed.
         args (list[str]): the words after it, positional for the script.
         session (SessionState): shell session state.
+        registry (MountRegistry): identifies the program view.
+        namespace (Namespace): resolves links to program files.
         stdin (ByteSource | None): input stream for the script.
     """
     try:
@@ -113,6 +124,21 @@ async def handle_exec_path(
             raise
         code = 127 if isinstance(exc, FileNotFoundError) else 126
         return script_error(path, strerror, code)
+    target = namespace.follow(resolve_path(path, session.cwd))
+    vfs, key, _ = registry.resolve(target)
+    if isinstance(vfs, BinViewVFS):
+        # The read above enforces visibility and path policy. Dispatch the
+        # target through its own command gate, without requiring permission
+        # for the stub's implementation helper, `command`.
+        saved = session.snapshot()
+        token = clear_program_invocation()
+        try:
+            return await handle_command_builtin(
+                execute_fn, ["--", key.strip("/"), *args], session, registry,
+                stdin)
+        finally:
+            reset_program_invocation(token)
+            session.restore(saved)
     words = shebang_words(script)
     interp = words[0] if words else "sh"
     if interp in ("sh", "bash"):

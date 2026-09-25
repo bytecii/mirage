@@ -15,11 +15,14 @@
 from mirage.core.mem0.read import read as _read
 from mirage.core.mem0.read import read_stream as _read_stream
 from mirage.core.mem0.readdir import readdir as _readdir
+from mirage.core.mem0.search import search_many, search_resource
 from mirage.core.mem0.stat import stat as _stat
 from mirage.vfs.adapter import VFSAdapter
-from mirage.vfs.types import NativeReadOps, ReadOps
+from mirage.vfs.types import NativeReadOps, ReadOps, SearchOps
 
-IO = VFSAdapter(read=ReadOps(readdir=_readdir, read_bytes=_read, stat=_stat),
+IO = VFSAdapter(search=SearchOps(search=search_resource,
+                                 search_many=search_many),
+                read=ReadOps(readdir=_readdir, read_bytes=_read, stat=_stat),
                 native=NativeReadOps(read_stream=_read_stream),
                 is_mounted=lambda _accessor: True,
                 local=False).to_command_io()

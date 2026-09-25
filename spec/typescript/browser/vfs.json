@@ -1,5 +1,16 @@
 {
   "capabilities": {
+    "airtable": {
+      "caches_reads": false,
+      "has_prompt": true,
+      "has_write_prompt": true,
+      "index_ttl": 600,
+      "read_revalidatable": false,
+      "sizes_always_known": false,
+      "statfs": false,
+      "storage_id": false,
+      "supports_snapshot": false
+    },
     "aliyun": {
       "caches_reads": true,
       "has_prompt": true,
@@ -466,6 +477,30 @@
     }
   },
   "command_io": {
+    "airtable": {
+      "local": false,
+      "max_du_entries": 10000,
+      "max_glob_matches": 10000,
+      "slots": [
+        "is_mounted",
+        "read_bytes",
+        "read_stream",
+        "readdir",
+        "stat"
+      ]
+    },
+    "bin": {
+      "local": false,
+      "max_du_entries": 10000,
+      "max_glob_matches": 10000,
+      "slots": [
+        "is_mounted",
+        "read_bytes",
+        "read_stream",
+        "readdir",
+        "stat"
+      ]
+    },
     "box": {
       "local": false,
       "max_du_entries": 10000,
@@ -501,6 +536,7 @@
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -509,6 +545,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 10000,
       "slots": [
+        "append",
         "copy",
         "create",
         "exists",
@@ -564,6 +601,7 @@
         "read_range",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -714,6 +752,7 @@
       "max_glob_matches": 10000,
       "slots": [
         "exists",
+        "find",
         "is_mounted",
         "read_bytes",
         "read_stream",
@@ -744,6 +783,7 @@
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -784,6 +824,7 @@
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -890,6 +931,7 @@
         "read_bytes",
         "read_stream",
         "readdir",
+        "search",
         "stat"
       ]
     },
@@ -952,6 +994,7 @@
       "max_du_entries": 10000,
       "max_glob_matches": 5000,
       "slots": [
+        "append",
         "copy",
         "create",
         "du",
@@ -1040,6 +1083,8 @@
     }
   },
   "command_vfs_names": [
+    "airtable",
+    "bin",
     "box",
     "chroma",
     "databricks_volume",
@@ -1074,6 +1119,27 @@
     "wandb"
   ],
   "configs": {
+    "airtable": {
+      "fields": {
+        "baseIds": {
+          "required": false
+        },
+        "baseUrl": {
+          "required": false
+        },
+        "maxReadRecords": {
+          "required": false
+        },
+        "requestsPerSecond": {
+          "required": false
+        },
+        "token": {
+          "required": true
+        }
+      },
+      "rename": {},
+      "validates": true
+    },
     "aliyun": {
       "fields": {
         "bucket": {
@@ -2124,6 +2190,7 @@
     }
   },
   "registry": [
+    "airtable",
     "aliyun",
     "backblaze",
     "box",

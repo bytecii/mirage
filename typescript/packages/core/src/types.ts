@@ -436,6 +436,7 @@ export const VFSName = Object.freeze({
   SHAREPOINT: 'sharepoint',
   DROPBOX: 'dropbox',
   BOX: 'box',
+  AIRTABLE: 'airtable',
   SLACK: 'slack',
   DISCORD: 'discord',
   GMAIL: 'gmail',
@@ -476,6 +477,7 @@ export const VFSName = Object.freeze({
   SCALEWAY: 'scaleway',
   QINGSTOR: 'qingstor',
   HISTORY: 'history',
+  BIN: 'bin',
 } as const)
 
 export type VFSName = (typeof VFSName)[keyof typeof VFSName]

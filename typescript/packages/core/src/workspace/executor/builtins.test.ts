@@ -1432,7 +1432,7 @@ describe('handleSet', () => {
   it('no args → print env', () => {
     const s = new SessionState({ sessionId: 'test', vars: varsFromEnv({ A: '1' }) })
     const [out] = handleSet([], s)
-    expect(decode(out as Uint8Array)).toBe('A=1\nPWD=/\n')
+    expect(decode(out as Uint8Array)).toBe('A=1\nPATH=/usr/bin\nPWD=/\n')
   })
 
   it('"-- a b" sets positional args', () => {

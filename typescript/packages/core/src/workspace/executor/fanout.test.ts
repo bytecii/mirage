@@ -287,22 +287,29 @@ describe('find actions on structural rows', () => {
   })
 
   it('-delete skips structural rows and exits 0', async () => {
-    const reg = nestedGhostRegistry()
-    const s = new SessionState({ sessionId: 'test', cwd: '/' })
-    const [, io] = await handleCommand(
-      NEVER_EXECUTE,
-      STAT_ONLY_DISPATCH,
-      reg,
-      ['find', '/', '-delete'],
-      s,
+    const parser = await getTestParser()
+    const root = new RAMVFS()
+    root.store.files.set('/top.txt', new TextEncoder().encode('hello\n'))
+    const deep = new RAMVFS()
+    deep.store.files.set('/leaf.txt', new TextEncoder().encode('deep\n'))
+    const ws = new Workspace(
+      { '/': root, '/ghost/very/deep': deep },
+      {
+        mode: MountMode.WRITE,
+        shellParser: parser,
+      },
     )
-    expect(io.exitCode).toBe(0)
-    expect(new TextDecoder().decode(await materialize(io.stderr))).toBe('')
-    const [after] = await handleCommand(NEVER_EXECUTE, STAT_ONLY_DISPATCH, reg, ['find', '/'], s)
-    const text = after === null ? '' : new TextDecoder().decode(await materialize(after))
-    expect(text).toContain('/ghost/very/deep')
-    expect(text).not.toContain('/top.txt')
-    expect(text).not.toContain('leaf.txt')
+    try {
+      const io = await ws.shell("find / -not -path '/usr*' -delete")
+      expect(io.exitCode).toBe(0)
+      expect(io.stderrText).toBe('')
+      const after = await ws.shell('find /')
+      expect(after.stdoutText).toContain('/ghost/very/deep')
+      expect(after.stdoutText).not.toContain('/top.txt')
+      expect(after.stdoutText).not.toContain('leaf.txt')
+    } finally {
+      await ws.close()
+    }
   })
 })
 
@@ -636,7 +643,7 @@ describe('ls -R across a mount boundary', () => {
       '/ghost/very/deep': ram({ '/leaf.txt': 'deep\n' }),
     }
     expect(await runLine(mounts, 'ls -R /')).toMatch(
-      /^\/:\ndev\nghost\ntop\.txt\n\n\/ghost:\nvery\n\n\/ghost\/very:\ndeep\n/,
+      /^\/:\ndev\nghost\ntop\.txt\nusr\n\n\/ghost:\nvery\n\n\/ghost\/very:\ndeep\n/,
     )
   })
 
@@ -648,9 +655,13 @@ describe('ls -R across a mount boundary', () => {
   // so the same name arrived twice in two wrong shapes.
   it('renders a file mount as one row and no group', async () => {
     const mounts = { '/': ram({ '/top.txt': 'T\n' }) }
-    expect(await runLine(mounts, 'ls -aRF /')).toBe(
-      '/:\n.bash_history\ndev/\ntop.txt\n\n/dev:\nnull\nzero\n',
-    )
+    const out = await runLine(mounts, 'ls -aRF /')
+    expect(
+      out.startsWith(
+        '/:\n.bash_history\ndev/\ntop.txt\nusr/\n\n/usr:\nbin/\n\n/dev:\nnull\nzero\n\n',
+      ),
+    ).toBe(true)
+    expect(out.split('.bash_history').length).toBe(2)
   })
 
   // A mount root is listed but not descended, so the shadowed group is

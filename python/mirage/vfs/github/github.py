@@ -16,21 +16,18 @@ from typing import Any
 
 from mirage.accessor.github import GitHubAccessor
 from mirage.commands.builtin.github import COMMANDS
+from mirage.commands.builtin.github.io import IO
 from mirage.core.github.config import GitHubConfig
-from mirage.core.github.readdir import readdir
 from mirage.core.github.tree_entry import TreeEntry
 from mirage.core.github.watch import build_delta_hook
 from mirage.ops.github import OPS as GITHUB_VFS_OPS
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.vfs.base import BaseVFS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.github.prompt import PROMPT
 from mirage.watch.base import DeltaHook
 
-_resolve_glob = make_resolve_glob(readdir)
 
-
-class GitHubVFS(BaseVFS):
+class GitHubVFS(BoundVFS):
 
     accessor: GitHubAccessor
     name: str = VFSName.GITHUB
@@ -110,7 +107,7 @@ class GitHubVFS(BaseVFS):
                                        default_branch,
                                        tree=tree,
                                        truncated=truncated)
-        super().__init__()
+        super().__init__(io=IO)
         for fn in COMMANDS:
             self.register(fn)
         for fn in GITHUB_VFS_OPS:
@@ -118,13 +115,6 @@ class GitHubVFS(BaseVFS):
 
     def delta_hook(self) -> DeltaHook:
         return build_delta_hook(self.accessor)
-
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        return await _resolve_glob(self.accessor, paths, self._index)
 
     @property
     def is_default_branch(self) -> bool | None:

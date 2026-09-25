@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { PathSpec } from '../types.ts'
-import { createAsyncContext } from '../utils/async_context.ts'
+import { type ContextCall, createAsyncContext } from '../utils/async_context.ts'
 
 /**
  * What this module needs from a cache manager. `CacheManager` in
@@ -46,6 +46,11 @@ export function runWithCacheManager<T>(
   fn: () => Promise<T>,
 ): Promise<T> {
   return Promise.resolve(storage.run({ manager }, fn))
+}
+
+/** Keep the mount's cache manager bound while a command's lazy output is read. */
+export function captureCacheContext(): ContextCall {
+  return storage.capture()
 }
 
 /**

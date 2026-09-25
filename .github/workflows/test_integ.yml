@@ -1647,9 +1647,21 @@ jobs:
           echo "TRELLO_URL=http://127.0.0.1:5095" >> "$GITHUB_ENV"
           echo "LINEAR_URL=http://127.0.0.1:5094" >> "$GITHUB_ENV"
 
+      # The airtable mount runs in the project facet and its CLI in the cli
+      # facet, against the same fake.
+      - name: Start fake Airtable API
+        if: matrix.facet == 'project' || matrix.facet == 'cli'
+        working-directory: integ
+        run: |
+          nohup ./node_modules/.bin/tsx server/airtable/main.ts --port 5101 > /tmp/airtable.log 2>&1 &
+          for i in $(seq 1 30); do grep -q "AIRTABLE_URL=" /tmp/airtable.log && break; sleep 1; done
+          cat /tmp/airtable.log
+          grep -q "AIRTABLE_URL=" /tmp/airtable.log
+          echo "AIRTABLE_URL=http://127.0.0.1:5101" >> "$GITHUB_ENV"
+
       # The cli facet drives the builtin CLIs (himalaya, gws, slack, discord,
-      # ntn, linear) end to end against the same mocks the email, chat and
-      # project facets use.
+      # ntn, linear, airtable) end to end against the same mocks the email,
+      # chat and project facets use.
       - name: Start the fake mail and Google Workspace servers
         if: matrix.facet == 'email' || matrix.facet == 'cli'
         run: |

@@ -222,8 +222,8 @@ def test_delete_removes_emptied_directories() -> None:
         r = await ws.shell("find /tree -delete", session_id="s")
         assert r.exit_code == 0
         assert await r.stderr_str() == ""
-        check = await ws.shell("find / -name tree", session_id="s")
-        assert await check.stdout_str() == ""
+        check = await ws.shell("test -e /tree", session_id="s")
+        assert check.exit_code == 1
         await ws.close()
 
     _run(_go())
@@ -938,3 +938,14 @@ async def test_exec_runs_the_head_as_a_program():
         assert await io.stderr_str() == ""
     finally:
         await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_keeps_a_directory_with_an_unmatched_link():
+    with Workspace({"/data": RAMVFS()}, mode=MountMode.WRITE) as ws:
+        await ws.shell("mkdir /data/d; ln -s nowhere /data/d/link")
+        result = await ws.shell("find /data/d -type d -delete")
+        assert result.exit_code == 1
+        assert await result.stderr_str(
+        ) == "find: cannot delete '/data/d': Directory not empty\n"
+        assert ws.namespace.is_link("/data/d/link")

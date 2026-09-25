@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { find } from '../../../core/history/find.ts'
 import { VFSAdapter } from '../../../vfs/adapter.ts'
 
 import type { HistoryAccessor } from '../../../accessor/history.ts'
@@ -25,7 +26,7 @@ import type { CommandIO } from '../generic_bind/index.ts'
 // the read trio is wired; the history builtin itself stays bespoke.
 export const HISTORY_IO: CommandIO<HistoryAccessor> = new VFSAdapter<HistoryAccessor>({
   read: { readdir: historyReaddir, readBytes: historyRead, stat: historyStat },
-  native: { readStream: historyStream },
+  native: { readStream: historyStream, find },
   isMounted: () => true,
   local: false,
 }).toCommandIO()

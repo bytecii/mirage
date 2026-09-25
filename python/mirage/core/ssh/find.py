@@ -65,20 +65,19 @@ async def find(
         if root_attrs is not None:
             is_dir = root_attrs.type == asyncssh.FILEXFER_TYPE_DIRECTORY
             if in_mtime_window(root_attrs.mtime, mtime_min, mtime_max):
-                emit_start_path(results,
-                                path,
-                                start_name,
-                                kind="d" if is_dir else "f",
-                                is_empty=False if is_dir else
-                                (root_attrs.size or 0) == 0,
-                                exists=True,
-                                tree=tree,
-                                maxdepth=maxdepth,
-                                mindepth=mindepth,
-                                size=None if is_dir else
-                                (root_attrs.size or 0),
-                                min_size=min_size,
-                                max_size=max_size)
+                emit_start_path(
+                    results,
+                    path,
+                    start_name,
+                    kind="d" if is_dir else "f",
+                    is_empty=False if is_dir else root_attrs.size == 0,
+                    exists=True,
+                    tree=tree,
+                    maxdepth=maxdepth,
+                    mindepth=mindepth,
+                    size=None if is_dir else (root_attrs.size or 0),
+                    min_size=min_size,
+                    max_size=max_size)
     await _walk(sftp, config, path, results, 0, maxdepth, mindepth, tree,
                 min_size, max_size, mtime_min, mtime_max)
     return sorted(results)
@@ -140,8 +139,7 @@ def _matches(
                            name=path.rsplit("/", 1)[-1],
                            kind="d" if is_dir else "f",
                            depth=depth,
-                           is_empty=False if is_dir else
-                           (entry.attrs.size or 0) == 0)
+                           is_empty=False if is_dir else entry.attrs.size == 0)
     if not keep(find_entry, tree, mindepth):
         return False
     if min_size is not None or max_size is not None:

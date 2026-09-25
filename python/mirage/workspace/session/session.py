@@ -24,7 +24,8 @@ from mirage.policy.types import (AdmissionRules, Decision, HideReason,
                                  ProfileScript)
 from mirage.secrets.config import EnvVar
 from mirage.shell.array import ShellArray
-from mirage.shell.constants import RANDOM, RANDOM_UNSET, SHELL_ARGV0
+from mirage.shell.constants import (BIN_PREFIX, RANDOM, RANDOM_UNSET,
+                                    SHELL_ARGV0)
 from mirage.shell.types import FunctionBody
 from mirage.shell.variable import (ManagedRef, ShellVar, VarAttr,
                                    attrs_from_letters, stored_attrs,
@@ -602,6 +603,11 @@ class SessionState:
         # process view is the exported set rather than every string.
         self.vars.setdefault("PWD",
                              ShellVar(self.cwd, frozenset({VarAttr.EXPORT})))
+        # bash starts with a PATH when the environment gives it none, and
+        # does not export it: `env` does not list it and a child process,
+        # such as a host interpreter, keeps its own. The one directory here
+        # is where every program's file is.
+        self.vars.setdefault("PATH", ShellVar(BIN_PREFIX, frozenset()))
 
     def fork(self, **overrides: Any) -> "SessionState":
         """Return a copy of this session with overrides applied.

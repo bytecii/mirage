@@ -94,7 +94,6 @@ async def _finish_find(
         ns: NamespaceView | None,
         stat_path: StatPath | None,
         dispatch: DispatchFn,
-        namespace: Namespace | None = None,
         stdin: ByteSource | None = None,
         starts: list[PathSpec] | None = None) -> ByteSource | None:
     """Apply find's actions once, at the command boundary.
@@ -115,10 +114,8 @@ async def _finish_find(
         execute_fn (ExecuteLine | None): runs an ``-exec`` line.
         ns (NamespaceView | None): the name plane's facts.
         stat_path (StatPath | None): dispatcher stat.
-        dispatch (DispatchFn): the op dispatcher a symlink row is
+        dispatch (DispatchFn): the op dispatcher every matched row is
             deleted through.
-        namespace (Namespace | None): the node table a deleted row's
-            meta is dropped from.
         stdin (ByteSource | None): find's own input, for its ``-exec``
             children.
         starts (list[PathSpec] | None): the start operands, for the
@@ -136,7 +133,6 @@ async def _finish_find(
         stat_path=stat_path,
         dispatch=dispatch,
         identity=identity_from(ns, session_view(session, registry.policies)),
-        namespace=namespace,
         stdin=stdin,
         starts=starts)
     if action_err:
@@ -395,7 +391,6 @@ async def handle_command(
                                         cross_ns,
                                         cross_stat,
                                         dispatch,
-                                        namespace=namespace,
                                         stdin=stdin,
                                         starts=cross_scopes)
         if cross_parsed.warnings:
@@ -509,7 +504,6 @@ async def handle_command(
                                         single_ns,
                                         single_stat,
                                         dispatch,
-                                        namespace=namespace,
                                         stdin=stdin,
                                         starts=paths)
             node.exit_code = io.exit_code
@@ -541,7 +535,6 @@ async def handle_command(
                                     single_ns,
                                     single_stat,
                                     dispatch,
-                                    namespace=namespace,
                                     stdin=stdin,
                                     starts=paths)
 

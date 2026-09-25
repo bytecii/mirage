@@ -482,12 +482,16 @@ export class Namespace {
     return moved.length
   }
 
-  // Drop every node entry under a directory (`rm -r` semantics).
-  async purgeUnder(directory: string): Promise<number> {
+  // Drop every node entry under a directory (`rm -r` semantics), except
+  // the entries in `keep`.
+  async purgeUnder(
+    directory: string,
+    keep: ReadonlySet<string> = new Set<string>(),
+  ): Promise<number> {
     const base = rstripSlash(directory) + '/'
     const doomed: string[] = []
     for (const path of this.nodeTable.keys()) {
-      if (path.startsWith(base)) doomed.push(path)
+      if (path.startsWith(base) && !keep.has(path)) doomed.push(path)
     }
     for (const path of doomed) this.nodeTable.delete(path)
     if (doomed.length > 0) await this.store.delete(doomed)

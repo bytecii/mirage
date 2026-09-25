@@ -676,7 +676,7 @@ async function routeArgv(
   // claim it. After the admission gate so a policy sees the line like
   // any other.
   if (name.includes('/')) {
-    return handleExecPath(dispatch, executeFn, name, args, session, stdin)
+    return handleExecPath(dispatch, executeFn, name, args, session, registry, namespace, stdin)
   }
 
   // Unsupported bash builtins. Constructs the parser accepts but the

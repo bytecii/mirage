@@ -161,6 +161,7 @@
                       "home/setup/mongodb",
                       "home/setup/gridfs",
                       "home/setup/postgres",
+                      "home/setup/airtable",
                       "home/setup/chroma",
                       "home/setup/lancedb",
                       "home/setup/qdrant",
@@ -194,6 +195,7 @@
                   "home/setup/cli/discord",
                   "home/setup/cli/ntn",
                   "home/setup/cli/linear",
+                  "home/setup/cli/airtable",
                   "home/setup/cli/gh",
                   "home/setup/cli/hf",
                   "home/setup/cli/git"
@@ -348,6 +350,7 @@
                       "python/vfs/mongodb",
                       "python/vfs/gridfs",
                       "python/vfs/postgres",
+                      "python/vfs/airtable",
                       "python/vfs/chroma",
                       "python/vfs/lancedb",
                       "python/vfs/qdrant",
@@ -383,6 +386,7 @@
                   "python/cli/discord",
                   "python/cli/ntn",
                   "python/cli/linear",
+                  "python/cli/airtable",
                   "python/cli/gh",
                   "python/cli/hf",
                   "python/cli/git"
@@ -545,6 +549,7 @@
                       "typescript/setup/mongodb",
                       "typescript/setup/gridfs",
                       "typescript/setup/postgres",
+                      "typescript/setup/airtable",
                       "typescript/setup/chroma",
                       "typescript/setup/lancedb",
                       "typescript/setup/qdrant",
@@ -579,6 +584,7 @@
                   "typescript/cli/discord",
                   "typescript/cli/ntn",
                   "typescript/cli/linear",
+                  "typescript/cli/airtable",
                   "typescript/cli/gh",
                   "typescript/cli/hf",
                   "typescript/cli/git"

@@ -164,7 +164,7 @@
     {
       "volatile": "  saved → /var/folders/4d/s_lrmhbd7xb9jglnmy13sz_w0000gn/T/mirage-redis-snap-CCr2H1/snap.json (19968 bytes)"
     },
-    "  copy() mounts: [/.bash_history/, /data/, /dev/, /]",
+    "  copy() mounts: [/.bash_history/, /usr/bin/, /data/, /dev/, /]",
     "  copy() sees original's writes: hello world",
     "",
     "=== CLEANUP ===",

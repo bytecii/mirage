@@ -1,4 +1,4 @@
-import { VFSAdapter } from '@struktoai/mirage-core/vfs/adapter'
+import { VFSAdapter, appendFromRead } from '@struktoai/mirage-core/vfs/adapter'
 import { rangeOf } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
 import type { CommandIO } from '@struktoai/mirage-core/commands/builtin/generic_bind/index'
 import type { NextcloudAccessor } from '../../../accessor/nextcloud.ts'
@@ -32,7 +32,18 @@ export const NEXTCLOUD_IO: CommandIO<NextcloudAccessor> = new VFSAdapter<Nextclo
     find,
     du: { size: nextcloudDuSize, entries: nextcloudDuEntries },
   },
-  writes: { write, mkdir, unlink, rmdir, rmR, rename, copy, create, truncate },
+  writes: {
+    append: appendFromRead(read, write),
+    write,
+    mkdir,
+    unlink,
+    rmdir,
+    rmR,
+    rename,
+    copy,
+    create,
+    truncate,
+  },
   maxGlobMatches: SCOPE_ERROR,
   isMounted: () => true,
   local: false,

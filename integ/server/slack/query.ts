@@ -41,6 +41,7 @@ const TOKEN_RE = /"([^"]*)"|(\S+)/g
 const PREFIXES: [string, keyof ParsedQuery][] = [
   ['in:#', 'channelName'],
   ['in:@', 'dmName'],
+  ['in:', 'channelName'],
   ['from:@', 'fromName'],
   ['from:', 'fromName'],
   ['after:', 'after'],

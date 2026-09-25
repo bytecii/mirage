@@ -1,24 +1,16 @@
-import dataclasses
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
 from mirage.accessor.nextcloud import NextcloudAccessor
 from mirage.commands.builtin.nextcloud import COMMANDS as NEXTCLOUD_COMMANDS
-from mirage.core.nextcloud.constants import SCOPE_ERROR
-from mirage.core.nextcloud.readdir import readdir
+from mirage.commands.builtin.nextcloud.io import IO
 from mirage.core.nextcloud.watch import build_delta_hook
 from mirage.ops.nextcloud import OPS as NEXTCLOUD_OPS
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.utils.key_prefix import mount_key
-from mirage.vfs.base import BaseVFS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.nextcloud.prompt import PROMPT
 from mirage.watch.base import DeltaHook
-
-_resolve_glob = make_resolve_glob(readdir, SCOPE_ERROR)
-
-_NEXTCLOUD_OPS: dict[str, Any] = {}
 
 
 class NextcloudConfig(BaseModel):
@@ -31,7 +23,7 @@ class NextcloudConfig(BaseModel):
     timeout: int = 30
 
 
-class NextcloudVFS(BaseVFS):
+class NextcloudVFS(BoundVFS):
 
     accessor: NextcloudAccessor
     name: str = VFSName.NEXTCLOUD
@@ -39,12 +31,11 @@ class NextcloudVFS(BaseVFS):
     # WebDAV PROPFIND carries getcontentlength for every file; readdir
     # backfills any lister-omitted size with one stat per affected file.
     SIZES_ALWAYS_KNOWN: bool = True
-    _ops: dict[str, Any] = _NEXTCLOUD_OPS
     PROMPT: str = PROMPT
     SUPPORTS_SNAPSHOT: bool = True
 
     def __init__(self, config: NextcloudConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self.accessor = NextcloudAccessor(self.config)
         for fn in NEXTCLOUD_COMMANDS:
@@ -54,18 +45,6 @@ class NextcloudVFS(BaseVFS):
 
     def delta_hook(self) -> DeltaHook:
         return build_delta_hook(self.accessor)
-
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        if prefix:
-            paths = [
-                dataclasses.replace(p, vfs_path=mount_key(p.virtual, prefix))
-                if isinstance(p, PathSpec) else p for p in paths
-            ]
-        return await _resolve_glob(self.accessor, paths, self._index)
 
     def get_state(self) -> dict[str, Any]:
         redacted = ["password"]

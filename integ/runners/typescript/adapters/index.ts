@@ -27,6 +27,8 @@ import {
 import { OPFSVFS, Workspace as BrowserWorkspace } from '@struktoai/mirage-browser'
 import type { ReadSpec } from '@struktoai/mirage-node'
 import {
+  AIRTABLE,
+  AirtableVFS,
   AliyunVFS,
   BackblazeVFS,
   BoxVFS,
@@ -962,6 +964,60 @@ async function openSharePoint(target: Target, options?: OpenOptions): Promise<Op
   return { ws: opened.ws, shadow: opened.shadow, cleanup: () => opened.closeAll() }
 }
 
+// The fixture's full-access token (integ/fixtures/airtable/v1.json). Airtable
+// tokens are data in that world rather than tenants, so it is the same value on
+// both hosts; the run in the base URL is what keeps them apart.
+const AIRTABLE_TOKEN = 'patIntegFullAccess.fake'
+// The bases the airtable CLI install is scoped to: the fixture's Roadmap and
+// Ops bases, leaving its read-only Archive outside.
+const AIRTABLE_CLI_BASES = ['appRoadmapBase001', 'appOpsFinance0002']
+
+async function openAirtable(target: Target): Promise<Open> {
+  let base = process.env.AIRTABLE_URL ?? ''
+  while (base.endsWith('/')) base = base.slice(0, -1)
+  if (base === '') throw new Error('airtable target requires AIRTABLE_URL')
+  // Each run takes its own world through a leading `/_run/<id>` segment, so
+  // the hosts reset and read concurrently without a shared lane.
+  const scoped = `${base}/_run/${runId()}`
+  const reset = await fetch(`${scoped}/reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+  if (!reset.ok) throw new Error(`airtable /reset failed: ${String(reset.status)}`)
+  const mounts: Record<string, AirtableVFS | RAMVFS | [AirtableVFS, MountMode]> = {}
+  for (const mount of target.mounts) {
+    if (mount.vfs === 'ram') {
+      mounts[mount.path] = new RAMVFS()
+      continue
+    }
+    // maxReadRecords sits below the fixture's 25-record Backlog so a full
+    // read of it is refused while head still answers; the fake meters
+    // nothing, so pacing is relaxed to keep the battery quick.
+    const vfs = new AirtableVFS({
+      token: AIRTABLE_TOKEN,
+      baseUrl: `${scoped}/v0`,
+      ...(mount.base_ids !== undefined ? { baseIds: mount.base_ids } : {}),
+      maxReadRecords: 20,
+      requestsPerSecond: 50,
+    })
+    mounts[mount.path] = mount.mode === 'read' ? [vfs, MountMode.READ] : vfs
+  }
+  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  // The same bounds as the mount, scoped to two of the fixture's three bases
+  // so the battery can show a refused one (the Archive).
+  if (target.clis?.includes('airtable') === true) {
+    ws.registerCli('airtable', AIRTABLE, {
+      token: AIRTABLE_TOKEN,
+      base_url: `${scoped}/v0`,
+      base_ids: AIRTABLE_CLI_BASES,
+      max_read_records: 20,
+      requests_per_second: 50,
+    })
+  }
+  return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
+}
+
 async function openNotion(target: Target): Promise<Open> {
   let base = process.env.NOTION_URL ?? ''
   while (base.endsWith('/')) base = base.slice(0, -1)
@@ -1382,14 +1438,15 @@ async function openMem0(target: Target): Promise<Open> {
   // Any future in-process fake belongs behind the same lazy import.
   const { mem0Fake } = await import('../../../server/mem0/fake.ts')
   const server = await startKitFake(mem0Fake)
-  const mounts: Record<string, Mem0VFS> = {}
+  const mounts: Record<string, Mem0VFS | [Mem0VFS, MountMode]> = {}
   for (const mount of target.mounts) {
-    mounts[mount.path] = new Mem0VFS({
+    const vfs = new Mem0VFS({
       apiKey: 'integ-key',
       host: server.endpoint,
       userId: 'integ-user',
       defaultPageSize: 2,
     })
+    mounts[mount.path] = mount.mode === 'read' ? [vfs, MountMode.READ] : vfs
   }
   const ws = new Workspace(mounts, { mode: MountMode.WRITE })
   const cleanup = async (): Promise<void> => {
@@ -1944,6 +2001,7 @@ async function openLangfuse(target: Target): Promise<Open> {
 // github needs a live repo at construct, notion an OAuth provider, and
 // hf_buckets validates the bucket id.
 const ARG_ERROR_VFS: Record<string, () => VFS> = {
+  airtable: () => new AirtableVFS({ token: 't' }),
   databricks: () =>
     new DatabricksVolumeVFS({ catalog: 'c', schema: 's', volume: 'v', rootPath: '/' }),
   discord: () => new DiscordVFS({ token: 'x' }),
@@ -2038,6 +2096,7 @@ export const ADAPTERS: Record<string, (target: Target, options?: OpenOptions) =>
   chroma: openChroma,
   qdrant: openQdrant,
   lancedb: openLancedb,
+  airtable: openAirtable,
   notion: openNotion,
   github: openGitHub,
   slack: openSlack,

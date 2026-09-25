@@ -57,6 +57,17 @@ class NoMountError(ValueError):
     """
 
 
+class FileTooLargeError(OSError):
+    """EFBIG: a read the backend refuses to render whole.
+
+    A records file past its mount's record cap (Airtable's
+    ``max_read_records``) raises this rather than paging a large table at
+    a few requests a second. Stamped like the other per-operand errors, so
+    a command chokepoint renders GNU's ``<cmd>: <path>: File too large``
+    and moves on to its next operand. Mirrors the TS ``efbig``.
+    """
+
+
 class BadDescriptorError(OSError):
     """EBADF: a read from a descriptor that is closed or open for
     writing only, which is what ``cat 0<&1`` and ``cat <&-`` attempt.
@@ -72,6 +83,7 @@ _FS_STRERROR: list[tuple[type[OSError], str]] = [
     (ReadOnlyError, "Read-only file system"),
     (PermissionError, "Permission denied"),
     (OperationNotSupportedError, "Operation not supported"),
+    (FileTooLargeError, "File too large"),
 ]
 
 # The recoverable per-operand filesystem errors: every catch site that
@@ -103,6 +115,10 @@ def _virtual_of(path: str | PathSpec) -> str:
 
 def enoent(path: str | PathSpec) -> FileNotFoundError:
     return FileNotFoundError(_virtual_of(path))
+
+
+def efbig(path: str | PathSpec) -> FileTooLargeError:
+    return FileTooLargeError(errno.EFBIG, "File too large", _virtual_of(path))
 
 
 def ebusy(path: str | PathSpec) -> OSError:

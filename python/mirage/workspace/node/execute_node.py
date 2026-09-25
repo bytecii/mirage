@@ -170,6 +170,7 @@ async def _recurse_reassociated(
     session: SessionState,
     stdin: Any = None,
     call_stack: CallStack | None = None,
+    sink: JobConsole | None = None,
 ) -> tuple[Any, IOResult, ExecutionNode]:
     """Recurse wrapper for a re-associated trailing redirect.
 
@@ -194,7 +195,7 @@ async def _recurse_reassociated(
     # so a pre_session rule governs those exactly as it governs `X=d`.
     view = session_view(session, registry.policies)
     if node is not right:
-        return await recurse(node, session, stdin, call_stack)
+        return await recurse(node, session, stdin, call_stack, sink=sink)
     expanded, pipe_node = await expand_redirects(redirects,
                                                  session,
                                                  execute_fn,
@@ -222,13 +223,15 @@ async def _recurse_pipe_stderr(
     session: SessionState,
     stdin: Any = None,
     call_stack: CallStack | None = None,
+    *,
+    sink: JobConsole | None = None,
 ) -> tuple[Any, IOResult, ExecutionNode]:
     # The session plane's door, bound once for the line: every
     # expansion-time write (`${X:=d}`, `$((X=5))`) lands through it,
     # so a pre_session rule governs those exactly as it governs `X=d`.
     view = session_view(session, registry.policies)
     if node not in targets or node_kind(node) != NodeKind.REDIRECT:
-        return await recurse(node, session, stdin, call_stack)
+        return await recurse(node, session, stdin, call_stack, sink=sink)
     command, redirects = get_redirects(node)
     redirects.append(
         Redirect(fd=2, target=1, kind=RedirectKind.STDERR_TO_STDOUT))

@@ -16,19 +16,16 @@ from typing import Any
 
 from mirage.accessor.gmail import GmailAccessor
 from mirage.commands.builtin.gmail import COMMANDS
-from mirage.core.gmail.readdir import readdir
+from mirage.commands.builtin.gmail.io import IO
 from mirage.core.google.client import TokenManager
 from mirage.ops.gmail import OPS as GMAIL_VFS_OPS
-from mirage.types import PathSpec, VFSName
-from mirage.utils.glob_walk import make_resolve_glob
-from mirage.vfs.base import BaseVFS
+from mirage.types import VFSName
+from mirage.vfs.bound import BoundVFS
 from mirage.vfs.gmail.config import GmailConfig
 from mirage.vfs.gmail.prompt import PROMPT, WRITE_PROMPT
 
-_resolve_glob = make_resolve_glob(readdir)
 
-
-class GmailVFS(BaseVFS):
+class GmailVFS(BoundVFS):
 
     accessor: GmailAccessor
     name: str = VFSName.GMAIL
@@ -45,7 +42,7 @@ class GmailVFS(BaseVFS):
     WRITE_PROMPT: str = WRITE_PROMPT
 
     def __init__(self, config: GmailConfig) -> None:
-        super().__init__()
+        super().__init__(io=IO)
         self.config = config
         self._token_manager = TokenManager(config)
         self.accessor = GmailAccessor(self.config, self._token_manager)
@@ -58,13 +55,6 @@ class GmailVFS(BaseVFS):
         """Drain the token manager's connection pool with the VFS."""
         await self._token_manager.close()
         await super().close()
-
-    async def resolve_glob(
-        self,
-        paths: list[PathSpec],
-        prefix: str = '',
-    ) -> list[PathSpec]:
-        return await _resolve_glob(self.accessor, paths, index=self._index)
 
     def get_state(self) -> dict[str, Any]:
         return self.config_state(self.config)

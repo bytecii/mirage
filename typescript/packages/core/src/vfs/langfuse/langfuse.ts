@@ -12,32 +12,29 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { BoundVFS } from '../bound.ts'
+import { LANGFUSE_IO } from '../../commands/builtin/langfuse/io.ts'
 import { LangfuseAccessor } from '../../accessor/langfuse.ts'
-import { makeResolveGlob } from '../../commands/builtin/generic_bind/index.ts'
+
 import { LANGFUSE_COMMANDS } from '../../commands/builtin/langfuse/index.ts'
 import type { RegisteredCommand } from '../../commands/config.ts'
 import { HttpLangfuseTransport } from '../../core/langfuse/client.ts'
-import { read as langfuseRead } from '../../core/langfuse/read.ts'
-import { readdir as langfuseReaddir } from '../../core/langfuse/readdir.ts'
-import { stat as langfuseStat } from '../../core/langfuse/stat.ts'
+
 import { LANGFUSE_OPS } from '../../ops/langfuse/index.ts'
 import type { RegisteredOp } from '../../ops/registry.ts'
-import { BaseVFS } from '../base.ts'
+
 import type { VFS } from '../base.ts'
 import { LANGFUSE_PROMPT } from './prompt.ts'
-import { PathSpec, VFSName } from '../../types.ts'
-import type { FileStat } from '../../types.ts'
-import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
-import { redactLangfuseConfig, type LangfuseConfig, type LangfuseConfigRedacted } from './config.ts'
+import { VFSName } from '../../types.ts'
 
-const resolveLangfuseGlob = makeResolveGlob(langfuseReaddir)
+import { redactLangfuseConfig, type LangfuseConfig, type LangfuseConfigRedacted } from './config.ts'
 
 export interface LangfuseVFSState {
   type: string
   config: LangfuseConfigRedacted
 }
 
-export class LangfuseVFS extends BaseVFS implements VFS {
+export class LangfuseVFS extends BoundVFS<LangfuseAccessor> implements VFS {
   readonly kind: string = VFSName.LANGFUSE
   readonly cachesReads: boolean = true
   readonly prompt: string = LANGFUSE_PROMPT
@@ -45,7 +42,7 @@ export class LangfuseVFS extends BaseVFS implements VFS {
   readonly accessor: LangfuseAccessor
 
   constructor(config: LangfuseConfig) {
-    super()
+    super(LANGFUSE_IO)
     this.config = config
     const transportOpts: { publicKey: string; secretKey: string; host?: string } = {
       publicKey: config.publicKey,
@@ -75,36 +72,6 @@ export class LangfuseVFS extends BaseVFS implements VFS {
 
   ops(): readonly RegisteredOp[] {
     return LANGFUSE_OPS
-  }
-
-  readFile(p: PathSpec): Promise<Uint8Array> {
-    return langfuseRead(this.accessor, p, this.index)
-  }
-
-  readdir(p: PathSpec): Promise<string[]> {
-    return langfuseReaddir(this.accessor, p, this.index)
-  }
-
-  stat(p: PathSpec): Promise<FileStat> {
-    return langfuseStat(this.accessor, p, this.index)
-  }
-
-  glob(paths: readonly PathSpec[], prefix = ''): Promise<PathSpec[]> {
-    const effective =
-      prefix !== ''
-        ? paths.map((p) =>
-            mountPrefixOf(p.virtual, p.vfsPath) !== ''
-              ? p
-              : new PathSpec({
-                  virtual: p.virtual,
-                  directory: p.directory,
-                  ...(p.pattern !== null ? { pattern: p.pattern } : {}),
-                  resolved: p.resolved,
-                  vfsPath: mountKey(p.virtual, prefix),
-                }),
-          )
-        : paths
-    return resolveLangfuseGlob(this.accessor, effective, this.index)
   }
 
   override getState(): Promise<LangfuseVFSState> {

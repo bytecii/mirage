@@ -217,6 +217,10 @@ async function main(): Promise<void> {
       ['deploying from:@marcus', 2],
       ['deploying from:<@U8>', 2],
       ['deploying in:#engineering', 4],
+      ['deploying in:engineering', 4],
+      ['deploying in:engineering from:<@U8>', 2],
+      ['deploying in:absent', 0],
+      ['"in:engineering"', 0],
       ['deploying in:##engineering', 4],
       ['deploying in:##engineering from:<@U8>', 2],
     ] as const) {

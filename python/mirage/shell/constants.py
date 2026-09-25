@@ -58,6 +58,12 @@ ARITH_MAX_DEPTH = 16
 # `SessionState.argv0` is the one place the two are folded together.
 SHELL_ARGV0 = "mirage"
 
+# The one directory PATH names, bash's default PATH for a shell that
+# starts without one: every program a session can run has a file here
+# (the /usr/bin view mount), which is the path which, type and
+# command -v report.
+BIN_PREFIX = "/usr/bin"
+
 # The descriptors the shell models: stdin, stdout and stderr, and no
 # table above them. A redirect naming any other number is refused
 # before it does anything (`shell/descriptors.py`), because the old
