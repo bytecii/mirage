@@ -43,7 +43,7 @@ class MirageOSAccess(OSAccess):
     are then flushed back through `MontyVFS`. Runs on Monty's worker
     thread, so every op hops to the workspace loop inside the core.
 
-    The binding only accepts sync callbacks (pydantic/monty#560), so the
+    This bridge uses synchronous callbacks, so the
     core's hop parks the tokio worker for the whole I/O wait. That caps
     concurrent I/O-waiting runs at Monty's worker pool size, which is
     the core count by default; TOKIO_WORKER_THREADS raises it, and

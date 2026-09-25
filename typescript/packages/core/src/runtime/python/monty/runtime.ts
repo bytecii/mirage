@@ -46,8 +46,8 @@ import { MontyExecution } from './execution.ts'
  * CPython's `stat_result` fields; only its sequence half (`st[6]`,
  * `len(st)`) is the python host's alone. Monty implements a Python
  * subset; host-only features (`sys.stdin`, `sys.argv`, third-party
- * imports) are unavailable, the importable stdlib is the sixteen
- * modules listed in docs/typescript/runtime/python.mdx, and the parser
+ * imports) are unavailable; supported stdlib modules are listed in
+ * docs/typescript/runtime/python.mdx. The parser
  * refuses class inheritance, method decorators and `yield` — use the
  * pyodide runtime for a program that needs those.
  */
@@ -87,7 +87,10 @@ export class MontyRuntime extends PythonRuntime implements Evaluator {
 
   async run(args: RunArgs, context = this.captureContext()): Promise<RunResult> {
     const notice = unhonoredNotice((args.flags ?? {}) as InitFlags, this.name)
-    const result = await this.execution.run(args, this.perRunVfs(context))
+    const result = await this.execution.run(
+      args.cwd === undefined && context !== undefined ? { ...args, cwd: context.cwd } : args,
+      this.perRunVfs(context),
+    )
     if (notice.length === 0) return result
     const stderr = result.stderr ?? new Uint8Array()
     const merged = new Uint8Array(notice.length + stderr.length)
@@ -100,7 +103,12 @@ export class MontyRuntime extends PythonRuntime implements Evaluator {
     code: string,
     opts: { inputs?: Record<string, EvalValue>; session?: string } = {},
   ): Promise<EvalResult> {
-    return this.execution.eval(code, this.perRunVfs(this.captureContext()), opts)
+    const context = this.captureContext()
+    return this.execution.eval(
+      code,
+      this.perRunVfs(context),
+      context === undefined ? opts : { ...opts, cwd: context.cwd },
+    )
   }
 
   override close(): Promise<void> {
