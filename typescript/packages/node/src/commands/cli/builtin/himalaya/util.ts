@@ -18,7 +18,7 @@ import type { FlagView } from '@struktoai/mirage-core/commands/spec/index'
 import { IOResult } from '@struktoai/mirage-core/io/types'
 import type { ByteSource } from '@struktoai/mirage-core/io/types'
 import { PathSpec } from '@struktoai/mirage-core/types'
-import { isMissingPath } from '@struktoai/mirage-core/utils/errors'
+import { fsStrerror, isEnotdir, isMissingPath } from '@struktoai/mirage-core/utils/errors'
 import { mimeTypeFor } from '@struktoai/mirage-core/utils/filetype'
 import { parseRfc822, type ParsedRfc822 } from '../../../../core/email/_parse.ts'
 import type { EmailConfig } from '../../../../core/email/config.ts'
@@ -65,8 +65,9 @@ async function loadAttachments(
     try {
       ;[data] = await dispatch('read', PathSpec.fromStrPath(path))
     } catch (err) {
-      if (isMissingPath(err)) {
-        throw new Error(`read attachment ${path}: No such file or directory`)
+      if (isMissingPath(err) || isEnotdir(err)) {
+        const strerror = fsStrerror(err) ?? 'No such file or directory'
+        throw new Error(`read attachment ${path}: ${strerror}`)
       }
       throw err
     }

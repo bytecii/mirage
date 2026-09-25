@@ -409,14 +409,16 @@ export async function handleCommand(
         new ExecutionNode({ command: cmdStr, exitCode: code, stderr: msg }),
       ]
     }
-    let csScopes = pathScopes
+    // The output flag owns a mount for routing, but is not a sort input.
+    // Parsed operands preserve aliases, order, and repeated path values.
+    let csScopes = cmdName === 'sort' ? csParsed.paths : pathScopes
     if (strategyFor(cmdName as Cmd, csFlags) === Strategy.RELAY) {
       // STREAM and FANOUT run each operand natively on its mount, which
       // expands the operand's glob. RELAY bypasses the mount command
       // wrappers entirely, so its glob operands must expand here; an
       // unmatched glob stays the literal word, like bash.
       const expanded = await resolveGlobs(
-        pathScopes,
+        csScopes,
         registry,
         false,
         namespace ?? null,

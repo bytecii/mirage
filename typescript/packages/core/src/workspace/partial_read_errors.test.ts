@@ -138,7 +138,9 @@ describe('cross-mount partial output matches single-mount bytes', () => {
     try {
       const result = await ws.shell('sort /a/f.txt /b/missing.txt')
       expect(result.stdoutText).toBe('')
-      expect(result.stderrText).toBe('sort: /b/missing.txt: No such file or directory\n')
+      expect(result.stderrText).toBe(
+        'sort: cannot read: /b/missing.txt: No such file or directory\n',
+      )
       expect(result.exitCode).toBe(2)
     } finally {
       await ws.close()
@@ -335,11 +337,12 @@ describe('rest of the read family keeps partial output past missing', () => {
 
   it('sort still aborts on missing', async () => {
     // GNU sort needs all input before emitting anything, so no partial
-    // output; it reports the operand and exits 2 (coreutils 9.7), which
-    // is sort's code for any failed read, not just a directory.
+    // output; it reports the operand in its own `cannot read:` words and
+    // exits 2 (coreutils 9.7), which is sort's code for any failed read,
+    // not just a directory.
     const [out, err, code] = await runNumbered(['sort /a/f.txt /a/missing.txt'])
     expect(out).toBe('')
-    expect(err).toBe('sort: /a/missing.txt: No such file or directory\n')
+    expect(err).toBe('sort: cannot read: /a/missing.txt: No such file or directory\n')
     expect(code).toBe(2)
   })
 })

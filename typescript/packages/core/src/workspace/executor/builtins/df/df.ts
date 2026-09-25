@@ -15,7 +15,7 @@
 import { humanScaled, humanSize } from '../../../../commands/builtin/utils/formatting.ts'
 import { CapacityState, FileStat, PathSpec } from '../../../../types.ts'
 import type { CapacityResult } from '../../../../types.ts'
-import { isMissingPath } from '../../../../utils/errors.ts'
+import { fsStrerror, isEnotdir, isMissingPath } from '../../../../utils/errors.ts'
 import { resolvePath } from '../../../../utils/path.ts'
 import { rstripSlash } from '../../../../utils/slash.ts'
 import type { DispatchFn } from '../../../../runtime/types.ts'
@@ -28,6 +28,7 @@ import { compareCodePoints } from '../../../../utils/sort.ts'
 import type { Result } from '../types.ts'
 
 const ENC = new TextEncoder()
+const NO_ENTRY = 'No such file or directory'
 
 // Parse a -B/--block-size argument into [bytes, header-label]; a plain byte
 // count or a 1024-based suffix (K/M/G/T), labelled after the raw argument.
@@ -76,14 +77,16 @@ function lastFormat(args: (string | PathSpec)[]): string | null {
   return last
 }
 
-// Whether a path resolves to an existing entry; GNU df errors on a missing
-// FILE operand, so a deeper path is statted before its mount is accepted.
-async function pathExists(dispatch: DispatchFn, spec: PathSpec): Promise<boolean> {
+// The strerror a FILE operand's lookup fails with, or null when it resolves.
+// GNU df errors on a missing FILE operand, so a deeper path is statted before
+// its mount is accepted: ENOENT for an absent entry, ENOTDIR for one under a
+// plain file. Mirrors _path_error in df.py.
+async function pathError(dispatch: DispatchFn, spec: PathSpec): Promise<string | null> {
   try {
     const [stat] = await dispatch('stat', spec)
-    return stat instanceof FileStat
+    return stat instanceof FileStat ? null : NO_ENTRY
   } catch (err) {
-    if (isMissingPath(err)) return false
+    if (isMissingPath(err) || isEnotdir(err)) return fsStrerror(err) ?? NO_ENTRY
     throw err
   }
 }
@@ -154,7 +157,7 @@ async function targetMounts(
   dispatch: DispatchFn,
   session: SessionState,
   operands: (string | PathSpec)[],
-): Promise<MountEntry[] | { missing: string }> {
+): Promise<MountEntry[] | { missing: string; strerror: string }> {
   // Python is `sorted(registry.mounts(), key=lambda m: m.prefix)`.
   const ordered = [...registry.allMounts()].sort((a, b) => compareCodePoints(a.prefix, b.prefix))
   if (operands.length === 0) return ordered
@@ -175,13 +178,14 @@ async function targetMounts(
     }
     const mount = registry.tryMountFor(virtual)
     if (mount === null) {
-      return { missing: label }
+      return { missing: label, strerror: NO_ENTRY }
     }
     // The mount root is the filesystem itself (always present); a deeper
     // path must exist, matching GNU df's per-FILE check.
     const root = rstripSlash(mount.prefix) || '/'
-    if (rstripSlash(virtual) !== root && !(await pathExists(dispatch, spec))) {
-      return { missing: label }
+    const strerror = rstripSlash(virtual) === root ? null : await pathError(dispatch, spec)
+    if (strerror !== null) {
+      return { missing: label, strerror }
     }
     if (!seen.has(mount.prefix)) {
       seen.add(mount.prefix)
@@ -254,7 +258,7 @@ export async function handleDf(
 
   const mounts = await targetMounts(registry, dispatch, session, operands)
   if (!Array.isArray(mounts)) {
-    return fail('df', `df: ${mounts.missing}: No such file or directory\n`, 1)
+    return fail('df', `df: ${mounts.missing}: ${mounts.strerror}\n`, 1)
   }
 
   let numHeaders: string[]

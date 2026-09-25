@@ -28,6 +28,7 @@ from mirage.commands.config import (CommandOpts, ExecContext,
                                     RegisteredCommand, has_injected_version)
 from mirage.commands.resolve import get_extension
 from mirage.commands.spec import CommandSpec
+from mirage.commands.spec.flag_view import FlagBag
 from mirage.commands.spec.types import FlagValue
 from mirage.context import (effective_mount_mode, effective_path_mode,
                             readonly_below, reset_mount_gate, set_mount_gate,
@@ -607,7 +608,7 @@ class MountEntry:
             # single grep -f) or a list of PathSpec (multiple grep -f).
             # Everything else (bools, strings, list[str] like repeated -e) is
             # not a path and passes through unchanged.
-            flags: dict[str, FlagValue] = {}
+            flags: dict[str, FlagValue] = FlagBag(flag_kwargs)
             for k, v in flag_kwargs.items():
                 if isinstance(v, PathSpec):
                     flags[k] = dataclasses.replace(v,

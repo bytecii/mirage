@@ -306,7 +306,8 @@ export async function checkDrift(
   try {
     stat = (await statFn(path)) as FileStat
   } catch (err) {
-    if ((err as { code?: string } | null)?.code === 'ENOENT') {
+    const code = (err as { code?: string } | null)?.code
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
       if (registry.tryMountFor(path) !== mount) return
       throw new ContentDriftError(path, recorded, null)
     }

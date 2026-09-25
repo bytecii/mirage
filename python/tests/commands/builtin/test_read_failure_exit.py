@@ -83,8 +83,11 @@ GNU_READ_EXIT = {
 # the WRONG errno, `strings: Warning: 'dir' is a directory`, and `gzip:
 # dir is a directory -- ignored`. mirage normalizes all of it to
 # `<cmd>: <path>: Is a directory`, so the message test asserts the house
-# style and only the exit code above is GNU's. head is the exception: it
-# carries GNU's own `error reading 'dir': Is a directory`.
+# style and only the exit code above is GNU's. Two commands carry GNU's
+# own wording instead: head's `error reading 'dir': Is a directory`, and
+# sort's step names from `sort_die` (`cannot read`, `open failed`, `stat
+# failed`, `read failed`), whose `read failed: dir: Is a directory` still
+# contains the house style.
 #
 # Two lines print nothing at all on a directory in GNU (`jq .` exits 2
 # silently, `zgrep x` exits 1 silently because gzip's warning is
@@ -154,7 +157,7 @@ GNU_SED_MULTI = [
      "sed: /ram/nope: No such file or directory\n"
      "sed: /ram/dir: Is a directory\n"),
     ("sort /ram/ok.txt /ram/dir /ram/ok2.txt", 2, "",
-     "sort: /ram/dir: Is a directory\n"),
+     "sort: read failed: /ram/dir: Is a directory\n"),
     ("cat /ram/ok.txt /ram/dir /ram/ok2.txt", 1, "a\nb\nc\nd\n",
      "cat: /ram/dir: Is a directory\n"),
     ("zcat /ram/dir /ram/nope", 1, "", "zcat: /ram/dir: Is a directory\n"

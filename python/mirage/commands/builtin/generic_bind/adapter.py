@@ -180,7 +180,7 @@ async def _pair_src_is_dir(stat: StatOp, accessor: Any, src: PathSpec) -> bool:
     """
     try:
         row = await stat(accessor, src)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         # Nothing moves; the op itself reports the absence.
         return False
     except OSError:

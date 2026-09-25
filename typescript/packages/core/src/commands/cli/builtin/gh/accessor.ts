@@ -20,6 +20,7 @@ import { UsageError } from '../../../errors.ts'
 import type { FlagView } from '../../../spec/flag_view.ts'
 import { IOResult, materialize, type ByteSource } from '../../../../io/types.ts'
 import { PathSpec } from '../../../../types.ts'
+import { fsStrerror, isEnoent, isEnotdir } from '../../../../utils/errors.ts'
 import { resolvePath } from '../../../../utils/path.ts'
 import { compareCodePoints } from '../../../../utils/sort.ts'
 import type { CommandFnResult } from '../../../config.ts'
@@ -115,9 +116,8 @@ export async function readCliFile(
     const [data] = await dispatch('read', PathSpec.fromStrPath(virtual))
     return await materialize(data as ByteSource)
   } catch (err) {
-    if (err instanceof Error && err.name === 'FileNotFoundError') {
-      throw new Error(`read ${path}: No such file or directory`)
-    }
+    const strerror = isEnoent(err) || isEnotdir(err) ? fsStrerror(err) : null
+    if (strerror !== null) throw new Error(`read ${path}: ${strerror}`)
     throw err
   }
 }

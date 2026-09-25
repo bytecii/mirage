@@ -245,10 +245,10 @@ async def awk(
         for prog in f.program_files:
             try:
                 raw = await read_bytes(prog)
-            except FileNotFoundError as exc:
+            except (FileNotFoundError, NotADirectoryError) as exc:
                 # GNU awk exits 2 when a -f program file cannot be opened.
                 raise UsageError(f"awk: {prog.raw_path}: "
-                                 "No such file or directory") from exc
+                                 f"{fs_strerror(exc)}") from exc
             pieces.append(raw.decode(errors="replace"))
         source = "\n".join(pieces)
     elif texts:

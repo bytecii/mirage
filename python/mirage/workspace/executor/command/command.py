@@ -345,13 +345,17 @@ async def handle_command(
                                       command=cmd_str,
                                       exit_code=code,
                                       stderr=refusal_msg)
-        cross_scopes = path_scopes
+        # sort's output flag routes to its owning mount but is not an input.
+        # Use the parser's operands so aliases and repeated paths keep their
+        # positions instead of subtracting matching path strings afterward.
+        cross_scopes = (cross_parsed.paths
+                        if cmd_name == "sort" else path_scopes)
         if strategy_for(cmd_name, cross_parsed.flag_kwargs) is Strategy.RELAY:
             # STREAM and FANOUT run each operand natively on its mount, which
             # expands the operand's glob. RELAY bypasses the mount command
             # wrappers entirely, so its glob operands must expand here; an
             # unmatched glob stays the literal word, like bash.
-            expanded = await resolve_globs(list(path_scopes),
+            expanded = await resolve_globs(list(cross_scopes),
                                            registry,
                                            links=namespace,
                                            options=glob_options(session))

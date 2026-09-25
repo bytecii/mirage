@@ -109,7 +109,7 @@
       "expect": {
         "exit": 2,
         "stdout": "",
-        "stderr": "sort: /data/rfdir: Is a directory\n"
+        "stderr": "sort: read failed: /data/rfdir: Is a directory\n"
       }
     },
     {
@@ -123,7 +123,7 @@
       "expect": {
         "exit": 2,
         "stdout": "",
-        "stderr": "sort: /data/rfnope.txt: No such file or directory\n"
+        "stderr": "sort: cannot read: /data/rfnope.txt: No such file or directory\n"
       }
     },
     {
@@ -823,7 +823,7 @@
       "expect": {
         "exit": 2,
         "stdout": "",
-        "stderr": "sort: /data/rfdir: Is a directory\n"
+        "stderr": "sort: read failed: /data/rfdir: Is a directory\n"
       }
     },
     {
@@ -880,6 +880,62 @@
         "exit": 2,
         "stdout": "",
         "stderr": "zcat: /data/rfdir: Is a directory\nzcat: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_sort_missing_outranks_a_dir",
+      "seq": 1299050,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "sort /data/rfdir /data/rfnope.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: cannot read: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_sort_check_missing_is_open_failed",
+      "seq": 1299051,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "sort -c /data/rfnope.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: open failed: /data/rfnope.txt: No such file or directory\n"
+      }
+    },
+    {
+      "id": "readfail_sort_output_dir_is_open_failed",
+      "seq": 1299052,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "sort -o /data/rfdir /data/rfok.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: open failed: /data/rfdir: Is a directory\n"
+      }
+    },
+    {
+      "id": "readfail_sort_output_missing_parent_is_open_failed",
+      "seq": 1299053,
+      "targets": [
+        "ram",
+        "disk"
+      ],
+      "command": "sort -o /data/rfnodir/out.txt /data/rfok.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "sort: open failed: /data/rfnodir/out.txt: No such file or directory\n"
       }
     }
   ]

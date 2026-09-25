@@ -18,6 +18,7 @@ import { recordStream } from '@struktoai/mirage-core/observe/context'
 import { VFSName } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { enoent } from '@struktoai/mirage-core/utils/errors'
+import { diskError } from './errors.ts'
 import { resolveInside } from './utils.ts'
 
 export async function* stream(accessor: DiskAccessor, path: PathSpec): AsyncIterable<Uint8Array> {
@@ -35,6 +36,6 @@ export async function* stream(accessor: DiskAccessor, path: PathSpec): AsyncIter
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       throw enoent(path)
     }
-    throw err
+    throw diskError(err, path)
   }
 }

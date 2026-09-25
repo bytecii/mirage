@@ -128,7 +128,12 @@ const GNU_MULTI: [string, number, string, string][] = [
     '',
     'sed: /ram/nope: No such file or directory\nsed: /ram/dir: Is a directory\n',
   ],
-  ['sort /ram/ok.txt /ram/dir /ram/ok2.txt', 2, '', 'sort: /ram/dir: Is a directory\n'],
+  [
+    'sort /ram/ok.txt /ram/dir /ram/ok2.txt',
+    2,
+    '',
+    'sort: read failed: /ram/dir: Is a directory\n',
+  ],
   ['cat /ram/ok.txt /ram/dir /ram/ok2.txt', 1, 'a\nb\nc\nd\n', 'cat: /ram/dir: Is a directory\n'],
   [
     'zcat /ram/dir /ram/nope',

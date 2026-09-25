@@ -122,3 +122,17 @@ async def test_read_range_records_the_virtual_path(tmp_path):
         scope.close()
     assert data == b"ell"
     assert [r.path for r in scope.records] == ["/m/m/k.txt"]
+
+
+# A path under a plain file is ENOTDIR on the real filesystem, and the
+# error names the virtual path, never the host one the mount resolves to.
+@pytest.mark.asyncio
+async def test_read_bytes_under_a_plain_file_is_not_a_directory(tmp_path):
+    (tmp_path / "a.txt").write_text("a")
+    spec = PathSpec(vfs_path="a.txt/x",
+                    virtual="/a.txt/x",
+                    directory="/a.txt/")
+    with pytest.raises(NotADirectoryError) as exc:
+        await read_bytes(DiskAccessor(tmp_path), spec)
+    assert exc.value.filename == "/a.txt/x"
+    assert str(tmp_path) not in str(exc.value)

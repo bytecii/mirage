@@ -18,7 +18,7 @@ import type { FileCache } from '../cache/file/mixin.ts'
 import type { OpsRegistry } from '../ops/registry.ts'
 import type { VFS } from '../vfs/base.ts'
 import { FileStat, PathSpec, ReadPolicy } from '../types.ts'
-import { enoent, isEnoent, isMissingOp } from '../utils/errors.ts'
+import { enoent, isEnoent, isEnotdir, isMissingOp } from '../utils/errors.ts'
 import { mountKey } from '../utils/key_prefix.ts'
 import { rstripSlash } from '../utils/slash.ts'
 import type { MountEntry } from './mount/mount.ts'
@@ -93,7 +93,7 @@ export class Reconciler {
         { index: new RAMIndexCacheStore() },
       )
     } catch (err) {
-      if (isEnoent(err)) {
+      if (isEnoent(err) || isEnotdir(err)) {
         await this.onMissing(path)
         await mount.index?.clear()
         return Verdict.GONE
@@ -136,7 +136,7 @@ export class Reconciler {
     try {
       return await this.probe(mount, path)
     } catch (err) {
-      if (isEnoent(err)) throw err
+      if (isEnoent(err) || isEnotdir(err)) throw err
       // A backend that cannot answer is one thing; a bug in the probe path
       // is another, and degrading it to "cannot verify" would hide it behind
       // a log line and a lifetime of cold reads.
@@ -223,7 +223,11 @@ export class Reconciler {
   // `isEnoent` is load-bearing and stays: the call site is a generic
   // catch, so without it a 500, a timeout or an auth failure would GC.
   async onOpMissing(mount: MountEntry, opName: string, path: string, err: unknown): Promise<void> {
-    if (mount.read.policy === ReadPolicy.FRESH && REVALIDATE_OPS.has(opName) && isEnoent(err)) {
+    if (
+      mount.read.policy === ReadPolicy.FRESH &&
+      REVALIDATE_OPS.has(opName) &&
+      (isEnoent(err) || isEnotdir(err))
+    ) {
       await this.onMissing(path)
     }
   }
