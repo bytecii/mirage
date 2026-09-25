@@ -40,8 +40,8 @@ from mirage.cache.index import RAMIndexCacheStore
 from mirage.commands.builtin.generic_bind.adapter import CommandIO
 from mirage.commands.builtin.gridfs.io import IO as GRIDFS_IO
 from mirage.commands.builtin.hf_hub.io import IO as HF_IO
-from mirage.core.hf_hub.client import etag_value
 from mirage.commands.builtin.s3.io import IO as S3_IO
+from mirage.core.hf_hub.client import etag_value
 from mirage.io.cachable_iterator import CachableAsyncIterator
 from mirage.io.types import IOResult
 from mirage.observe.context import OpTimer, RecordingScope, active_recorder
@@ -62,13 +62,22 @@ S3_FAMILY = ("s3", "aliyun", "backblaze", "ceph", "digitalocean", "gcs",
              "minio", "oci", "qingstor", "r2", "scaleway", "seaweedfs",
              "supabase", "tencent", "wasabi")
 
-HF_FAMILY = {"hf_models": "models", "hf_datasets": "datasets",
-             "hf_spaces": "spaces"}
+HF_FAMILY = {
+    "hf_models": "models",
+    "hf_datasets": "datasets",
+    "hf_spaces": "spaces"
+}
 
 HARNESSES = {
-    **{name: "s3" for name in S3_FAMILY},
+    **{
+        name: "s3"
+        for name in S3_FAMILY
+    },
     "gridfs": "gridfs",
-    **{name: "hf_models" for name in HF_FAMILY},
+    **{
+        name: "hf_models"
+        for name in HF_FAMILY
+    },
 }
 
 # One document per family, identical in the TypeScript twin. oci is the one
@@ -624,8 +633,9 @@ def test_a_changed_object_is_refetched(name, monkeypatch):
                 # The refetch has to stamp the new token, or every later
                 # read refetches as well and the backend never serves warm.
                 restat = await _reconcile_stat(ws, virtual)
-                refreshed = (restat.fingerprint is not None and await
-                             ws.cache.is_fresh(virtual, restat.fingerprint))
+                refreshed = (restat.fingerprint is not None
+                             and await ws.cache.is_fresh(
+                                 virtual, restat.fingerprint))
                 before = fake.fetches()
                 third = await _line(ws, f"cat {virtual}")
                 return (stat, fresh, refetched, second, refreshed,

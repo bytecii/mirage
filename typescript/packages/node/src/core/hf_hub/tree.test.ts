@@ -290,7 +290,9 @@ describe('pathsInfoUrl', () => {
     ['space', 'spaces'],
   ])('names the %s repo type', (kind, segment) => {
     const acc = new HfHubAccessor({ repoId: 'acme/widget' } as never, kind)
-    expect(pathsInfoUrl(acc)).toBe(`https://huggingface.co/api/${segment}/acme/widget/paths-info/main`)
+    expect(pathsInfoUrl(acc)).toBe(
+      `https://huggingface.co/api/${segment}/acme/widget/paths-info/main`,
+    )
   })
 
   it('encodes a revision and carries no prefix', () => {

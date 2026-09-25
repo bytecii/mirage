@@ -15,6 +15,7 @@
 import { createHash } from 'node:crypto'
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 
 // The Hub answers these to a paths-info body it cannot read as JSON, which is
 // what an untyped fetch body is (measured against huggingface.co, 2026-09-24).
@@ -121,7 +122,11 @@ export class FakeHub {
     if (server === null) return
     this.server = null
     server.closeAllConnections()
-    await new Promise<void>((done) => server.close(() => done()))
+    await new Promise<void>((done) =>
+      server.close(() => {
+        done()
+      }),
+    )
   }
 
   private refused(route: string, res: ServerResponse): boolean {
@@ -160,7 +165,10 @@ export class FakeHub {
   }
 
   private tree(parts: string[], res: ServerResponse): void {
-    const prefix = parts.slice(6).join('/').replace(/^\/+|\/+$/g, '')
+    const prefix = parts
+      .slice(6)
+      .join('/')
+      .replace(/^\/+|\/+$/g, '')
     this.log.push(['tree', prefix])
     if (this.refused('tree', res)) return
     const files = this.repo(parts[1] ?? '', parts[2], parts[3])
@@ -179,7 +187,7 @@ export class FakeHub {
       if (p.startsWith(under) && p.slice(under.length).includes('/'))
         dirs.add(p.slice(0, p.lastIndexOf('/')))
     }
-    json(res, 200, [...[...dirs].sort().map(dirRow), ...rows])
+    json(res, 200, [...[...dirs].sort(compareCodePoints).map(dirRow), ...rows])
   }
 
   private async pathsInfo(

@@ -71,8 +71,8 @@ class FakeHub:
         posts (list): each paths-info request's content type and body.
     """
 
-    repos: dict[tuple[str, str], dict[str, bytes]] = field(
-        default_factory=dict)
+    repos: dict[tuple[str, str], dict[str,
+                                      bytes]] = field(default_factory=dict)
     xet: bool = True
     listed: dict[str, bytes] = field(default_factory=dict)
     etags: dict[str, str] = field(default_factory=dict)
@@ -114,8 +114,7 @@ class FakeHub:
 
     def _files(self, request: web.Request) -> dict[str, bytes] | None:
         info = request.match_info
-        return self.repos.get(
-            (info["seg"], f"{info['ns']}/{info['name']}"))
+        return self.repos.get((info["seg"], f"{info['ns']}/{info['name']}"))
 
     async def tree(self, request: web.Request) -> web.Response:
         prefix = request.match_info.get("prefix", "").strip("/")
@@ -127,7 +126,9 @@ class FakeHub:
         if files is None:
             return _error(404, "RepoNotFound", "Repository not found")
         under = prefix + "/" if prefix else ""
-        rows = [self.row(p, d) for p, d in files.items() if p.startswith(under)]
+        rows = [
+            self.row(p, d) for p, d in files.items() if p.startswith(under)
+        ]
         if prefix and not rows:
             return _error(404, "EntryNotFound",
                           f"{prefix} does not exist on \"main\"")

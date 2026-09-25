@@ -397,7 +397,12 @@ async function makeFake(name: string, shape: Shape, data: Uint8Array): Promise<F
     // A whole-tree refill is the one thing that invalidates a store's prefix.
     // On the mount's own index a cold read does it legitimately; on any other
     // store it is the reconcile probe walking the tree.
-    const invalidate = RAMIndexCacheStore.prototype.invalidatePrefix
+    // The original, taken before the spy replaces it and typed with its `this`,
+    // so the spy can forward to it for every store.
+    const invalidate = Object.getOwnPropertyDescriptor(
+      RAMIndexCacheStore.prototype,
+      'invalidatePrefix',
+    )?.value as (this: RAMIndexCacheStore, path: string) => Promise<void>
     vi.spyOn(RAMIndexCacheStore.prototype, 'invalidatePrefix').mockImplementation(function (
       this: RAMIndexCacheStore,
       path: string,

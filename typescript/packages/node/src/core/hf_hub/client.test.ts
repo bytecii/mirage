@@ -178,7 +178,11 @@ describe('the download wire', () => {
 
   afterEach(async () => {
     server.closeAllConnections()
-    await new Promise<void>((done) => server.close(() => done()))
+    await new Promise<void>((done) =>
+      server.close(() => {
+        done()
+      }),
+    )
   })
 
   it("hubBytesTagged returns the final hop's etag", async () => {
