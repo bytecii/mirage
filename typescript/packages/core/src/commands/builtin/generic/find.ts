@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { activeCacheManager } from '../../../cache/context.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { FlagView } from '../../spec/flag_view.ts'
 import { modifiedTs } from '../../../core/generic/find.ts'
@@ -431,6 +432,7 @@ export function findGeneric(
           ...(orNames.length > 1 ? { orNames } : {}),
           ...(emptyFlag ? { empty: true } : {}),
         }
+  const cacheManager = activeCacheManager()
   const matchedRuns: PathSpec[][] = []
   const io = new IOResult({ matchedRuns })
   async function* stream(): AsyncGenerator<Uint8Array> {
@@ -463,7 +465,7 @@ export function findGeneric(
       const startStat = opts.statPath
       let startIsDir = false
       if (startStat !== undefined && !rootIsLink) {
-        const start = await startStat(root.virtual)
+        let start = await startStat(root.virtual)
         if (start === null) {
           // GNU names each start point it cannot stat, keeps going with the
           // rest, and exits 1. Reported as the operand was typed, falling
@@ -472,6 +474,8 @@ export function findGeneric(
           missing.push(`find: '${label}': ${await missingStartDetail(root, stat)}`)
           continue
         }
+        const cachedSize = start.size === null ? await cacheManager?.cachedSize(root) : null
+        if (cachedSize != null) start = start.with({ size: cachedSize })
         if (start.type !== FileType.DIRECTORY && root.rawPath.endsWith('/')) {
           // POSIX reads `x/` as `x/.`, so an operand typed with a trailing
           // slash has to name a directory; GNU refuses the rest with

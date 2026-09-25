@@ -1,3 +1,5 @@
+import { IndexEntry } from '../../cache/index/config.ts'
+import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,12 +14,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { mountKey } from '../../utils/key_prefix.ts'
 import { describe, expect, it } from 'vitest'
 import { PathSpec } from '../../types.ts'
 import type { NotionTransport } from './client.ts'
 import type { NotionAccessor } from '../../accessor/notion.ts'
-import { read } from './read.ts'
+import { read as rawOperation } from './read.ts'
 
 class FakeTransport implements NotionTransport {
   public readonly invocations: { name: string; args: Record<string, unknown> }[] = []
@@ -184,6 +187,10 @@ describe('notion read', () => {
       ...pageBody(PAGE_ID_DASHED, 'Row A'),
       parent: { data_source_id: 'cccc1111222233334444555566667777' },
     })
+    transport.enqueue('API-retrieve-a-page', {
+      ...pageBody(PAGE_ID_DASHED, 'Row A'),
+      parent: { data_source_id: 'cccc1111222233334444555566667777' },
+    })
     transport.enqueue('API-retrieve-block-children', {
       results: [],
       has_more: false,
@@ -338,3 +345,26 @@ it.each([
   expect(row.properties.Amount.number === number).toBe(true)
   expect(new TextDecoder().decode(data)).toContain(`"number":${spelling}}`)
 })
+
+async function read(accessor: NotionAccessor, path: PathSpec, index?: IndexCacheStore) {
+  const cache = index ?? new RAMIndexCacheStore()
+  const pieces = path.virtual.replace(/\/$/, '').split('/')
+  const count = pieces.length - 1
+  for (let i = 1; i < count; i++) {
+    const key = pieces.slice(0, i + 1).join('/')
+    const name = pieces[i] ?? ''
+    if (name.includes('__') && (await cache.get(key)).entry == null)
+      await cache.setPartialDir(key.slice(0, key.lastIndexOf('/')) || '/', [
+        [
+          name,
+          new IndexEntry({
+            id: name.split('__').at(-1) ?? '',
+            name,
+            vfsName: name,
+            resourceType: 'notion/container',
+          }),
+        ],
+      ])
+  }
+  return rawOperation(accessor, path, cache)
+}

@@ -1269,6 +1269,7 @@
       "targets": [
         "trello"
       ],
+      "clear_cache": true,
       "command": "f=/board/workspaces/Strukto__org_strukto/boards/Roadmap_Q3__brd_roadmap/lists/In_Progress__lst_doing/cards/Fix_login_redirect_loop__crd_login/comments.jsonl; echo \"cold=$(stat -c %s \"$f\")\"; echo \"read=$(cat \"$f\" | wc -c)\"; echo \"warm=$(stat -c %s \"$f\")\"",
       "expect": {
         "exit": 0,

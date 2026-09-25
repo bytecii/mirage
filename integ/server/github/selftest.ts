@@ -12,6 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { searchConformance } from './search_conformance.ts'
 import { spawn } from 'node:child_process'
 import type { ChildProcessByStdio } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
@@ -24,8 +25,7 @@ import type { JsonValue } from '../kit/typescript/types.ts'
 // gh battery drives the porcelain against a one-repository fixture. A client
 // that BUILDS history calls `POST /git/trees` then `POST /git/commits`, which is
 // the path a fixture uses to pin a commit's own author and date; a grader reads
-// an issue's comments back; `search_repositories` is an MCP tool with no `gh`
-// equivalent, so nothing else here would notice it answering the wrong scope;
+// an issue's comments back; repository search must preserve owner scope;
 // and code search's scope rules need files under several owners and a
 // mixed-case name, which the `cli` fixture does not hold.
 
@@ -123,6 +123,7 @@ async function main(): Promise<void> {
       body: JSON.stringify({ tenants: [TENANT], fixture: 'v1' }),
     })
     check('/reset seeds the fixture', reset.status === 200, String(reset.status))
+    check('vanilla gh search matches Mirage', (await searchConformance(at)) > 0)
 
     // ---- an author the caller states is the author the fake keeps
     const t1 = await stage(at, 'tasks/one.md', '# one\n')
@@ -994,7 +995,10 @@ async function main(): Promise<void> {
     eq('unscoped, every repository is searched, in full-name order', everything.items, ALL)
     eq('and the count is every hit', field(everything.body, 'total_count'), 5)
     const hitRows = field(everything.body, 'items')
-    const repoOf = (row: JsonValue | undefined): JsonValue => field(row ?? null, 'repository')
+    const repoOf = (row: JsonValue | undefined): JsonValue => {
+      const repo = field(row ?? null, 'repository')
+      return { name: field(repo, 'name'), full_name: field(repo, 'full_name') }
+    }
     eq(
       'each hit names its own repository (first)',
       repoOf(Array.isArray(hitRows) ? hitRows[0] : undefined),
@@ -1106,15 +1110,28 @@ async function main(): Promise<void> {
       [],
     )
     const one = await codeSearch(`repo:${OTHER}/Repo-Mixed ${MARK}`)
-    eq('a hit carries the blob it names', field(one.body, 'items'), [
-      {
-        name: 'mixed.md',
-        path: 'notes/mixed.md',
-        sha: mixedSha,
-        score: 1,
-        repository: { name: 'Repo-Mixed', full_name: `${OTHER}/Repo-Mixed` },
-      },
-    ])
+    const blobs = field(one.body, 'items')
+    eq(
+      'a hit carries the blob it names',
+      Array.isArray(blobs)
+        ? blobs.map((row) => ({
+            name: field(row, 'name'),
+            path: field(row, 'path'),
+            sha: field(row, 'sha'),
+            score: field(row, 'score'),
+            repository: repoOf(row),
+          }))
+        : blobs,
+      [
+        {
+          name: 'mixed.md',
+          path: 'notes/mixed.md',
+          sha: mixedSha,
+          score: 1,
+          repository: { name: 'Repo-Mixed', full_name: `${OTHER}/Repo-Mixed` },
+        },
+      ],
+    )
     for (const prefix of ['', '/api/v3']) {
       for (const q of ['', '  ', null]) {
         const r = await codeSearch(q, prefix)

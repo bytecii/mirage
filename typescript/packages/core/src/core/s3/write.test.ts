@@ -28,6 +28,10 @@ import * as clientMod from './client.ts'
 import { write } from './write.ts'
 
 class FakeManager {
+  readThrough(_path: PathSpec, fetch: () => Promise<Uint8Array>): Promise<Uint8Array> {
+    return fetch()
+  }
+
   writes: string[] = []
 
   invalidateAfterWrite(path: PathSpec): Promise<void> {

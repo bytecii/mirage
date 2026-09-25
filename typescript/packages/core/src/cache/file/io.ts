@@ -48,7 +48,7 @@ export function withCacheMutation<T>(cache: FileCache, fn: () => Promise<T>): Pr
  * each; asking for the wrong direction stamps the write's token onto the
  * bytes the read produced, and the entry then reads as fresh forever.
  */
-function latestFingerprint(
+export function latestFingerprint(
   records: readonly OpRecord[] | undefined,
   path: string,
   ops: ReadonlySet<string>,

@@ -264,3 +264,21 @@ def test_a_name_no_builder_has_is_refused(option):
     if it displaced something."""
     with pytest.raises(ValueError, match="no generic builder named"):
         make_generic_commands("fake", _ops(_CountingBackend(b"")), **option)
+
+
+@pytest.mark.asyncio
+async def test_partial_consumer_caches_complete_synthesized_stream():
+    backend = _CountingBackend(b'first\nsecond\n')
+    manager = CacheManager(RAMFileCacheStore(), None, '/s3/', True)
+    prev = push_cache_manager(manager)
+    try:
+        ops = with_read_cache(replace(_ops(backend), streams_bytes=True))
+    finally:
+        push_cache_manager(prev)
+    source = ops.read_stream(None, _spec())
+    assert (await anext(source))[:5] == b'first'
+    await source.aclose()
+    assert await manager.cached_bytes(_spec()) == backend.data
+    assert await ops.read_bytes(None, _spec()) == backend.data
+    assert backend.bytes_calls == 1
+    assert backend.stream_calls == 0

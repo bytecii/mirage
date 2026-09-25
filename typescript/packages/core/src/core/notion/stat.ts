@@ -13,6 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import type { NotionAccessor } from '../../accessor/notion.ts'
+import type { IndexCacheStore } from '../../cache/index/store.ts'
+import { assertParent } from '../hierarchy/probe.ts'
 import type { IndexEntry } from '../../cache/index/config.ts'
 import { ContentType, FileStat, FileType, type PathSpec } from '../../types.ts'
 import type { ScopeMatch } from '../hierarchy/scope.ts'
@@ -35,7 +37,9 @@ async function rowStat(
   accessor: NotionAccessor,
   match: ScopeMatch,
   path: PathSpec,
+  index?: IndexCacheStore,
 ): Promise<FileStat> {
+  await assertParent(stat, accessor, path, index)
   const page = await resolveRow(accessor, match, path.virtual)
   const name = pageSegmentName(page)
   const edited = typeof page.last_edited_time === 'string' ? page.last_edited_time : ''
@@ -51,8 +55,9 @@ async function rowJsonStat(
   accessor: NotionAccessor,
   match: ScopeMatch,
   path: PathSpec,
+  index?: IndexCacheStore,
 ): Promise<FileStat> {
-  await resolveRow(accessor, match, path.virtual)
+  await assertParent(stat, accessor, path, index)
   return new FileStat({ name: 'page.json', type: FileType.FILE, content: ContentType.JSON })
 }
 

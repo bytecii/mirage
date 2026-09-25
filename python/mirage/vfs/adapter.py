@@ -53,6 +53,7 @@ class VFSAdapter:
         return CommandIO(
             readdir=self.read.readdir,
             read_bytes=self.read.read_bytes,
+            streams_bytes=self.native.read_stream is None,
             stat=self.read.stat,
             read_stream=self.native.read_stream
             or partial(stream_from_bytes, self.read.read_bytes),

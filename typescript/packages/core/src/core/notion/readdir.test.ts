@@ -12,6 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import { IndexEntry } from '../../cache/index/config.ts'
+import type { IndexCacheStore } from '../../cache/index/store.ts'
 import { mountKey } from '../../utils/key_prefix.ts'
 import { describe, expect, it } from 'vitest'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
@@ -19,7 +21,7 @@ import { PathSpec } from '../../types.ts'
 import type { NotionTransport } from './client.ts'
 import { normalizeDatabase, toJsonBytes } from './normalize.ts'
 import type { NotionAccessor } from '../../accessor/notion.ts'
-import { readdir } from './readdir.ts'
+import { readdir as rawOperation } from './readdir.ts'
 import { formatSegment } from './pathing.ts'
 import { NAME_MAX_BYTES, byteLength } from '../../utils/sanitize.ts'
 
@@ -400,3 +402,26 @@ describe('notion readdir long child titles', () => {
     expect(byteLength(child ?? '')).toBeLessThanOrEqual(NAME_MAX_BYTES)
   })
 })
+
+async function readdir(accessor: NotionAccessor, path: PathSpec, index?: IndexCacheStore) {
+  const cache = index ?? new RAMIndexCacheStore()
+  const pieces = path.virtual.replace(/\/$/, '').split('/')
+  const count = pieces.length
+  for (let i = 1; i < count; i++) {
+    const key = pieces.slice(0, i + 1).join('/')
+    const name = pieces[i] ?? ''
+    if (name.includes('__') && (await cache.get(key)).entry == null)
+      await cache.setPartialDir(key.slice(0, key.lastIndexOf('/')) || '/', [
+        [
+          name,
+          new IndexEntry({
+            id: name.split('__').at(-1) ?? '',
+            name,
+            vfsName: name,
+            resourceType: 'notion/container',
+          }),
+        ],
+      ])
+  }
+  return rawOperation(accessor, path, cache)
+}

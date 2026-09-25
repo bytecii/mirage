@@ -610,6 +610,230 @@
         "stdout": "",
         "stderr": "stat: /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Write_spec__ffff1111-2222-3333-4444-555566667777/Fabricated__ffff9999-2222-3333-4444-555566667777: No such file or directory\n"
       }
+    },
+    {
+      "id": "notion_cat_populates_render_cache",
+      "seq": 660050,
+      "targets": [
+        "notion"
+      ],
+      "command": "cat /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl >/dev/null; stat -c %s /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl; find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777 -name rows.jsonl -size +1c; find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl -size +1c",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "2123\n/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl\n/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_wc_populates_render_cache",
+      "seq": 660051,
+      "targets": [
+        "notion"
+      ],
+      "command": "wc -l /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl >/dev/null; stat -c %s /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl; find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777 -name rows.jsonl -size +1c; find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl -size +1c",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "2123\n/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl\n/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_grep_populates_render_cache",
+      "seq": 660052,
+      "targets": [
+        "notion"
+      ],
+      "command": "grep -c title /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl >/dev/null; stat -c %s /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl; find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777 -name rows.jsonl -size +1c; find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl -size +1c",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "2123\n/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl\n/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_head_populates_render_cache",
+      "seq": 660053,
+      "targets": [
+        "notion"
+      ],
+      "command": "head -c 20 /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl >/dev/null; stat -c %s /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl; find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777 -name rows.jsonl -size +1c; find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl -size +1c",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "2123\n/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl\n/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_tail_populates_render_cache",
+      "seq": 660054,
+      "targets": [
+        "notion"
+      ],
+      "command": "tail -c 20 /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl >/dev/null; stat -c %s /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl; find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777 -name rows.jsonl -size +1c; find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl -size +1c",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "2123\n/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl\n/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_jq_populates_render_cache",
+      "seq": 660055,
+      "targets": [
+        "notion"
+      ],
+      "command": "jq -c .title /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl >/dev/null; stat -c %s /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl; find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777 -name rows.jsonl -size +1c; find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl -size +1c",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "2123\n/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl\n/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_unknown_size_find_direct_and_walk",
+      "seq": 660056,
+      "targets": [
+        "notion"
+      ],
+      "command": "test -z \"$(find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/rows.jsonl -size +1c)\" && test -z \"$(find /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777 -name rows.jsonl -size +1c)\" && echo unknown",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "unknown\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_rejects_unlisted_database_read",
+      "seq": 660057,
+      "targets": [
+        "notion"
+      ],
+      "command": "cat /notion/databases/Wrong__eeee1111-2222-3333-4444-555566667777/database.json >/dev/null 2>/dev/null; echo $?",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_rejects_unlisted_database_readdir",
+      "seq": 660058,
+      "targets": [
+        "notion"
+      ],
+      "command": "ls /notion/databases/Wrong__eeee1111-2222-3333-4444-555566667777 >/dev/null 2>/dev/null; echo $?",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_rejects_unlisted_database_stat",
+      "seq": 660059,
+      "targets": [
+        "notion"
+      ],
+      "command": "stat /notion/databases/Wrong__eeee1111-2222-3333-4444-555566667777 >/dev/null 2>/dev/null; echo $?",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_rejects_unlisted_source_read",
+      "seq": 660060,
+      "targets": [
+        "notion"
+      ],
+      "command": "cat /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Wrong__d5000000-2222-3333-4444-555566667777/rows.jsonl >/dev/null 2>/dev/null; echo $?",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_rejects_unlisted_source_readdir",
+      "seq": 660061,
+      "targets": [
+        "notion"
+      ],
+      "command": "ls /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Wrong__d5000000-2222-3333-4444-555566667777 >/dev/null 2>/dev/null; echo $?",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_rejects_unlisted_source_stat",
+      "seq": 660062,
+      "targets": [
+        "notion"
+      ],
+      "command": "stat /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Wrong__d5000000-2222-3333-4444-555566667777 >/dev/null 2>/dev/null; echo $?",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_rejects_unlisted_page_read",
+      "seq": 660063,
+      "targets": [
+        "notion"
+      ],
+      "command": "cat /notion/pages/Project_Roadmap__aaaa1111-2222-3333-4444-555566667777/Notes__bbbb2222-3333-4444-5555-666677778888/page.json >/dev/null 2>/dev/null; echo $?",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_rejects_unlisted_page_readdir",
+      "seq": 660064,
+      "targets": [
+        "notion"
+      ],
+      "command": "ls /notion/pages/Project_Roadmap__aaaa1111-2222-3333-4444-555566667777/Notes__bbbb2222-3333-4444-5555-666677778888 >/dev/null 2>/dev/null; echo $?",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "2\n",
+        "stderr": ""
+      }
+    },
+    {
+      "id": "notion_rejects_unlisted_page_stat",
+      "seq": 660065,
+      "targets": [
+        "notion"
+      ],
+      "command": "stat /notion/pages/Project_Roadmap__aaaa1111-2222-3333-4444-555566667777/Notes__bbbb2222-3333-4444-5555-666677778888 >/dev/null 2>/dev/null; echo $?",
+      "clear_cache": true,
+      "expect": {
+        "exit": 0,
+        "stdout": "1\n",
+        "stderr": ""
+      }
     }
   ]
 }

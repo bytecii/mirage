@@ -18,6 +18,7 @@ from mirage.commands.cli.builtin.gh import pull as pull_commands
 from mirage.commands.cli.builtin.gh import release as release_commands
 from mirage.commands.cli.builtin.gh import repo as repo_commands
 from mirage.commands.cli.builtin.gh.api import api
+from mirage.commands.cli.builtin.gh.search import search_spec
 from mirage.commands.cli.types import CLISpec
 from mirage.commands.spec.types import Operand, Option
 from mirage.core.github.config import GhConfig
@@ -442,5 +443,6 @@ GH = CLISpec(
         _release(),
         _run(),
         _workflow(),
+        search_spec(),
     ),
 )

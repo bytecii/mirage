@@ -25,6 +25,7 @@ from mirage.core.notion.pages import (get_data_source, get_database, get_page,
                                       list_block_tree, query_data_source)
 from mirage.core.notion.resolve import guard_row, resolve_row
 from mirage.core.notion.scope import detect_scope
+from mirage.core.notion.stat import stat
 from mirage.core.render.json import jsonl_bytes
 from mirage.types import PathSpec
 
@@ -80,6 +81,7 @@ async def _read_rows_jsonl(accessor: NotionAccessor, match: ScopeMatch,
 
 read = make_read(
     detect_scope,
+    stat=stat,
     readers={
         "page_json": _read_page_json,
         "row_json": _read_page_json,

@@ -12,6 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from typing import Protocol
 
@@ -36,6 +37,10 @@ class CacheInvalidator(Protocol):
         ...
 
     async def cached_bytes(self, path: PathSpec) -> bytes | None:
+        ...
+
+    async def read_through(self, path: PathSpec,
+                           fetch: Callable[[], Awaitable[bytes]]) -> bytes:
         ...
 
     async def cached_size(self, path: PathSpec) -> int | None:

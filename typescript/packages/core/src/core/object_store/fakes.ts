@@ -254,6 +254,10 @@ export function makeDriver(
 }
 
 export class FakeManager {
+  readThrough(_path: PathSpec, fetch: () => Promise<Uint8Array>): Promise<Uint8Array> {
+    return fetch()
+  }
+
   readonly writes: string[] = []
   readonly unlinks: string[] = []
   readonly subtrees: string[] = []

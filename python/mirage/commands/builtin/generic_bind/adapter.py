@@ -416,6 +416,7 @@ class Builder:
 class CommandIO(ReadOps, NativeReadOps, WriteOps):
     read_stream: ReadStreamOp = field()
     is_mounted: IsMountedOp = field()
+    streams_bytes: bool = False
     local: bool = True
     max_glob_matches: int | None = DEFAULT_MAX_GLOB_MATCHES
     max_du_entries: int | None = DEFAULT_MAX_DU_ENTRIES

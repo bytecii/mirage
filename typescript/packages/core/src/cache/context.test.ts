@@ -25,6 +25,10 @@ import {
 } from './context.ts'
 
 class FakeManager {
+  readThrough(_path: PathSpec, fetch: () => Promise<Uint8Array>): Promise<Uint8Array> {
+    return fetch()
+  }
+
   writes: string[] = []
   unlinks: string[] = []
   subtrees: string[] = []

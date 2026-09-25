@@ -26,6 +26,7 @@ export interface CacheInvalidator {
   invalidateAfterUnlink(path: string | PathSpec): Promise<void>
   invalidateSubtree(path: string | PathSpec): Promise<void>
   cachedBytes(path: PathSpec): Promise<Uint8Array | null>
+  readThrough(path: PathSpec, fetch: () => Promise<Uint8Array>): Promise<Uint8Array>
   cachedSize(path: PathSpec): Promise<number | null>
 }
 

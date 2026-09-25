@@ -19,11 +19,9 @@ import { read as gmailRead } from '../../../core/gmail/read.ts'
 import { readdir as gmailReaddir } from '../../../core/gmail/readdir.ts'
 import { stat as gmailStat } from '../../../core/gmail/stat.ts'
 import type { CommandIO } from '../generic_bind/index.ts'
-import { streamFromBytes } from '../utils/wrap.ts'
 
 export const GMAIL_IO: CommandIO<GmailAccessor> = new VFSAdapter<GmailAccessor>({
   read: { readdir: gmailReaddir, readBytes: gmailRead, stat: gmailStat },
-  native: { readStream: (a, p, i) => streamFromBytes(gmailRead, a, p, i) },
   isMounted: () => true,
   local: false,
 }).toCommandIO()

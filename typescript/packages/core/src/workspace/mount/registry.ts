@@ -163,6 +163,7 @@ export class MountRegistry {
       cachesReads(m.vfs),
       (path) => !m.retiring && this.tryMountFor(path) === m,
       (key) => this.mayServeCached(m, key),
+      m.read.ttl,
     )
   }
 

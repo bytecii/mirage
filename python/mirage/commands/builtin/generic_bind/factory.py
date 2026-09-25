@@ -28,6 +28,7 @@ from mirage.commands.builtin.generic_bind.adapter import (CommandIO,
                                                           with_policy_guard)
 from mirage.commands.builtin.generic_bind.builders import BUILDERS
 from mirage.commands.builtin.generic_bind.provision import default_provision
+from mirage.commands.builtin.utils.wrap import stream_from_bytes
 from mirage.commands.config import CommandOpts, command
 from mirage.commands.spec import SPECS
 from mirage.types import FileType, PathSpec
@@ -74,10 +75,13 @@ def with_read_cache(ops: CommandIO) -> CommandIO:
     Args:
         ops (CommandIO): the backend's IO adapter.
     """
+    read_bytes = cache_aware_read_bytes(ops.read_bytes)
     return replace(
         with_stat_cache(ops),
-        read_stream=cache_aware_read_stream(ops.read_stream),
-        read_bytes=cache_aware_read_bytes(ops.read_bytes),
+        read_stream=(functools.partial(stream_from_bytes, read_bytes)
+                     if ops.streams_bytes else cache_aware_read_stream(
+                         ops.read_stream)),
+        read_bytes=read_bytes,
     )
 
 

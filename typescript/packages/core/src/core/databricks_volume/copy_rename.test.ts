@@ -33,6 +33,10 @@ import {
 const resolveGlob = resolveGlobOf(DATABRICKS_VOLUME_IO)
 
 class FakeManager {
+  readThrough(_path: PathSpec, fetch: () => Promise<Uint8Array>): Promise<Uint8Array> {
+    return fetch()
+  }
+
   writes: string[] = []
   unlinks: string[] = []
   subtrees: string[] = []

@@ -23,6 +23,7 @@ export class VFSAdapter<A extends Accessor = Accessor> {
     const { read, native, writes, ...settings } = this.options
     return {
       ...read,
+      streamsBytes: native?.readStream === undefined,
       readStream: (a, p, i) => streamFromBytes(read.readBytes, a, p, i),
       exists: async (a, p) => {
         try {

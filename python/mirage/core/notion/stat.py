@@ -14,6 +14,7 @@
 
 from mirage.accessor.notion import NotionAccessor
 from mirage.cache.index import IndexCacheStore, IndexEntry
+from mirage.core.hierarchy.probe import assert_parent
 from mirage.core.hierarchy.scope import ScopeMatch
 from mirage.core.hierarchy.stat import make_stat
 from mirage.core.notion.pathing import page_dirname
@@ -35,6 +36,7 @@ def _page_stat(match: ScopeMatch, path: PathSpec,
 
 async def _row_stat(accessor: NotionAccessor, match: ScopeMatch,
                     path: PathSpec, index: IndexCacheStore) -> FileStat:
+    await assert_parent(stat, accessor, path, index)
     page = await resolve_row(accessor, match, path.virtual)
     name = page_dirname(page)
     return FileStat(
@@ -47,7 +49,7 @@ async def _row_stat(accessor: NotionAccessor, match: ScopeMatch,
 
 async def _row_json_stat(accessor: NotionAccessor, match: ScopeMatch,
                          path: PathSpec, index: IndexCacheStore) -> FileStat:
-    await resolve_row(accessor, match, path.virtual)
+    await assert_parent(stat, accessor, path, index)
     return FileStat(name="page.json",
                     type=FileType.FILE,
                     content=ContentType.JSON)

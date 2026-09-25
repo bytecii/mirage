@@ -71,7 +71,13 @@ DATA_SOURCE = {
 
 
 @pytest.fixture
-def accessor():
+def accessor(monkeypatch):
+    monkeypatch.setattr(notion_readdir, "search_data_sources",
+                        AsyncMock(return_value=[DATA_SOURCE]))
+    monkeypatch.setattr(notion_readdir, "get_database",
+                        AsyncMock(return_value=DATABASE))
+    monkeypatch.setattr(notion_readdir, "get_data_source",
+                        AsyncMock(return_value=DATA_SOURCE))
     return NotionAccessor(NotionConfig(api_key="ntn_test"))
 
 
@@ -398,3 +404,19 @@ async def test_rows_jsonl_spells_numeric_cells(accessor, monkeypatch, number,
                       PathSpec.from_str_path(f"{SOURCE_DIR}/rows.jsonl"))
     assert json.loads(data)["properties"]["Priority"]["number"] == number
     assert f'"number":{spelling}}}'.encode() in data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("directory", [
+    "/databases/Wrong__db123",
+    "/databases/Tasks__db123/Wrong__ds789",
+    "/databases/Tasks__db123/Other__foreign",
+])
+@pytest.mark.parametrize("operation", [read, readdir, stat])
+async def test_paths_must_be_listed_by_their_parent(accessor, directory,
+                                                    operation):
+    suffix = "/database.json" if directory.count("/") == 2 else "/rows.jsonl"
+    path = directory + suffix if operation is read else directory
+    for index in (RAMIndexCacheStore(), None):
+        with pytest.raises(FileNotFoundError):
+            await operation(accessor, PathSpec.from_str_path(path), index)

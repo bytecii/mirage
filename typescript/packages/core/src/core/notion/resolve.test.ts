@@ -1,3 +1,4 @@
+import { IndexEntry } from '../../cache/index/config.ts'
 import { expect, it } from 'vitest'
 import { RAMIndexCacheStore } from '../../cache/index/ram.ts'
 import { PathSpec } from '../../types.ts'
@@ -39,6 +40,17 @@ it.each(['title', 'parent', 'trash', 'archived'])(
       const virtual = `/databases/DB__db/DS__ds/${label}__row${suffix}`
       const path = new PathSpec({ virtual, directory: virtual, vfsPath: virtual })
       const index = new RAMIndexCacheStore()
+      await index.setPartialDir('/databases/DB__db', [
+        [
+          'DS__ds',
+          new IndexEntry({
+            id: 'ds',
+            name: 'DS__ds',
+            vfsName: 'DS__ds',
+            resourceType: 'notion/data_source',
+          }),
+        ],
+      ])
       await index.setDir(virtual, [])
       await expect(operation(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
       expect(calls).toEqual(['API-retrieve-a-page'])
@@ -67,8 +79,32 @@ it('keeps the containing row identity when reading a child', async () => {
     },
   }
   const path = PathSpec.fromStrPath('/databases/DB__db/DS__ds/Row__row/Child__child/page.json')
-  await read(accessor, path, undefined)
-  expect(pages).toEqual(['row', 'child'])
+  const index = new RAMIndexCacheStore()
+  await index.setPartialDir('/databases/DB__db', [
+    [
+      'DS__ds',
+      new IndexEntry({
+        id: 'ds',
+        name: 'DS__ds',
+        vfsName: 'DS__ds',
+        resourceType: 'notion/data_source',
+      }),
+    ],
+  ])
+  await index.setPartialDir('/databases/DB__db/DS__ds/Row__row', [
+    [
+      'Child__child',
+      new IndexEntry({
+        id: 'child',
+        name: 'Child__child',
+        vfsName: 'Child__child',
+        resourceType: 'notion/page',
+      }),
+    ],
+  ])
+  await read(accessor, path, index)
+  expect(pages).toContain('row')
+  expect(pages.at(-1)).toBe('child')
 })
 
 it('rejects a missing child beneath a valid row', async () => {
@@ -89,6 +125,18 @@ it('rejects a missing child beneath a valid row', async () => {
     },
   }
   const path = PathSpec.fromStrPath('/databases/DB__db/DS__ds/Row__row/Fabricated__missing')
-  await expect(stat(accessor, path)).rejects.toMatchObject({ code: 'ENOENT' })
+  const index = new RAMIndexCacheStore()
+  await index.setPartialDir('/databases/DB__db', [
+    [
+      'DS__ds',
+      new IndexEntry({
+        id: 'ds',
+        name: 'DS__ds',
+        vfsName: 'DS__ds',
+        resourceType: 'notion/data_source',
+      }),
+    ],
+  ])
+  await expect(stat(accessor, path, index)).rejects.toMatchObject({ code: 'ENOENT' })
   expect(listed).toEqual(['row'])
 })

@@ -22,12 +22,10 @@ import { read as langfuseRead } from '../../../core/langfuse/read.ts'
 import { readdir as langfuseReaddir } from '../../../core/langfuse/readdir.ts'
 import { stat as langfuseStat } from '../../../core/langfuse/stat.ts'
 import type { CommandIO } from '../generic_bind/index.ts'
-import { streamFromBytes } from '../utils/wrap.ts'
 
 export const LANGFUSE_IO: CommandIO<LangfuseAccessor> = new VFSAdapter<LangfuseAccessor>({
   search: { search: makeSearchOp(detectScope, SEARCHERS), meta: { grep: { mode: 'regex' } } },
   read: { readdir: langfuseReaddir, readBytes: langfuseRead, stat: langfuseStat },
-  native: { readStream: (a, p, i) => streamFromBytes(langfuseRead, a, p, i) },
   isMounted: () => true,
   local: false,
 }).toCommandIO()

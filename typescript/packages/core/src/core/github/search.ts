@@ -16,7 +16,7 @@ import { mountKey, mountPrefixOf } from '../../utils/key_prefix.ts'
 import type { GitHubAccessor } from '../../accessor/github.ts'
 import { PathSpec } from '../../types.ts'
 import { lstripSlash, stripSlash } from '../../utils/slash.ts'
-import { type GitHubCodeSearch, searchCode } from './client.ts'
+import { type GitHubTransport, type GitHubCodeSearch, searchCode } from './client.ts'
 import { scopeRelativeKey, unsearchableKeys } from './pushdown.ts'
 
 // Use GitHub code search to narrow grep/rg scopes to candidate files.
@@ -68,4 +68,45 @@ export async function narrowPaths(
       resolved: true,
     })
   })
+}
+
+/** Fetch a bounded REST search, following the server's pagination. */
+export async function search(
+  transport: GitHubTransport,
+  kind: string,
+  query: string,
+  limit: number,
+  sort?: string,
+  order?: string,
+): Promise<unknown[]> {
+  const params: Record<string, string> = {
+    q: query,
+    per_page: String(Math.min(limit, 100)),
+    page: '1',
+  }
+  if (sort !== undefined) params.sort = sort
+  if (order !== undefined) params.order = order
+  const rows: unknown[] = []
+  for (let page = 1; rows.length < limit; page += 1) {
+    params.page = String(page)
+    const headers = {
+      Accept:
+        kind === 'code'
+          ? 'application/vnd.github.text-match+json'
+          : 'application/vnd.github.v3+json',
+    }
+    const response =
+      transport.requestWithResponse === undefined
+        ? {
+            data: await transport.request('GET', `/search/${kind}`, undefined, params, headers),
+            headers: {} as Record<string, string>,
+          }
+        : await transport.requestWithResponse('GET', `/search/${kind}`, undefined, params, headers)
+    const body = response.data as { items?: unknown[] }
+    const items = body.items ?? []
+    if (!Array.isArray(items)) throw new Error('invalid search response: items must be an array')
+    rows.push(...items.slice(0, limit - rows.length))
+    if (items.length === 0 || !(response.headers.link ?? '').includes('rel="next"')) break
+  }
+  return rows
 }
