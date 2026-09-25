@@ -20,8 +20,9 @@ from mirage.commands.builtin.grep_pushdown import (is_literal_pattern,
                                                    search_query)
 from mirage.commands.resolve import get_extension
 from mirage.core.github.constants import SCOPE_WARN
-from mirage.core.github.pushdown import (count_scope_files, scope_relative_key,
-                                         search_safe, should_use_search)
+from mirage.core.github.pushdown import (count_scope_files, is_directory_key,
+                                         scope_relative_key, search_safe,
+                                         should_use_search)
 from mirage.core.github.repo import ensure_default_branch, ensure_ref
 from mirage.core.github.search import narrow_paths
 from mirage.core.github.tree import ensure_tree
@@ -110,10 +111,14 @@ async def narrow_scope(
     # resolving the default branch is the one term here that can cost a
     # request.
     # A truncated tree cannot list every file code search skips, so no
-    # answer over it can be shown to be the whole set.
+    # answer over it can be shown to be the whole set; and a full scan reads
+    # every file named on the line, binary or not, so only directory
+    # operands are narrowed.
     use_search = (not exact_file_set and query is not None and whole_word
                   and literal and file_count > SCOPE_WARN
-                  and not accessor.truncated and search_safe(query)
+                  and not accessor.truncated and all(
+                      is_directory_key(accessor.tree, scope_relative_key(p))
+                      for p in paths) and search_safe(query)
                   and should_use_search(
                       recursive=recursive,
                       on_default_branch=(await ensure_ref(accessor) == await
@@ -135,6 +140,9 @@ async def narrow_scope(
                 p for p in narrowed
                 if get_extension(p.virtual) not in BINARY_EXTENSIONS
             ]
-            return kept, len(kept), True
+            # Left empty, the list would read as no operands and grep
+            # would read standard input.
+            if kept:
+                return kept, len(kept), True
     resolved = await resolve_glob(accessor, paths, index)
     return resolved, file_count, False

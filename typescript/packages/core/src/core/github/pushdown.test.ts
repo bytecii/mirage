@@ -18,6 +18,7 @@ import { PathSpec } from '../../types.ts'
 import type { TreeEntry } from './tree_entry.ts'
 import {
   countScopeFiles,
+  isDirectoryKey,
   isRepoRoot,
   scopeRelativeKey,
   searchSafe,
@@ -154,5 +155,14 @@ describe('unsearchableKeys', () => {
       'src/none.py',
       'srcx/big.bin',
     ])
+  })
+})
+
+describe('isDirectoryKey', () => {
+  it('names the root and tree entries only', () => {
+    expect(isDirectoryKey(TREE, '/')).toBe(true)
+    expect(isDirectoryKey(TREE, '/src')).toBe(true)
+    expect(isDirectoryKey(TREE, '/src/main.py')).toBe(false)
+    expect(isDirectoryKey(TREE, '/nope')).toBe(false)
   })
 })
