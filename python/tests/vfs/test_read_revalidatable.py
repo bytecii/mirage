@@ -436,6 +436,32 @@ def test_a_read_leaves_an_entry_reconcile_calls_fresh(name, shape, row,
     assert fake.reach == []
 
 
+@pytest.mark.parametrize(("name", "shape", "row"), _cases(("drain", )))
+def test_early_pipe_exit_never_caches_a_prefix(name, shape, row, monkeypatch):
+    with _fake(name, shape, BIG, monkeypatch) as fake:
+        slots = _spy_slots(fake, monkeypatch)
+        drains = _spy_drain(monkeypatch)
+        virtual = "/m/" + fake.key
+
+        async def run():
+            ws = _fresh_workspace(fake.vfs)
+            try:
+                before = fake.fetches()
+                assert await _line(ws, f"cat {virtual} | head -c 1") == BIG[:1]
+                for done in drains:
+                    await done.wait()
+                assert slots == [(SLOTS[row], virtual)]
+                assert fake.fetches() - before == 1
+                cached = await ws.cache.get(virtual)
+                assert cached is None or cached == BIG
+                assert await _line(ws, f"cat {virtual}") == BIG
+                assert fake.fetches() - before == (2 if cached is None else 1)
+            finally:
+                await ws.close()
+
+        asyncio.run(run())
+
+
 @pytest.mark.parametrize(("name", "shape", "row"), B_CASES)
 def test_an_unrecorded_read_stamps_the_stat_token(name, shape, row,
                                                   monkeypatch):

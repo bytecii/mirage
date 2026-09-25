@@ -579,6 +579,27 @@ describe('the read-token contract', () => {
     })
   }
 
+  for (const { name, shape, row } of cases(['drain'])) {
+    it(`an early pipe exit never caches a prefix: ${name}-${shape}`, async () => {
+      const fake = await makeFake(name, shape, BIG)
+      const virtual = `/m/${fake.key}`
+      const ws = freshWorkspace(fake.vfs)
+      try {
+        expect(await line(ws, `cat ${virtual} | head -c 1`)).toEqual(BIG.slice(0, 1))
+        await Promise.all([...(ws.cache.drainTasks?.values() ?? [])])
+        expect(readsOnMount()).toEqual([[SLOTS[row], virtual]])
+        expect(fake.fetches()).toBe(1)
+        const cached = await ws.cache.get(virtual)
+        if (cached !== null) expect(cached).toEqual(BIG)
+        expect(await line(ws, `cat ${virtual}`)).toEqual(BIG)
+        expect(fake.fetches()).toBe(cached === null ? 2 : 1)
+        expect(H.reach).toEqual([])
+      } finally {
+        await ws.close()
+      }
+    })
+  }
+
   for (const { name, shape, row } of B_CASES) {
     it(`an unrecorded read stamps the stat token: ${name}-${shape}-${row}`, async () => {
       const fake = await makeFake(name, shape, SEED)
