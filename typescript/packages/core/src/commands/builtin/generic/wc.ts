@@ -27,6 +27,7 @@ import { FlagView } from '../../spec/flag_view.ts'
 import { type FlagValue } from '../../spec/types.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { advanceColumn, isSpace } from '../../../utils/width.ts'
+import { shellQuote } from '../../../utils/quote.ts'
 
 const ENC = new TextEncoder()
 
@@ -185,6 +186,14 @@ export function numberWidth(
   return sizes.includes(null) ? Math.max(width, 7) : width
 }
 
+// One report row under GNU's name rule (coreutils 9.7 wc.c): a name holding a
+// newline is shell-quoted, as quotef does, so no row spans two lines; every
+// other name, spaces included, prints as itself. Mirrors Python's labelled.
+function labelled(body: string, label: string | null): string {
+  if (label === null) return body
+  return `${body} ${label.includes('\n') ? shellQuote(label) : label}`
+}
+
 // GNU wc layout: counts right-aligned to a shared width and space-separated.
 // A caller that knows its operands passes GNU's width (numberWidth); one that
 // holds only counts, such as a database push-down that never renders its
@@ -194,7 +203,7 @@ export function formatWcLines(rows: WcRow[], width: number | null = null): strin
   const first = rows[0]
   if (width === null && rows.length === 1 && first?.values.length === 1) {
     const body = String(first.values[0])
-    return [first.label === null ? body : `${body} ${first.label}`]
+    return [labelled(body, first.label)]
   }
   let pad = width ?? 1
   if (width === null && rows.length === 1 && first?.label === null) {
@@ -206,7 +215,7 @@ export function formatWcLines(rows: WcRow[], width: number | null = null): strin
   }
   return rows.map((row) => {
     const body = row.values.map((n) => String(n).padStart(pad)).join(' ')
-    return row.label === null ? body : `${body} ${row.label}`
+    return labelled(body, row.label)
   })
 }
 

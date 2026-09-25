@@ -20,6 +20,7 @@ from mirage.io.cooperative import chunks
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec, PolymorphicReadFn
 from mirage.utils.errors import FS_ERRORS, fs_error_line
+from mirage.utils.quote import shell_quote
 from mirage.utils.width import advance_column, is_space
 
 # GNU's `total_types` in declaration order, which is both the accepted
@@ -214,6 +215,23 @@ def number_width(sizes: list[int | None], operands: int, counts: int) -> int:
     return max(width, 7) if None in sizes else width
 
 
+def labelled(body: str, label: str | None) -> str:
+    """One report row under GNU's name rule (coreutils 9.7 ``wc.c``).
+
+    A name holding a newline is shell-quoted, as ``quotef`` does, so no
+    row spans two lines; every other name, spaces included, prints as
+    itself.
+
+    Args:
+        body (str): The row's right-aligned counts.
+        label (str | None): The operand's name, or None for no name.
+    """
+    if label is None:
+        return body
+    name = shell_quote(label) if "\n" in label else label
+    return f"{body} {name}"
+
+
 def format_wc_lines(
     rows: list[tuple[WCCounts, str | None]],
     *,
@@ -253,7 +271,7 @@ def format_wc_lines(
     if width is None and len(values) == 1 and len(values[0][0]) == 1:
         nums, label = values[0]
         body = str(nums[0])
-        return [body if label is None else f"{body} {label}"]
+        return [labelled(body, label)]
     if width is None and len(values) == 1 and values[0][1] is None:
         width = 7
     if width is None:
@@ -262,7 +280,7 @@ def format_wc_lines(
     out: list[str] = []
     for nums, label in values:
         body = " ".join(str(n).rjust(width) for n in nums)
-        out.append(body if label is None else f"{body} {label}")
+        out.append(labelled(body, label))
     return out
 
 

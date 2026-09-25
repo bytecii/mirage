@@ -17,7 +17,7 @@ import { materialize } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import { eisdir } from '../../../utils/errors.ts'
 import type { CommandOpts } from '../../config.ts'
-import { numberWidth, parseFlags, wcGeneric } from './wc.ts'
+import { formatWcLines, numberWidth, parseFlags, wcGeneric } from './wc.ts'
 
 // GNU's ARGMATCH refusal names the refused word through gnulib's quote(),
 // so a byte outside 0x20-0x7e comes back escaped rather than interpolated
@@ -84,6 +84,14 @@ describe('wc --total refusal carries GNU candidate block', () => {
   it('still defaults an absent --total to auto', () => {
     const parsed = parseFlags({})
     expect(typeof parsed === 'string' ? parsed : parsed.total).toBe('auto')
+  })
+})
+
+describe('formatWcLines', () => {
+  it('quotes only a name holding a newline', () => {
+    // coreutils 9.7 wc.c: `strchr (file, '\n') ? quotef (file) : file`.
+    expect(formatWcLines([{ values: [2], label: '/a/n\nq' }])).toEqual(["2 '/a/n'$'\\n''q'"])
+    expect(formatWcLines([{ values: [2], label: '/a/b c' }])).toEqual(['2 /a/b c'])
   })
 })
 

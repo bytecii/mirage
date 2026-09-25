@@ -18,6 +18,7 @@ import { expect, it } from 'vitest'
 import { IOResult, materialize } from '../../../../../io/types.ts'
 import { FileStat, FileType, PathSpec } from '../../../../../types.ts'
 import type { FlagValue } from '../../../../spec/types.ts'
+import { enoent } from '../../../../../utils/errors.ts'
 import type { CrossResult } from '../types.ts'
 import { parseRow, runWc } from './wc.ts'
 
@@ -31,8 +32,14 @@ const ROWS: Record<string, [string, string | null]> = {
   '/b/x': ['1 /b/x\n', null],
   '/pg/rows': ['5 /pg/rows\n', null],
   '/pg2/rows': ['3 /pg2/rows\n', null],
+  '/a/n\nq': ['2 /a/n\nq\n', null],
+  '/gone': ['4 /gone\n', null],
 }
-const SIZES: Record<string, number | null> = { '/b/name with spaces': 6, '/b/x': 120 }
+const SIZES: Record<string, number | null> = {
+  '/b/name with spaces': 6,
+  '/b/x': 120,
+  '/a/n\nq': 4,
+}
 
 class Mounts {
   runs: [string, string[], Record<string, FlagValue>][] = []
@@ -57,6 +64,7 @@ class Mounts {
 
   dispatch = (op: string, path: PathSpec): Promise<[unknown, IOResult]> => {
     this.ops.push(op)
+    if (path.virtual === '/gone') return Promise.reject(enoent(path))
     const type = path.virtual === '/a/dir' ? FileType.DIRECTORY : FileType.FILE
     const stat = new FileStat({ name: path.virtual, type, size: SIZES[path.virtual] ?? null })
     return Promise.resolve([stat, new IOResult()])
@@ -104,6 +112,31 @@ it.each([
     mounts.runSingle,
   )
   expect(DEC.decode(await materialize(body))).toBe(expected)
+  expect(io.exitCode).toBe(0)
+})
+
+it('reads a name holding a newline as one quoted row', async () => {
+  // One operand's run is one row, whatever its name holds; the report quotes
+  // that name as GNU wc does, so no row spans two lines.
+  const mounts = new Mounts()
+  const [body] = await runWc(
+    specs('/a/n\nq', '/b/x'),
+    { lines: true },
+    mounts.dispatch,
+    mounts.runSingle,
+  )
+  expect(DEC.decode(await materialize(body))).toBe("  2 '/a/n'$'\\n''q'\n  1 /b/x\n  3 total\n")
+})
+
+it('keeps every count when a file is gone before sizing', async () => {
+  const mounts = new Mounts()
+  const [body, io] = await runWc(
+    specs('/gone', '/b/x'),
+    { lines: true },
+    mounts.dispatch,
+    mounts.runSingle,
+  )
+  expect(DEC.decode(await materialize(body))).toBe('  4 /gone\n  1 /b/x\n  5 total\n')
   expect(io.exitCode).toBe(0)
 })
 

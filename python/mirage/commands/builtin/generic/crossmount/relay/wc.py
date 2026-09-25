@@ -12,6 +12,8 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
+import logging
+
 from mirage.commands.builtin.generic.crossmount.types import (Cmd, CrossResult,
                                                               RunSingle)
 from mirage.commands.builtin.generic.crossmount.utils import (
@@ -24,6 +26,9 @@ from mirage.commands.spec.types import FlagValue
 from mirage.io.types import IOResult
 from mirage.runtime.types import DispatchFn
 from mirage.types import FileType, PathSpec
+from mirage.utils.errors import FS_ERRORS
+
+logger = logging.getLogger(__name__)
 
 # GNU prints a row's counts in this order whichever flags ask for them.
 COLUMNS = ("lines", "words", "chars", "bytes_", "max_line_length")
@@ -50,8 +55,9 @@ async def operand_size(dispatch: DispatchFn, path: PathSpec,
     """The size GNU sizes the columns by, which it takes from fstat.
 
     A stream or a directory has none. A file whose size ``stat`` cannot
-    give without rendering it counts as its widest count, a lower bound,
-    which is the width a count-only mount pads to on its own.
+    give without rendering it, or that is gone by the time it is sized,
+    counts as its widest count, a lower bound, which is the width a
+    count-only mount pads to on its own.
 
     Args:
         dispatch (DispatchFn): Workspace operation dispatcher.
@@ -60,7 +66,13 @@ async def operand_size(dispatch: DispatchFn, path: PathSpec,
     """
     if is_stdin(path):
         return None
-    info = await relay(dispatch, "stat", path)
+    try:
+        info = await relay(dispatch, "stat", path)
+    except FS_ERRORS as exc:
+        # Gone since its mount counted it: the width is only layout, so
+        # the counts already taken still print, padded to the lower bound.
+        logger.debug("wc: sizing %s failed: %s", path.virtual, exc)
+        return max(counts)
     if info.type is FileType.DIRECTORY:
         return None
     return info.size if info.size is not None else max(counts)
@@ -97,15 +109,16 @@ async def run_wc(scopes: list[PathSpec], flag_kwargs: dict[str, FlagValue],
     sizes: list[int | None] = []
     totals = WCCounts()
     for run in runs:
-        for line in run.data.decode(errors="replace").split("\n"):
-            if not line:
-                continue
-            counts, label = parse_row(line, columns)
-            rows.append((counts, label))
-            sizes.append(await
-                         operand_size(dispatch, run.scope,
-                                      [getattr(counts, c) for c in columns]))
-            totals.merge(counts)
+        # One concrete operand per run, so its output is one row or none;
+        # the row is taken whole, whatever its name holds.
+        text = run.data.decode(errors="replace").removesuffix("\n")
+        if not text:
+            continue
+        counts, label = parse_row(text, columns)
+        rows.append((counts, label))
+        values = [getattr(counts, c) for c in columns]
+        sizes.append(await operand_size(dispatch, run.scope, values))
+        totals.merge(counts)
     width = number_width(sizes, len(scopes), len(columns))
     body = format_count_rows(rows, totals, len(scopes), flags, width)
     return body, await merge_operand_ios(runs,

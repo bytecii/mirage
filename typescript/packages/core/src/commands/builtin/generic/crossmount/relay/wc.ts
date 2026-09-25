@@ -13,7 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { IOResult } from '../../../../../io/types.ts'
-import { FileType, type PathSpec } from '../../../../../types.ts'
+import { FileType, type FileStat, type PathSpec } from '../../../../../types.ts'
+import { isFsError } from '../../../../../utils/errors.ts'
 import type { FlagValue } from '../../../../spec/types.ts'
 import { isStdin } from '../../../utils/stream.ts'
 import { formatCountRows, numberWidth, parseFlags, type WcRow } from '../../wc.ts'
@@ -46,9 +47,10 @@ export function parseRow(line: string, counts: number): WcRow {
 
 /**
  * The size GNU sizes the columns by, which it takes from fstat. A stream or a
- * directory has none. A file whose size stat cannot give without rendering it
- * counts as its widest count, a lower bound, which is the width a count-only
- * mount pads to on its own. Mirrors Python's operand_size.
+ * directory has none. A file whose size stat cannot give without rendering it,
+ * or that is gone by the time it is sized, counts as its widest count, a lower
+ * bound, which is the width a count-only mount pads to on its own. Mirrors
+ * Python's operand_size.
  */
 async function operandSize(
   dispatch: DispatchFn,
@@ -56,7 +58,15 @@ async function operandSize(
   counts: number[],
 ): Promise<number | null> {
   if (isStdin(path)) return null
-  const info = await statOp(dispatch)(path)
+  let info: FileStat
+  try {
+    info = await statOp(dispatch)(path)
+  } catch (err) {
+    // Gone since its mount counted it: the width is only layout, so the
+    // counts already taken still print, padded to the lower bound.
+    if (!isFsError(err)) throw err
+    return Math.max(...counts)
+  }
   if (info.type === FileType.DIRECTORY) return null
   return info.size ?? Math.max(...counts)
 }
@@ -85,16 +95,17 @@ export async function runWc(
   const sizes: (number | null)[] = []
   const totals = columns.map(() => 0)
   for (const run of runs) {
-    for (const line of DEC.decode(run.data).split('\n')) {
-      if (line === '') continue
-      const row = parseRow(line, columns.length)
-      rows.push(row)
-      sizes.push(await operandSize(dispatch, run.scope, row.values))
-      row.values.forEach((value, i) => {
-        const sum = totals[i] ?? 0
-        totals[i] = columns[i] === 'maxLineLength' ? Math.max(sum, value) : sum + value
-      })
-    }
+    // One concrete operand per run, so its output is one row or none; the row
+    // is taken whole, whatever its name holds.
+    const text = DEC.decode(run.data).replace(/\n$/, '')
+    if (text === '') continue
+    const row = parseRow(text, columns.length)
+    rows.push(row)
+    sizes.push(await operandSize(dispatch, run.scope, row.values))
+    row.values.forEach((value, i) => {
+      const sum = totals[i] ?? 0
+      totals[i] = columns[i] === 'maxLineLength' ? Math.max(sum, value) : sum + value
+    })
   }
   const width = numberWidth(sizes, scopes.length, columns.length)
   const body = formatCountRows(rows, totals, scopes.length, parsed.total, width)

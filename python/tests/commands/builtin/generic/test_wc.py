@@ -200,6 +200,13 @@ def test_format_wc_lines_args_l():
     assert _fmt(counts, lines=True, label="/f.txt") == "2 /f.txt"
 
 
+def test_format_wc_lines_quotes_only_a_name_holding_a_newline():
+    # coreutils 9.7 wc.c: `strchr (file, '\n') ? quotef (file) : file`.
+    counts = WCCounts(lines=2)
+    assert _fmt(counts, lines=True, label="/a/n\nq") == "2 '/a/n'$'\\n''q'"
+    assert _fmt(counts, lines=True, label="/a/b c") == "2 /a/b c"
+
+
 def test_format_wc_lines_w_c_m():
     counts = WCCounts(lines=2, words=4, bytes_=20, chars=18)
     assert _fmt(counts, words=True) == "4"

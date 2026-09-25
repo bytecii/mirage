@@ -19,6 +19,7 @@ from mirage.commands.builtin.generic.crossmount.relay.wc import (parse_row,
 from mirage.commands.builtin.generic.wc import WCCounts
 from mirage.io.types import IOResult, materialize
 from mirage.types import FileStat, FileType, PathSpec
+from mirage.utils.errors import enoent
 
 # What each operand's own mount answers for `wc -l`, and what stat says.
 ROWS = {
@@ -27,8 +28,10 @@ ROWS = {
     "/b/x": (b"1 /b/x\n", None),
     "/pg/rows": (b"5 /pg/rows\n", None),
     "/pg2/rows": (b"3 /pg2/rows\n", None),
+    "/a/n\nq": (b"2 /a/n\nq\n", None),
+    "/gone": (b"4 /gone\n", None),
 }
-SIZES = {"/b/name with spaces": 6, "/b/x": 120, "/pg/rows": None}
+SIZES = {"/b/name with spaces": 6, "/b/x": 120, "/pg/rows": None, "/a/n\nq": 4}
 
 
 class Mounts:
@@ -44,6 +47,8 @@ class Mounts:
 
     async def dispatch(self, op, path, **kwargs):
         self.ops.append(op)
+        if path.virtual == "/gone":
+            raise enoent(path)
         kind = (FileType.DIRECTORY
                 if path.virtual == "/a/dir" else FileType.FILE)
         return FileStat(name=path.virtual,
@@ -97,6 +102,26 @@ async def test_an_unsized_file_pads_to_its_count(paths, expected):
     body, io = await run_wc(specs(*paths), {"lines": True}, mounts.dispatch,
                             mounts.run_single)
     assert await materialize(body) == expected
+    assert io.exit_code == 0
+
+
+@pytest.mark.asyncio
+async def test_a_name_holding_a_newline_is_one_quoted_row():
+    # One operand's run is one row, whatever its name holds; the report
+    # quotes that name as GNU wc does, so no row spans two lines.
+    mounts = Mounts()
+    body, _ = await run_wc(specs("/a/n\nq", "/b/x"), {"lines": True},
+                           mounts.dispatch, mounts.run_single)
+    assert await materialize(body) == (b"  2 '/a/n'$'\\n''q'\n"
+                                       b"  1 /b/x\n  3 total\n")
+
+
+@pytest.mark.asyncio
+async def test_a_file_gone_before_sizing_keeps_every_count():
+    mounts = Mounts()
+    body, io = await run_wc(specs("/gone", "/b/x"), {"lines": True},
+                            mounts.dispatch, mounts.run_single)
+    assert await materialize(body) == b"  4 /gone\n  1 /b/x\n  5 total\n"
     assert io.exit_code == 0
 
 
