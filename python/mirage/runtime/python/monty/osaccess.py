@@ -23,7 +23,8 @@ from mirage.runtime.handles import parse_mode
 from mirage.runtime.python.monty.binding import (MemoryFile, MontyFileHandle,
                                                  OSAccess, path_from_arg)
 from mirage.runtime.python.monty.constants import (EXDEV_MESSAGE,
-                                                   FILE_EXISTS_MESSAGE)
+                                                   FILE_EXISTS_MESSAGE,
+                                                   MAX_URANDOM_BYTES)
 from mirage.runtime.python.monty.list import merge_entries
 from mirage.runtime.python.monty.stat import stat_result
 from mirage.runtime.python.monty.vfs import MontyVFS
@@ -64,7 +65,9 @@ class MirageOSAccess(OSAccess):
                  dispatch: DispatchFn | None,
                  environ: dict[str, str],
                  resolver: MountResolver | None = None) -> None:
-        super().__init__([], environ=dict(environ))
+        super().__init__([],
+                         environ=dict(environ),
+                         max_urandom_bytes=MAX_URANDOM_BYTES)
         core = (RuntimeVFS(dispatch, loop, resolver)
                 if dispatch is not None else None)
         self._vfs = MontyVFS(core)

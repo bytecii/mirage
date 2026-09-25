@@ -13,6 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { captureSessionContext } from '../../../context/session_context.ts'
+import type { PathSpec } from '../../../types.ts'
 import { captureRecordingContext } from '../../../observe/context.ts'
 import { ContextScope } from '../../../utils/context_scope.ts'
 import { CommandTimeoutError } from '../../../commands/errors.ts'
@@ -303,6 +304,7 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
   }
 
   async run(args: RunArgs, context = this.captureContext()): Promise<RunResult> {
+    if (args.cwd === undefined && context !== undefined) args = { ...args, cwd: context.cwd }
     const scope =
       context?.scope ?? new ContextScope([...captureSessionContext(), ...captureRecordingContext()])
     const task = (): Promise<RunResult> => scope.run(() => this.runOne(args, context))
@@ -347,20 +349,30 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
           config: this.config as PyodideConfig,
           prefixes: context.resolver.prefixes(),
           code,
+          cwd: context.cwd.virtual,
           ...opts,
         },
         context,
       )) as EvalResult
     }
     if (opts.session !== undefined) {
-      const repl = await this.runOneRepl(code, opts.session, opts.inputs ?? {})
+      const repl = await this.runOneRepl(
+        code,
+        opts.session,
+        opts.inputs ?? {},
+        this.guestCwd(context?.cwd),
+      )
       return { value: null, ...repl }
     }
     const pyodide = await this.ensureLoaded()
     await this.loadImports(pyodide, code)
     const armed = this.interrupter !== null ? this.interrupter.arm(EVAL_INTERRUPT_SECONDS) : null
     try {
-      const arr = this.guestModule(pyodide).evaluate(code, opts.inputs ?? {})
+      const arr = this.guestModule(pyodide).evaluate(
+        code,
+        opts.inputs ?? {},
+        this.guestCwd(context?.cwd),
+      )
       if (armed?.disarm() === 'deadline') {
         throw new EvalError(`pyodide eval timed out after ${String(EVAL_INTERRUPT_SECONDS)}s`)
       }
@@ -715,8 +727,6 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     // sys.argv[0] is the program's own name when the caller has one (a
     // CLI install's head word), else CPython's own -c spelling.
     const argv = [args.prog ?? '-c', ...args.args]
-    const cwd = args.cwd?.virtual ?? ''
-    const cwdMount = cwd === '' ? null : (this.vfs?.mountOf(cwd) ?? null)
     const request = {
       code: args.code,
       argv,
@@ -724,8 +734,7 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
       stdin: args.stdin,
       flags: args.flags ?? {},
       script_cli: args.scriptCli ?? false,
-      // A root mount cannot replace the interpreter's own filesystem.
-      cwd: cwd !== '/' && cwdMount !== null && !servable(cwdMount) ? '' : cwd,
+      cwd: this.guestCwd(args.cwd),
     }
 
     // Deadline trip -> exit 124 via CommandTimeoutError; a kill signal
@@ -778,11 +787,12 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
     code: string,
     sessionId: string,
     inputs: Record<string, EvalValue> = {},
+    cwd = '',
   ): Promise<Omit<EvalResult, 'value'>> {
     const pyodide = await this.ensureLoaded()
     await this.loadImports(pyodide, code)
 
-    const arr = this.guestModule(pyodide).repl(code, sessionId, inputs)
+    const arr = this.guestModule(pyodide).repl(code, sessionId, inputs, cwd)
     const flushFailures = await this.drainMutations()
     return {
       stdout: bridgeBytes(arr[0]),
@@ -790,5 +800,12 @@ export class PyodideRuntime extends PythonRuntime implements Evaluator {
       exitCode: flushFailures.length > 0 && arr[2] === 0 ? 1 : arr[2],
       status: arr[3],
     }
+  }
+
+  private guestCwd(path?: PathSpec): string {
+    const cwd = path?.virtual ?? ''
+    const mount = cwd === '' ? null : (this.vfs?.mountOf(cwd) ?? null)
+    // A root mount cannot replace the interpreter's own filesystem.
+    return cwd !== '/' && mount !== null && !servable(mount) ? '' : cwd
   }
 }

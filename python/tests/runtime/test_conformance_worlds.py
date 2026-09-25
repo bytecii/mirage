@@ -625,8 +625,7 @@ async def test_guest_cannot_follow_link_out_of_scope():
 
 # ── Group 4: a guest resolves relative paths against its cwd (forward) ──
 #
-# Monty inherits the shell cwd. WASI still needs to initialize its
-# guest cwd before running user code.
+# Both Python guests inherit the shell cwd before executing user code.
 
 
 @pytest.mark.asyncio
@@ -643,10 +642,7 @@ async def test_guest_cannot_follow_link_out_of_scope():
             "wasi",
             "cd /base && python3 -c \"print(open('a.txt').read())\"",
             id="wasi",
-            marks=[
-                wasi_live,
-                pytest.mark.xfail(reason="WASI cwd is not wired", strict=True),
-            ],
+            marks=wasi_live,
         ),
     ],
 )

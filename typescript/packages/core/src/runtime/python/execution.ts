@@ -15,7 +15,7 @@
 import type { RunArgs } from '../types.ts'
 
 /** Bind the script-CLI contract before compiling the unmodified program. */
-export function bootstrap(args: RunArgs): string {
+export function prepareSource(args: RunArgs): string {
   if (!args.scriptCli) return args.code
   // JSON string literals are also Python string literals; encode twice so
   // Python's JSON decoder, not its source parser, handles source escapes.
