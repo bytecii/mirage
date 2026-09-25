@@ -26,6 +26,8 @@ it.each([
     const paths = ['/a/dir', '/b/name with spaces'].map((p) => PathSpec.fromStrPath(p))
     const [body, io] = await runWc(paths, flags, dispatch)
     expect(new TextDecoder().decode(await materialize(body))).toBe(expected)
+    expect(io.reads).toEqual({ '/b/name with spaces': new TextEncoder().encode('hello\n') })
+    expect(io.cache).toEqual(['/b/name with spaces'])
     expect(io.exitCode).toBe(1)
     expect(new TextDecoder().decode(await materialize(io.stderr))).toBe(
       'wc: /a/dir: Is a directory\n',

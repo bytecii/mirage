@@ -99,7 +99,12 @@ class GzipDecoder:
                 self._between = True
 
     def finish(self) -> None:
-        """Reject an absent header or an unfinished member at EOF."""
+        """Reject an absent header or an unfinished member at EOF.
+
+        GNU gzip 1.13 also treats exactly one trailing nonzero byte as
+        fatal EOF, even when it cannot start a member. Two junk bytes
+        instead trigger the nonfatal trailing-garbage warning in feed.
+        """
         if not self._seen or not self._between or self._prefix:
             raise GzipDataError(GZIP_EOF, True)
 

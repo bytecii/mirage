@@ -34,6 +34,8 @@ async def test_counts_preserve_operand_type_and_whitespace(flags, expected):
     ]
     body, io = await run_wc(paths, flags, dispatch)
     assert await materialize(body) == expected
+    assert io.reads == {"/b/name with spaces": b"hello\n"}
+    assert io.cache == ["/b/name with spaces"]
     assert io.exit_code == 1
     assert io.stderr == b"wc: /a/dir: Is a directory\n"
 

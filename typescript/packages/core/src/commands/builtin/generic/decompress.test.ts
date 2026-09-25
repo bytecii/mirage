@@ -7,11 +7,17 @@ import { decompressInputs } from './decompress.ts'
 
 const enc = new TextEncoder()
 
-it('does not read later operands or stdin after fatal input', async () => {
+it.each(
+  ['gunzip', 'gzip', 'zcat'].flatMap((command) =>
+    [null, 'x', '\x1f'].map((suffix) => ({ command, suffix })),
+  ),
+)('stops after fatal input: %j', async ({ command, suffix }) => {
   const reads: string[] = []
   async function* read(path: PathSpec): AsyncIterable<Uint8Array> {
     reads.push(path.virtual)
-    yield* yieldBytes(new Uint8Array())
+    yield suffix === null
+      ? new Uint8Array()
+      : new Uint8Array([...(await gzip(enc.encode('hello'))), ...enc.encode(suffix)])
   }
   async function* stdin(): AsyncIterable<Uint8Array> {
     reads.push('stdin')
@@ -19,15 +25,15 @@ it('does not read later operands or stdin after fatal input', async () => {
   }
   const paths = ['/a/bad.gz', '/b/missing.gz', '-'].map((p) => PathSpec.fromStrPath(p))
   const [body, io] = await decompressInputs(paths, read, {
-    command: 'zcat',
+    command,
     stdin: stdin(),
     toStdout: true,
   })
-  expect(await materialize(body)).toEqual(new Uint8Array())
+  expect(await materialize(body)).toEqual(enc.encode(suffix === null ? '' : 'hello'))
   expect(reads).toEqual(['/a/bad.gz'])
   expect(io.exitCode).toBe(1)
   expect(new TextDecoder().decode(io.stderr as Uint8Array)).toBe(
-    'zcat: /a/bad.gz: unexpected end of file\n',
+    `${command}: /a/bad.gz: unexpected end of file\n`,
   )
 })
 

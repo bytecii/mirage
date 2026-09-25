@@ -14,7 +14,7 @@
 
 import dataclasses
 import functools
-from typing import Any
+from typing import Any, cast
 
 from mirage.commands.builtin.generic.crossmount.types import (Cmd, OperandRun,
                                                               RunSingle)
@@ -32,7 +32,7 @@ from mirage.commands.spec.usage import read_fail_exit
 from mirage.io import IOResult
 from mirage.io.stream import materialize
 from mirage.runtime.types import DispatchFn
-from mirage.types import PathSpec
+from mirage.types import FileType, PathSpec
 from mirage.utils.errors import FS_ERRORS, fs_error_line
 
 
@@ -41,6 +41,25 @@ async def relay(dispatch: DispatchFn, name: str, path: PathSpec,
     # Relay one op for one path to the mount that owns it. The generics call
     # ops as (path); dispatch keys off the path.
     data, _ = await dispatch(name, path, **kwargs)
+    return data
+
+
+async def read_file(dispatch: DispatchFn, io: IOResult,
+                    path: PathSpec) -> bytes:
+    """Read a relayed file and retain its cache/accounting envelope.
+
+    Args:
+        dispatch (DispatchFn): Workspace operation dispatcher.
+        io (IOResult): Input accounting to merge with the generic's result.
+        path (PathSpec): Full virtual input path.
+    """
+    info = await relay(dispatch, "stat", path)
+    if info.type is FileType.DIRECTORY:
+        raise IsADirectoryError(path.virtual)
+    data = cast(bytes, await relay(dispatch, "read", path))
+    io.reads[path.virtual] = data
+    if path.virtual not in io.cache:
+        io.cache.append(path.virtual)
     return data
 
 

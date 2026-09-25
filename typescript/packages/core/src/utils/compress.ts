@@ -112,6 +112,8 @@ class GzipDecoder {
     }
   }
 
+  // GNU gzip 1.13 treats a single trailing nonzero byte as fatal EOF;
+  // the trailing-garbage warning requires at least two bytes.
   finish(): void {
     if (!this.seen || this.decoder !== null || this.prefix.byteLength > 0)
       throw new GzipDataError(GZIP_EOF, true)

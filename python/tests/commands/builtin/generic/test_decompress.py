@@ -8,12 +8,15 @@ from mirage.types import PathSpec
 
 
 @pytest.mark.asyncio
-async def test_fatal_input_never_reads_later_operands_or_stdin():
+@pytest.mark.parametrize("command", ["gunzip", "gzip", "zcat"])
+@pytest.mark.parametrize("suffix", [None, b"x", b"\x1f"])
+async def test_fatal_input_never_reads_later_operands_or_stdin(
+        command, suffix):
     reads = []
 
     async def read(path):
         reads.append(path.virtual)
-        return b""
+        return b"" if suffix is None else gzip.compress(b"hello") + suffix
 
     async def stdin():
         reads.append("stdin")
@@ -23,14 +26,15 @@ async def test_fatal_input_never_reads_later_operands_or_stdin():
         PathSpec.from_str_path(p) for p in ("/a/bad.gz", "/b/missing.gz", "-")
     ]
     body, io = await decompress_inputs(paths,
-                                       command="zcat",
+                                       command=command,
                                        read=read,
                                        stdin=stdin(),
                                        to_stdout=True)
-    assert await materialize(body) == b""
+    assert await materialize(body) == (b"" if suffix is None else b"hello")
     assert reads == ["/a/bad.gz"]
     assert io.exit_code == 1
-    assert io.stderr == b"zcat: /a/bad.gz: unexpected end of file\n"
+    assert io.stderr == (f"{command}: /a/bad.gz: "
+                         "unexpected end of file\n").encode()
 
 
 @pytest.mark.asyncio

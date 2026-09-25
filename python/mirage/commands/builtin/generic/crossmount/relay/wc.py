@@ -1,13 +1,14 @@
-from typing import cast
+from functools import partial
 
 from mirage.commands.builtin.generic.crossmount.types import CrossResult
-from mirage.commands.builtin.generic.crossmount.utils import flat_scopes, relay
+from mirage.commands.builtin.generic.crossmount.utils import (flat_scopes,
+                                                              read_file)
 from mirage.commands.builtin.generic.wc import wc_generic
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec.types import FlagValue
-from mirage.io.types import ByteSource
+from mirage.io.types import ByteSource, IOResult
 from mirage.runtime.types import DispatchFn
-from mirage.types import FileType, PathSpec
+from mirage.types import PathSpec
 
 
 async def run_wc(scopes: list[PathSpec],
@@ -23,11 +24,8 @@ async def run_wc(scopes: list[PathSpec],
         stdin (ByteSource | None): Shared standard input cursor.
     """
 
-    async def read(path: PathSpec) -> bytes:
-        info = await relay(dispatch, "stat", path)
-        if info.type is FileType.DIRECTORY:
-            raise IsADirectoryError(path.virtual)
-        return cast(bytes, await relay(dispatch, "read", path))
-
-    return await wc_generic(flat_scopes(scopes), [],
-                            CommandOpts(flags=flag_kwargs, stdin=stdin), read)
+    reads = IOResult()
+    body, io = await wc_generic(flat_scopes(scopes), [],
+                                CommandOpts(flags=flag_kwargs, stdin=stdin),
+                                partial(read_file, dispatch, reads))
+    return body, await reads.merge(io)
