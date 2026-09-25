@@ -14,9 +14,14 @@
 
 import asyncio
 
+import pytest
+
+from mirage.commands.builtin.generic.mktemp import mktemp_writes
+from mirage.commands.spec import SPECS
 from mirage.types import MountMode
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
+from mirage.workspace.executor.command.flags import parse_flags
 
 
 def _ws():
@@ -75,3 +80,14 @@ def test_mktemp_d_explicit_path_template():
     path = _bytes(stdout).strip().decode()
     assert path.startswith("/data/mtd/t.")
     assert io.exit_code == 0
+
+
+@pytest.mark.parametrize("argv,writes", [
+    ([], True),
+    (["-d"], True),
+    (["-u"], False),
+    (["--dry-run", "-d"], False),
+])
+def test_mktemp_writes_unless_it_is_a_dry_run(argv: list[str], writes: bool):
+    parsed = parse_flags(argv, SPECS["mktemp"], "mktemp", "/data")
+    assert mktemp_writes(parsed.flag_kwargs, parsed.paths) is writes

@@ -314,6 +314,45 @@ describe('Mount.executeCmd', () => {
     )
   })
 
+  it.each([
+    [MountMode.READ, 0],
+    [MountMode.READ, 1],
+    [MountMode.WRITE, 0],
+    [MountMode.WRITE, 1],
+  ])(
+    'refuses a write command only where its invocation writes (%s, %i operands)',
+    async (mode, operands) => {
+      const m = makeMount(mode)
+      const calls: number[] = []
+      const [cmd] = command({
+        name: 'filter',
+        vfs: 'ram',
+        spec: BASIC_SPEC,
+        write: true,
+        writes: (_flags, paths) => paths.length > 0,
+        fn: (_accessor, paths) => {
+          calls.push(paths.length)
+          return [new TextEncoder().encode('ran\n'), new IOResult()]
+        },
+      })
+      if (cmd === undefined) throw new Error('missing')
+      m.register(cmd)
+      const paths = [PathSpec.fromStrPath('/a')].slice(0, operands)
+      const [stdout, io] = await m.executeCmd('filter', paths, [], {})
+      if (mode === MountMode.READ && operands > 0) {
+        expect(io.exitCode).toBe(1)
+        expect(new TextDecoder().decode(io.stderr as Uint8Array)).toBe(
+          `filter: read-only mount at ${m.prefix}\n`,
+        )
+        expect(calls).toEqual([])
+      } else {
+        expect(io.exitCode).toBe(0)
+        expect(new TextDecoder().decode(await materialize(stdout))).toBe('ran\n')
+        expect(calls).toEqual([operands])
+      }
+    },
+  )
+
   it('passes the mount prefix through PathSpecs given to the command', async () => {
     const m = makeMount()
     let seenPrefix: string | null = null

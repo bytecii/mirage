@@ -150,6 +150,41 @@ def test_the_read_only_refusal_is_newline_terminated():
     assert io.stderr == b"mkdir: read-only mount at /ro/\n"
 
 
+def _writes_its_operands(flags, paths) -> bool:
+    return bool(paths)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [MountMode.READ, MountMode.WRITE])
+@pytest.mark.parametrize("operands", [0, 1])
+async def test_a_write_command_is_refused_only_where_its_invocation_writes(
+        mode, operands):
+    vfs = RAMVFS()
+    mount = MountEntry("/ram/", vfs, mode)
+    calls: list[int] = []
+
+    @command("filter",
+             vfs="ram",
+             spec=CommandSpec(),
+             write=True,
+             writes=_writes_its_operands)
+    async def filter_cmd(accessor: RAMAccessor, paths, texts, opts):
+        calls.append(len(paths))
+        return b"ran\n", IOResult()
+
+    mount.register_fns([filter_cmd])
+    paths = [PathSpec.from_str_path("/ram/a")][:operands]
+    stdout, io = await mount.execute_cmd("filter", paths, [], {})
+    if mode == MountMode.READ and operands:
+        assert io.exit_code == 1
+        assert io.stderr == b"filter: read-only mount at /ram/\n"
+        assert not calls
+    else:
+        assert io.exit_code == 0
+        assert await materialize(stdout) == b"ran\n"
+        assert calls == [operands]
+
+
 def test_write_mode_allows_write_cmd():
     reg = MountRegistry()
     reg.mount("/rw/", RAMVFS(), MountMode.WRITE)

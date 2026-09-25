@@ -14,12 +14,13 @@
 
 import { resolvePath } from '../../../../utils/path.ts'
 import { PathSpec } from '../../../../types.ts'
-import { mktempGeneric } from '../../generic/mktemp.ts'
+import { mktempGeneric, mktempWrites } from '../../generic/mktemp.ts'
 import type { Builder } from '../adapter.ts'
 
 export const MKTEMP_BUILDER: Builder = {
   name: 'mktemp',
   write: true,
+  writes: mktempWrites,
   requirements: ['mkdir', 'write'],
   fn: (ops, accessor, _paths, texts, opts) => {
     const { mkdir, write } = ops

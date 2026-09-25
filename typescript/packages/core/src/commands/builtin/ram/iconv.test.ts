@@ -17,9 +17,20 @@ import { describe, expect, it } from 'vitest'
 import { materialize } from '../../../io/types.ts'
 import { RAMVFS } from '../../../vfs/ram/ram.ts'
 import type { PathSpec } from '../../../types.ts'
+import type { RegisteredCommand } from '../../config.ts'
+import { parseFlags } from '../../../workspace/executor/command/flags.ts'
+import { specOf } from '../../spec/builtins.ts'
 const RAM_ICONV = RAM_COMMANDS.filter((c) => c.name === 'iconv' && c.filetype == null)
 
 const ENC = new TextEncoder()
+
+// What a registered command's writes predicate answers for a typed line,
+// read through the same parse the executor hands the mount.
+function writesFor(cmd: RegisteredCommand | undefined, argv: string[]): boolean {
+  if (cmd?.writes == null) throw new Error('the command declares no writes predicate')
+  const parsed = parseFlags(argv, specOf(cmd.name), cmd.name, '/data')
+  return cmd.writes(parsed.flagKwargs, parsed.paths)
+}
 
 async function runIconv(
   vfs: RAMVFS,
@@ -54,5 +65,15 @@ describe('iconv', () => {
     expect(r.exitCode).toBe(0)
     const expected = new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0a])
     expect(Array.from(r.out)).toEqual(Array.from(expected))
+  })
+})
+
+describe('iconv says which invocations write', () => {
+  it.each([
+    [['-f', 'latin1', '-t', 'utf-8'], false],
+    [['-f', 'latin1', '-t', 'utf-8', 'in.txt'], false],
+    [['-f', 'latin1', '-t', 'utf-8', '-o', 'out.txt', 'in.txt'], true],
+  ])('iconv %j writes: %s', (argv, writes) => {
+    expect(writesFor(RAM_ICONV[0], argv)).toBe(writes)
   })
 })
