@@ -29,6 +29,7 @@ import {
   NUMERIC_SHORT,
   SOLE_ARGUMENT_LONG_OPTIONS,
 } from './constants.ts'
+import { flagOccurrences } from './flag_view.ts'
 import { expandOldStyle } from './oldstyle.ts'
 import type { CommandSpec, Option, ValueType, FlagValue } from './types.ts'
 
@@ -315,6 +316,7 @@ function setValueFlag(
 ): void {
   const name = cs.destOf(spelling)
   const stored = checkValue(refusals, cs, argmatchDestSet, name, value)
+  flagOccurrences(flags).push([name, stored])
   if (cs.multipleDests.has(name)) {
     const prev = flags[name]
     if (Array.isArray(prev)) {
@@ -368,6 +370,7 @@ function rebase(
 // as 3); every other boolean flag is sticky true.
 function setBoolFlag(flags: Record<string, FlagValue>, cs: CompiledSpec, spelling: string): void {
   const name = cs.destOf(spelling)
+  flagOccurrences(flags).push([name, true])
   if (cs.countDests.has(name)) {
     const prev = flags[name]
     flags[name] = typeof prev === 'number' ? prev + 1 : 1
@@ -982,6 +985,11 @@ export function parseCommand(
     }
   }
 
+  for (const occurrence of flagOccurrences(flags)) {
+    const [name, value] = occurrence
+    if (cs.kindByDest.get(name) === 'path' && typeof value === 'string')
+      occurrence[1] = resolvePath(value, cwd)
+  }
   return new ParsedArgs({
     flags,
     args: classified,
@@ -1011,5 +1019,11 @@ export function parseToKwargs(parsed: ParsedArgs): Record<string, FlagValue> {
   for (const [key, value] of Object.entries(parsed.flags)) {
     result[flagKwargName(key)] = value
   }
+  flagOccurrences(result).push(
+    ...flagOccurrences(parsed.flags).map(([name, value]): [string, FlagValue] => [
+      flagKwargName(name),
+      value,
+    ]),
+  )
   return result
 }

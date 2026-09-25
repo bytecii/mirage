@@ -61,11 +61,11 @@ async def _is_dir(stat: OperationFn, readdir: OperationFn, path: PathSpec,
     """
     try:
         return (await stat(path, index)).type == FileType.DIRECTORY
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, NotADirectoryError, ValueError):
         logger.debug("archive: %s does not stat; asking readdir", path.virtual)
     try:
         return bool(await readdir(path, index))
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
         logger.debug("archive: %s is not a directory on either channel: %r",
                      path.virtual, exc)
         return False

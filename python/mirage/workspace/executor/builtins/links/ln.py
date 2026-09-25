@@ -34,6 +34,7 @@ from mirage.types import FileStat, FileType, PathSpec, word_text
 from mirage.utils.errors import FS_ERRORS, ReadOnlyError, fs_strerror
 from mirage.utils.path import CycleError
 from mirage.workspace.executor.builtins.links.probe import (link_target_stat,
+                                                            miss_strerror,
                                                             path_readdir,
                                                             path_stat)
 from mirage.workspace.executor.builtins.shared import (abs_path, fail,
@@ -333,7 +334,7 @@ async def plan_links(
                                        flags.no_dereference)
         if stat is None:
             return [], (f"ln: failed to access '{typed}': "
-                        "No such file or directory\n")
+                        f"{await miss_strerror(dispatch, resolved)}\n")
         if stat.type != FileType.DIRECTORY:
             return [], f"ln: target '{typed}' is not a directory\n"
         return [_into(op, resolved, typed) for op in operands], None
@@ -360,7 +361,7 @@ async def plan_links(
     if not is_dir:
         if stat is None:
             return [], (f"ln: target '{word_text(last)}': "
-                        "No such file or directory\n")
+                        f"{await miss_strerror(dispatch, resolved)}\n")
         return [], f"ln: target '{word_text(last)}': Not a directory\n"
     return [_into(op, resolved, word_text(last)) for op in operands[:-1]], None
 
@@ -401,7 +402,7 @@ async def _source_bytes(
     stat = await path_stat(dispatch, src_abs)
     if stat is None:
         return None, (f"ln: failed to access '{typed}': "
-                      "No such file or directory\n")
+                      f"{await miss_strerror(dispatch, src_abs)}\n")
     if stat.type == FileType.DIRECTORY:
         if flags.directory:
             return None, (f"ln: failed to create hard link '{link_typed}' "
@@ -504,8 +505,9 @@ async def make_link(
             return
         if not linked and behind is None:
             arrow = "" if flags.symbolic else f" => '{target_typed}'"
-            errors.append(f"ln: failed to create {kind} '{typed}'{arrow}: "
-                          "No such file or directory\n")
+            why = await miss_strerror(dispatch, plan.link_abs)
+            errors.append(
+                f"ln: failed to create {kind} '{typed}'{arrow}: {why}\n")
             return
         if linked and (behind is None
                        or behind.type is not FileType.DIRECTORY):
@@ -556,7 +558,7 @@ async def make_link(
         # expected case and not an error.
         try:
             await dispatch("unlink", link_spec)
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             pass
         except IsADirectoryError:
             errors.append(f"ln: {typed}: cannot overwrite directory\n")
@@ -575,6 +577,13 @@ async def make_link(
         # can see both the node table and the backend); ln owns the
         # wording.
         errors.append(f"ln: failed to create {kind} '{typed}': File exists\n")
+        return
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        # A parent the name cannot sit under. GNU names a hard link's
+        # target alongside for these errnos, a symlink's never.
+        arrow = "" if flags.symbolic else f" => '{target_typed}'"
+        errors.append(f"ln: failed to create {kind} '{typed}'{arrow}: "
+                      f"{fs_strerror(exc)}\n")
         return
     except ReadOnlyError:
         # The mount voice, as `touch` on the same read-only mount

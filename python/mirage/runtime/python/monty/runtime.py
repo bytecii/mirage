@@ -43,8 +43,8 @@ class MontyRuntime(PythonRuntime, EvaluatorMixin):
     is the script name) and piped input as the `stdin` global (bytes,
     None when nothing was piped). Monty implements a Python subset;
     host-only features (`sys.stdin`, `sys.argv`, third-party imports)
-    are unavailable, the importable stdlib is the sixteen modules
-    listed in docs/python/runtime/python.mdx, and the parser refuses
+    are unavailable; supported stdlib modules are listed in
+    docs/python/runtime/python.mdx. The parser refuses
     class inheritance, method decorators and `yield` — use the `wasi`
     or `local` runtime for a program that needs those.
     """
@@ -92,8 +92,11 @@ class MontyRuntime(PythonRuntime, EvaluatorMixin):
             args (RunArgs): the execution request.
         """
         notice = unhonored_notice(args.flags, self.name)
-        result = await self._execution.run(
-            args, self._bridge(args.env, context or self._capture_context()))
+        context = context or self._capture_context()
+        if args.cwd is None and context is not None:
+            args = replace(args, cwd=context.cwd)
+        result = await self._execution.run(args,
+                                           self._bridge(args.env, context))
         if not notice:
             return result
         return replace(result, stderr=notice + (result.stderr or b""))
@@ -103,11 +106,14 @@ class MontyRuntime(PythonRuntime, EvaluatorMixin):
                    *,
                    inputs: dict[str, EvalValue] | None = None,
                    session: str | None = None) -> EvalResult:
-        bridge = self._bridge({}, self._capture_context())
-        return await self._execution.eval(code,
-                                          bridge,
-                                          inputs=inputs,
-                                          session=session)
+        context = self._capture_context()
+        bridge = self._bridge({}, context)
+        return await self._execution.eval(
+            code,
+            bridge,
+            inputs=inputs,
+            session=session,
+            cwd=context.cwd if context is not None else None)
 
     async def close(self) -> None:
         await self._execution.close()

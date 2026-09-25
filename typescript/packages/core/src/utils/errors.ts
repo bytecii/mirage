@@ -66,6 +66,14 @@ export function ebusy(path: string | { virtual: string }): FsError {
   return fsError(path, 'EBUSY')
 }
 
+// ENOTDIR: a component of the path is a plain file. What open(2) and stat(2)
+// answer for `a.txt/x`, and what a lookup there answers on ram, redis, disk
+// and OPFS too: the keyed stores walk the parents on a miss (their
+// lookupError), the filesystems hear it from the kernel. Deliberate
+// divergence: object stores and SFTP answer ENOENT, because telling the two
+// apart costs a request per ancestor on every miss, a stat miss is the
+// ordinary case of a copy's destination probe, and an object store may hold
+// `a.txt` and `a.txt/x` at once. Mirrors Python's enotdir.
 export function enotdir(path: string | { virtual: string }): FsError {
   return fsError(path, 'ENOTDIR')
 }
@@ -359,6 +367,12 @@ export function isFsError(err: unknown): boolean {
 // `except FileNotFoundError`. Three modules had grown their own copy of this.
 export function isEnoent(err: unknown): boolean {
   return err instanceof Error && (err as Error & { code?: string }).code === 'ENOENT'
+}
+
+// Python's twin is `except NotADirectoryError`: a component of the path is
+// a plain file, the other way a lookup fails besides ENOENT.
+export function isEnotdir(err: unknown): boolean {
+  return err instanceof Error && (err as Error & { code?: string }).code === 'ENOTDIR'
 }
 
 // Python's twin is `except FileTooLargeError`.

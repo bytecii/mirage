@@ -28,7 +28,7 @@ describe('strategyFor — mirrors tests/commands/builtin/generic/crossmount/test
   })
 
   it('streams the whole-content commands', () => {
-    for (const name of [Cmd.CAT, Cmd.NL, Cmd.SORT, Cmd.CUT, Cmd.REV]) {
+    for (const name of [Cmd.CAT, Cmd.NL, Cmd.CUT, Cmd.REV]) {
       expect(strategyFor(name, {})).toBe(Strategy.STREAM)
     }
   })
@@ -40,7 +40,7 @@ describe('strategyFor — mirrors tests/commands/builtin/generic/crossmount/test
   })
 
   it('relays the commands whose operands must colocate', () => {
-    for (const name of [Cmd.CP, Cmd.MV, Cmd.DIFF, Cmd.CMP, Cmd.WC]) {
+    for (const name of [Cmd.CP, Cmd.MV, Cmd.DIFF, Cmd.CMP, Cmd.SORT, Cmd.WC]) {
       expect(strategyFor(name, {})).toBe(Strategy.RELAY)
     }
   })

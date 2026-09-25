@@ -16,6 +16,17 @@ import { flagKwargName } from './constants.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import type { CommandSpec, FlagValue } from './types.ts'
 
+const occurrenceTapes = new WeakMap<Record<string, FlagValue>, [string, FlagValue][]>()
+
+export function flagOccurrences(flags: Record<string, FlagValue>): [string, FlagValue][] {
+  let tape = occurrenceTapes.get(flags)
+  if (tape === undefined) {
+    tape = []
+    occurrenceTapes.set(flags, tape)
+  }
+  return tape
+}
+
 /**
  * Collect the kwarg names a spec's options can produce.
  *
@@ -80,6 +91,21 @@ export class FlagView {
   typedOrder(...names: string[]): string[] {
     const wanted = new Set(names.map((n) => this.key(n)))
     return Object.keys(this.flags).filter((k) => wanted.has(k))
+  }
+
+  occurrences(...names: string[]): [string, FlagValue][] {
+    const wanted = new Set(names.map((name) => this.key(name)))
+    const result = flagOccurrences(this.flags).filter(
+      ([name]) => wanted.has(name) && name in this.flags,
+    )
+    const seen = new Set(result.map(([name]) => name))
+    for (const name of this.typedOrder(...names)) {
+      if (seen.has(name)) continue
+      const value = this.flags[name]
+      if (value === undefined) continue
+      for (const item of Array.isArray(value) ? value : [value]) result.push([name, item])
+    }
+    return result
   }
 
   asBool(name: string): boolean {

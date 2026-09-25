@@ -190,6 +190,20 @@ waiting. Provider timeouts and sandbox lifecycle limits still apply;
 configure sandbox creation and cleanup in your application.
 </Warning>
 
+## SDK loader overrides
+
+Runtime subclasses that override `loadSdk()` import the SDK type from
+the provider's `sdk` module:
+
+```ts
+import type { E2bSdk } from '@struktoai/mirage-core/runtime/sandbox/e2b/sdk'
+import type { DaytonaSdk } from '@struktoai/mirage-node/runtime/sandbox/daytona/sdk'
+import type { Ssh2Sdk } from '@struktoai/mirage-node/runtime/sandbox/ssh/sdk'
+```
+
+These types live alongside the optional SDK loaders; `runtime` modules
+export the runtime classes.
+
 ## Evaluating route-policy scripts
 
 A sandbox runs programs; it does not evaluate expressions, so it cannot

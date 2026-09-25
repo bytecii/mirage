@@ -413,7 +413,7 @@ class Dispatcher:
                 result = await self._apply_setattr(mount, path, kwargs)
             else:
                 result = await mount.execute_op(op, path.virtual, **kwargs)
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             result = self._namespace_result(op, path.virtual)
             if result is None:
                 await self._reconciler.on_op_missing(mount, op, path.virtual)
@@ -520,7 +520,7 @@ class Dispatcher:
             return True
         try:
             row = await mount.execute_op("stat", path.virtual)
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             return False
         except OSError:
             return True
@@ -838,6 +838,11 @@ class Dispatcher:
                            mount.prefix, _session_id())
         try:
             return await mount.execute_op(op, path.virtual)
+        except NotADirectoryError:
+            # Final on every channel: a plain file above the path means
+            # nothing can be at it or under it, and symlink(2) and
+            # readlink(2) answer with this errno.
+            raise
         except MISS_ERRORS:
             # The "nothing here" set exactly: a miss on one channel is
             # not absence on its own, so the caller tries the other.
@@ -919,11 +924,13 @@ class Dispatcher:
         if self._namespace.is_link(path.virtual):
             return
         stat: FileStat | None = None
+        missing: OSError | None = None
         if mount is not None:
             await mount.ensure_ready()
             try:
                 stat = await mount.execute_op("stat", path.virtual)
-            except FileNotFoundError:
+            except (FileNotFoundError, NotADirectoryError) as exc:
+                missing = exc
                 await self._reconciler.on_op_missing(mount, "stat",
                                                      path.virtual)
         if stat is not None or isinstance(
@@ -931,6 +938,8 @@ class Dispatcher:
             return
         if mount is None:
             raise no_mount(path.virtual)
+        if isinstance(missing, NotADirectoryError):
+            raise missing
         raise enoent(path)
 
     async def _apply_setattr(self, mount: MountEntry, path: PathSpec,

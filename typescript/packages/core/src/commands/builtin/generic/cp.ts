@@ -41,7 +41,7 @@ import {
   pathExists,
   type BackendKeyFn,
 } from '../utils/copy.ts'
-import { fsStrerror, isEacces, isFsError, isMissingPath } from '../../../utils/errors.ts'
+import { fsStrerror, isEacces, isEnotdir, isFsError, isMissingPath } from '../../../utils/errors.ts'
 import { rstripSlash } from '../../../utils/slash.ts'
 import { norm, parent } from '../../../utils/path.ts'
 import { compareCodePoints } from '../../../utils/sort.ts'
@@ -221,6 +221,7 @@ export async function targetDirError(
   try {
     info = await stat(target)
   } catch (err) {
+    if (isEnotdir(err)) return `${cmdName}: target directory '${target.virtual}': Not a directory`
     if (!isMissingPath(err)) throw err
     return `${cmdName}: target directory '${target.virtual}': No such file or directory`
   }
@@ -411,7 +412,7 @@ export async function overwriteGate(
   } catch (err) {
     // A probe failure here is not permission to clobber: returning true on an
     // auth error or timeout would silently defeat -n / --update=none.
-    if (!isMissingPath(err)) throw err
+    if (!isMissingPath(err) && !isEnotdir(err)) throw err
     return true
   }
   if (policy.noClobber || policy.update === 'none') return false
@@ -424,7 +425,7 @@ export async function overwriteGate(
     try {
       srcInfo = await stat(src)
     } catch (err) {
-      if (!isMissingPath(err)) throw err
+      if (!isMissingPath(err) && !isEnotdir(err)) throw err
       return true
     }
     const srcTs = modifiedTs(srcInfo.modified)

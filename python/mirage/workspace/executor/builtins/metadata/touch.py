@@ -64,10 +64,10 @@ async def handle_touch(
         ref = PathSpec.from_str_path(resolve_path(values["r"], session.cwd))
         try:
             ref_stat, _ = await dispatch("stat", ref)
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError) as exc:
             return fail(
                 "touch", f"touch: failed to get attributes of "
-                f"'{values['r']}': No such file or directory\n")
+                f"'{values['r']}': {fs_strerror(exc)}\n")
         stamp = ref_stat.modified
     if stamp is None:
         stamp = now_iso()
@@ -111,6 +111,14 @@ async def handle_touch(
         try:
             try:
                 await dispatch("stat", resolved)
+            except NotADirectoryError as exc:
+                # -c never opens the file, so GNU meets the bad parent
+                # when it sets the times, and says so in those words.
+                if "c" not in flags:
+                    raise
+                errors.append(f"touch: setting times of "
+                              f"'{target.raw_path}': {fs_strerror(exc)}\n")
+                continue
             except FileNotFoundError:
                 if "c" in flags:
                     continue
@@ -142,9 +150,9 @@ async def handle_touch(
             # A destination whose parent chain is not all directories is one
             # failed operand, not an aborted command: GNU reports it and
             # touches the rest. Caught here rather than around the write
-            # because backends disagree about which call refuses first (ram
-            # answers stat with ENOENT and fails the write; a real
-            # filesystem answers stat itself with ENOTDIR).
+            # because backends disagree about which call refuses first (an
+            # object store answers stat with ENOENT and fails the write; a
+            # filesystem or a keyed store answers stat itself with ENOTDIR).
             errors.append(f"touch: cannot touch '{target.raw_path}': "
                           f"{fs_strerror(exc)}\n")
     return finish("touch", errors, io=IOResult(writes=writes))

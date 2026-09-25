@@ -737,7 +737,7 @@
       "expect": {
         "exit": 2,
         "stdout": "",
-        "stderr": "sort: /ghost: Is a directory\n"
+        "stderr": "sort: read failed: /ghost: Is a directory\n"
       }
     },
     {
@@ -883,7 +883,7 @@
       "expect": {
         "exit": 2,
         "stdout": "",
-        "stderr": "sort: /ghost: No such file or directory\n"
+        "stderr": "sort: cannot read: /ghost: No such file or directory\n"
       }
     },
     {

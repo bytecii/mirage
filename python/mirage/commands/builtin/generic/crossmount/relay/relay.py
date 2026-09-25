@@ -22,6 +22,7 @@ from mirage.commands.builtin.generic.crossmount.relay.join import run_join
 from mirage.commands.builtin.generic.crossmount.relay.ls import run_ls
 from mirage.commands.builtin.generic.crossmount.relay.mv import run_mv
 from mirage.commands.builtin.generic.crossmount.relay.paste import run_paste
+from mirage.commands.builtin.generic.crossmount.relay.sort import run_sort
 from mirage.commands.builtin.generic.crossmount.relay.tar import run_tar
 from mirage.commands.builtin.generic.crossmount.relay.unzip import run_unzip
 from mirage.commands.builtin.generic.crossmount.relay.wc import run_wc
@@ -55,7 +56,7 @@ async def run_relay(cmd_name: str,
 
     Args:
         cmd_name (str): One of cp, mv, diff, cmp, paste, comm, join, tar,
-            unzip, zip, ls, wc.
+            unzip, zip, ls, sort, wc.
         scopes (list[PathSpec]): Path operands in command-line order.
         text_args (list[str]): Positional text operands (tar's member
             selectors; empty for the transfer and merge commands).
@@ -74,6 +75,8 @@ async def run_relay(cmd_name: str,
     """
     if cmd_name == Cmd.WC:
         return await run_wc(scopes, flag_kwargs, dispatch, run_single)
+    if cmd_name == Cmd.SORT:
+        return await run_sort(scopes, flag_kwargs, dispatch, stdin)
     if cmd_name == Cmd.LS:
         return await run_ls(scopes, flag_kwargs, dispatch, ns, session_view)
     if cmd_name == Cmd.CP:

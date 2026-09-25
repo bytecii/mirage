@@ -227,7 +227,7 @@ async function checkPartialRead(ws: Workspace, dst: string, label: string): Prom
   ;[out, err, code] = await run(ws, `sort ${src} ${miss}`)
   check(
     `${label}: sort aborts`,
-    out === '' && code === 2 && err === `sort: ${miss}: No such file or directory\n`,
+    out === '' && code === 2 && err === `sort: cannot read: ${miss}: No such file or directory\n`,
   )
 }
 

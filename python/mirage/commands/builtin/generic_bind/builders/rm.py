@@ -62,8 +62,9 @@ async def rm(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
         try:
             s = await ops.stat(accessor, p)
         except NotADirectoryError:
-            # The operand carried a trailing slash and named something
-            # that is not a directory (a plain file, `rm reg/`).
+            # A component is a plain file: the operand sits under one, or
+            # carried a trailing slash that named one (`rm reg/`). -f
+            # ignores it like ENOENT, as GNU's `ignorable_missing` does.
             if f:
                 continue
             errors.append(f"rm: cannot remove '{p.raw_path}': "

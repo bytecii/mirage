@@ -19,6 +19,7 @@ from mirage.io.types import ByteSource, IOResult
 from mirage.ops.types import LinkView, StatPath
 from mirage.types import FileStat, FileType, FindType, PathSpec
 from mirage.utils.dates import iso_timestamp, matches_mtime
+from mirage.utils.errors import MISS_ERRORS
 from mirage.utils.key_prefix import mount_key, mount_prefix_of
 from mirage.utils.path import respell_one, respell_raw
 from mirage.utils.stat_view import DIR_SIZE
@@ -104,7 +105,7 @@ async def apply_mtime_filter(
     for r in results:
         try:
             s = await stat(_row_spec(r, mount_prefix))
-        except (FileNotFoundError, ValueError):
+        except (FileNotFoundError, NotADirectoryError, ValueError):
             continue
         # `matches_mtime` is the same helper the rest of this file already
         # uses. Parsing inline instead stamped UTC over an offset the
@@ -131,7 +132,7 @@ async def _row_mtime(
     try:
         return _modified_ts((await stat(_row_spec(row,
                                                   mount_prefix))).modified)
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, NotADirectoryError, ValueError):
         return None
 
 
@@ -200,9 +201,10 @@ class StartPoint:
     missing: bool = False
     stat: FileStat | None = None
     # The strerror the diagnostic carries when `missing` is set. A start
-    # point that is simply absent keeps GNU's default wording; one typed
-    # with a trailing slash that resolved to a non-directory reports
-    # ENOTDIR instead (`find flink/` -> "Not a directory").
+    # point that is simply absent keeps GNU's default wording; one under a
+    # plain file, or typed with a trailing slash that resolved to a
+    # non-directory, reports ENOTDIR instead (`find flink/` -> "Not a
+    # directory").
     detail: str = "No such file or directory"
 
 
@@ -214,12 +216,39 @@ NOT_DIR_START = StartPoint(walk=False,
                            detail="Not a directory")
 
 
+async def _missing_start(
+        search: PathSpec,
+        stat: Callable[[PathSpec], Awaitable[FileStat]] | None) -> StartPoint:
+    """The start point ``stat_path`` found nothing at, with GNU's errno.
+
+    ``stat_path`` answers None for both ways a lookup fails, because every
+    other caller of it treats them alike, while GNU names the one its stat
+    met. So the mount's own stat is asked which, on the failure path only:
+    a start point under a plain file is ENOTDIR.
+
+    Args:
+        search (PathSpec): the start point, as the operand named it.
+        stat (Callable | None): the mount's stat, None when the caller has
+            none to offer.
+    """
+    if stat is None:
+        return MISSING_START
+    try:
+        await stat(search)
+    except NotADirectoryError:
+        return NOT_DIR_START
+    except MISS_ERRORS:
+        return MISSING_START
+    return MISSING_START
+
+
 async def resolve_start(
     search: PathSpec,
     args: find_eval.FindArgs,
     stat_path: StatPath | None,
     *,
     is_link: bool = False,
+    stat: Callable[[PathSpec], Awaitable[FileStat]] | None = None,
 ) -> StartPoint:
     """Decide what one start point contributes, before any walk.
 
@@ -244,12 +273,14 @@ async def resolve_start(
         stat_path (StatPath | None): dispatcher-backed stat, None when the
             command runs outside a workspace (the walk then decides).
         is_link (bool): whether the start point is itself a namespace link.
+        stat (Callable | None): the mount's stat, asked only to name the
+            errno of a start point ``stat_path`` found nothing at.
     """
     if stat_path is None or is_link:
         return WALK_START
     start = await stat_path(search.virtual)
     if start is None:
-        return MISSING_START
+        return await _missing_start(search, stat)
     if start.type == FileType.DIRECTORY:
         return StartPoint(walk=True, results=[], stat=start)
     # POSIX reads `x/` as `x/.`, so an operand typed with a trailing
@@ -577,7 +608,8 @@ async def _find_root(
     start = await resolve_start(search_path,
                                 args,
                                 stat_path,
-                                is_link=root_is_link)
+                                is_link=root_is_link,
+                                stat=stat)
     if start.missing:
         return None, start.detail
     if not start.walk and not root_is_link:
@@ -677,7 +709,7 @@ async def _stat_entry(
                     vfs_path=mount_key(path, prefix))
     try:
         return await stat(spec, index)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return None
     except Exception as exc:
         # Any other failure resolves to None too when the caller collects
@@ -708,7 +740,7 @@ async def _is_empty_entry(
                         vfs_path=mount_key(path, prefix))
         try:
             return len(await readdir(spec, index)) == 0
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             return False
     st = await _stat_entry(stat, path, prefix, index, unstatted)
     return st is not None and st.type is FileType.FILE and st.size == 0
@@ -730,7 +762,7 @@ async def _walk_collect(
         return
     try:
         children = await readdir(spec, index)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         # Only vanished dirs are skipped; API errors (rate limit, auth)
         # propagate.
         return

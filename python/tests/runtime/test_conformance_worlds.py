@@ -60,8 +60,6 @@ quickjs_live = pytest.mark.skipif(
 # RuntimeVFS captures the launch session and re-binds it across the
 # thread hop) landed too, so the guest confinement group runs unmarked.
 
-CWD = "runtime cwd is not wired: guests resolve no relative paths"
-
 
 def _seed(files: dict[str, bytes]) -> RAMVFS:
     """A RAM VFS preloaded with mount-relative files.
@@ -627,22 +625,27 @@ async def test_guest_cannot_follow_link_out_of_scope():
 
 # ── Group 4: a guest resolves relative paths against its cwd (forward) ──
 #
-# The shell has a cwd; the guest never receives it. Relative-path ops
-# in a guest fail today. Pinned as the fact a cwd-carrying door must
-# satisfy, so the wiring lands with a test already waiting for it.
+# Both Python guests inherit the shell cwd before executing user code.
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "runtime,line",
-    _guest_cases({
-        "monty":
-        "cd /base && python3 -c \"print(open('a.txt').read())\"",
-        "wasi":
-        "cd /base && python3 -c \"print(open('a.txt').read())\"",
-    }),
+    [
+        pytest.param(
+            "monty",
+            "cd /base && python3 -c \"print(open('a.txt').read())\"",
+            id="monty",
+            marks=GUARDS["monty"],
+        ),
+        pytest.param(
+            "wasi",
+            "cd /base && python3 -c \"print(open('a.txt').read())\"",
+            id="wasi",
+            marks=wasi_live,
+        ),
+    ],
 )
-@pytest.mark.xfail(reason=CWD, strict=True)
 async def test_guest_resolves_relative_path_against_cwd(
         runtime: str, line: str):
     """A guest launched in ``/base`` reads ``a.txt`` relatively.

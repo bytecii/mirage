@@ -87,7 +87,7 @@ export function makeRm<A extends Accessor>(
           await unlink(accessor, p, opts.index ?? undefined)
         } catch (err) {
           const code = (err as { code?: string }).code
-          if (force && code === 'ENOENT') continue
+          if (force && (code === 'ENOENT' || code === 'ENOTDIR')) continue
           if (!isFsError(err)) throw err
           // GNU rm reports the operand and keeps removing the rest.
           errors.push(`rm: cannot remove '${p.virtual}': ${String(fsStrerror(err))}`)

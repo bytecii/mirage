@@ -17,7 +17,6 @@ import { Cmd } from './types.ts'
 export const STREAM_COMMANDS: ReadonlySet<string> = new Set([
   Cmd.CAT,
   Cmd.NL,
-  Cmd.SORT,
   Cmd.CUT,
   Cmd.SED,
   Cmd.REV,
@@ -59,6 +58,7 @@ export const RELAY_COMMANDS: ReadonlySet<string> = new Set([
   Cmd.UNZIP,
   Cmd.ZIP,
   Cmd.LS,
+  Cmd.SORT,
   Cmd.WC,
 ])
 export const CROSS_MOUNT_COMMANDS: ReadonlySet<string> = new Set([

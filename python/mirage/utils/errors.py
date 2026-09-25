@@ -147,6 +147,21 @@ def ebusy(path: str | PathSpec) -> OSError:
 
 
 def enotdir(path: str | PathSpec) -> NotADirectoryError:
+    """ENOTDIR: a component of the path is a plain file.
+
+    What ``open(2)`` and ``stat(2)`` answer for ``a.txt/x``, and what a
+    lookup there answers on ram, redis, disk and OPFS too: the keyed stores
+    walk the parents on a miss (their ``lookup_error``), the filesystems
+    hear it from the kernel. Deliberate divergence: object stores and SFTP
+    answer ENOENT, because telling the two apart costs a request per
+    ancestor on every miss, a stat miss is the ordinary case of a copy's
+    destination probe, and an object store may hold ``a.txt`` and
+    ``a.txt/x`` at once. Mirrors TS ``enotdir``.
+
+    Args:
+        path (str | PathSpec): the operand; ``virtual`` is the reported
+            spelling.
+    """
     return NotADirectoryError(_virtual_of(path))
 
 

@@ -14,7 +14,7 @@
 
 import type { FileStat } from '../../../../types.ts'
 import { FileType, PathSpec } from '../../../../types.ts'
-import { isEnoent } from '../../../../utils/errors.ts'
+import { fsStrerror, isEnoent, isEnotdir } from '../../../../utils/errors.ts'
 import { DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, parseChmod } from '../../../../utils/mode.ts'
 import { CycleError } from '../../../../utils/path.ts'
 import type { DispatchFn } from '../../../../runtime/types.ts'
@@ -63,8 +63,9 @@ export async function handleChmod(
       const [result] = await dispatch('stat', resolved)
       stat = result as FileStat
     } catch (err) {
-      if (isEnoent(err)) {
-        errors.push(`chmod: cannot access '${target.rawPath}': No such file or directory\n`)
+      const strerror = isEnoent(err) || isEnotdir(err) ? fsStrerror(err) : null
+      if (strerror !== null) {
+        errors.push(`chmod: cannot access '${target.rawPath}': ${strerror}\n`)
         continue
       }
       throw err

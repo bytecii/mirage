@@ -358,6 +358,10 @@
       "type": "bool"
     },
     {
+      "short": "-C",
+      "type": "bool"
+    },
+    {
       "long": "--check",
       "type": "str",
       "value_optional": true
@@ -384,6 +388,7 @@
     },
     {
       "long": "--output",
+      "multiple": true,
       "short": "-o",
       "type": "path"
     },

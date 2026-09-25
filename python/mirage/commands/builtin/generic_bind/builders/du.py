@@ -78,7 +78,7 @@ async def _walk(
 ) -> int:
     try:
         info = await ops.stat(accessor, path, index)
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, NotADirectoryError, ValueError):
         return 0
     if info.type != FileType.DIRECTORY:
         size = info.size or 0
@@ -88,7 +88,7 @@ async def _walk(
         return size
     try:
         children = await ops.readdir(accessor, path, index)
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, NotADirectoryError, ValueError):
         return 0
     except PermissionError:
         budget.unreadable.append(path.virtual)

@@ -62,9 +62,11 @@ export const RM_BUILDER: Builder = {
         isDir = st.type === FileType.DIRECTORY
       } catch (err) {
         if (force) continue
-        // A trailing slash that named something which is not a directory
-        // (`rm reg/`); otherwise the operand is simply absent. GNU rm
-        // reports it and keeps removing the rest.
+        // ENOTDIR is a component that is a plain file: the operand sits
+        // under one, or carried a trailing slash that named one (`rm reg/`);
+        // otherwise the operand is simply absent. -f ignores both, as GNU's
+        // `ignorable_missing` does, and without it GNU rm reports the operand
+        // and keeps removing the rest.
         const detail =
           (err as { code?: string }).code === 'ENOTDIR'
             ? 'Not a directory'

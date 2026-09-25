@@ -100,7 +100,8 @@ def make_rm(
             try:
                 await unlink(accessor, p, opts.index)
             except FS_ERRORS as exc:
-                if f and isinstance(exc, FileNotFoundError):
+                if f and isinstance(exc,
+                                    (FileNotFoundError, NotADirectoryError)):
                     continue
                 # GNU rm reports the operand and keeps removing the rest.
                 errors.append(

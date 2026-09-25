@@ -15,9 +15,8 @@
 import { recordStream } from '@struktoai/mirage-core/observe/context'
 import { VFSName } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
-import { eisdir, enoent } from '@struktoai/mirage-core/utils/errors'
 import type { OPFSAccessor } from '../../accessor/opfs.ts'
-import { isNotFound, resolveFileHandle } from './utils.ts'
+import { openError, resolveFileHandle } from './utils.ts'
 
 export async function* stream(accessor: OPFSAccessor, path: PathSpec): AsyncIterable<Uint8Array> {
   const root = accessor.rootHandle
@@ -26,9 +25,9 @@ export async function* stream(accessor: OPFSAccessor, path: PathSpec): AsyncIter
   try {
     handle = await resolveFileHandle(root, key, { create: false })
   } catch (err) {
-    if (isNotFound(err)) throw enoent(path)
-    if (err instanceof DOMException && err.name === 'TypeMismatchError') throw eisdir(path)
-    throw err
+    // One TypeMismatchError for a directory at the leaf (EISDIR) and for a
+    // plain file in the chain (ENOTDIR); openError tells them apart.
+    throw await openError(root, key, err, path)
   }
   const file = await handle.getFile()
   const rec = recordStream('read', path.virtual, VFSName.OPFS)

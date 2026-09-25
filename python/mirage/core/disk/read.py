@@ -16,6 +16,7 @@ import aiofiles
 
 from mirage.accessor.disk import DiskAccessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
+from mirage.core.disk.errors import disk_errors
 from mirage.core.disk.utils import resolve_inside
 from mirage.observe.context import record, start_op
 from mirage.types import PathSpec
@@ -28,11 +29,9 @@ async def read_bytes(accessor: DiskAccessor,
     root = accessor.root
     timer = start_op()
     p = await resolve_inside(root, path_spec)
-    try:
+    with disk_errors(virtual):
         async with aiofiles.open(p, "rb") as f:
             data = await f.read()
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(virtual) from exc
     record("read", virtual, "disk", len(data), timer)
     return data
 
@@ -55,11 +54,9 @@ async def read_range(accessor: DiskAccessor,
     root = accessor.root
     timer = start_op()
     p = await resolve_inside(root, path_spec)
-    try:
+    with disk_errors(virtual):
         async with aiofiles.open(p, "rb") as f:
             await f.seek(offset)
             data = await (f.read() if size is None else f.read(size))
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(virtual) from exc
     record("read", virtual, "disk", len(data), timer)
     return data
