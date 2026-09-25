@@ -1,15 +1,14 @@
 from functools import partial
-from typing import cast
 
 from mirage.commands.builtin.generic.crossmount.types import CrossResult
 from mirage.commands.builtin.generic.crossmount.utils import (_relay_write,
                                                               flat_scopes,
-                                                              relay)
+                                                              read_file)
 from mirage.commands.builtin.generic.sort import sort as generic_sort
 from mirage.commands.spec.types import FlagValue
-from mirage.io.types import ByteSource
+from mirage.io.types import ByteSource, IOResult
 from mirage.runtime.types import DispatchFn
-from mirage.types import FileType, PathSpec
+from mirage.types import PathSpec
 
 
 async def run_sort(scopes: list[PathSpec], flags: dict[str, FlagValue],
@@ -24,14 +23,17 @@ async def run_sort(scopes: list[PathSpec], flags: dict[str, FlagValue],
         stdin (ByteSource | None): Shared standard input cursor.
     """
 
-    async def read_file(path: PathSpec) -> bytes:
-        info = await relay(dispatch, "stat", path)
-        if info.type is FileType.DIRECTORY:
-            raise IsADirectoryError(path.virtual)
-        return cast(bytes, await relay(dispatch, "read", path))
+    reads = IOResult()
 
-    return await generic_sort(flat_scopes(scopes),
-                              read_bytes=read_file,
-                              write_bytes=partial(_relay_write, dispatch),
-                              stdin=stdin,
-                              flags=flags)
+    async def write_file(path: PathSpec, data: bytes) -> None:
+        await _relay_write(dispatch, path, data)
+        # A replacement must cache the new bytes, not its earlier input.
+        reads.reads.pop(path.virtual, None)
+
+    body, io = await generic_sort(flat_scopes(scopes),
+                                  read_bytes=partial(read_file, dispatch,
+                                                     reads),
+                                  write_bytes=write_file,
+                                  stdin=stdin,
+                                  flags=flags)
+    return body, await reads.merge(io)
