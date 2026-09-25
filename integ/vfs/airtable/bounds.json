@@ -36,7 +36,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "head: cannot open '/airtable/bases/Product_Roadmap__appRoadmapBase001/Backlog__tblBacklog0000003/records.jsonl' for reading: File too large\n"
+        "stderr": "head: error reading '/airtable/bases/Product_Roadmap__appRoadmapBase001/Backlog__tblBacklog0000003/records.jsonl': File too large\n"
       }
     },
     {
@@ -76,6 +76,19 @@
         "exit": 0,
         "stdout": "nonempty\n",
         "stderr": ""
+      }
+    },
+    {
+      "id": "at_head_byte_read_past_cap_refused",
+      "seq": 720206,
+      "targets": [
+        "airtable"
+      ],
+      "command": "head -c 12 /airtable/bases/Product_Roadmap__appRoadmapBase001/Backlog__tblBacklog0000003/records.jsonl",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "head: error reading '/airtable/bases/Product_Roadmap__appRoadmapBase001/Backlog__tblBacklog0000003/records.jsonl': File too large\n"
       }
     }
   ]

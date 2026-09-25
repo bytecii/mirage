@@ -57,7 +57,7 @@ async def test_head_default_is_ten_and_respects_the_cap(airtable_api):
     # would exceed the cap, so it is refused rather than truncated
     assert result.exit_code == 1
     assert await result.stderr_str(
-    ) == f"head: cannot open '{RECORDS}' for reading: File too large\n"
+    ) == f"head: error reading '{RECORDS}': File too large\n"
 
 
 @pytest.mark.asyncio

@@ -323,3 +323,11 @@ def test_no_mount_is_a_typed_miss():
     assert str(err) == "no mount matches path: '/nowhere/x'"
     assert classify(err) is FsCondition.ENOENT
     assert classify(ValueError("row too large to render")) is None
+
+
+@pytest.mark.parametrize("cmd", ["head", "tail"])
+def test_read_cap_failure_names_the_read_at_the_chokepoint(cmd):
+    spec = PathSpec.from_str_path("/records.jsonl")
+    assert format_fs_error(cmd, efbig(spec), [
+        spec
+    ]) == (f"{cmd}: error reading '/records.jsonl': File too large\n".encode())

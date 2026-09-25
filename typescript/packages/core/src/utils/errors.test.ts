@@ -313,3 +313,9 @@ describe('listingError', () => {
     expect(err.code).toBe('ENOENT')
   })
 })
+
+it.each(['head', 'tail'])('%s names a read-cap failure at the chokepoint', (cmd) => {
+  expect(decode(formatFsError(cmd, efbig('/records.jsonl')))).toBe(
+    `${cmd}: error reading '/records.jsonl': File too large\n`,
+  )
+})

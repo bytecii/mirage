@@ -332,7 +332,8 @@ def _segments(path: str) -> list[str]:
 # than as the bare name, the name always quoted (gnulib's quoteaf): a
 # missing file is ``cannot open 'x' for reading``, and a directory, which
 # opens and then refuses the read, is ``error reading 'x'``. Measured on
-# coreutils 9.7 (debian:stable-slim).
+# coreutils 9.7 (debian:stable-slim). FileTooLargeError and
+# BadDescriptorError also identify read failures in the backend contract.
 OPEN_FAILURE_COMMANDS: frozenset[str] = frozenset({"head", "tail"})
 
 
@@ -362,7 +363,9 @@ def fs_error_line(cmd_name: str, path: str | PathSpec,
     if (cmd_name in OPEN_FAILURE_COMMANDS and strerror is not None
             and label != "-"):
         quoted = shell_quote_always(label)
-        if isinstance(exc, IsADirectoryError):
+        if isinstance(
+                exc,
+            (IsADirectoryError, FileTooLargeError, BadDescriptorError)):
             return f"{cmd_name}: error reading {quoted}: {strerror}\n"
         return f"{cmd_name}: cannot open {quoted} for reading: {strerror}\n"
     if quotes_operands(cmd_name):

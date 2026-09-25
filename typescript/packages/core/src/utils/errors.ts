@@ -416,7 +416,8 @@ export function operandSpelling(
 // missing file is `cannot open 'x' for reading`, and a directory, which
 // opens and then refuses the read, is `error reading 'x'`. Measured on
 // coreutils 9.7 (debian:stable-slim). Mirrors Python's
-// OPEN_FAILURE_COMMANDS.
+// OPEN_FAILURE_COMMANDS. EFBIG and EBADF identify read failures in the
+// backend contract as well.
 export const OPEN_FAILURE_COMMANDS: ReadonlySet<string> = new Set(['head', 'tail'])
 
 // GNU coreutils stderr line for one failed path operand, spelled as typed
@@ -438,7 +439,8 @@ export function fsErrorLine(
   const typed = virtualOf(path)
   if (OPEN_FAILURE_COMMANDS.has(cmdName) && strerror !== null && typed !== '-') {
     const quoted = shellQuoteAlways(typed)
-    if (code === 'EISDIR') return `${cmdName}: error reading ${quoted}: ${strerror}\n`
+    if (code === 'EISDIR' || code === 'EFBIG' || code === 'EBADF')
+      return `${cmdName}: error reading ${quoted}: ${strerror}\n`
     return `${cmdName}: cannot open ${quoted} for reading: ${strerror}\n`
   }
   const label = quotesOperands(cmdName) ? shellQuote(typed) : typed
