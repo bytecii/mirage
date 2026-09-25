@@ -18,14 +18,13 @@ import { record, startOp } from '@struktoai/mirage-core/observe/context'
 import { VFSName } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
 import { enoent } from '@struktoai/mirage-core/utils/errors'
-import { resolveSafe } from './utils.ts'
+import { resolveInside } from './utils.ts'
 
 const CHUNK = 1 << 20
 
 export async function read(accessor: DiskAccessor, path: PathSpec): Promise<Uint8Array> {
   const timer = startOp()
-  const key = path.mountPath
-  const full = resolveSafe(accessor.root, key)
+  const full = await resolveInside(accessor.root, path)
   let data: Buffer
   try {
     data = await readFile(full)
@@ -60,8 +59,7 @@ export async function readRange(
   size: number | null,
 ): Promise<Uint8Array> {
   const timer = startOp()
-  const key = path.mountPath
-  const full = resolveSafe(accessor.root, key)
+  const full = await resolveInside(accessor.root, path)
   let handle
   try {
     handle = await open(full, 'r')

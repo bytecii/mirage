@@ -3208,6 +3208,21 @@
           "backend": "memory"
         }
       ]
+    },
+    {
+      "id": "disk-host-links",
+      "hosts": [
+        "python",
+        "typescript-node"
+      ],
+      "mounts": [
+        {
+          "path": "/data",
+          "vfs": "disk",
+          "backend": "tmpdir",
+          "host_fixture": "disk/host-links"
+        }
+      ]
     }
   ]
 }

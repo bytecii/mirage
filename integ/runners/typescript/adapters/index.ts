@@ -13,9 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { randomBytes, randomUUID } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, relative, sep } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
 import { gzipSync } from 'node:zlib'
 import {
   CreateBucketCommand,
@@ -314,7 +314,27 @@ async function openDisk(target: Target): Promise<Open> {
   for (const m of target.mounts) {
     const root = mkdtempSync(join(tmpdir(), 'mirage-integ-disk-'))
     roots.push(root)
-    const vfs = new DiskVFS({ root })
+    let mountRoot = root
+    if (m.host_fixture) {
+      const fixture = JSON.parse(
+        readFileSync(join(integRoot(), 'fixtures', m.host_fixture + '.json'), 'utf8'),
+      ) as {
+        files: Record<string, string>
+        directories: string[]
+        symlinks: Record<string, string>
+      }
+      for (const [relative, text] of Object.entries(fixture.files)) {
+        const full = join(root, relative)
+        mkdirSync(dirname(full), { recursive: true })
+        writeFileSync(full, text)
+      }
+      for (const relative of fixture.directories)
+        mkdirSync(join(root, relative), { recursive: true })
+      for (const [relative, target] of Object.entries(fixture.symlinks))
+        symlinkSync(target, join(root, relative))
+      mountRoot = join(root, 'root')
+    }
+    const vfs = new DiskVFS({ root: mountRoot })
     mounts[m.path] = m.mode === 'read' ? [vfs, MountMode.READ] : vfs
   }
   const ws = new Workspace(mounts, { mode: MountMode.WRITE, ...permissionOptions(target) })

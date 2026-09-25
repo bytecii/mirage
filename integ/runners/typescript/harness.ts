@@ -33,6 +33,7 @@ export interface Mount {
   mode?: string
   config?: Record<string, unknown>
   fixture?: string
+  host_fixture?: string
   // Mount this prefix over an already-built mount's storage instead of
   // allocating fresh storage, so cp/mv can be exercised against two
   // prefixes that address the same bytes.
