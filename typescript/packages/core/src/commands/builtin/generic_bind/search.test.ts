@@ -19,7 +19,7 @@ import { Slot, Scope, makeDetectScope } from '../../../core/hierarchy/scope.ts'
 import type { Searcher } from '../../../core/hierarchy/search.ts'
 import type { SearchQuery } from '../../../vfs/types.ts'
 import { ContentType, FileStat, FileType, PathSpec } from '../../../types.ts'
-import { enoent } from '../../../utils/errors.ts'
+import { efbig, enoent } from '../../../utils/errors.ts'
 import { stripSlash } from '../../../utils/slash.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import type { ByteSource, IOResult } from '../../../io/types.ts'
@@ -224,6 +224,23 @@ describe('adapter search', () => {
         await drain(out)
       })(),
     ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('falls back to the scan when the push-down is past the read cap', async () => {
+    // A push-down past the mount's read cap cannot print its answer; the scan
+    // reads the operand, which refuses the same way against the operand, and
+    // the executor reports it as typed (`grep: <path>: File too large`).
+    const refusing: Searcher<FakeAccessor> = (_accessor, match) =>
+      Promise.reject(efbig(`rooms/${match.slots.room ?? ''}/${match.slots.note ?? ''}`))
+    const io = makeIO({ readBytes: (_accessor, p) => Promise.reject(efbig(p)) })
+    const search = searchCommand({ note: refusing }, io, {})
+    const [out] = unwrap(
+      await search(new FakeAccessor(), [spec('/rooms/red/a.json')], ['ada'], opts()),
+    )
+    await expect(drain(out)).rejects.toMatchObject({
+      code: 'EFBIG',
+      virtualPath: '/h/rooms/red/a.json',
+    })
   })
 
   it('probes existence before searching when guarded', async () => {

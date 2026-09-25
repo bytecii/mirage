@@ -8,6 +8,7 @@ from mirage.commands.spec.usage import (  # yapf: disable
     missing_required_error, missing_value_error, old_option_error,
     read_fail_exit, read_fail_exit_line, unexpected_value_error,
     unknown_option_error, usage_exit_code)
+from mirage.utils.errors import efbig
 
 
 def test_exit_codes_match_gnu():
@@ -123,6 +124,9 @@ def test_read_fail_exit_reads_the_code_off_the_command():
     assert read_fail_exit("sort", FileNotFoundError("/x")) == 2
     assert read_fail_exit("sort", IsADirectoryError("/x")) == 2
     assert read_fail_exit("unzip", FileNotFoundError("/x")) == 9
+    # A read the mount refuses to render whole (EFBIG) is a failed read too.
+    assert read_fail_exit("rg", efbig("/x")) == 2
+    assert read_fail_exit("cat", efbig("/x")) == 1
 
 
 def test_read_fail_exit_splits_by_errno_for_the_four_that_do():

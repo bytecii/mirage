@@ -26,6 +26,7 @@ from mirage.core.postgres.client import (canonicalize_row, qualified,
                                          quote_ident)
 from mirage.core.postgres.read import read_rows, row_line
 from mirage.core.postgres.semantic import build_entity_semantic_json
+from mirage.utils.errors import efbig
 from mirage.vfs.types import SearchQuery
 
 # Column types whose `::text` is the value exactly as a rows.jsonl line
@@ -106,7 +107,7 @@ async def search_entity(accessor: PostgresAccessor, schema: str, kind: str,
     refused rather than answered short. There is no result cap: the
     push-down used to stop at ``default_search_limit`` rows and print
     those as grep's whole answer; past ``max_read_rows`` candidates it
-    now refuses, as a whole read of that many rows is refused.
+    now refuses with EFBIG, as a whole read of that many rows is refused.
 
     Args:
         accessor (PostgresAccessor): backend handle.
@@ -116,9 +117,10 @@ async def search_entity(accessor: PostgresAccessor, schema: str, kind: str,
         query (SearchQuery): the qualified request.
 
     Raises:
-        ValueError: more rows match than one read may return.
+        FileTooLargeError: more rows match than one read may return.
     """
     cap = accessor.config.max_read_rows
+    rows_path = f"{schema}/{kind}/{entity}/rows.jsonl"
     matcher = query_matcher(query)
     pool = await accessor.pool()
     async with pool.acquire() as conn:
@@ -142,26 +144,19 @@ async def search_entity(accessor: PostgresAccessor, schema: str, kind: str,
                 conn, sql, [f"%{_escape_like(query.query)}%", cap + 1],
                 {name
                  for name, _ in columns}, max_bytes)
-            byte_error = (f"{schema}/{kind}/{entity}/rows.jsonl: "
-                          f"more than {max_bytes} bytes match "
-                          "(max_read_bytes); narrow the pattern")
-            if rows is None:
-                raise ValueError(byte_error)
-            if len(rows) > cap:
-                raise ValueError(f"{schema}/{kind}/{entity}/rows.jsonl: "
-                                 f"more than {cap} rows match "
-                                 "(max_read_rows); narrow the pattern")
+            if rows is None or len(rows) > cap:
+                raise efbig(rows_path)
             lines: list[str] = []
             rendered_bytes = 0
             for row in rows:
                 line = row_line(canonicalize_row(dict(row)))
                 rendered_bytes += len(line.encode()) + 1
                 if rendered_bytes > max_bytes:
-                    raise ValueError(byte_error)
+                    raise efbig(rows_path)
                 if matcher.search(line):
                     lines.append(line)
             return lines
-    data = await read_rows(accessor, schema, entity, kind=kind)
+    data = await read_rows(accessor, schema, entity, path=rows_path)
     return [
         line for line in data.decode().split("\n")[:-1] if matcher.search(line)
     ]

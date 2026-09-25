@@ -21,6 +21,7 @@ from mirage.accessor.postgres import PostgresAccessor
 from mirage.core.postgres.search import (format_grep_results, search_database,
                                          search_entity, search_kind,
                                          search_schema)
+from mirage.utils.errors import FileTooLargeError
 from mirage.vfs.postgres.config import PostgresConfig
 from mirage.vfs.types import SearchQuery
 
@@ -170,7 +171,8 @@ async def test_search_refuses_database_and_rendered_byte_overflows(
     accessor = _accessor_with_conn(conn)
     accessor.config = PostgresConfig(dsn="postgres://localhost/db",
                                      max_read_bytes=64)
-    with pytest.raises(ValueError, match="max_read_bytes"):
+    with pytest.raises(FileTooLargeError,
+                       match="public/tables/users/rows.jsonl"):
         await search_entity(accessor, "public", "tables", "users",
                             _query("needle"))
 
@@ -235,7 +237,8 @@ async def test_search_entity_refuses_more_matches_than_one_read_returns():
     accessor = _accessor_with_conn(conn)
     accessor.config = PostgresConfig(dsn="postgres://localhost/db",
                                      max_read_rows=3)
-    with pytest.raises(ValueError, match="more than 3 rows match"):
+    with pytest.raises(FileTooLargeError,
+                       match="public/tables/users/rows.jsonl"):
         await search_entity(accessor, "public", "tables", "users",
                             _query("ada"))
 

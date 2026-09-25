@@ -296,6 +296,9 @@ describe('readFailExitCode', () => {
     expect(readFailExitCode('sort', fsErr('ENOENT'))).toBe(2)
     expect(readFailExitCode('sort', fsErr('EISDIR'))).toBe(2)
     expect(readFailExitCode('unzip', fsErr('ENOENT'))).toBe(9)
+    // A read the mount refuses to render whole (EFBIG) is a failed read too.
+    expect(readFailExitCode('rg', fsErr('EFBIG'))).toBe(2)
+    expect(readFailExitCode('cat', fsErr('EFBIG'))).toBe(1)
   })
 
   it('splits by errno for the four commands that do', () => {

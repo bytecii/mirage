@@ -57,7 +57,7 @@ export function operandExitCode(cmdName: string): number {
  * code; that is the safe side, and it is what the executor already did
  * before the tables existed.
  */
-const READ_FAIL_CODES: ReadonlySet<string> = new Set(['ENOENT', 'EISDIR', 'ENOTDIR'])
+const READ_FAIL_CODES: ReadonlySet<string> = new Set(['ENOENT', 'EISDIR', 'ENOTDIR', 'EFBIG'])
 
 function readFailCode(cmdName: string, isDir: boolean): number {
   if (isDir) {

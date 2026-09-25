@@ -22,6 +22,7 @@ from mirage.accessor.postgres import PostgresAccessor
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.postgres.read import read
 from mirage.types import PathSpec
+from mirage.utils.errors import FileTooLargeError
 from mirage.vfs.postgres.config import PostgresConfig
 
 
@@ -149,7 +150,7 @@ async def test_read_rows_too_many_rows_raises():
     accessor = _accessor(max_read_rows=100)
     with patch("mirage.core.postgres.read.client") as mc:
         mc.estimate_size = AsyncMock(return_value=(1_000_000, 50))
-        with pytest.raises(ValueError, match="too large"):
+        with pytest.raises(FileTooLargeError, match="rows.jsonl"):
             await read(
                 accessor,
                 PathSpec(vfs_path="public/tables/users/rows.jsonl",
@@ -162,7 +163,7 @@ async def test_read_rows_too_many_bytes_raises():
     accessor = _accessor(max_read_rows=10_000_000, max_read_bytes=1024)
     with patch("mirage.core.postgres.read.client") as mc:
         mc.estimate_size = AsyncMock(return_value=(100, 100))
-        with pytest.raises(ValueError, match="too large"):
+        with pytest.raises(FileTooLargeError, match="rows.jsonl"):
             await read(
                 accessor,
                 PathSpec(vfs_path="public/tables/users/rows.jsonl",
@@ -229,12 +230,12 @@ async def test_read_invalid_path_raises():
 
 
 @pytest.mark.asyncio
-async def test_read_view_rows_uses_view_kind_in_error():
-    """Error message references views/, not tables/, for a view path."""
+async def test_read_view_rows_names_the_view_in_the_refusal():
+    """The refusal names the view's own path, not a table's."""
     accessor = _accessor(max_read_rows=10)
     with patch("mirage.core.postgres.read.client") as mc:
         mc.estimate_size = AsyncMock(return_value=(10000, 100))
-        with pytest.raises(ValueError, match="views/v1"):
+        with pytest.raises(FileTooLargeError, match="views/v1/rows.jsonl"):
             await read(
                 accessor,
                 PathSpec(vfs_path="public/views/v1/rows.jsonl",
@@ -300,7 +301,7 @@ async def test_a_table_the_estimate_undercounted_is_refused_on_its_rows():
     with patch("mirage.core.postgres.read.client") as mc:
         mc.estimate_size = AsyncMock(return_value=(2, 10))
         mc.fetch_bounded_rows = AsyncMock(side_effect=_table(40))
-        with pytest.raises(ValueError, match="more than 10 rows"):
+        with pytest.raises(FileTooLargeError, match="rows.jsonl"):
             await read(
                 accessor,
                 PathSpec(vfs_path="public/tables/users/rows.jsonl",
@@ -316,7 +317,7 @@ async def test_whole_read_refuses_bytes_before_serializing():
             patch("mirage.core.postgres.read.row_line") as render:
         mc.estimate_size = AsyncMock(return_value=(1, 10))
         mc.fetch_bounded_rows = AsyncMock(return_value=None)
-        with pytest.raises(ValueError, match="more than 100 bytes"):
+        with pytest.raises(FileTooLargeError, match="rows.jsonl"):
             await read(
                 accessor,
                 PathSpec.from_str_path("/public/tables/users/rows.jsonl"))
@@ -333,7 +334,7 @@ async def test_whole_read_checks_rendered_utf8_bytes(budget, refuses):
         mc.fetch_bounded_rows = AsyncMock(return_value=[{"x": "é"}])
         path = PathSpec.from_str_path("/public/tables/users/rows.jsonl")
         if refuses:
-            with pytest.raises(ValueError, match="more than 10 bytes"):
+            with pytest.raises(FileTooLargeError, match="rows.jsonl"):
                 await read(accessor, path)
         else:
             assert await read(accessor, path) == '{"x":"é"}\n'.encode()

@@ -144,7 +144,7 @@ describe('searchEntity', () => {
     )
     await expect(
       searchEntity(accessor, 'public', 'tables', 'users', query('needle')),
-    ).rejects.toThrow('max_read_bytes')
+    ).rejects.toMatchObject({ code: 'EFBIG', virtualPath: 'public/tables/users/rows.jsonl' })
   })
 
   // A tab renders as `\t` in the line, so `t` matches it there while no LIKE
@@ -180,9 +180,9 @@ describe('searchEntity', () => {
   it('refuses more candidates than one read may return', async () => {
     const rows = Array.from({ length: 4 }, (_, id) => ({ id, name: 'ada' }))
     const { accessor } = makeAccessor(USERS, rows, 3)
-    await expect(searchEntity(accessor, 'public', 'tables', 'users', query('ada'))).rejects.toThrow(
-      /more than 3 rows match \(max_read_rows\)/,
-    )
+    await expect(
+      searchEntity(accessor, 'public', 'tables', 'users', query('ada')),
+    ).rejects.toMatchObject({ code: 'EFBIG', virtualPath: 'public/tables/users/rows.jsonl' })
   })
 
   it('matches nothing in a relation with no columns', async () => {
