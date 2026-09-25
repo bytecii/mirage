@@ -472,51 +472,26 @@ jobs:
       - name: Run curl/wget battery (HTTP fixture started by the adapter)
         run: ./python/.venv/bin/python integ/runners/python/main.py --facet http --strict
 
-  integ-shared-ts:
+  # Keep self-tests off the battery's critical path and timeout budget. These
+  # checks start their own fakes; they do not need the shared service fleet.
+  integ-selftests:
     needs: [changes, typescript-build]
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.core == 'true' || needs.changes.outputs.ts == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    services:
-      redis:
-        image: redis:7
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      mongodb:
-        image: mongo:8
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      REDIS_URL: redis://localhost:6379/0
-      # The mail fake serves IMAP and SMTP on the ports GreenMail used, so only
-      # the reset URL is new: seeding moved from an IMAP APPEND loop in each
-      # adapter to one POST the fake answers.
-      EMAIL_HOST: 127.0.0.1
-      MAIL_URL: http://127.0.0.1:5085
-      MONGODB_URI: mongodb://localhost:27017
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/integ-battery-setup
         with:
           build-packages: "false"
           typescript-build-artifact: integ-typescript-dist
+          start-services: "false"
 
       # Every "verified by integ" claim rests on the runner failing when it
-      # tests nothing, so assert the gates themselves before the battery.
-      # This job hosts them because it is the only one with both halves: the
-      # setup action always installs the python venv, and this job also has
-      # the prebuilt mirage TypeScript dist the runner imports. --require-ts
-      # turns an absent tsx into a failure rather than a silent half-run.
+      # tests nothing, so assert the gates themselves in this required job.
+      # Setup installs both the Python venv and the prebuilt TypeScript dist
+      # the runner imports. --require-ts turns an absent tsx into a failure
+      # rather than a silent half-run.
       - name: Assert the integ runner gates (strict exit, services, case ids)
         run: ./python/.venv/bin/python integ/runners/tools/gate_selftest.py --require-ts
 
@@ -612,6 +587,45 @@ jobs:
         working-directory: integ
         run: pnpm run launcher:selftest
 
+  integ-shared-ts:
+    needs: [changes, typescript-build]
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.outputs.core == 'true' || needs.changes.outputs.ts == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mongodb:
+        image: mongo:8
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      REDIS_URL: redis://localhost:6379/0
+      # The mail fake serves IMAP and SMTP on the ports GreenMail used, so only
+      # the reset URL is new: seeding moved from an IMAP APPEND loop in each
+      # adapter to one POST the fake answers.
+      EMAIL_HOST: 127.0.0.1
+      MAIL_URL: http://127.0.0.1:5085
+      MONGODB_URI: mongodb://localhost:27017
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/integ-battery-setup
+        with:
+          build-packages: "false"
+          typescript-build-artifact: integ-typescript-dist
+
       - name: Run declarative battery (typescript hosts)
         working-directory: integ
         run: pnpm exec tsx runners/typescript/main.ts --facet core --strict --target-jobs 4 --allow-skip chroma,lancedb,nextcloud,notion,postgres,qdrant
@@ -623,7 +637,7 @@ jobs:
         working-directory: integ
         run: pnpm exec tsx runners/typescript/main.ts --facet http --strict
 
-  # The two jobs above prove each language passes its own battery. This one
+  # The shared battery jobs prove each language passes its own battery. This one
   # runs both emitters and diffs them case by case, so a change that breaks
   # the same way in both languages still fails. Shared targets only (ram,
   # disk, redis) — the credentialed targets stay in their own jobs.
@@ -1799,7 +1813,7 @@ jobs:
   gate:
     name: integ-gate
     runs-on: ubuntu-latest
-    needs: [changes, typescript-build, integ, integ-ts, integ-shared-py, integ-shared-ts, integ-shared-parity, integ-database, integ-data, integ-fuse, integ-observability, integ-facets, integ-runtime, integ-wandb]
+    needs: [changes, typescript-build, integ, integ-ts, integ-shared-py, integ-shared-ts, integ-selftests, integ-shared-parity, integ-database, integ-data, integ-fuse, integ-observability, integ-facets, integ-runtime, integ-wandb]
     if: always()
     steps:
       - name: Check required jobs
