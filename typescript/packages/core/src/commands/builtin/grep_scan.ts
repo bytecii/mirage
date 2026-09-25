@@ -173,6 +173,10 @@ export interface GrepStreamOptions {
   // keeps whatever it decides for itself.
   io?: IOResult
   signal?: AbortSignal | undefined
+  // The file name context output leads each line with, and ripgrep's -m under
+  // context; see ContextRenderer.
+  contextLabel?: string | null
+  trailingMatches?: boolean
 }
 
 export async function* grepStream(
@@ -204,6 +208,8 @@ export async function* grepStream(
       opts.afterContext,
       opts.beforeContext,
       opts.byteOffsets === true,
+      opts.contextLabel ?? null,
+      opts.trailingMatches === true,
     )) {
       if (opts.io !== undefined) opts.io.exitCode = 0
       yield chunk

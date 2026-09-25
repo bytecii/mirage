@@ -20,6 +20,7 @@ from mirage.commands.builtin.box.pushdown import narrow_scope
 from mirage.commands.builtin.generic.rg import rg as generic_rg
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.grep_pattern import pattern_arg
+from mirage.commands.builtin.rg_scan import walk_candidates
 from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
@@ -31,41 +32,6 @@ from mirage.core.box.readdir import readdir as _readdir
 from mirage.core.box.stat import stat as _stat
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
-
-
-def _keep_visible(
-    narrowed: list[PathSpec],
-    scopes: list[PathSpec],
-    hidden: bool,
-) -> list[PathSpec]:
-    """Reproduce rg's dotfile pruning for search-narrowed candidates.
-
-    The generic rg walk skips hidden files and never descends into hidden
-    directories, but explicit file operands bypass that pruning, so narrowed
-    candidates are filtered on every path segment below their
-    (longest-matching) scope.
-
-    Args:
-        narrowed (list[PathSpec]): search-narrowed candidate files.
-        scopes (list[PathSpec]): the original scope operands.
-        hidden (bool): True if --hidden is set (no pruning).
-    """
-    if hidden:
-        return narrowed
-    kept: list[PathSpec] = []
-    for p in narrowed:
-        rel = p.virtual
-        best = -1
-        for scope in scopes:
-            base = scope.virtual.rstrip("/")
-            if len(base) > best and (p.virtual == base
-                                     or p.virtual.startswith(base + "/")):
-                rel = p.virtual[len(base):]
-                best = len(base)
-        if any(seg.startswith(".") for seg in rel.split("/") if seg):
-            continue
-        kept.append(p)
-    return kept
 
 
 @command("rg", vfs="box", spec=SPECS["rg"])
@@ -91,7 +57,8 @@ async def rg(accessor: BoxAccessor, paths: list[PathSpec], texts: list[str],
                             or fl.as_str("glob") is not None),
         )
         if used_search:
-            narrowed = _keep_visible(narrowed, paths, fl.as_bool("hidden"))
+            narrowed = walk_candidates(narrowed, paths, fl.as_str("type"),
+                                       fl.as_str("glob"), fl.as_bool("hidden"))
             if not narrowed:
                 return b"", IOResult(exit_code=1)
             # ripgrep labels every file a walk finds; narrowed candidates

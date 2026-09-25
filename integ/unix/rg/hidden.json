@@ -32,6 +32,38 @@
       "flags": [
         "hidden"
       ]
+    },
+    {
+      "id": "rg_named_dot_file_is_searched",
+      "seq": 612205,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgh && printf 'b\\n' > /data/rgh/.hid && rg -l b /data/rgh/.hid /data/a.txt",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/rgh/.hid\n/data/a.txt\n",
+        "stderr": ""
+      }
     }
   ]
 }

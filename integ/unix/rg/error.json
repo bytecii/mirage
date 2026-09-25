@@ -166,7 +166,7 @@
       "command": "rg -A1 hello /data/a.txt /data/nosuch.txt",
       "expect": {
         "exit": 2,
-        "stdout": "/data/a.txt:hello\n",
+        "stdout": "/data/a.txt:hello\n/data/a.txt-world\n",
         "stderr": "rg: /data/nosuch.txt: No such file or directory\n"
       }
     },

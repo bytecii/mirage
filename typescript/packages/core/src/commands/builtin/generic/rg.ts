@@ -33,7 +33,7 @@ import {
 import { rgFull } from '../rg_scan.ts'
 import { decodeLine } from '../grep_offsets.ts'
 import { splitLines } from '../utils/lines.ts'
-import { isStdin, resolveSource, stdinStream } from '../utils/stream.ts'
+import { isStdin, stdinStream } from '../utils/stream.ts'
 import { formatRecords } from '../utils/output.ts'
 
 const ENC = new TextEncoder()
@@ -41,13 +41,15 @@ const ENC = new TextEncoder()
 export const RG_NO_PATTERN = 'rg: ripgrep requires at least one pattern to execute a search'
 // ripgrep's name for stdin wherever it names the file a line came from.
 const STDIN_NAME = '<stdin>'
+// The operand ripgrep searches when a line names none and stdin is piped.
+const IMPLICIT_STDIN = new PathSpec({ virtual: '-', directory: '-', vfsPath: '-' })
 const DEC = new TextDecoder()
 
 type Stat = (p: PathSpec) => Promise<FileStat>
 type Readdir = (p: PathSpec) => Promise<string[]>
 type Stream = (p: PathSpec) => AsyncIterable<Uint8Array>
 
-interface RgFlags {
+export interface RgFlags {
   ignoreCase: boolean
   invert: boolean
   lineNumbers: boolean
@@ -68,7 +70,7 @@ interface RgFlags {
   hidden: boolean
 }
 
-function parseFlags(fl: FlagView): RgFlags {
+export function parseFlags(fl: FlagView): RgFlags {
   // -c, -l and --files-without-match set one output mode in ripgrep, so
   // the later one on the line wins: `-c --files-without-match` lists the
   // matchless files and `--files-without-match -c` prints counts (ripgrep
@@ -102,9 +104,23 @@ function parseFlags(fl: FlagView): RgFlags {
   }
 }
 
+// Whether the output shows -A/-B/-C context. Only printed lines carry it: -c,
+// -l and --files-without-match answer per file, and -o drops it (ripgrep
+// prints -o's context its own way).
+export function printsContext(flags: RgFlags): boolean {
+  return (
+    (flags.beforeContext > 0 || flags.afterContext > 0) &&
+    !flags.countOnly &&
+    !flags.filesOnly &&
+    !flags.filesWithoutMatch &&
+    !flags.onlyMatching
+  )
+}
+
 // The stream reports selection on `io` rather than the caller reading it off
 // an empty output: under -o a line whose only match is empty prints nothing
-// and is still selected, so it exits 0 (GNU grep 3.11).
+// and is still selected, so it exits 0 (GNU grep 3.11). A line past -m in
+// the trailing context prints as ripgrep prints it.
 function streamOptionsOf(flags: RgFlags, io: IOResult, signal?: AbortSignal): GrepStreamOptions {
   return {
     invert: flags.invert,
@@ -115,6 +131,7 @@ function streamOptionsOf(flags: RgFlags, io: IOResult, signal?: AbortSignal): Gr
     maxCount: flags.maxCount,
     afterContext: flags.afterContext,
     beforeContext: flags.beforeContext,
+    trailingMatches: true,
     io,
     signal,
   }
@@ -164,8 +181,7 @@ async function selectsAny(
 // --files-without-match are settled at the first selected line and -m at its
 // last one and that line's trailing context, so a pipe that goes on past the
 // answer is never waited on. ripgrep searches stdin whatever --type or --glob
-// say, since it never filters an explicit operand, and a labelled search drops
-// context here as rgFull drops it for a labelled file.
+// say, since it never filters an explicit operand.
 async function operandRecords(
   source: AsyncIterable<Uint8Array>,
   name: string,
@@ -187,7 +203,7 @@ async function operandRecords(
   const scanned = new IOResult({ exitCode: 1 })
   const scan = grepStream(source, pat, {
     ...streamOptionsOf(flags, scanned, signal),
-    ...(label ? { afterContext: 0, beforeContext: 0 } : {}),
+    contextLabel: label ? name : null,
   })
   const hits = splitLines(decodeLine(await materialize(scan)))
   if (scanned.exitCode === 0) io.exitCode = 0
@@ -197,7 +213,8 @@ async function operandRecords(
     if (count === undefined || count === '0') return []
     return [label ? `${name}:${count}` : count]
   }
-  return label ? hits.map((hit) => `${name}:${hit}`) : hits
+  // The context renderer leads each line with the label itself.
+  return label && !printsContext(flags) ? hits.map((hit) => `${name}:${hit}`) : hits
 }
 
 export async function rgGeneric(
@@ -208,8 +225,10 @@ export async function rgGeneric(
   readdir: Readdir,
   stream: Stream,
 ): Promise<CommandFnResult> {
-  // Every `-` operand reads stdin through one cursor, as grep's do.
-  stream = stdinStream(cacheAwareStream(stream), opts.stdin)
+  // Every `-` operand reads stdin through one cursor, as grep's do. With no
+  // operand typed, the implicit one below is stdin's sole reader, so a search
+  // that stops early closes the input.
+  stream = stdinStream(cacheAwareStream(stream), opts.stdin, paths.length === 0)
   const resolution = await resolvePattern('rg', texts, opts.flags, paths, opts.mountPrefix, stream)
   if (resolution.error !== null) {
     return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(resolution.error) })]
@@ -220,37 +239,20 @@ export async function rgGeneric(
   }
   const flags = parseFlags(new FlagView(opts.flags, specOf('rg')))
   if (resolution.neverMatch) flags.fixedString = false
+  // A line that names no path searches a piped stdin as an implicit `-`
+  // operand, so -l, -H, -c and context answer as they do for a typed one
+  // (ripgrep's Paths::from_low_args, 14.1.1).
+  const [first = IMPLICIT_STDIN] = paths
+  if (paths.length === 0) {
+    if (opts.stdin === null) {
+      return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(`${RG_NO_PATTERN}\n`) })]
+    }
+    paths = [first]
+  }
   // ripgrep labels when searching multiple files; -H forces the label for a
   // single file and -I suppresses it (cross-mount fanout forces -H so
   // per-operand native runs stay filename-keyed).
   const label = (paths.length > 1 || flags.withFilename) && !flags.noFilename
-  const [first] = paths
-
-  if (first === undefined) {
-    let source: AsyncIterable<Uint8Array>
-    try {
-      source = resolveSource(opts.stdin, RG_NO_PATTERN)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(`${msg}\n`) })]
-    }
-    const pat = compilePattern(exprText, flags.ignoreCase, flags.fixedString, flags.wholeWord)
-    // Seeded to 1 the way the python twin and the multi-operand branch
-    // below are: grepStream flips it to 0 on the first selected line, and
-    // seeding here means the status does not depend on the generator having
-    // been started.
-    const io = new IOResult({ exitCode: 1 })
-    if (flags.filesWithoutMatch && !flags.countOnly) {
-      // ripgrep names a matchless stdin `<stdin>`, exit 0 for the listing,
-      // and lists nothing under -m0, where it reads nothing.
-      if (flags.maxCount === 0) return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
-      if (await selectsAny(source, pat, flags, opts.signal)) {
-        return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
-      }
-      return [ENC.encode(`${STDIN_NAME}\n`), new IOResult()]
-    }
-    return [grepStream(source, pat, streamOptionsOf(flags, io, opts.signal)), io]
-  }
 
   const mounts = opts.ns?.mounts
   const readdirFn = mountParentReaddir(
@@ -260,33 +262,35 @@ export async function rgGeneric(
   const statFn = mountParentStat((p: string): Promise<FileStat> => stat(makeSpec(p, first)), mounts)
   const readBytesFn = (p: string): Promise<Uint8Array> => materialize(stream(makeSpec(p, first)))
 
-  // Through the wrapped pair, not the raw ops: a directory that exists
-  // only because mounts sit under it answers on neither, so probing raw
-  // left isDir false and the operand was read as a file, which reports
-  // it missing while the fan-out prints hits from the mounts below it.
-  let isDir = false
-  try {
-    const s = await (isStdin(first) ? fifoStat(first.rawPath) : statFn(first.virtual))
-    isDir = s.type === FileType.DIRECTORY
-  } catch (err) {
-    if (!isWalkError(err)) throw err
-    try {
-      await readdirFn(first.virtual)
-      isDir = true
-    } catch (probeErr) {
-      if (!isWalkError(probeErr)) throw probeErr
-      // not readable
-    }
-  }
-
-  const needsFull =
-    isDir ||
+  let needsFull =
     flags.filesOnly ||
     flags.filesWithoutMatch ||
     flags.beforeContext > 0 ||
     flags.afterContext > 0 ||
     flags.fileType !== null ||
     flags.globPattern !== null
+  // Every operand is probed, not just the first: a directory anywhere on the
+  // line is walked, as ripgrep walks `rg x file dir`. Through the wrapped
+  // pair, not the raw ops: a directory that exists only because mounts sit
+  // under it answers on neither, so probing raw read the operand as a file,
+  // which reports it missing while the fan-out prints hits from the mounts
+  // below it.
+  for (const p of paths) {
+    if (needsFull) break
+    try {
+      const s = await (isStdin(p) ? fifoStat(p.rawPath) : statFn(p.virtual))
+      needsFull = s.type === FileType.DIRECTORY
+    } catch (err) {
+      if (!isWalkError(err)) throw err
+      try {
+        await readdirFn(p.virtual)
+        needsFull = true
+      } catch (probeErr) {
+        if (!isWalkError(probeErr)) throw probeErr
+        // not readable
+      }
+    }
+  }
   const pat = compilePattern(exprText, flags.ignoreCase, flags.fixedString, flags.wholeWord)
   if (needsFull) {
     const warnings: string[] = []
@@ -315,33 +319,29 @@ export async function rgGeneric(
     // `results` is not "nothing matched". `grep -r` reads its status the
     // same way.
     const fullIO = new IOResult({ exitCode: 1 })
+    // ripgrep puts `--` between one operand's context and the next one's,
+    // labelled or not.
+    const context = printsContext(flags)
     for (const p of paths) {
-      if (isStdin(p)) {
-        results.push(
-          ...(await operandRecords(
-            stream(p),
-            operandName(p),
-            pat,
-            flags,
-            label,
-            fullIO,
-            opts.signal,
-          )),
-        )
-        continue
-      }
-      const hitsFull = await rgFull(
-        readdirFn,
-        statFn,
-        readBytesFn,
-        p.virtual,
-        exprText,
-        fullOpts,
-        warnings,
-        label ? p.rawPath : null,
-        fullIO,
-      )
-      results.push(...respellRaw(hitsFull, p.virtual, p.rawPath))
+      const records = isStdin(p)
+        ? await operandRecords(stream(p), operandName(p), pat, flags, label, fullIO, opts.signal)
+        : respellRaw(
+            await rgFull(
+              readdirFn,
+              statFn,
+              readBytesFn,
+              p.virtual,
+              exprText,
+              fullOpts,
+              warnings,
+              label ? p.rawPath : null,
+              fullIO,
+            ),
+            p.virtual,
+            p.rawPath,
+          )
+      if (context && results.length > 0 && records.length > 0) results.push('--')
+      results.push(...records)
     }
     const stderr = warnings.length > 0 ? ENC.encode(warnings.join('\n') + '\n') : undefined
     // `exitCodeFor` is the one contract both commands share: an operand the

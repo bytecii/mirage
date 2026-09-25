@@ -18,7 +18,7 @@ import pytest
 
 from mirage.accessor.dropbox import DropboxAccessor
 from mirage.cache.index.ram import RAMIndexCacheStore
-from mirage.commands.builtin.dropbox.rg import _keep_visible, rg
+from mirage.commands.builtin.dropbox.rg import rg
 from mirage.commands.config import CommandOpts
 from mirage.core.dropbox.client import DropboxTokenManager
 from mirage.io.types import IOResult
@@ -59,29 +59,6 @@ def harness(monkeypatch):
     monkeypatch.setitem(_GLOBALS, "narrow_scope", narrow)
     monkeypatch.setitem(_GLOBALS, "generic_rg", generic)
     return narrow, generic
-
-
-def test_keep_visible_drops_dotfiles_below_the_scope():
-    kept = _keep_visible(
-        [spec('/data/.env'),
-         spec('/data/.git/config'),
-         spec('/data/a.txt')], [scope()],
-        hidden=False)
-    assert [p.virtual for p in kept] == ["/data/a.txt"]
-
-
-def test_keep_visible_hidden_flag_keeps_everything():
-    paths = [spec("/data/.env"), spec("/data/a.txt")]
-    assert _keep_visible(paths, [scope()], hidden=True) == paths
-
-
-def test_keep_visible_ignores_dots_in_the_scope_itself():
-    hidden_scope = PathSpec(vfs_path=".cfg",
-                            virtual="/data/.cfg",
-                            directory="/data/.cfg")
-    kept = _keep_visible([spec('/data/.cfg/a.txt')], [hidden_scope],
-                         hidden=False)
-    assert [p.virtual for p in kept] == ["/data/.cfg/a.txt"]
 
 
 @pytest.mark.asyncio

@@ -12,12 +12,10 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-// Twin of test_an_answer_that_depends_on_every_file_is_never_narrowed in
-// python/tests/commands/builtin/github/test_pushdown.py: a narrowing holds only
-// files that match the searched literal, so the flags whose answer depends on
-// the files that do not reach narrowScope as an exact file set.
+// Mirror of python/tests/commands/builtin/github/test_rg_search.py.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+
 import type * as PushdownModule from './pushdown.ts'
 import type * as GenericModule from '../generic/rg.ts'
 
@@ -32,14 +30,15 @@ vi.mock('../generic/rg.ts', async () => {
 
 import { GitHubAccessor } from '../../../accessor/github.ts'
 import type { GitHubTransport } from '../../../core/github/client.ts'
-import { IOResult } from '../../../io/types.ts'
+import { IOResult, materialize, type ByteSource } from '../../../io/types.ts'
 import { PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
 import { rgGeneric } from '../generic/rg.ts'
-import { GITHUB_RG } from './rg.ts'
 import { narrowScope } from './pushdown.ts'
+import { GITHUB_RG } from './rg.ts'
 
 const narrow = vi.mocked(narrowScope)
+const generic = vi.mocked(rgGeneric)
 
 function makeAccessor(): GitHubAccessor {
   const transport: GitHubTransport = {
@@ -49,6 +48,9 @@ function makeAccessor(): GitHubAccessor {
     request(method: string, path: string): Promise<unknown> {
       throw new Error(`unexpected transport call: ${method} ${path}`)
     },
+    requestWithResponse(method: string, path: string): Promise<never> {
+      throw new Error(`unexpected transport call: ${method} ${path}`)
+    },
   }
   return new GitHubAccessor({
     transport,
@@ -56,8 +58,17 @@ function makeAccessor(): GitHubAccessor {
     repo: 'r',
     ref: 'main',
     defaultBranch: 'main',
+    tree: {},
   })
 }
+
+const ROOT = new PathSpec({ virtual: '/', directory: '/', vfsPath: '', resolved: false })
+const MAIN = new PathSpec({
+  virtual: '/src/main.py',
+  directory: '',
+  vfsPath: 'src/main.py',
+  resolved: true,
+})
 
 async function exactFileSet(flags: CommandOpts['flags']): Promise<unknown> {
   const cmd = GITHUB_RG[0]
@@ -70,11 +81,33 @@ async function exactFileSet(flags: CommandOpts['flags']): Promise<unknown> {
 
 beforeEach(() => {
   narrow.mockReset()
-  narrow.mockResolvedValue({ resolved: [], fileCount: 0, usedSearch: false })
-  vi.mocked(rgGeneric).mockResolvedValue([new Uint8Array(), new IOResult()])
+  generic.mockReset()
+  narrow.mockResolvedValue({ resolved: [MAIN], fileCount: 1, usedSearch: true })
+  generic.mockResolvedValue([new Uint8Array(), new IOResult()])
 })
 
 describe('github rg push-down', () => {
+  // The candidates stand in for a walk, which --type filters, while a file
+  // named on the line is never filtered, so the wrapper filters them itself;
+  // none left is no match, not a stdin run.
+  it('hands the generic the candidates the walk would search', async () => {
+    const cmd = GITHUB_RG[0]
+    if (cmd === undefined) throw new Error('rg not registered')
+    const opts = { stdin: null, flags: { w: true, type: 'py' }, filetypeFns: null, cwd: '/' }
+    await cmd.fn(makeAccessor(), [ROOT], ['import'], opts as unknown as CommandOpts)
+    expect((generic.mock.calls[0]?.[0] ?? []).map((p) => p.virtual)).toEqual(['/src/main.py'])
+  })
+
+  it('answers no match when the walk would search nothing', async () => {
+    const cmd = GITHUB_RG[0]
+    if (cmd === undefined) throw new Error('rg not registered')
+    const opts = { stdin: null, flags: { w: true, type: 'md' }, filetypeFns: null, cwd: '/' }
+    const result = await cmd.fn(makeAccessor(), [ROOT], ['import'], opts as unknown as CommandOpts)
+    expect(generic).not.toHaveBeenCalled()
+    const [out, io] = result as [ByteSource, IOResult]
+    expect([(await materialize(out)).byteLength, io.exitCode]).toEqual([0, 1])
+  })
+
   it.each<[string, CommandOpts['flags']]>([
     ['-v', { w: true, v: true }],
     ['--files-without-match', { w: true, files_without_match: true }],

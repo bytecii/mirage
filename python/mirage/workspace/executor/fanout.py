@@ -23,6 +23,7 @@ from mirage.commands.builtin.find_parse import parse_find_expression
 from mirage.commands.builtin.generic.crossmount.fanout.du import \
     merge_du_blocks
 from mirage.commands.builtin.generic.crossmount.types import RunSingle
+from mirage.commands.builtin.generic.crossmount.utils import context_separated
 from mirage.commands.builtin.generic.grep import filename_mode
 from mirage.commands.config import ExecContext
 from mirage.commands.errors import FindParseError
@@ -663,9 +664,14 @@ async def _fan_out_traversal(
                               for p in all_rows) + "\n").encode("utf-8")
     elif all_stdout:
         # `ls -R` separates directory groups with a blank line, and a
-        # per-mount block is one more group; every other format is a
+        # per-mount block is one more group; grep and rg put `--` between
+        # one file's context and the next file's; every other format is a
         # plain line stream.
-        sep = b"\n\n" if cmd_name == "ls" else b"\n"
+        sep = b"\n"
+        if cmd_name == "ls":
+            sep = b"\n\n"
+        elif context_separated(cmd_name, flag_kwargs):
+            sep = b"\n--\n"
         combined = sep.join(b.rstrip(b"\n") for b in all_stdout) + b"\n"
     else:
         combined = None

@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { FileStat } from '../../types.ts'
+import type { FileStat, PathSpec } from '../../types.ts'
 import { FileType } from '../../types.ts'
 import { rstripSlash } from '../../utils/slash.ts'
 import { fsStrerror } from '../../utils/errors.ts'
@@ -66,6 +66,40 @@ function rgMatchesFilter(
   return true
 }
 
+/**
+ * The candidates a walk of `scopes` would have searched. A search push-down
+ * narrows a directory search to candidate files and hands them on as operands
+ * of their own, which ripgrep never filters, so the walk's filters are applied
+ * here instead: no dot segment below the candidate's (longest-matching) scope
+ * unless --hidden, since the walk never descends into a hidden directory, and
+ * --type and --glob on the file itself.
+ */
+export function walkCandidates(
+  candidates: PathSpec[],
+  scopes: readonly PathSpec[],
+  fileType: string | null,
+  globPattern: string | null,
+  hidden: boolean,
+): PathSpec[] {
+  const kept: PathSpec[] = []
+  for (const p of candidates) {
+    let rel = p.virtual
+    let best = -1
+    for (const scope of scopes) {
+      const base = scope.virtual.replace(/\/+$/, '')
+      if (base.length > best && (p.virtual === base || p.virtual.startsWith(base + '/'))) {
+        rel = p.virtual.slice(base.length)
+        best = base.length
+      }
+    }
+    const segments = rel.split('/').filter((s) => s !== '')
+    if (!hidden && segments.some((s) => s.startsWith('.'))) continue
+    if (!rgMatchesFilter(p.virtual, fileType, globPattern, true)) continue
+    kept.push(p)
+  }
+  return kept
+}
+
 export interface RgFullOptions {
   ignoreCase: boolean
   invert: boolean
@@ -91,6 +125,19 @@ export interface RgFullOptions {
   filesWithoutMatch?: boolean
 }
 
+// Whether the output shows -A/-B/-C context. Only printed lines carry it: -c,
+// -l and --files-without-match answer per file, and -o drops it (ripgrep
+// prints -o's context its own way).
+function printsContext(opts: RgFullOptions): boolean {
+  return (
+    (opts.contextBefore > 0 || opts.contextAfter > 0) &&
+    !opts.countOnly &&
+    !opts.filesOnly &&
+    opts.filesWithoutMatch !== true &&
+    !opts.onlyMatching
+  )
+}
+
 /**
  * Search one already-read file. `io`, when given, receives exit status 0 as
  * soon as a line is selected: under -o a zero-width match selects the line and
@@ -114,6 +161,28 @@ function searchFile(
   const count = { n: 0 }
   const byteOffsets = opts.byteOffsets === true
   const withoutMatch = opts.filesWithoutMatch === true && !opts.countOnly
+  if (printsContext(opts)) {
+    // Context rides the shared renderer: match lines `N:`, context lines
+    // `N-`, `--` between groups, all led by the label when the search prints
+    // one, and a trailing line that would be selected past -m printed as
+    // selected, as ripgrep prints it.
+    const rendered = grepContextLines(
+      data,
+      compiled,
+      opts.invert,
+      opts.lineNumbers,
+      opts.maxCount,
+      opts.contextAfter,
+      opts.contextBefore,
+      byteOffsets,
+      prefixPath,
+      true,
+    )
+    if (rendered.length > 0 && io !== null) io.exitCode = 0
+    // `decodeLine` because the renderer puts a smuggled byte back as itself,
+    // and `formatRecords` puts it out as itself too.
+    return rendered.map((chunk) => decodeLine(chunk).replace(/\n$/, ''))
+  }
   const offsets = byteOffsets ? lineOffsets(data) : []
   const globalRe = opts.onlyMatching
     ? new RegExp(
@@ -207,7 +276,9 @@ export async function rgFull(
 
   if (!isDir) {
     if (startType === FileType.CHAR_DEVICE) return []
-    if (!rgMatchesFilter(path, opts.fileType, opts.globPattern, opts.hidden)) return []
+    // ripgrep searches a file named on the line whatever --type, --glob or a
+    // leading dot say: its walker filters no entry at depth 0. A push-down
+    // that narrows a walk filters its candidates itself (walkCandidates).
     let data: string[]
     try {
       data = splitLines(decodeLine(await readBytesFn(path)))
@@ -215,37 +286,12 @@ export async function rgFull(
       if (warnings !== null) warnings.push(`rg: ${path}: ${fsStrerror(err) ?? String(err)}`)
       return []
     }
-    if (
-      (opts.contextBefore > 0 || opts.contextAfter > 0) &&
-      !opts.filesOnly &&
-      !(opts.filesWithoutMatch === true && !opts.countOnly) &&
-      !opts.countOnly &&
-      !opts.onlyMatching &&
-      filePrefix === null
-    ) {
-      // Single-file context rides the shared grep renderer (match lines
-      // `N:`, context lines `N-`, `--` between groups). Directory search
-      // and filename-prefixed fanout skip context, mirroring grep's -H
-      // divergence.
-      const rendered = grepContextLines(
-        data,
-        compiled,
-        opts.invert,
-        opts.lineNumbers,
-        opts.maxCount,
-        opts.contextAfter,
-        opts.contextBefore,
-        opts.byteOffsets === true,
-      )
-      if (rendered.length > 0 && io !== null) io.exitCode = 0
-      // `decodeLine` because the renderer now puts a smuggled byte back as
-      // itself, and `formatRecords` puts it out as itself too, which
-      // `formatRecords` encodes.
-      return rendered.map((chunk) => decodeLine(chunk).replace(/\n$/, ''))
-    }
     return searchFile(path, data, compiled, opts, filePrefix, io)
   }
 
+  // ripgrep puts `--` between one file's context and the next file's,
+  // labelled or not.
+  const context = printsContext(opts)
   const results: string[] = []
   let entries: string[]
   try {
@@ -281,6 +327,7 @@ export async function rgFull(
         null,
         io,
       )
+      if (context && results.length > 0 && sub.length > 0) results.push('--')
       results.push(...sub)
       continue
     }
@@ -300,6 +347,7 @@ export async function rgFull(
     // paths (they are the output).
     const walkPrefix = opts.noFilename === true && !opts.filesOnly ? null : entry
     const fileResults = searchFile(entry, data, compiled, opts, walkPrefix, io)
+    if (context && results.length > 0 && fileResults.length > 0) results.push('--')
     results.push(...fileResults)
   }
 

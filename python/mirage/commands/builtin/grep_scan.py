@@ -242,6 +242,8 @@ async def grep_stream(
     before_context: int = 0,
     io: IOResult | None = None,
     byte_offsets: bool = False,
+    context_label: str | None = None,
+    trailing_matches: bool = False,
 ) -> AsyncIterator[bytes]:
     """Stream grep's output for one input.
 
@@ -264,6 +266,10 @@ async def grep_stream(
             the status from an empty stream reports 1 where GNU says 0.
         byte_offsets (bool): -b, prefix each printed line with the byte
             offset of its own start, or of the match itself under -o.
+        context_label (str | None): the file name context output leads
+            each line with, see ``ContextRenderer``.
+        trailing_matches (bool): ripgrep's -m under context, see
+            ``ContextRenderer``.
     """
     if max_count == 0:
         # GNU selects no line at all, context and all, and prints nothing
@@ -280,7 +286,8 @@ async def grep_stream(
         async for chunk in grep_context_stream(source, pat, invert,
                                                line_numbers, max_count,
                                                after_context, before_context,
-                                               byte_offsets):
+                                               byte_offsets, context_label,
+                                               trailing_matches):
             if io is not None:
                 io.exit_code = 0
             yield chunk

@@ -14,8 +14,8 @@
 
 import { describe, expect, it } from 'vitest'
 import { IOResult } from '../../io/types.ts'
-import { ContentType, FileStat, FileType } from '../../types.ts'
-import { rgFull, type RgFullOptions } from './rg_scan.ts'
+import { ContentType, FileStat, FileType, PathSpec } from '../../types.ts'
+import { rgFull, walkCandidates, type RgFullOptions } from './rg_scan.ts'
 
 const ENC = new TextEncoder()
 
@@ -214,7 +214,9 @@ describe('rgFull single-file context', () => {
     expect(out).toEqual(['error: disk full', 'warning: low memory'])
   })
 
-  it('skips context on directory walks (documented divergence)', async () => {
+  it('prints labelled context on directory walks', async () => {
+    // ripgrep 14.1.1 prints context in a walk too, each line led by its
+    // file's name: `name:` on a match, `name-` on context.
     const out = await rgFull(
       logReaddirFn,
       logStatFn,
@@ -224,7 +226,7 @@ describe('rgFull single-file context', () => {
       opts({ contextAfter: 1 }),
       null,
     )
-    expect(out).toEqual(['/log/app.log:warning: low memory'])
+    expect(out).toEqual(['/log/app.log:warning: low memory', '/log/app.log-info: all good'])
   })
 })
 
@@ -720,5 +722,151 @@ describe('rgFull --files-without-match', () => {
       await raw('/raw/m.txt', 'a', { countOnly: true }),
     )
     expect(await raw('/raw/m.txt', 'zzz', { filesWithoutMatch: true, maxCount: 0 })).toEqual([])
+  })
+})
+
+// A walk prints context the way ripgrep 14.1.1 does: every line leads with its
+// file's name, `name:` on a match and `name-` on context, and `--` sits between
+// one file's context and the next file's.
+describe('rgFull walk context', () => {
+  const WALK: Record<string, string> = {
+    '/w/a.txt': 'x\nhit\ny\n',
+    '/w/b.txt': 'miss\n',
+    '/w/c.txt': 'hit\nz\n',
+  }
+  const readdirFn = (path: string): Promise<string[]> =>
+    path === '/w'
+      ? Promise.resolve(Object.keys(WALK))
+      : Promise.reject(new Error(`ENOTDIR: ${path}`))
+  const statFn = (path: string): Promise<FileStat> =>
+    path === '/w'
+      ? Promise.resolve(new FileStat({ name: 'w', type: FileType.DIRECTORY }))
+      : Promise.resolve(new FileStat({ name: path.slice(3), type: FileType.FILE }))
+  const readBytesFn = (path: string): Promise<Uint8Array> =>
+    Promise.resolve(ENC.encode(WALK[path] ?? ''))
+
+  it('labels every line and separates the files that print', async () => {
+    const out = await rgFull(
+      readdirFn,
+      statFn,
+      readBytesFn,
+      '/w',
+      'hit',
+      opts({ contextAfter: 1, lineNumbers: true }),
+      null,
+    )
+    expect(out).toEqual(['/w/a.txt:2:hit', '/w/a.txt-3-y', '--', '/w/c.txt:1:hit', '/w/c.txt-2-z'])
+  })
+
+  it('gives counts no separator', async () => {
+    const out = await rgFull(
+      readdirFn,
+      statFn,
+      readBytesFn,
+      '/w',
+      'hit',
+      opts({ contextAfter: 1, countOnly: true }),
+      null,
+    )
+    expect(out).toEqual(['/w/a.txt:1', '/w/c.txt:1'])
+  })
+})
+
+describe('walkCandidates', () => {
+  // Narrowed candidates pass the filters the walk they replace applies.
+  const scope = (virtual = '/data'): PathSpec =>
+    new PathSpec({ virtual, directory: virtual, vfsPath: '' })
+  const candidate = (virtual: string): PathSpec =>
+    new PathSpec({
+      virtual,
+      directory: '',
+      vfsPath: virtual.replace(/^\/data\//, ''),
+      resolved: true,
+    })
+
+  it('drops dotfiles below the scope', () => {
+    const kept = walkCandidates(
+      [candidate('/data/.env'), candidate('/data/.git/config'), candidate('/data/a.txt')],
+      [scope()],
+      null,
+      null,
+      false,
+    )
+    expect(kept.map((p) => p.virtual)).toEqual(['/data/a.txt'])
+  })
+
+  it('keeps dotfiles under --hidden', () => {
+    const paths = [candidate('/data/.env'), candidate('/data/a.txt')]
+    expect(walkCandidates(paths, [scope()], null, null, true)).toEqual(paths)
+  })
+
+  it('ignores dots in the scope itself', () => {
+    const kept = walkCandidates(
+      [candidate('/data/.cfg/a.txt')],
+      [scope('/data/.cfg')],
+      null,
+      null,
+      false,
+    )
+    expect(kept.map((p) => p.virtual)).toEqual(['/data/.cfg/a.txt'])
+  })
+
+  it('applies --type and --glob to the file', () => {
+    const paths = [candidate('/data/a.py'), candidate('/data/b.md')]
+    expect(walkCandidates(paths, [scope()], 'py', null, false).map((p) => p.virtual)).toEqual([
+      '/data/a.py',
+    ])
+    expect(walkCandidates(paths, [scope()], null, '*.md', false).map((p) => p.virtual)).toEqual([
+      '/data/b.md',
+    ])
+  })
+})
+
+// ripgrep 14.1.1 searches a file named on the line whatever --type, --glob or
+// a leading dot say (`rg --type rust b in` prints `b`); a walked file is still
+// filtered.
+describe('rgFull named operands', () => {
+  const NAMED: Record<string, string> = { '/t/.in': 'b\n', '/t/w/in': 'b\n', '/t/w/.h.rs': 'b\n' }
+  const readdirFn = (path: string): Promise<string[]> =>
+    path === '/t/w'
+      ? Promise.resolve(['/t/w/in', '/t/w/.h.rs'])
+      : Promise.reject(new Error(`ENOTDIR: ${path}`))
+  const statFn = (path: string): Promise<FileStat> =>
+    Promise.resolve(
+      new FileStat({
+        name: path.slice(path.lastIndexOf('/') + 1),
+        type: path === '/t/w' ? FileType.DIRECTORY : FileType.FILE,
+      }),
+    )
+  const readBytesFn = (path: string): Promise<Uint8Array> =>
+    Promise.resolve(ENC.encode(NAMED[path] ?? ''))
+
+  it.each([[{ fileType: 'rust' }], [{ globPattern: '*.rs' }], [{}]])(
+    'searches a named file: %j',
+    async (filters) => {
+      const out = await rgFull(
+        readdirFn,
+        statFn,
+        readBytesFn,
+        '/t/.in',
+        'b',
+        opts({ lineNumbers: true, ...filters }),
+        null,
+      )
+      expect(out).toEqual(['1:b'])
+    },
+  )
+
+  it('still filters a walked file', async () => {
+    const out = await rgFull(
+      readdirFn,
+      statFn,
+      readBytesFn,
+      '/t/w',
+      'b',
+      opts({ fileType: 'rust' }),
+      null,
+    )
+    expect(out).toEqual([])
   })
 })
