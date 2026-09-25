@@ -25,7 +25,7 @@ from mirage.commands.builtin.utils.types import (AsyncReadBytes, AsyncReaddir,
                                                  AsyncStat)
 from mirage.commands.resolve import get_extension
 from mirage.io.types import IOResult
-from mirage.types import FileType
+from mirage.types import FileType, PathSpec
 from mirage.utils.errors import WALK_ERRORS, fs_strerror
 from mirage.utils.fnmatch import fnmatch
 
@@ -69,6 +69,44 @@ def _rg_matches_filter(
     if glob_pattern is not None and not fnmatch(basename, glob_pattern):
         return False
     return True
+
+
+def walk_candidates(candidates: list[PathSpec], scopes: list[PathSpec],
+                    file_type: str | None, glob_pattern: str | None,
+                    hidden: bool) -> list[PathSpec]:
+    """The candidates a walk of ``scopes`` would have searched.
+
+    A search push-down narrows a directory search to candidate files and
+    hands them on as operands of their own, which ripgrep never filters,
+    so the walk's filters are applied here instead: no dot segment below
+    the candidate's (longest-matching) scope unless --hidden, since the
+    walk never descends into a hidden directory, and --type and --glob on
+    the file itself.
+
+    Args:
+        candidates (list[PathSpec]): the narrowed candidate files.
+        scopes (list[PathSpec]): the operands the search narrowed.
+        file_type (str | None): --type, restrict by extension set.
+        glob_pattern (str | None): --glob, restrict by basename glob.
+        hidden (bool): --hidden, keep dot entries.
+    """
+    kept: list[PathSpec] = []
+    for p in candidates:
+        rel = p.virtual
+        best = -1
+        for scope in scopes:
+            base = scope.virtual.rstrip("/")
+            if len(base) > best and (p.virtual == base
+                                     or p.virtual.startswith(base + "/")):
+                rel = p.virtual[len(base):]
+                best = len(base)
+        if not hidden and any(
+                seg.startswith(".") for seg in rel.split("/") if seg):
+            continue
+        if not _rg_matches_filter(p.virtual, file_type, glob_pattern, True):
+            continue
+        kept.append(p)
+    return kept
 
 
 def search_file(
@@ -277,8 +315,10 @@ async def rg_full(
             pass
 
     if not is_dir:
-        if not _rg_matches_filter(path, file_type, glob_pattern, hidden):
-            return []
+        # ripgrep searches a file named on the line whatever --type,
+        # --glob or a leading dot say: its walker filters no entry at
+        # depth 0. A push-down that narrows a walk filters its candidates
+        # itself (``walk_candidates``).
         try:
             data = split_lines(decode_line(await read_bytes_fn(path)))
         except WALK_ERRORS as exc:

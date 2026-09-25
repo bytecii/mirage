@@ -16,7 +16,8 @@ from functools import partial
 
 import pytest
 
-from mirage.commands.builtin.rg_scan import _rg_matches_filter, rg_full
+from mirage.commands.builtin.rg_scan import (_rg_matches_filter, rg_full,
+                                             walk_candidates)
 from mirage.commands.builtin.utils.wrap import (call_read_bytes, call_readdir,
                                                 call_stat, to_pathspec)
 from mirage.core.ram.mkdir import mkdir
@@ -25,6 +26,7 @@ from mirage.core.ram.readdir import readdir
 from mirage.core.ram.stat import stat
 from mirage.core.ram.write import write_bytes as _async_write_bytes
 from mirage.io.types import IOResult
+from mirage.types import PathSpec
 
 
 async def _write(backend, path, content):
@@ -304,9 +306,10 @@ class TestFileType:
 
     @pytest.mark.anyio
     async def test_file_type_single_file(self, backend):
+        # A named file is searched whatever --type says (ripgrep 14.1.1).
         await _write(backend, "/tmp/a.txt", "hello")
         result = await rg(backend, "/tmp/a.txt", "hello", file_type="py")
-        assert result == []
+        assert result == ["1:hello"]
 
 
 class TestGlobPattern:
@@ -927,3 +930,60 @@ class TestWalkContext:
                         count_only=True) == [
                             "/tmp/w/a.txt:1", "/tmp/w/b.txt:1"
                         ]
+
+
+def _scope(virtual: str = "/data") -> PathSpec:
+    return PathSpec(vfs_path="", virtual=virtual, directory=virtual)
+
+
+def _candidate(virtual: str) -> PathSpec:
+    return PathSpec(vfs_path=virtual.removeprefix("/data/"),
+                    virtual=virtual,
+                    directory="",
+                    resolved=True)
+
+
+class TestWalkCandidates:
+    """Narrowed candidates pass the filters the walk they replace applies."""
+
+    def test_drops_dotfiles_below_the_scope(self):
+        kept = walk_candidates([
+            _candidate("/data/.env"),
+            _candidate("/data/.git/config"),
+            _candidate("/data/a.txt")
+        ], [_scope()], None, None, False)
+        assert [p.virtual for p in kept] == ["/data/a.txt"]
+
+    def test_hidden_flag_keeps_dotfiles(self):
+        paths = [_candidate("/data/.env"), _candidate("/data/a.txt")]
+        assert walk_candidates(paths, [_scope()], None, None, True) == paths
+
+    def test_ignores_dots_in_the_scope_itself(self):
+        kept = walk_candidates([_candidate("/data/.cfg/a.txt")],
+                               [_scope("/data/.cfg")], None, None, False)
+        assert [p.virtual for p in kept] == ["/data/.cfg/a.txt"]
+
+    def test_applies_type_and_glob_to_the_file(self):
+        paths = [_candidate("/data/a.py"), _candidate("/data/b.md")]
+        by_type = walk_candidates(paths, [_scope()], "py", None, False)
+        by_glob = walk_candidates(paths, [_scope()], None, "*.md", False)
+        assert [p.virtual for p in by_type] == ["/data/a.py"]
+        assert [p.virtual for p in by_glob] == ["/data/b.md"]
+
+
+class TestNamedOperandsAreNeverFiltered:
+    """ripgrep 14.1.1 searches a file named on the line whatever --type,
+    --glob or a leading dot say (`rg --type rust b in` prints `b`)."""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("kwargs", [{"glob_pattern": "*.rs"}, {}])
+    async def test_a_named_file_is_searched(self, backend, kwargs):
+        await _write(backend, "/tmp/.in", "b\n")
+        assert await rg(backend, "/tmp/.in", "b", **kwargs) == ["1:b"]
+
+    @pytest.mark.anyio
+    async def test_a_walked_file_is_still_filtered(self, backend):
+        await _mkdir(backend, "/tmp/w")
+        await _write(backend, "/tmp/w/in", "b\n")
+        await _write(backend, "/tmp/w/.hid.rs", "b\n")
+        assert await rg(backend, "/tmp/w", "b", file_type="rust") == []

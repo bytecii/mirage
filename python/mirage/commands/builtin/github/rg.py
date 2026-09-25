@@ -18,6 +18,7 @@ from mirage.commands.builtin.generic.rg import rg as generic_rg
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.github.pushdown import narrow_scope
 from mirage.commands.builtin.grep_pattern import pattern_arg
+from mirage.commands.builtin.rg_scan import walk_candidates
 from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
@@ -40,7 +41,7 @@ async def rg(accessor: GitHubAccessor, paths: list[PathSpec], texts: list[str],
         raise UsageError(RG_NO_PATTERN)
 
     if paths:
-        paths[0]
+        scopes = list(paths)
         paths, file_count, used_search = await narrow_scope(
             accessor,
             opts.index,
@@ -57,6 +58,13 @@ async def rg(accessor: GitHubAccessor, paths: list[PathSpec], texts: list[str],
             msg = (f"rg: {file_count} files in scope, "
                    "narrow the path, or use -w to enable code search\n")
             return b"", IOResult(exit_code=1, stderr=msg.encode())
+        if used_search:
+            # The candidates stand in for the walk, so they pass its
+            # filters; none left means nothing matched, not a stdin run.
+            paths = walk_candidates(paths, scopes, fl.as_str("type"),
+                                    fl.as_str("glob"), fl.as_bool("hidden"))
+            if not paths:
+                return b"", IOResult(exit_code=1)
 
     return await generic_rg(
         paths,

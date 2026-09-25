@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import type { FileStat } from '../../types.ts'
+import type { FileStat, PathSpec } from '../../types.ts'
 import { FileType } from '../../types.ts'
 import { rstripSlash } from '../../utils/slash.ts'
 import { fsStrerror } from '../../utils/errors.ts'
@@ -64,6 +64,40 @@ function rgMatchesFilter(
   }
   if (globPattern !== null && !fnmatch(base, globPattern)) return false
   return true
+}
+
+/**
+ * The candidates a walk of `scopes` would have searched. A search push-down
+ * narrows a directory search to candidate files and hands them on as operands
+ * of their own, which ripgrep never filters, so the walk's filters are applied
+ * here instead: no dot segment below the candidate's (longest-matching) scope
+ * unless --hidden, since the walk never descends into a hidden directory, and
+ * --type and --glob on the file itself.
+ */
+export function walkCandidates(
+  candidates: PathSpec[],
+  scopes: readonly PathSpec[],
+  fileType: string | null,
+  globPattern: string | null,
+  hidden: boolean,
+): PathSpec[] {
+  const kept: PathSpec[] = []
+  for (const p of candidates) {
+    let rel = p.virtual
+    let best = -1
+    for (const scope of scopes) {
+      const base = scope.virtual.replace(/\/+$/, '')
+      if (base.length > best && (p.virtual === base || p.virtual.startsWith(base + '/'))) {
+        rel = p.virtual.slice(base.length)
+        best = base.length
+      }
+    }
+    const segments = rel.split('/').filter((s) => s !== '')
+    if (!hidden && segments.some((s) => s.startsWith('.'))) continue
+    if (!rgMatchesFilter(p.virtual, fileType, globPattern, true)) continue
+    kept.push(p)
+  }
+  return kept
 }
 
 export interface RgFullOptions {
@@ -242,7 +276,9 @@ export async function rgFull(
 
   if (!isDir) {
     if (startType === FileType.CHAR_DEVICE) return []
-    if (!rgMatchesFilter(path, opts.fileType, opts.globPattern, opts.hidden)) return []
+    // ripgrep searches a file named on the line whatever --type, --glob or a
+    // leading dot say: its walker filters no entry at depth 0. A push-down
+    // that narrows a walk filters its candidates itself (walkCandidates).
     let data: string[]
     try {
       data = splitLines(decodeLine(await readBytesFn(path)))
