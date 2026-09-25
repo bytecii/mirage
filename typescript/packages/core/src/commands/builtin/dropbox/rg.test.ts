@@ -15,9 +15,13 @@
 // Mirror of python/tests/commands/builtin/dropbox/test_rg_search.py.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as RgModule from '../generic/rg.ts'
 
 vi.mock('./pushdown.ts', () => ({ narrowScope: vi.fn() }))
-vi.mock('../generic/rg.ts', () => ({ rgGeneric: vi.fn() }))
+vi.mock('../generic/rg.ts', async () => {
+  const actual = await vi.importActual<typeof RgModule>('../generic/rg.ts')
+  return { ...actual, rgGeneric: vi.fn() }
+})
 
 import { DropboxAccessor } from '../../../accessor/dropbox.ts'
 import type { DropboxTokenManager } from '../../../core/dropbox/client.ts'

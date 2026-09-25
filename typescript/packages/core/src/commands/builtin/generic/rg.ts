@@ -473,3 +473,13 @@ export async function rgGeneric(
   const io = new IOResult({ exitCode: 1 })
   return [grepStream(stream(first), pat, streamOptionsOf(flags, io, opts.signal)), io]
 }
+
+// Ask for the filename a walk would have printed on its own. A content
+// search hands the generic explicit files where the user named a directory,
+// and the generic labels explicit operands only when there are several, so
+// -H is requested here; an explicit -I still wins, since forcing -H under it
+// would defeat the suppression in the delegated scan.
+export function labelled(opts: CommandOpts): CommandOpts {
+  if (new FlagView(opts.flags, specOf('rg')).asBool('args_I')) return opts
+  return { ...opts, flags: { ...opts.flags, H: true } }
+}

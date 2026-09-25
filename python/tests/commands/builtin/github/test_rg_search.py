@@ -20,6 +20,7 @@ from mirage.commands.builtin.github.pushdown import narrow_scope
 from mirage.commands.builtin.github.rg import rg
 from mirage.commands.config import CommandOpts
 from mirage.io.stream import materialize
+from mirage.io.types import IOResult
 from mirage.types import PathSpec
 from tests.fixtures.github_mock import MOCK_BLOBS
 
@@ -149,8 +150,101 @@ async def test_rg_without_word_flag_skips_search(mock_github_api, github_env,
     spy.assert_not_awaited()
 
 
+# The narrowed run at the seam between narrow_scope and the generic scan,
+# as tests/commands/builtin/dropbox/test_rg_search.py drives its wrapper.
+def _narrowed(virtual: str) -> PathSpec:
+    return PathSpec(vfs_path=virtual.removeprefix("/"),
+                    virtual=virtual,
+                    directory="",
+                    resolved=True)
+
+
+@pytest.fixture
+def seam(monkeypatch):
+    narrow = AsyncMock(return_value=([_subdir()], 3, False))
+    generic = AsyncMock(return_value=(b"", IOResult()))
+    monkeypatch.setitem(_GLOBALS, "narrow_scope", narrow)
+    monkeypatch.setitem(_GLOBALS, "generic_rg", generic)
+    return narrow, generic
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("file_type, want", [("py", ("3\n", 0)),
+async def test_narrowed_run_forces_filename_labels(github_env, seam):
+    # A walk labels every file it finds; one narrowed candidate arrives as
+    # a lone explicit operand, which the generic scan would print bare.
+    accessor, index = github_env
+    narrow, generic = seam
+    narrow.return_value = ([_narrowed("/src/a.py")], 1, True)
+    await rg(accessor, [_subdir()], ["needle"],
+             CommandOpts(index=index, flags={"w": True}))
+    assert generic.await_args.args[2].flags.get("H") is True
+
+
+@pytest.mark.asyncio
+async def test_dash_upper_i_suppression_survives_narrowing(github_env, seam):
+    accessor, index = github_env
+    narrow, generic = seam
+    narrow.return_value = ([_narrowed("/src/a.py")], 1, True)
+    await rg(accessor, [_subdir()], ["needle"],
+             CommandOpts(index=index, flags={
+                 "w": True,
+                 "args_I": True
+             }))
+    assert "H" not in generic.await_args.args[2].flags
+
+
+@pytest.mark.asyncio
+async def test_walk_fallback_leaves_flags_alone(github_env, seam):
+    accessor, index = github_env
+    _, generic = seam
+    await rg(accessor, [_subdir()], ["needle"],
+             CommandOpts(index=index, flags={"w": True}))
+    assert "H" not in generic.await_args.args[2].flags
+
+
+@pytest.mark.asyncio
+async def test_hidden_candidates_are_pruned(github_env, seam):
+    accessor, index = github_env
+    narrow, generic = seam
+    narrow.return_value = ([
+        _narrowed("/src/.env"),
+        _narrowed("/src/.github/ci.yml"),
+        _narrowed("/src/a.py"),
+    ], 3, True)
+    await rg(accessor, [_subdir()], ["needle"],
+             CommandOpts(index=index, flags={"w": True}))
+    assert [p.virtual for p in generic.await_args.args[0]] == ["/src/a.py"]
+
+
+@pytest.mark.asyncio
+async def test_hidden_flag_keeps_hidden_candidates(github_env, seam):
+    accessor, index = github_env
+    narrow, generic = seam
+    narrow.return_value = ([_narrowed("/src/.env"),
+                            _narrowed("/src/a.py")], 2, True)
+    await rg(accessor, [_subdir()], ["needle"],
+             CommandOpts(index=index, flags={
+                 "w": True,
+                 "hidden": True
+             }))
+    assert [p.virtual
+            for p in generic.await_args.args[0]] == ["/src/.env", "/src/a.py"]
+
+
+@pytest.mark.asyncio
+async def test_all_hidden_narrowed_set_exits_one(github_env, seam):
+    accessor, index = github_env
+    narrow, generic = seam
+    narrow.return_value = ([_narrowed("/src/.env")], 1, True)
+    stdout, io = await rg(accessor, [_subdir()], ["needle"],
+                          CommandOpts(index=index, flags={"w": True}))
+    assert stdout == b""
+    assert io.exit_code == 1
+    generic.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("file_type, want", [("py", ("/src/main.py:3\n", 0)),
                                              ("md", ("", 1))])
 async def test_rg_narrowed_candidates_pass_the_walk_filters(
         mock_github_api, github_env, monkeypatch, file_type, want):

@@ -72,6 +72,15 @@ export function operandLabel(path: PathSpec, stdinName: string): string {
 }
 
 /**
+ * The name a command's output gives an operand. Only a literal `-` is stdin by
+ * name: /dev/stdin reads the same bytes, but GNU grep, head and tail name it as
+ * the path it is.
+ */
+export function operandLabel(path: PathSpec, stdinName: string): string {
+  return path.rawPath === '-' ? stdinName : path.rawPath
+}
+
+/**
  * Read each operand from its backend, or from stdin for a stdin one.
  *
  * Every stdin operand shares one cursor, so a later `-` never replays bytes

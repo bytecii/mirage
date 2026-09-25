@@ -21,7 +21,7 @@ import { type FileStat, VFSName, type PathSpec } from '../../../types.ts'
 import { command, type CommandFnResult, type CommandOpts } from '../../config.ts'
 import { specOf } from '../../spec/builtins.ts'
 import { patternArg } from '../grep_pattern.ts'
-import { rgGeneric } from '../generic/rg.ts'
+import { labelled, rgGeneric } from '../generic/rg.ts'
 import { walkCandidates } from '../rg_scan.ts'
 import { narrowScope } from './pushdown.ts'
 import { FlagView } from '../../spec/flag_view.ts'
@@ -58,12 +58,7 @@ async function rgCommand(
       )
       if (visible.length === 0) return [new Uint8Array(), new IOResult({ exitCode: 1 })]
       resolved = visible
-      // ripgrep labels every file a walk finds; narrowed candidates arrive as
-      // explicit operands, so force the label flag — unless -I suppresses
-      // labels (forcing H would defeat it in the delegated grepGeneric body).
-      if (!fl.asBool('args_I')) {
-        runOpts = { ...opts, flags: { ...opts.flags, H: true } }
-      }
+      runOpts = labelled(opts)
     } else {
       resolved = narrowed.resolved
     }

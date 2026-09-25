@@ -17,7 +17,7 @@ import { materialize, type ByteSource, type IOResult } from '../../../io/types.t
 import { FileStat, FileType, PathSpec } from '../../../types.ts'
 import type { CommandOpts } from '../../config.ts'
 import { eacces, enoent } from '../../../utils/errors.ts'
-import { rgGeneric } from './rg.ts'
+import { labelled, rgGeneric } from './rg.ts'
 
 const ENC = new TextEncoder()
 const DEC = new TextDecoder()
@@ -378,5 +378,18 @@ describe('rgGeneric - unreadable paths are named as typed', () => {
       'rg: sub/locked.txt: Permission denied\n',
       2,
     ])
+  })
+})
+
+describe('labelled', () => {
+  const base: CommandOpts = { stdin: null, flags: {}, filetypeFns: null, cwd: '/' }
+
+  it('asks for the filename a walk would have printed', () => {
+    expect(labelled(base).flags).toEqual({ H: true })
+  })
+
+  it('lets -I win', () => {
+    const opts = { ...base, flags: { args_I: true } }
+    expect(labelled(opts)).toBe(opts)
   })
 })
