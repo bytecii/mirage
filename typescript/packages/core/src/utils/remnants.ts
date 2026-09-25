@@ -13,7 +13,7 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { FileStat, FileType, PathSpec } from '../types.ts'
-import { isMissingPath } from './errors.ts'
+import { isEnotdir, isMissingPath } from './errors.ts'
 
 export type Allowed = (virtual: string) => boolean
 
@@ -117,7 +117,7 @@ export async function removeRemnants(
   try {
     entries = await channel.readdir(spec)
   } catch (err) {
-    if (isMissingPath(err)) return
+    if (isMissingPath(err) || isEnotdir(err)) return
     throw err
   }
   for (const entry of entries) {
@@ -128,7 +128,7 @@ export async function removeRemnants(
     try {
       row = await channel.stat(child)
     } catch (err) {
-      if (isMissingPath(err)) continue
+      if (isMissingPath(err) || isEnotdir(err)) continue
       throw err
     }
     if (row instanceof FileStat && row.type === FileType.DIRECTORY) {
@@ -137,13 +137,13 @@ export async function removeRemnants(
       try {
         await channel.unlink(child)
       } catch (err) {
-        if (!isMissingPath(err)) throw err
+        if (!(isMissingPath(err) || isEnotdir(err))) throw err
       }
     }
   }
   try {
     await channel.rmdir(spec)
   } catch (err) {
-    if (!isMissingPath(err)) throw err
+    if (!(isMissingPath(err) || isEnotdir(err))) throw err
   }
 }

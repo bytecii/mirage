@@ -19,7 +19,7 @@ import { NO_FOLLOW_OPS, type NamespaceLinks } from './config.ts'
 import type { OpKwargs } from './registry.ts'
 import type { FileStat, SetAttrFields } from '../types.ts'
 import { FileType, PathSpec } from '../types.ts'
-import { exdev, isMissingPath } from '../utils/errors.ts'
+import { exdev, isEnotdir, isMissingPath } from '../utils/errors.ts'
 import type { DispatchFn } from '../runtime/types.ts'
 import { getCurrentSession, pathAllowed } from '../context/session_context.ts'
 
@@ -349,17 +349,18 @@ export class Ops {
     return (await this.through('stat', path, [], {}, sessionId)) as FileStat
   }
 
-  // The three probes below answer "is this path there?", so only a genuine
-  // missing path may read back as false. An auth failure, a timeout, or a
-  // backend bug is not an answer to that question: swallowing it would let a
-  // caller act on a false "missing" (overwrite, recreate, skip). Mirrors
-  // Python's `(FileNotFoundError, ValueError)` swallow set.
+  // The three probes below answer "is this path there?", so only a path that
+  // does not resolve may read back as false: absent, outside every mount, or
+  // under a plain file (ENOTDIR). An auth failure, a timeout, or a backend
+  // bug is not an answer to that question: swallowing it would let a caller
+  // act on a false "missing" (overwrite, recreate, skip). Mirrors Python's
+  // `(FileNotFoundError, NotADirectoryError, NoMountError)` swallow set.
   async exists(path: string, sessionId?: string): Promise<boolean> {
     try {
       await this.stat(path, sessionId)
       return true
     } catch (err) {
-      if (isMissingPath(err)) return false
+      if (isMissingPath(err) || isEnotdir(err)) return false
       throw err
     }
   }
@@ -369,7 +370,7 @@ export class Ops {
       const s = await this.stat(path, sessionId)
       return s.type === FileType.DIRECTORY
     } catch (err) {
-      if (isMissingPath(err)) return false
+      if (isMissingPath(err) || isEnotdir(err)) return false
       throw err
     }
   }
@@ -379,7 +380,7 @@ export class Ops {
       const s = await this.stat(path, sessionId)
       return s.type !== FileType.DIRECTORY
     } catch (err) {
-      if (isMissingPath(err)) return false
+      if (isMissingPath(err) || isEnotdir(err)) return false
       throw err
     }
   }

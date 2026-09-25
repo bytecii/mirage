@@ -18,7 +18,7 @@ import { UsageError } from '@struktoai/mirage-core/commands/errors'
 import { FlagView } from '@struktoai/mirage-core/commands/spec/index'
 import type { DispatchFn } from '@struktoai/mirage-core/runtime/types'
 import { FileType, PathSpec } from '@struktoai/mirage-core/types'
-import { isMissingPath } from '@struktoai/mirage-core/utils/errors'
+import { fsStrerror, isEnotdir, isMissingPath } from '@struktoai/mirage-core/utils/errors'
 import { fnmatch } from '@struktoai/mirage-core/utils/fnmatch'
 import { compareCodePoints } from '@struktoai/mirage-core/utils/sort'
 import { createRepo } from '../../../../core/hf_hub/admin.ts'
@@ -60,7 +60,9 @@ async function collect(
   try {
     directory = await isDir(dispatch, base)
   } catch (err) {
-    if (isMissingPath(err)) throw new UsageError(`${local}: No such file or directory`)
+    if (isMissingPath(err) || isEnotdir(err)) {
+      throw new UsageError(`${local}: ${fsStrerror(err) ?? 'No such file or directory'}`)
+    }
     throw err
   }
   if (!directory) {

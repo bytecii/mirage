@@ -17,6 +17,7 @@ import math
 from mirage.commands.builtin.utils.formatting import human_scaled, human_size
 from mirage.runtime.types import DispatchFn
 from mirage.types import CapacityResult, CapacityState, PathSpec
+from mirage.utils.errors import fs_strerror
 from mirage.utils.path import resolve_path
 from mirage.workspace.executor.builtins.df.constants import (BLOCK_SUFFIX,
                                                              SI_UNITS)
@@ -176,21 +177,26 @@ def _pct_cell(cap: CapacityResult, inodes: bool) -> str:
     return _use_pct(cap.used or 0, cap.available or 0)
 
 
-async def _path_exists(dispatch: DispatchFn, spec: PathSpec) -> bool:
-    """Whether a path resolves to an existing entry.
+async def _path_error(dispatch: DispatchFn, spec: PathSpec,
+                      label: str) -> OSError | None:
+    """The lookup failure a FILE operand meets, or None when it resolves.
 
     GNU df errors on a missing FILE operand, so a deeper path is statted
-    before its mount is accepted; a missing entry maps to False.
+    before its mount is accepted: ENOENT for an absent entry, ENOTDIR for
+    one under a plain file, stamped with the operand as typed.
 
     Args:
         dispatch (DispatchFn): op dispatcher.
         spec (PathSpec): the operand to stat.
+        label (str): the operand as typed, for the diagnostic.
     """
     try:
         await dispatch("stat", spec)
     except FileNotFoundError:
-        return False
-    return True
+        return FileNotFoundError(label)
+    except NotADirectoryError:
+        return NotADirectoryError(label)
+    return None
 
 
 async def _target_mounts(registry: MountRegistry, dispatch: DispatchFn,
@@ -199,8 +205,9 @@ async def _target_mounts(registry: MountRegistry, dispatch: DispatchFn,
     """Resolve df operands to the mounts to report, deduped and ordered.
 
     No operand (or the workspace root ``/``) reports every mount; a path
-    operand reports the mount that contains it, and a missing FILE raises
-    ``FileNotFoundError`` carrying the operand as typed. Mirrors GNU df,
+    operand reports the mount that contains it, and a FILE that does not
+    resolve raises its ``FileNotFoundError`` or ``NotADirectoryError``
+    carrying the operand as typed. Mirrors GNU df,
     which maps each FILE to its filesystem and lists all with no args.
 
     Args:
@@ -233,9 +240,10 @@ async def _target_mounts(registry: MountRegistry, dispatch: DispatchFn,
         # one. The mount root is the filesystem itself (always present); a
         # deeper path must exist, so stat it before accepting the mount.
         root = mount.prefix.rstrip("/") or "/"
-        if virtual.rstrip("/") != root and not await _path_exists(
-                dispatch, spec):
-            raise FileNotFoundError(label)
+        if virtual.rstrip("/") != root:
+            missing = await _path_error(dispatch, spec, label)
+            if missing is not None:
+                raise missing
         if mount.prefix not in seen:
             seen.add(mount.prefix)
             out.append(mount)
@@ -323,8 +331,8 @@ async def handle_df(
 
     try:
         mounts = await _target_mounts(registry, dispatch, session, operands)
-    except FileNotFoundError as exc:
-        return fail("df", f"df: {exc}: No such file or directory\n", 1)
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        return fail("df", f"df: {exc}: {fs_strerror(exc)}\n", 1)
 
     if inodes:
         num_headers = ["Inodes", "IUsed", "IFree"]

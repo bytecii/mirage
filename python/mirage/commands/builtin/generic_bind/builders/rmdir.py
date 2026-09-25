@@ -24,6 +24,7 @@ from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import FileType, PathSpec
+from mirage.utils.errors import fs_strerror
 
 
 async def rmdir(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
@@ -54,9 +55,9 @@ async def rmdir(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
             continue
         try:
             s = await ops.stat(accessor, p)
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError) as exc:
             errors.append(f"rmdir: failed to remove '{p.raw_path}': "
-                          "No such file or directory")
+                          f"{fs_strerror(exc)}")
             continue
         if s.type != FileType.DIRECTORY:
             errors.append(

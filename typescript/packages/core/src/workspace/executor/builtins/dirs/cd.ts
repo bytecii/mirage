@@ -18,6 +18,7 @@ import { PathSpec } from '../../../../types.ts'
 import { FileType } from '../../../../types.ts'
 import { CycleError } from '../../../../utils/path.ts'
 import { posixNormpath } from '../../../../utils/path.ts'
+import { fsStrerror } from '../../../../utils/errors.ts'
 import type { SessionState } from '../../../session/session.ts'
 import { changeDir, logicalCwd } from '../../../session/shell_dirs.ts'
 import { ExecutionNode } from '../../../types.ts'
@@ -112,7 +113,7 @@ export async function handleCd(
       if (code === 'ENOENT' || /not found|no such file/i.test(msg)) {
         notFound = true
       } else {
-        error = `cd: ${raw}: ${msg}\n`
+        error = `cd: ${raw}: ${fsStrerror(exc) ?? msg}\n`
         continue
       }
     }

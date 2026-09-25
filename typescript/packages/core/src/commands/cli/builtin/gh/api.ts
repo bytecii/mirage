@@ -21,6 +21,7 @@ import type { GitHubResponse } from '../../../../core/github/client.ts'
 import { jqEval } from '../../../../core/jq/index.ts'
 import { materialize } from '../../../../io/types.ts'
 import { PathSpec } from '../../../../types.ts'
+import { fsStrerror, isEnoent, isEnotdir } from '../../../../utils/errors.ts'
 import { resolvePath } from '../../../../utils/path.ts'
 import { ghTransport, jsonOut, textOut } from './accessor.ts'
 
@@ -138,9 +139,8 @@ async function readFile(inv: CLIInvocation, path: string): Promise<Uint8Array> {
     const [data] = await dispatch('read', PathSpec.fromStrPath(virtual))
     return data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer)
   } catch (err) {
-    if (err instanceof Error && err.name === 'FileNotFoundError') {
-      throw new Error(`read ${path}: No such file or directory`)
-    }
+    const strerror = isEnoent(err) || isEnotdir(err) ? fsStrerror(err) : null
+    if (strerror !== null) throw new Error(`read ${path}: ${strerror}`)
     throw err
   }
 }

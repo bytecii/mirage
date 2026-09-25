@@ -27,6 +27,7 @@ import {
   einval,
   enoent,
   enotempty,
+  isEnotdir,
   isMissError,
   isMissingOp,
   noMount,
@@ -481,7 +482,8 @@ export class Dispatcher {
         await this.rmdirRemnants(vfs, scope, mountPrefix, mode, err, issuer)
         result = null
       } else {
-        const fallback = isMissingPath(err) ? this.namespaceResult(opName, p.virtual) : null
+        const fallback =
+          isMissingPath(err) || isEnotdir(err) ? this.namespaceResult(opName, p.virtual) : null
         if (fallback === null) {
           await this.reconciler.onOpMissing(mount, opName, p.virtual, err)
           throw err
@@ -682,7 +684,7 @@ export class Dispatcher {
       )
     } catch (err) {
       // An absent source moves nothing; the rename itself reports it.
-      if (isMissingPath(err)) return false
+      if (isMissingPath(err) || isEnotdir(err)) return false
       // Unanswerable classification fails toward refusal.
       return true
     }
@@ -983,6 +985,10 @@ export class Dispatcher {
         })
       return await (mount === null ? call() : mount.use(call))
     } catch (err) {
+      // Final on every channel: a plain file above the path means nothing
+      // can be at it or under it, and symlink(2) and readlink(2) answer
+      // with this errno.
+      if (isEnotdir(err)) throw err
       // The "nothing here" set exactly, plus a backend with no such op:
       // a miss on one channel is not absence on its own, so the caller
       // tries the other.
@@ -1066,6 +1072,7 @@ export class Dispatcher {
   private async xattrTarget(mount: MountEntry | null, path: PathSpec): Promise<void> {
     if (this.namespace.isLink(path.virtual)) return
     let stat: FileStat | null = null
+    let missing: unknown = null
     if (mount !== null) {
       const [vfs, scope] = await this.namespace.resolve(path.virtual, false)
       await mount.ensureReady()
@@ -1079,11 +1086,13 @@ export class Dispatcher {
         )
         stat = found instanceof FileStat ? found : null
       } catch (err) {
-        if (!isMissingPath(err)) throw err
+        if (!isMissingPath(err) && !isEnotdir(err)) throw err
+        missing = err
         await this.reconciler.onOpMissing(mount, 'stat', path.virtual, err)
       }
     }
     if (stat !== null || this.namespaceResult('stat', path.virtual) instanceof FileStat) return
+    if (isEnotdir(missing)) throw missing
     throw mount === null ? noMount(path.virtual) : enoent(path.virtual)
   }
 

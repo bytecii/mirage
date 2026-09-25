@@ -79,7 +79,8 @@ async function walk(
       ;[stat] = await dispatch('stat', path)
     }
   } catch (err) {
-    if (classify(err) === 'ENOENT') return entries
+    const code = classify(err)
+    if (code === 'ENOENT' || code === 'ENOTDIR') return entries
     throw err
   }
   if (!(stat instanceof FileStat) || stat.type !== FileType.DIRECTORY) return entries

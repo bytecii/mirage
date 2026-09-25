@@ -14,7 +14,7 @@
 
 import type { FileStat } from '../../../../types.ts'
 import { PathSpec } from '../../../../types.ts'
-import { isEnoent } from '../../../../utils/errors.ts'
+import { fsStrerror, isEnoent, isEnotdir } from '../../../../utils/errors.ts'
 import { CycleError } from '../../../../utils/path.ts'
 import type { DispatchFn } from '../../../../runtime/types.ts'
 import type { Namespace } from '../../../mount/namespace/namespace.ts'
@@ -68,8 +68,9 @@ export async function handleChown(
       const [result] = await dispatch('stat', resolved)
       stat = result as FileStat
     } catch (err) {
-      if (isEnoent(err)) {
-        errors.push(`chown: cannot access '${target.rawPath}': No such file or directory\n`)
+      const strerror = isEnoent(err) || isEnotdir(err) ? fsStrerror(err) : null
+      if (strerror !== null) {
+        errors.push(`chown: cannot access '${target.rawPath}': ${strerror}\n`)
         continue
       }
       throw err

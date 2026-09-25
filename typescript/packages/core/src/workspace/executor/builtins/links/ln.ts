@@ -34,6 +34,7 @@ import {
   isEexist,
   isEisdir,
   isEnoent,
+  isEnotdir,
   isErofs,
 } from '../../../../utils/errors.ts'
 import { CycleError, gnuBasename, gnuDirname } from '../../../../utils/path.ts'
@@ -45,7 +46,7 @@ import type { Namespace } from '../../../mount/namespace/namespace.ts'
 import type { SessionState } from '../../../session/session.ts'
 import { absPath, fail, readOnlyError, result } from '../shared.ts'
 import { posixRelative } from './links.ts'
-import { linkTargetStat, pathReaddir, resolvePathStat } from './probe.ts'
+import { linkTargetStat, missStrerror, pathReaddir, resolvePathStat } from './probe.ts'
 import type { Result } from '../types.ts'
 
 const TARGET_DIR_LONG = '--target-directory'
@@ -280,7 +281,9 @@ export async function planLinks(
       absPath(targetDir, cwd),
       flags.noDereference,
     )
-    if (stat === null) return [[], `ln: failed to access '${typed}': No such file or directory\n`]
+    if (stat === null) {
+      return [[], `ln: failed to access '${typed}': ${await missStrerror(dispatch, resolved)}\n`]
+    }
     if (stat.type !== FileType.DIRECTORY) return [[], `ln: target '${typed}' is not a directory\n`]
     return [operands.map((op) => into(op, resolved, typed)), null]
   }
@@ -307,7 +310,9 @@ export async function planLinks(
     return [[{ source: first, linkAbs: lastAbs, linkTyped: wordText(last) }], null]
   }
   if (!isDir) {
-    if (stat === null) return [[], `ln: target '${wordText(last)}': No such file or directory\n`]
+    if (stat === null) {
+      return [[], `ln: target '${wordText(last)}': ${await missStrerror(dispatch, resolved)}\n`]
+    }
     return [[], `ln: target '${wordText(last)}': Not a directory\n`]
   }
   return [operands.slice(0, -1).map((op) => into(op, resolved, wordText(last))), null]
@@ -334,7 +339,9 @@ async function sourceBytes(
     }
   }
   const stat = await pathStat(dispatch, resolved)
-  if (stat === null) return [null, `ln: failed to access '${typed}': No such file or directory\n`]
+  if (stat === null) {
+    return [null, `ln: failed to access '${typed}': ${await missStrerror(dispatch, resolved)}\n`]
+  }
   if (stat.type === FileType.DIRECTORY) {
     if (flags.directory) {
       return [
@@ -446,7 +453,8 @@ export async function makeLink(
     }
     if (!linked && behind === null) {
       const arrow = flags.symbolic ? '' : ` => '${targetTyped}'`
-      errors.push(`ln: failed to create ${kind} '${typed}'${arrow}: No such file or directory\n`)
+      const why = await missStrerror(dispatch, plan.linkAbs)
+      errors.push(`ln: failed to create ${kind} '${typed}'${arrow}: ${why}\n`)
       return
     }
     if (linked && behind?.type !== FileType.DIRECTORY) {
@@ -515,7 +523,7 @@ export async function makeLink(
         errors.push(`ln: ${typed}: cannot overwrite directory\n`)
         return
       }
-      if (!isEnoent(err)) throw err
+      if (!isEnoent(err) && !isEnotdir(err)) throw err
     }
     occupied = false
   }
@@ -534,6 +542,13 @@ export async function makeLink(
       // The door owns the existence rule (it is the only layer that can
       // see both the node table and the backend); ln owns the wording.
       errors.push(`ln: failed to create ${kind} '${typed}': File exists\n`)
+      return
+    }
+    if (isEnoent(err) || isEnotdir(err)) {
+      // A parent the name cannot sit under. GNU names a hard link's target
+      // alongside for these errnos, a symlink's never.
+      const arrow = flags.symbolic ? '' : ` => '${targetTyped}'`
+      errors.push(`ln: failed to create ${kind} '${typed}'${arrow}: ${String(fsStrerror(err))}\n`)
       return
     }
     if (isErofs(err)) {

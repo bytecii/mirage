@@ -28,6 +28,7 @@ from mirage.core.jq import jq_eval
 from mirage.io.stream import materialize, yield_bytes
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import JsonValue, PathSpec
+from mirage.utils.errors import fs_strerror
 
 
 def gh_repo(config: GhConfig, spec: str | None) -> RepoRef:
@@ -129,8 +130,8 @@ async def read_cli_file(inv: CLIInvocation[GhConfig], raw: FlagValue,
         raise ValueError(f"{option} needs a workspace to read files from")
     try:
         data, _ = await inv.doors.dispatch("read", spec)
-    except FileNotFoundError:
-        raise ValueError(f"read {path}: No such file or directory") from None
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        raise ValueError(f"read {path}: {fs_strerror(exc)}") from None
     return data if isinstance(data, bytes) else bytes(data)
 
 

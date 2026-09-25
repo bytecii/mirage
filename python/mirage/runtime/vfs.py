@@ -261,7 +261,7 @@ class RuntimeVFS:
                 continue
             try:
                 st = self.stat(raw)
-            except FileNotFoundError as exc:
+            except (FileNotFoundError, NotADirectoryError) as exc:
                 logger.debug("runtime vfs: readdir %s: stat %s: %s", path, raw,
                              exc)
                 entries.append(unclassified)

@@ -33,7 +33,7 @@ import {
 } from '../../../core/awk/index.ts'
 import { UsageError } from '../../errors.ts'
 import { FS_ESCAPES, USAGE, type AwkFlags } from './awk_types.ts'
-import { isMissingPath, isWalkError, fsStrerror } from '../../../utils/errors.ts'
+import { fsStrerror, isEnotdir, isMissingPath, isWalkError } from '../../../utils/errors.ts'
 import { resolvePath } from '../../../utils/path.ts'
 import { resolveSource } from '../utils/stream.ts'
 
@@ -260,8 +260,8 @@ export async function awkGeneric(
       } catch (err) {
         // GNU awk exits 2 when a -f program file cannot be opened;
         // anything that is not absence keeps propagating.
-        if (!isMissingPath(err)) throw err
-        const msg = `awk: ${programFile}: No such file or directory`
+        if (!isMissingPath(err) && !isEnotdir(err)) throw err
+        const msg = `awk: ${programFile}: ${fsStrerror(err) ?? 'No such file or directory'}`
         return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(`${msg}\n`) })]
       }
     }
