@@ -108,7 +108,11 @@ async def grep(accessor: GitHubAccessor, paths: list[PathSpec],
             fixed_string=fl.as_bool("F"),
             recursive=recursive,
             whole_word=fl.as_bool("w"),
+            # A narrowing holds only files matching the searched literal:
+            # -v, -c and -L also print from the rest, and -f adds patterns
+            # code search never saw.
             exact_file_set=fl.as_bool("v") or fl.as_bool("c")
+            or fl.as_bool("files_without_match") or bool(fl.raw("file"))
             or fl.as_bool("text") or fl.as_str("binary_files") == "text",
         )
         if used_search and not resolved:

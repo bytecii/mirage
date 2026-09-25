@@ -48,6 +48,11 @@ async def rg(accessor: GitHubAccessor, paths: list[PathSpec], texts: list[str],
             fixed_string=fl.as_bool("F"),
             recursive=True,
             whole_word=fl.as_bool("w"),
+            # A narrowing holds only files matching the searched literal:
+            # -v and --files-without-match print from the rest, and -f adds
+            # patterns code search never saw.
+            exact_file_set=fl.as_bool("v") or fl.as_bool("files_without_match")
+            or bool(fl.raw("f")),
         )
         if used_search and not paths:
             return b"", IOResult(exit_code=1)

@@ -440,3 +440,48 @@ async def test_a_narrowing_left_empty_matches_nothing_and_never_reads_stdin(
     assert (await materialize(stdout)).decode() == ""
     assert io.exit_code == 1
     assert counting_read == []
+
+
+_GUIDE = PathSpec(vfs_path="docs/guide.md",
+                  virtual="/docs/guide.md",
+                  directory="/docs",
+                  resolved=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command, flags", [
+    (grep, {
+        "r": True,
+        "w": True,
+        "files_without_match": True
+    }),
+    (grep, {
+        "r": True,
+        "w": True,
+        "file": [_GUIDE]
+    }),
+    (rg, {
+        "w": True,
+        "v": True
+    }),
+    (rg, {
+        "w": True,
+        "files_without_match": True
+    }),
+    (rg, {
+        "w": True,
+        "f": [_GUIDE]
+    }),
+])
+async def test_an_answer_that_depends_on_every_file_is_never_narrowed(
+        mock_github_api, github_env, monkeypatch, command, flags):
+    # A narrowing holds only files that match the searched literal: -L and
+    # -v print from the files that do not, and -f adds patterns code search
+    # never saw.
+    accessor, index = github_env
+    monkeypatch.setitem(_NGLOBALS, "SCOPE_WARN", 1)
+    calls = _answer(monkeypatch, [_hit("src/main.py", "bbb222")])
+    stdout, _ = await command(accessor, [_root()], ["import"],
+                              CommandOpts(index=index, flags=flags))
+    await materialize(stdout)
+    assert calls == []
