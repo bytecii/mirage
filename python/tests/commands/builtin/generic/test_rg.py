@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from mirage.commands.builtin import grep_offsets
-from mirage.commands.builtin.generic.rg import parse_flags, rg
+from mirage.commands.builtin.generic.rg import labelled, parse_flags, rg
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec.flag_view import FlagView
 from mirage.types import ContentType, FileStat, FileType, PathSpec
@@ -1131,3 +1131,12 @@ async def test_rg_m_prints_a_selected_trailing_line_as_selected(paths, stdin):
         "A": "1"
     }, stdin, {"/a.txt": A_TXT})
     assert (out, io.exit_code) == (b"1:hello\n2:world\n", 0)
+
+
+def test_labelled_asks_for_the_filename_a_walk_would_have_printed():
+    assert labelled(CommandOpts(flags={})).flags == {"H": True}
+
+
+def test_labelled_lets_dash_upper_i_win():
+    opts = CommandOpts(flags={"args_I": True})
+    assert labelled(opts) is opts

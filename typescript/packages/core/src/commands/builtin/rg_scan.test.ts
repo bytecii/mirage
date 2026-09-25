@@ -784,6 +784,17 @@ describe('walkCandidates', () => {
       resolved: true,
     })
 
+  it('prunes below the longest matching scope', () => {
+    const kept = walkCandidates(
+      [candidate('/data/.cfg/a.txt'), candidate('/data/.cfg/.secret')],
+      [scope(), scope('/data/.cfg')],
+      null,
+      null,
+      false,
+    )
+    expect(kept.map((p) => p.virtual)).toEqual(['/data/.cfg/a.txt'])
+  })
+
   it('drops dotfiles below the scope', () => {
     const kept = walkCandidates(
       [candidate('/data/.env'), candidate('/data/.git/config'), candidate('/data/a.txt')],

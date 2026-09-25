@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from mirage.accessor.github import GitHubAccessor
-from mirage.commands.builtin.generic.rg import RG_NO_PATTERN
+from mirage.commands.builtin.generic.rg import RG_NO_PATTERN, labelled
 from mirage.commands.builtin.generic.rg import rg as generic_rg
 from mirage.commands.builtin.generic_bind.adapter import bound_op
 from mirage.commands.builtin.github.pushdown import narrow_scope, scope_refusal
@@ -40,9 +40,9 @@ async def rg(accessor: GitHubAccessor, paths: list[PathSpec], texts: list[str],
     if pattern_str is None:
         raise UsageError(RG_NO_PATTERN)
 
+    run_opts = opts
     if paths:
-        scopes = list(paths)
-        paths, file_count, used_search = await narrow_scope(
+        narrowed, file_count, used_search = await narrow_scope(
             accessor,
             opts.index,
             paths,
@@ -56,25 +56,25 @@ async def rg(accessor: GitHubAccessor, paths: list[PathSpec], texts: list[str],
             exact_file_set=fl.as_bool("v") or fl.as_bool("files_without_match")
             or bool(fl.raw("f")),
         )
-        if used_search and not paths:
-            return b"", IOResult(exit_code=1)
+        if used_search:
+            # The walk a narrowing stands in for prunes hidden entries and
+            # labels every file it finds.
+            narrowed = walk_candidates(narrowed, paths, fl.as_str("type"),
+                                       fl.as_str("glob"), fl.as_bool("hidden"))
+            if not narrowed:
+                return b"", IOResult(exit_code=1)
+            run_opts = labelled(opts)
         if file_count > SCOPE_ERROR:
             # A scope this large with no trusted narrowing is refused rather
             # than scanned blob by blob.
             msg = scope_refusal("rg", file_count, fl.as_bool("w"))
             return b"", IOResult(exit_code=1, stderr=msg.encode())
-        if used_search:
-            # The candidates stand in for the walk, so they pass its
-            # filters; none left means nothing matched, not a stdin run.
-            paths = walk_candidates(paths, scopes, fl.as_str("type"),
-                                    fl.as_str("glob"), fl.as_bool("hidden"))
-            if not paths:
-                return b"", IOResult(exit_code=1)
+        paths = narrowed
 
     return await generic_rg(
         paths,
         texts,
-        opts,
+        run_opts,
         readdir=bound_op(_readdir, accessor, opts.index),
         stat=bound_op(_stat, accessor, opts.index),
         read_bytes=bound_op(github_read, accessor, opts.index),
