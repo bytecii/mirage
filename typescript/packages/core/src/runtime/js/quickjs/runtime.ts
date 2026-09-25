@@ -27,7 +27,7 @@ import type {
 } from '../../types.ts'
 import { RuntimeVFS } from '../../vfs.ts'
 import { installMirageFs } from './vfs.ts'
-import { cwdPreamble } from './bootstrap.ts'
+import { cwdPreamble } from './execution.ts'
 import BOOTSTRAP from '../../../generated/quickjs.ts'
 import { QuickJsUnavailableError } from './errors.ts'
 import type {

@@ -14,7 +14,7 @@
 
 import type { PathSpec } from '../../../types.ts'
 
-/** Initialize the guest cwd before evaluating user source. */
+/** Prepare the guest cwd before evaluating user source. */
 export function cwdPreamble(cwd?: PathSpec): string {
   if (cwd === undefined || cwd.virtual === '/') return ''
   const path = JSON.stringify(cwd.virtual)

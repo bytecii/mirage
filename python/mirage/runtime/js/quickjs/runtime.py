@@ -23,7 +23,7 @@ from typing import Any, Callable, ClassVar
 from mirage.runtime.config import HomeConfig, RuntimeConfig
 from mirage.runtime.errors import EvalError
 from mirage.runtime.js.base import JsRuntime
-from mirage.runtime.js.quickjs.bootstrap import cwd_preamble
+from mirage.runtime.js.quickjs.execution import cwd_preamble
 from mirage.runtime.mixin import EvaluatorMixin
 from mirage.runtime.types import (EvalResult, EvalValue, FilesystemOperation,
                                   RunArgs, RunResult, RuntimeContext,

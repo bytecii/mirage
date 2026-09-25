@@ -18,7 +18,7 @@ from mirage.types import PathSpec
 
 
 def cwd_preamble(cwd: PathSpec) -> str:
-    """Initialize the guest cwd before evaluating user source.
+    """Prepare the guest cwd before evaluating user source.
 
     Args:
         cwd (PathSpec): the requested virtual working directory.

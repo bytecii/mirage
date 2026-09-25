@@ -147,13 +147,18 @@ so a dependency update can revisit them.
 - Command-line arguments are the `argv` global; `sys.argv` does not exist.
 - No `sys.stdin` and no third-party imports.
 - `os.environ` reflects the session env only.
+- `os.urandom()` returns cryptographic random bytes, capped at 1 MiB per
+  call on both hosts. Larger requests raise `MemoryError`.
+- `Path.iterdir()` yields native `Path` objects on both hosts, including
+  relative paths whose entries can be read directly.
 - `os` has no extended-attribute calls (`os.getxattr` and its siblings);
   run `getfattr` or `setfattr` in the shell instead.
 - `os.stat()` and `Path.stat()` answer with every attribute CPython's
   `stat_result` carries, but not its sequence half: `st[6]`, `len(st)`
   and iterating it raise `TypeError` here and work on the Python host,
-  because the JS wire has no namedtuple shape to send one in. Read the
-  fields by name (`st.st_size`, `st.st_mode`).
+  because the JS input encoder cannot construct a native namedtuple.
+  This also prevents guest `os.chdir()` from validating a destination.
+  Read the fields by name (`st.st_size`, `st.st_mode`).
 
 ## Selecting in YAML
 
