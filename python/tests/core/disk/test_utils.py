@@ -60,3 +60,17 @@ def test_refuses_a_dangling_link(tree):
 def test_still_refuses_a_dotdot_escape(tree):
     with pytest.raises(ValueError, match="escapes root"):
         resolve_inside(tree, "/../escaped", "/../escaped")
+
+
+def test_a_permission_error_names_the_operand_not_the_host(tree):
+    locked = tree / "locked"
+    locked.mkdir()
+    (locked / "f.txt").write_text("x")
+    locked.chmod(0)
+    try:
+        with pytest.raises(PermissionError) as caught:
+            resolve_inside(tree, "/locked/f.txt", "/data/locked/f.txt")
+    finally:
+        locked.chmod(0o755)
+    assert caught.value.filename == "/data/locked/f.txt"
+    assert str(tree) not in str(caught.value)

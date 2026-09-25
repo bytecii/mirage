@@ -51,6 +51,12 @@ async function realOrNull(p: string): Promise<string | null> {
  * absent one are left to the op, which answers its own ENOENT or creates.
  * Mirrors Python's resolve_inside.
  *
+ * It answers for the tree as it stands when called. The mount's own writers
+ * cannot make a host link (`ln -s` lands in the namespace), but another host
+ * process that swaps a directory for a link between this check and the op
+ * is beyond it: closing that race needs every op to walk by file descriptor
+ * with O_NOFOLLOW (openat2's RESOLVE_BENEATH), which node:fs cannot express.
+ *
  * @param root - the mount root on the host.
  * @param spec - the operand, the path any refusal names.
  * @param virtual - the mount-relative path, when not `spec.mountPath`.

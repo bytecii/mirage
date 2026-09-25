@@ -116,3 +116,21 @@ async def test_find_skips_host_symlinks_and_finds_nothing_through_one(
         accessor,
         PathSpec(vfs_path="sub64", virtual="/sub64",
                  directory="/sub64")) == []
+
+
+@pytest.mark.asyncio
+async def test_find_empty_ignores_host_symlinks(tmp_path):
+    (tmp_path / "a.txt").write_text("a")
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "python").symlink_to("/nowhere/python3")
+    accessor = DiskAccessor(tmp_path)
+    result = await find(accessor,
+                        PathSpec(vfs_path="bin",
+                                 virtual="/bin",
+                                 directory="/bin"),
+                        empty=True)
+    assert result == ["/bin"]
+    result = await find(accessor,
+                        PathSpec(vfs_path="", virtual="/", directory="/"),
+                        empty=True)
+    assert result == ["/bin"]

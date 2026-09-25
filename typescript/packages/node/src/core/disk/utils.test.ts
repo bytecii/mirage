@@ -12,7 +12,7 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { mkdir, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { spec, tmpRoot } from '../../test-utils.ts'
@@ -117,6 +117,21 @@ describe('resolveInside', () => {
   })
   it('refuses a dangling link', async () => {
     await expect(resolveInside(root, spec('/dangling'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+  it('names the operand, not the host, when a component is unreadable', async () => {
+    await mkdir(join(root, 'locked'))
+    await writeFile(join(root, 'locked', 'f.txt'), 'x')
+    await chmod(join(root, 'locked'), 0)
+    try {
+      const err = await resolveInside(root, spec('/locked/f.txt')).then(
+        () => null,
+        (e: unknown) => e as Error & { code?: string },
+      )
+      expect(err?.code).toBe('EACCES')
+      expect(err?.message).toBe('/locked/f.txt')
+    } finally {
+      await chmod(join(root, 'locked'), 0o755)
+    }
   })
   it('still refuses a .. escape', async () => {
     await expect(resolveInside(root, spec('/../escaped'))).rejects.toThrow(/escapes root/)

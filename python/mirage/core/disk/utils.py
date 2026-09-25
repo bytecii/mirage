@@ -16,6 +16,7 @@ import os
 import stat
 from pathlib import Path
 
+from mirage.core.disk.errors import disk_error
 from mirage.types import PathSpec
 from mirage.utils.errors import enoent
 
@@ -30,6 +31,14 @@ def resolve_inside(root: Path, path: str, spec: PathSpec | str) -> Path:
     leaves it out so every walk agrees. Components past the first absent
     one are left to the op, which answers its own ENOENT or creates.
     Mirrors TypeScript's ``resolveInside``.
+
+    It answers for the tree as it stands when called. The mount's own
+    writers cannot make a host link (``ln -s`` lands in the namespace),
+    but another host process that swaps a directory for a link between
+    this check and the op is beyond it: closing that race needs every op
+    to walk by file descriptor with ``O_NOFOLLOW`` (openat2's
+    ``RESOLVE_BENEATH``), which ``node:fs`` cannot express, so neither
+    twin does.
 
     Args:
         root (Path): the mount root on the host.
@@ -46,6 +55,9 @@ def resolve_inside(root: Path, path: str, spec: PathSpec | str) -> Path:
             info = at.lstat()
         except (FileNotFoundError, NotADirectoryError):
             return full
+        except OSError as exc:
+            virtual = spec if isinstance(spec, str) else spec.virtual
+            raise disk_error(exc, virtual) from exc
         if stat.S_ISLNK(info.st_mode):
             raise enoent(spec)
     return full

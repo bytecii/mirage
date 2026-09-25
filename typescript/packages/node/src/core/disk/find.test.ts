@@ -64,6 +64,13 @@ describe('core/disk/find', () => {
     expect(await find(accessor, spec('/missing'))).toEqual([])
   })
 
+  it('counts a directory holding only host symlinks as empty', async () => {
+    await mkdir(join(root, 'bin'))
+    await symlink('/nowhere/python3', join(root, 'bin', 'python'))
+    expect(await find(accessor, spec('/bin'), { empty: true })).toEqual(['/bin'])
+    expect(await find(accessor, spec('/'), { empty: true, type: 'd' })).toEqual(['/bin'])
+  })
+
   it('skips host symlinks and finds nothing through one', async () => {
     await symlink('sub', join(root, 'sub64'))
     await symlink('a.json', join(root, 'alias.json'))

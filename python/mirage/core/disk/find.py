@@ -27,6 +27,17 @@ from mirage.types import PathSpec
 from mirage.utils.stat_view import DIR_SIZE
 
 
+def _empty_dir(p: Path) -> bool:
+    """Whether a host directory is empty as the mount sees it.
+
+    A host symlink is not an entry of the mount (see ``resolve_inside``).
+
+    Args:
+        p (Path): the host directory.
+    """
+    return all(child.is_symlink() for child in p.iterdir())
+
+
 def _find_sync(
     root: Path,
     path: str,
@@ -64,7 +75,7 @@ def _find_sync(
                                                     empty=empty)
 
     if p.is_dir():
-        root_empty = (not any(p.iterdir())) if empty else None
+        root_empty = _empty_dir(p) if empty else None
         emit_start_path(results,
                         base,
                         start_name,
@@ -116,8 +127,8 @@ def _find_sync(
             is_empty: bool | None = None
             if empty:
                 try:
-                    is_empty = (full.stat().st_size == 0) if kind == "f" else (
-                        not any(full.iterdir()))
+                    is_empty = (full.stat().st_size
+                                == 0) if kind == "f" else (_empty_dir(full))
                 except OSError:
                     is_empty = None
             entry = FindEntry(key=entry_path,

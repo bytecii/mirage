@@ -53,6 +53,12 @@ interface WalkCtx {
   results: string[]
 }
 
+// Empty as the mount sees it: a host symlink is not an entry (resolveInside).
+async function emptyDir(dir: string): Promise<boolean> {
+  const entries = await readdir(dir, { withFileTypes: true })
+  return entries.every((e) => e.isSymbolicLink())
+}
+
 async function walk(ctx: WalkCtx, full: string, current: string, depth: number): Promise<void> {
   const opts = ctx.options
   if (opts.maxDepth !== null && opts.maxDepth !== undefined && depth > opts.maxDepth) return
@@ -80,7 +86,7 @@ async function walk(ctx: WalkCtx, full: string, current: string, depth: number):
         isEmpty =
           kind === 'f'
             ? (await stat(path.join(full, e.name))).size === 0
-            : (await readdir(path.join(full, e.name))).length === 0
+            : await emptyDir(path.join(full, e.name))
       } catch {
         isEmpty = null
       }
@@ -172,7 +178,7 @@ export async function find(
     let rootEmpty: boolean | null = null
     if (isDir && options.empty === true) {
       try {
-        rootEmpty = (await readdir(full)).length === 0
+        rootEmpty = await emptyDir(full)
       } catch {
         rootEmpty = null
       }
