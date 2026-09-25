@@ -33,6 +33,7 @@ import {
 } from './pages.ts'
 import { formatSegment } from './pathing.ts'
 import { detectScope } from './scope.ts'
+import { guardRow } from './resolve.ts'
 
 function pickString(record: Record<string, unknown>, key: string): string {
   const value = record[key]
@@ -104,7 +105,7 @@ async function listPage(
   accessor: NotionAccessor,
   match: ScopeMatch,
 ): Promise<[string, IndexEntry][]> {
-  const pageId = match.slots.page_id ?? ''
+  const pageId = match.slots.page_id ?? match.slots.row_id ?? ''
   const refs = await getChildPages(accessor.transport, pageId)
   // page.json renders from getPage plus the *recursive* block tree while
   // this listing only holds one level of children, so sizing it here would
@@ -217,4 +218,5 @@ export const readdir = makeReaddir<NotionAccessor>(detectScope, {
     data_source: listDataSource,
   },
   staticRoot: ['pages', 'databases'],
+  guards: { row: guardRow, page: guardRow },
 })

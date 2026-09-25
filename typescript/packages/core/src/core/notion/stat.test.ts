@@ -389,13 +389,9 @@ describe('notion stat rows', () => {
     expect(result.extra.data_source_id).toBe(DS_ID)
   })
 
-  it('returns a json stat for a row page.json through the row listing', async () => {
+  it('returns a json stat for a row page.json without fetching blocks', async () => {
     const transport = new FakeTransport()
-    transport.enqueue('API-retrieve-block-children', {
-      results: [],
-      has_more: false,
-      next_cursor: null,
-    })
+    transport.enqueue('API-retrieve-a-page', rowBody())
     const result = await stat(
       makeAccessor(transport),
       spec(`${DS_DIR}/Row_A__${PAGE_ID}/page.json`),
@@ -403,6 +399,6 @@ describe('notion stat rows', () => {
     )
     expect(result.type).toBe(FileType.FILE)
     expect(result.content).toBe(ContentType.JSON)
-    expect(transport.invocations.map((call) => call.name)).toEqual(['API-retrieve-block-children'])
+    expect(transport.invocations.map((call) => call.name)).toEqual(['API-retrieve-a-page'])
   })
 })

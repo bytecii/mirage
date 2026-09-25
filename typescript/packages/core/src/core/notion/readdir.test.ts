@@ -251,6 +251,10 @@ describe('notion readdir databases', () => {
 
   it('lists a row by its path, as any page', async () => {
     const transport = new FakeTransport()
+    transport.enqueue('API-retrieve-a-page', {
+      ...topPage(TOP1_ID, 'Row A'),
+      parent: { data_source_id: DS_ID },
+    })
     transport.enqueue('API-retrieve-block-children', {
       results: [
         {
@@ -266,7 +270,7 @@ describe('notion readdir databases', () => {
     const dirPath = `/databases/Tasks__${DB_ID}/Tasks__${DS_ID}/Row_A__${TOP1_ID}`
     const out = await readdir(makeAccessor(transport), spec(dirPath), undefined)
     expect(out).toEqual([`${dirPath}/page.json`, `${dirPath}/Notes__${CHILD1_ID}`])
-    expect(transport.invocations[0]?.args).toEqual({ block_id: TOP1_ID, page_size: 100 })
+    expect(transport.invocations[1]?.args).toEqual({ block_id: TOP1_ID, page_size: 100 })
   })
 
   it('sizes database.json from the retrieved database', async () => {

@@ -23,7 +23,7 @@ from mirage.types import ContentType
 # path alone and proves itself (`row` and `row_json`), while the pages
 # under a row are listed by the row as any child page is.
 _PAGE = Slot("page", id_key="page_id", variadic=True)
-_ROW = Slot("row", id_key="page_id")
+_ROW = Slot("row", id_key="row_id")
 _DB = ("databases", Slot("database", id_key="database_id"))
 _DS = _DB + (Slot("data_source", id_key="data_source_id"), )
 

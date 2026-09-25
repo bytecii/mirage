@@ -16,13 +16,11 @@ from mirage.accessor.notion import NotionAccessor
 from mirage.cache.index import IndexCacheStore, IndexEntry
 from mirage.core.hierarchy.scope import ScopeMatch
 from mirage.core.hierarchy.stat import make_stat
-from mirage.core.notion.client import NotionAPIError
-from mirage.core.notion.pages import get_page
 from mirage.core.notion.pathing import page_dirname
 from mirage.core.notion.readdir import readdir
+from mirage.core.notion.resolve import guard_row, resolve_row
 from mirage.core.notion.scope import detect_scope
 from mirage.types import ContentType, FileStat, FileType, PathSpec
-from mirage.utils.errors import enoent
 
 
 def _page_stat(match: ScopeMatch, path: PathSpec,
@@ -37,29 +35,22 @@ def _page_stat(match: ScopeMatch, path: PathSpec,
 
 async def _row_stat(accessor: NotionAccessor, match: ScopeMatch,
                     path: PathSpec, index: IndexCacheStore) -> FileStat:
-    # No listing names a row, so the row answers for itself: it exists
-    # when the page does, sits in this data source, is not in the trash,
-    # and the path spells it as rows.jsonl does.
-    name = path.vfs_path.strip("/").split("/")[-1]
-    try:
-        page = await get_page(accessor.config,
-                              match.slots["page_id"],
-                              session=accessor.pool)
-    except NotionAPIError as exc:
-        if exc.status == 404 or exc.code == "validation_error":
-            raise enoent(path.virtual)
-        raise
-    parent = page.get("parent", {})
-    if (parent.get("data_source_id") != match.slots["data_source_id"]
-            or page.get("in_trash") or page.get("archived")
-            or page_dirname(page) != name):
-        raise enoent(path.virtual)
+    page = await resolve_row(accessor, match, path.virtual)
+    name = page_dirname(page)
     return FileStat(
         name=name,
         type=FileType.DIRECTORY,
         modified=page.get("last_edited_time") or None,
         extra={"page_id": page.get("id", "")},
     )
+
+
+async def _row_json_stat(accessor: NotionAccessor, match: ScopeMatch,
+                         path: PathSpec, index: IndexCacheStore) -> FileStat:
+    await resolve_row(accessor, match, path.virtual)
+    return FileStat(name="page.json",
+                    type=FileType.FILE,
+                    content=ContentType.JSON)
 
 
 def _page_json_stat(match: ScopeMatch, path: PathSpec,
@@ -126,11 +117,15 @@ def _rows_jsonl_stat(match: ScopeMatch, path: PathSpec,
 stat = make_stat(
     detect_scope,
     readdir,
-    overrides={"row": _row_stat},
+    overrides={
+        "row": _row_stat,
+        "row_json": _row_json_stat
+    },
+    guards={kind: guard_row
+            for kind in ("page", "page_json")},
     entry_stats={
         "page": _page_stat,
         "page_json": _page_json_stat,
-        "row_json": _page_json_stat,
         "database": _database_stat,
         "database_json": _database_json_stat,
         "data_source": _data_source_stat,

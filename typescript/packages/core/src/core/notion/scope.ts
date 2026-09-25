@@ -24,7 +24,7 @@ import { Scope, Slot, makeDetectScope } from '../hierarchy/scope.ts'
 // alone and proves itself (`row` and `row_json`), while the pages under a
 // row are listed by the row as any child page is.
 const PAGE = new Slot('page', RAW, 'page_id', true)
-const ROW = new Slot('row', RAW, 'page_id')
+const ROW = new Slot('row', RAW, 'row_id')
 const DB: readonly (string | Slot)[] = ['databases', new Slot('database', RAW, 'database_id')]
 const DS: readonly (string | Slot)[] = [...DB, new Slot('data_source', RAW, 'data_source_id')]
 

@@ -558,6 +558,45 @@
         "stdout": "",
         "stderr": "stat: /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Write_spec__ffff9999-2222-3333-4444-555566667777: No such file or directory\n"
       }
+    },
+    {
+      "id": "notion_cat_row_wrong_title_leaf",
+      "seq": 9901205,
+      "targets": [
+        "notion"
+      ],
+      "command": "cat /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Wrong_title__ffff1111-2222-3333-4444-555566667777/page.json",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "cat: /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Wrong_title__ffff1111-2222-3333-4444-555566667777/page.json: No such file or directory\n"
+      }
+    },
+    {
+      "id": "notion_stat_row_wrong_title_leaf",
+      "seq": 9901206,
+      "targets": [
+        "notion"
+      ],
+      "command": "stat /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Wrong_title__ffff1111-2222-3333-4444-555566667777/page.json",
+      "expect": {
+        "exit": 1,
+        "stdout": "",
+        "stderr": "stat: /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Wrong_title__ffff1111-2222-3333-4444-555566667777/page.json: No such file or directory\n"
+      }
+    },
+    {
+      "id": "notion_ls_row_wrong_title_leaf",
+      "seq": 9901207,
+      "targets": [
+        "notion"
+      ],
+      "command": "ls /notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Wrong_title__ffff1111-2222-3333-4444-555566667777",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "ls: cannot access '/notion/databases/Tasks__eeee1111-2222-3333-4444-555566667777/Tasks__d5000000-2222-3333-4444-555566667777/Wrong_title__ffff1111-2222-3333-4444-555566667777': No such file or directory\n"
+      }
     }
   ]
 }

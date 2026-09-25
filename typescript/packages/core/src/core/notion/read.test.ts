@@ -180,7 +180,10 @@ describe('notion read', () => {
 
   it('reads a row page.json as any page', async () => {
     const transport = new FakeTransport()
-    transport.enqueue('API-retrieve-a-page', pageBody(PAGE_ID_DASHED, 'Row A'))
+    transport.enqueue('API-retrieve-a-page', {
+      ...pageBody(PAGE_ID_DASHED, 'Row A'),
+      parent: { data_source_id: 'cccc1111222233334444555566667777' },
+    })
     transport.enqueue('API-retrieve-block-children', {
       results: [],
       has_more: false,
@@ -304,4 +307,27 @@ describe('notion read', () => {
     expect((captured as { code?: string }).code).toBe('ENOENT')
     expect(transport.invocations).toHaveLength(0)
   })
+})
+
+it('renders a row with an integer cell beyond the 64-bit range', async () => {
+  const transport = new FakeTransport()
+  transport.enqueue('API-post-data-source-query', {
+    results: [
+      {
+        ...pageBody(PAGE_ID_DASHED, 'Row A'),
+        properties: { Amount: { type: 'number', number: 100000000000000000000 } },
+      },
+    ],
+    has_more: false,
+    next_cursor: null,
+  })
+  const data = await read(
+    makeAccessor(transport),
+    spec('/databases/DB__db/DS__ds/rows.jsonl'),
+    undefined,
+  )
+  const row = JSON.parse(new TextDecoder().decode(data)) as {
+    properties: { Amount: { number: number } }
+  }
+  expect(row.properties.Amount.number).toBe(100000000000000000000)
 })

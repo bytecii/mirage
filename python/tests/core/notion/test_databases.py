@@ -21,7 +21,7 @@ from mirage.accessor.notion import NotionAccessor
 from mirage.cache.index.ram import RAMIndexCacheStore
 from mirage.core.notion import read as notion_read
 from mirage.core.notion import readdir as notion_readdir
-from mirage.core.notion import stat as notion_stat
+from mirage.core.notion import resolve as notion_resolve
 from mirage.core.notion.client import NotionAPIError
 from mirage.core.notion.config import NotionConfig
 from mirage.core.notion.normalize import normalize_database, to_json_bytes
@@ -202,6 +202,8 @@ async def test_readdir_database_row_lists_page_json_and_child_pages(
             },
         }]),
     )
+    monkeypatch.setattr(notion_resolve, "get_page",
+                        AsyncMock(return_value=_row()))
     entries = await readdir(
         accessor, PathSpec.from_str_path(f"{SOURCE_DIR}/Row-A__{ROW_ID}"))
     assert entries == [
@@ -307,7 +309,7 @@ async def test_read_rows_jsonl_of_no_rows_is_empty(accessor, monkeypatch):
 @pytest.mark.asyncio
 async def test_stat_database_row_dir(accessor, monkeypatch):
     get_page = AsyncMock(return_value=_row())
-    monkeypatch.setattr(notion_stat, "get_page", get_page)
+    monkeypatch.setattr(notion_resolve, "get_page", get_page)
     result = await stat(
         accessor, PathSpec.from_str_path(f"{SOURCE_DIR}/Row-A__{ROW_ID}"),
         RAMIndexCacheStore())
@@ -329,7 +331,8 @@ async def test_stat_database_row_dir(accessor, monkeypatch):
 ])
 async def test_stat_database_row_dir_that_is_not_this_row(
         accessor, monkeypatch, page, segment):
-    monkeypatch.setattr(notion_stat, "get_page", AsyncMock(return_value=page))
+    monkeypatch.setattr(notion_resolve, "get_page",
+                        AsyncMock(return_value=page))
     with pytest.raises(FileNotFoundError):
         await stat(accessor, PathSpec.from_str_path(f"{SOURCE_DIR}/{segment}"),
                    RAMIndexCacheStore())
@@ -339,7 +342,7 @@ async def test_stat_database_row_dir_that_is_not_this_row(
 async def test_stat_database_row_dir_notion_does_not_know(
         accessor, monkeypatch):
     monkeypatch.setattr(
-        notion_stat, "get_page",
+        notion_resolve, "get_page",
         AsyncMock(side_effect=NotionAPIError(
             "Could not find page", status=404, code="object_not_found")))
     with pytest.raises(FileNotFoundError):
@@ -363,8 +366,10 @@ async def test_stat_rows_jsonl_through_the_data_source_listing(
 
 
 @pytest.mark.asyncio
-async def test_stat_row_page_json_through_the_row_listing(
+async def test_stat_row_page_json_without_fetching_blocks(
         accessor, monkeypatch):
+    monkeypatch.setattr(notion_resolve, "get_page",
+                        AsyncMock(return_value=_row()))
     monkeypatch.setattr(notion_readdir, "list_block_children",
                         AsyncMock(return_value=[]))
     result = await stat(
@@ -373,3 +378,15 @@ async def test_stat_row_page_json_through_the_row_listing(
         RAMIndexCacheStore())
     assert result.type == FileType.FILE
     assert result.content == ContentType.JSON
+
+
+@pytest.mark.asyncio
+async def test_rows_jsonl_accepts_large_integer_cells(accessor, monkeypatch):
+    row = _row()
+    row["properties"]["Priority"]["number"] = 100000000000000000000
+    monkeypatch.setattr(notion_read, "query_data_source",
+                        AsyncMock(return_value=[row]))
+    data = await read(accessor,
+                      PathSpec.from_str_path(f"{SOURCE_DIR}/rows.jsonl"))
+    assert json.loads(
+        data)["properties"]["Priority"]["number"] == 100000000000000000000

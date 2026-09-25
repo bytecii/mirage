@@ -23,6 +23,7 @@ from mirage.core.notion.pages import (get_data_source, get_database,
                                       search_pages)
 from mirage.core.notion.pathing import (data_source_dirname, database_dirname,
                                         format_segment, page_dirname)
+from mirage.core.notion.resolve import guard_row
 from mirage.core.notion.scope import detect_scope
 
 
@@ -78,7 +79,7 @@ async def _list_databases_root(
 
 async def _list_page(accessor: NotionAccessor,
                      match: ScopeMatch) -> list[tuple[str, IndexEntry]]:
-    page_id = match.slots["page_id"]
+    page_id = match.slots.get("page_id") or match.slots["row_id"]
     blocks = await list_block_children(accessor.config,
                                        page_id,
                                        session=accessor.pool)
@@ -181,4 +182,8 @@ readdir = make_readdir(
         "data_source": _list_data_source,
     },
     static_root=("pages", "databases"),
+    guards={
+        "row": guard_row,
+        "page": guard_row
+    },
 )
