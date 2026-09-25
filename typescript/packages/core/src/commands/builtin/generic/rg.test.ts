@@ -168,3 +168,27 @@ describe('rgGeneric - operand', () => {
     ])
   })
 })
+
+describe('rgGeneric - no operand', () => {
+  it.each([
+    [{ args_l: true }, 'b\n', ['<stdin>\n', 0]],
+    [{ H: true }, 'b\n', ['<stdin>:b\n', 0]],
+    [{ H: true, c: true }, 'b\n', ['<stdin>:1\n', 0]],
+    [{ C: '1' }, 'a\nb\nc\n', ['a\nb\nc\n', 0]],
+    [{ type: 'rust' }, 'b\n', ['b\n', 0]],
+    [{ args_l: true, m: '0' }, 'b\n', ['', 1]],
+  ])('searches stdin as an implicit `-`: %j', async (flags, data, want) => {
+    // ripgrep 14.1.1 searches a piped stdin as an implicit `-` when the line
+    // names no path, so every flag answers as it does for a typed one:
+    // `printf 'b\n' | rg -l b` prints `<stdin>`.
+    expect(await run([], 'b', flags, ENC.encode(data))).toEqual(want)
+  })
+
+  it.each([
+    [{ args_l: true }, '<stdin>\n'],
+    [{ m: '1', C: '1' }, 'a\nb\nc\n'],
+    [{ m: '1', H: true }, '<stdin>:b\n'],
+  ])('stops reading at the answer: %j', async (flags, want) => {
+    expect(await run([], 'b', flags, pipeThatGoesOn('a\nb\nc\n'))).toEqual([want, 0])
+  })
+})

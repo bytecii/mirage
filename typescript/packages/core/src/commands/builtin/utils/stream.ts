@@ -57,11 +57,21 @@ export function isStdin(path: PathSpec): boolean {
   return path.rawPath === '-' || path.virtual === '/dev/stdin'
 }
 
+/**
+ * Read each operand from its backend, or from stdin for a stdin one.
+ *
+ * Every stdin operand shares one cursor, so a later `-` never replays bytes
+ * an earlier one read, and the cursor never closes the input a later one may
+ * still read. `sole` says stdin has exactly one reader, which takes the input
+ * itself, so a scan that stops early closes it.
+ */
 export function stdinStream(
   read: (path: PathSpec) => AsyncIterable<Uint8Array>,
   stdin: ByteSource | null,
+  sole = false,
 ): (path: PathSpec) => AsyncIterable<Uint8Array> {
-  const source = resolveSource(stdin)[Symbol.asyncIterator]()
+  const input = resolveSource(stdin)
+  const source = input[Symbol.asyncIterator]()
   async function* inputStream(): AsyncIterable<Uint8Array> {
     // All '-' operands share one cursor; a new operand must not replay bytes.
     for (;;) {
@@ -72,7 +82,10 @@ export function stdinStream(
   }
   // Bind the backend stream while its mount cache context is active.
   // Byte consumption stays lazy; only stdin needs a shared cursor.
-  return (path) => (isStdin(path) ? inputStream() : read(path))
+  return (path) => {
+    if (!isStdin(path)) return read(path)
+    return sole ? input : inputStream()
+  }
 }
 
 export function stdinStat(

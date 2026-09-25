@@ -1,5 +1,8 @@
+import asyncio
+
 import pytest
 
+from mirage.commands.builtin import grep_offsets
 from mirage.commands.builtin.generic.rg import parse_flags, rg
 from mirage.commands.config import CommandOpts
 from mirage.commands.spec.flag_view import FlagView
@@ -975,3 +978,85 @@ async def test_rg_dash_stops_reading_at_max_count(flags, paths, want):
                          _pipe_that_goes_on(b"a\nb\nc\n"),
                          {"/a.txt": b"hello\nworld\n"})
     assert (out, io.exit_code) == (want, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags, data, want", [
+    ({
+        "args_l": True
+    }, b"b\n", (b"<stdin>\n", 0)),
+    ({
+        "H": True
+    }, b"b\n", (b"<stdin>:b\n", 0)),
+    ({
+        "H": True,
+        "c": True
+    }, b"b\n", (b"<stdin>:1\n", 0)),
+    ({
+        "C": "1"
+    }, b"a\nb\nc\n", (b"a\nb\nc\n", 0)),
+    ({
+        "type": "rust"
+    }, b"b\n", (b"b\n", 0)),
+    ({
+        "args_l": True,
+        "m": "0"
+    }, b"b\n", (b"", 1)),
+])
+async def test_rg_no_operand_searches_stdin_as_an_implicit_dash(
+        flags, data, want):
+    # ripgrep 14.1.1 searches a piped stdin as an implicit `-` when the
+    # line names no path, so every flag answers as it does for a typed
+    # one: `printf 'b\n' | rg -l b` prints `<stdin>`.
+    out, io = await _run([], ["b"], flags, data)
+    assert (out, io.exit_code) == want
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags, want", [
+    ({
+        "args_l": True
+    }, b"<stdin>\n"),
+    ({
+        "m": "1",
+        "C": "1"
+    }, b"a\nb\nc\n"),
+    ({
+        "m": "1",
+        "H": True
+    }, b"<stdin>:b\n"),
+])
+async def test_rg_no_operand_stops_reading_at_the_answer(flags, want):
+    out, io = await _run([], ["b"], flags, _pipe_that_goes_on(b"a\nb\nc\n"))
+    assert (out, io.exit_code) == (want, 0)
+
+
+@pytest.mark.asyncio
+async def test_rg_no_operand_cancellation_closes_stdin(monkeypatch):
+    # The implicit operand is stdin's sole reader, so a search cancelled
+    # mid-line closes the input rather than leaving it half read.
+    closed = False
+    calls = 0
+    task = asyncio.current_task()
+    original = grep_offsets.MatchOffsets.at
+
+    def measured(self, index):
+        nonlocal calls
+        if calls == 0:
+            asyncio.get_running_loop().call_later(0, task.cancel)
+        calls += 1
+        return original(self, index)
+
+    async def source():
+        nonlocal closed
+        try:
+            yield b"needle " * 100000 + b"\n"
+            raise AssertionError("read beyond the matching line")
+        finally:
+            closed = True
+
+    monkeypatch.setattr(grep_offsets.MatchOffsets, "at", measured)
+    with pytest.raises(asyncio.CancelledError):
+        await _run([], ["needle"], {"o": True, "byte_offset": True}, source())
+    assert closed
+    assert calls < 100000

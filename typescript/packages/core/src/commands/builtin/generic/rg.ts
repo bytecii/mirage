@@ -33,7 +33,7 @@ import {
 import { rgFull } from '../rg_scan.ts'
 import { decodeLine } from '../grep_offsets.ts'
 import { splitLines } from '../utils/lines.ts'
-import { isStdin, resolveSource, stdinStream } from '../utils/stream.ts'
+import { isStdin, stdinStream } from '../utils/stream.ts'
 import { formatRecords } from '../utils/output.ts'
 
 const ENC = new TextEncoder()
@@ -41,6 +41,8 @@ const ENC = new TextEncoder()
 export const RG_NO_PATTERN = 'rg: ripgrep requires at least one pattern to execute a search'
 // ripgrep's name for stdin wherever it names the file a line came from.
 const STDIN_NAME = '<stdin>'
+// The operand ripgrep searches when a line names none and stdin is piped.
+const IMPLICIT_STDIN = new PathSpec({ virtual: '-', directory: '-', vfsPath: '-' })
 const DEC = new TextDecoder()
 
 type Stat = (p: PathSpec) => Promise<FileStat>
@@ -208,8 +210,10 @@ export async function rgGeneric(
   readdir: Readdir,
   stream: Stream,
 ): Promise<CommandFnResult> {
-  // Every `-` operand reads stdin through one cursor, as grep's do.
-  stream = stdinStream(cacheAwareStream(stream), opts.stdin)
+  // Every `-` operand reads stdin through one cursor, as grep's do. With no
+  // operand typed, the implicit one below is stdin's sole reader, so a search
+  // that stops early closes the input.
+  stream = stdinStream(cacheAwareStream(stream), opts.stdin, paths.length === 0)
   const resolution = await resolvePattern('rg', texts, opts.flags, paths, opts.mountPrefix, stream)
   if (resolution.error !== null) {
     return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(resolution.error) })]
@@ -220,37 +224,20 @@ export async function rgGeneric(
   }
   const flags = parseFlags(new FlagView(opts.flags, specOf('rg')))
   if (resolution.neverMatch) flags.fixedString = false
+  // A line that names no path searches a piped stdin as an implicit `-`
+  // operand, so -l, -H, -c and context answer as they do for a typed one
+  // (ripgrep's Paths::from_low_args, 14.1.1).
+  const [first = IMPLICIT_STDIN] = paths
+  if (paths.length === 0) {
+    if (opts.stdin === null) {
+      return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(`${RG_NO_PATTERN}\n`) })]
+    }
+    paths = [first]
+  }
   // ripgrep labels when searching multiple files; -H forces the label for a
   // single file and -I suppresses it (cross-mount fanout forces -H so
   // per-operand native runs stay filename-keyed).
   const label = (paths.length > 1 || flags.withFilename) && !flags.noFilename
-  const [first] = paths
-
-  if (first === undefined) {
-    let source: AsyncIterable<Uint8Array>
-    try {
-      source = resolveSource(opts.stdin, RG_NO_PATTERN)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      return [null, new IOResult({ exitCode: 2, stderr: ENC.encode(`${msg}\n`) })]
-    }
-    const pat = compilePattern(exprText, flags.ignoreCase, flags.fixedString, flags.wholeWord)
-    // Seeded to 1 the way the python twin and the multi-operand branch
-    // below are: grepStream flips it to 0 on the first selected line, and
-    // seeding here means the status does not depend on the generator having
-    // been started.
-    const io = new IOResult({ exitCode: 1 })
-    if (flags.filesWithoutMatch && !flags.countOnly) {
-      // ripgrep names a matchless stdin `<stdin>`, exit 0 for the listing,
-      // and lists nothing under -m0, where it reads nothing.
-      if (flags.maxCount === 0) return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
-      if (await selectsAny(source, pat, flags, opts.signal)) {
-        return [new Uint8Array(0), new IOResult({ exitCode: 1 })]
-      }
-      return [ENC.encode(`${STDIN_NAME}\n`), new IOResult()]
-    }
-    return [grepStream(source, pat, streamOptionsOf(flags, io, opts.signal)), io]
-  }
 
   const mounts = opts.ns?.mounts
   const readdirFn = mountParentReaddir(
