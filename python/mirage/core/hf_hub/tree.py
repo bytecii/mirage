@@ -167,7 +167,11 @@ async def fetch_path(accessor: HfHubAccessor,
                               "expand": accessor.expand_commits is True
                           },
                           session=accessor.pool)
-    rows = rows if isinstance(rows, list) else []
+    if not isinstance(rows, list):
+        # Only an empty list says the path is missing; an answer of any
+        # other shape is one the client cannot read, not an absence.
+        raise HfHubError(f"paths-info answered no list for {asked}", 0,
+                         "InvalidResponse")
     matching = [
         row for row in rows
         if isinstance(row, dict) and row.get("path") == asked

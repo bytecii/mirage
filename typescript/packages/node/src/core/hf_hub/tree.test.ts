@@ -306,6 +306,20 @@ describe('pathsInfoUrl', () => {
 })
 
 describe('fetchPath', () => {
+  it('refuses an answer that is not a list', async () => {
+    // Only an empty list says the path is missing; any other shape is an
+    // answer the client cannot read, and must not become absence.
+    const spy = vi.spyOn(client, 'hubPost').mockResolvedValue({ error: 'unexpected' })
+    await expect(fetchPath(accessor(), 'a.txt')).rejects.toBeInstanceOf(client.HfHubError)
+    spy.mockRestore()
+  })
+
+  it('reads an empty list as absence', async () => {
+    const spy = vi.spyOn(client, 'hubPost').mockResolvedValue([])
+    expect((await fetchPath(accessor(), 'a.txt')).size).toBe(0)
+    spy.mockRestore()
+  })
+
   it('asks for the prefixed path', async () => {
     const spy = vi.spyOn(client, 'hubPost').mockResolvedValue([
       { ...fileRow('a.txt'), oid: 'decoy' },

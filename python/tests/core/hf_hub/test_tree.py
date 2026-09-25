@@ -393,3 +393,21 @@ async def test_fetch_path_expands_only_when_asked(mock_post, accessor, expand,
     mock_post.return_value = []
     await fetch_path(accessor, "a.txt")
     assert mock_post.await_args.args[2]["expand"] is sent
+
+
+@pytest.mark.asyncio
+@patch("mirage.core.hf_hub.tree.hub_post")
+async def test_fetch_path_refuses_an_answer_that_is_not_a_list(
+        mock_post, accessor):
+    # Only an empty list says the path is missing; any other shape is an
+    # answer the client cannot read, and must not become absence.
+    mock_post.return_value = {"error": "unexpected"}
+    with pytest.raises(HfHubError):
+        await fetch_path(accessor, "a.txt")
+
+
+@pytest.mark.asyncio
+@patch("mirage.core.hf_hub.tree.hub_post")
+async def test_fetch_path_reads_an_empty_list_as_absence(mock_post, accessor):
+    mock_post.return_value = []
+    assert await fetch_path(accessor, "a.txt") == {}

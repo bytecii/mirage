@@ -121,7 +121,12 @@ export async function fetchPath(
     paths: [asked],
     expand: accessor.expandCommits === true,
   })
-  const rows = Array.isArray(answer) ? answer : []
+  // Only an empty list says the path is missing; an answer of any other shape
+  // is one the client cannot read, not an absence.
+  if (!Array.isArray(answer)) {
+    throw new HfHubError(`paths-info answered no list for ${asked}`, 0, 'InvalidResponse')
+  }
+  const rows: unknown[] = answer
   const matching = rows.filter(
     (row) =>
       typeof row === 'object' && row !== null && (row as Record<string, unknown>).path === asked,

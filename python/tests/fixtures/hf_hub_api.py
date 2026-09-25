@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote
 
 from aiohttp import web
 
@@ -172,9 +173,15 @@ class FakeHub:
             return _error(404, "EntryNotFound", f"{path} not found")
         # The first hop names the LFS sha, never the bytes' own ETag, so
         # a client that read the wrong hop reads the wrong token.
+        # Only ever a path on this same server, built from a known segment
+        # and the quoted names of a repo and file that exist.
+        segment = info["seg"] if info["seg"] in SEGMENTS else "models"
+        target = "/cdn/" + "/".join(
+            quote(part, safe="")
+            for part in (segment, info["ns"],
+                         info["name"])) + "/" + quote(path)
         raise web.HTTPFound(
-            f"/cdn/{info['seg']}/{info['ns']}/{info['name']}/{path}",
-            headers={"X-Linked-Etag": f'"{lfs_oid(files[path])}"'})
+            target, headers={"X-Linked-Etag": f'"{lfs_oid(files[path])}"'})
 
     async def cdn(self, request: web.Request) -> web.Response:
         files = self._files(request)

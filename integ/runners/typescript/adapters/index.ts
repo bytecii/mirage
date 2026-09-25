@@ -743,9 +743,11 @@ async function openHfHub(target: Target, options?: OpenOptions): Promise<Open> {
   // so a scenario's out-of-band change is a commit through the backend's own
   // client, against the same repository the read side mounts.
   const mutate = async (path: string, content: Uint8Array): Promise<void> => {
-    const m = target.mounts.find(
-      (x) => path === x.path || path.startsWith(`${x.path.replace(/\/+$/, '')}/`),
-    )
+    // The most specific mount owns the path, as the workspace resolves it, so a
+    // nested mount listed after its parent still gets its own commits.
+    const m = target.mounts
+      .filter((x) => path === x.path || path.startsWith(`${x.path.replace(/\/+$/, '')}/`))
+      .sort((a, b) => b.path.length - a.path.length)[0]
     if (m === undefined || m.vfs === 'ram') throw new Error(`hf-hub cannot commit ${path}`)
     const vfs = hubMount(m)
     const rel = path.slice(m.path.replace(/\/+$/, '').length)
