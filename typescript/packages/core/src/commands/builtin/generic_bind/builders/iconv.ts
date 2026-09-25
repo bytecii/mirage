@@ -12,12 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { iconvGeneric } from '../../generic/iconv.ts'
+import { iconvGeneric, iconvWrites } from '../../generic/iconv.ts'
 import { type Builder, resolveGlobOf } from '../adapter.ts'
 
 export const ICONV_BUILDER: Builder = {
   name: 'iconv',
   write: true,
+  writes: iconvWrites,
   requirements: ['write'],
   fn: async (ops, accessor, paths, _texts, opts) => {
     const idx = opts.index ?? undefined

@@ -23,7 +23,8 @@ from typing import Any, Protocol, overload
 from mirage.accessor.base import Accessor
 from mirage.cache.index import NULL_INDEX, IndexCacheStore
 from mirage.commands.builtin.generic.du import DEFAULT_MAX_DU_ENTRIES
-from mirage.commands.config import CommandFnResult, CommandOpts, ProvisionFn
+from mirage.commands.config import (CommandFnResult, CommandOpts, ProvisionFn,
+                                    WritesFn)
 from mirage.context import (effective_path_mode, get_admission,
                             get_current_session, get_mount_gate,
                             get_op_policies, hidden_paths_intersect,
@@ -408,6 +409,7 @@ class Builder:
     aggregate: AggregateFn | None = None
     read: bool = False
     requirements: frozenset[Operation] = frozenset()
+    writes: WritesFn | None = None
 
 
 @dataclass(frozen=True)

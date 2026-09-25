@@ -115,6 +115,7 @@ export async function show(inv: CLIInvocation): Promise<CommandFnResult> {
           bodies,
           parsed.pretty.kind,
           repo.abbrev,
+          parsed.diff,
           parsed.diff.summary && !parsed.diff.noPatch,
         ),
       ),

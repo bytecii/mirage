@@ -290,9 +290,12 @@ async function commentCounts(ctx: Ctx<C>, ids: string[]): Promise<Map<string, nu
 }
 
 // One page of a table (or of a view), in this order:
-//   records in `seq` order -- Airtable calls the order with neither view nor
-//     sort arbitrary; this fake answers the fixture's order with creates
-//     appended, which is stable between calls, as the real one is in practice
+//   through a view, the table's own row order: the fixture's, with creates
+//     appended; with no view, record-id order, which live Airtable answers
+//     where its Grid view's order differs (MCP-Atlas's recorded list and
+//     search calls, replayed by integ/airtable_atlas.ts, and five live tables
+//     read on 2026-09-25 -- every one created in a single batch, so none of
+//     them tells id order from creation order)
 //   minus what the view's filter drops, then what filterByFormula drops
 //   sorted by `sort`, else by the view's sort, else left in that order
 // A page holds min(pageSize, 100, the fixture's pageCap) records, and never
@@ -322,7 +325,10 @@ async function listPage(ctx: Ctx<C>, world: World, table: TableRow, p: ListParam
       ? null
       : compileFilter(table, p.filterByFormula)
   const viewFilter = view?.filter ? compileIn(table, view.filter) : null
-  let rows: RecordRow[] = table.records
+  let rows: RecordRow[] =
+    view === undefined
+      ? [...table.records].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      : table.records
   if (viewFilter !== null) rows = rows.filter((r) => passes(world, table, r, viewFilter))
   if (formula !== null) rows = rows.filter((r) => passes(world, table, r, formula))
   if (keys.length > 0) rows = sortRecords(world, table, rows, keys)

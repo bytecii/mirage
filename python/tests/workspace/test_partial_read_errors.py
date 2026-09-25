@@ -90,21 +90,24 @@ def test_wc_all_missing_zero_total():
 def test_head_good_then_missing_keeps_banner():
     out, err, code = _run(_make_ws(), "head -n 1 /a/f.txt /a/missing.txt")
     assert out == "==> /a/f.txt <==\naaa\n"
-    assert err == "head: /a/missing.txt: No such file or directory\n"
+    assert err == ("head: cannot open '/a/missing.txt' for reading: "
+                   "No such file or directory\n")
     assert code == 1
 
 
 def test_head_missing_first_no_leading_blank():
     out, err, code = _run(_make_ws(), "head -n 1 /a/missing.txt /a/f.txt")
     assert out == "==> /a/f.txt <==\naaa\n"
-    assert err == "head: /a/missing.txt: No such file or directory\n"
+    assert err == ("head: cannot open '/a/missing.txt' for reading: "
+                   "No such file or directory\n")
     assert code == 1
 
 
 def test_tail_good_then_missing_keeps_banner():
     out, err, code = _run(_make_ws(), "tail -n 1 /a/f.txt /a/missing.txt")
     assert out == "==> /a/f.txt <==\naaa\n"
-    assert err == "tail: /a/missing.txt: No such file or directory\n"
+    assert err == ("tail: cannot open '/a/missing.txt' for reading: "
+                   "No such file or directory\n")
     assert code == 1
 
 
@@ -135,14 +138,16 @@ def test_cross_wc_good_then_missing_keeps_total():
 def test_cross_head_good_then_missing_keeps_banner():
     out, err, code = _run(_make_ws(), "head -n 1 /a/f.txt /b/missing.txt")
     assert out == "==> /a/f.txt <==\naaa\n"
-    assert err == "head: /b/missing.txt: No such file or directory\n"
+    assert err == ("head: cannot open '/b/missing.txt' for reading: "
+                   "No such file or directory\n")
     assert code == 1
 
 
 def test_cross_tail_good_then_missing_keeps_banner():
     out, err, code = _run(_make_ws(), "tail -n 1 /a/f.txt /b/missing.txt")
     assert out == "==> /a/f.txt <==\naaa\n"
-    assert err == "tail: /b/missing.txt: No such file or directory\n"
+    assert err == ("tail: cannot open '/b/missing.txt' for reading: "
+                   "No such file or directory\n")
     assert code == 1
 
 

@@ -598,7 +598,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "head: /ghost: Is a directory\n"
+        "stderr": "head: error reading '/ghost': Is a directory\n"
       }
     },
     {
@@ -611,7 +611,7 @@
       "expect": {
         "exit": 1,
         "stdout": "",
-        "stderr": "tail: /ghost: Is a directory\n"
+        "stderr": "tail: error reading '/ghost': Is a directory\n"
       }
     },
     {

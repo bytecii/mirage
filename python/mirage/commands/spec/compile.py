@@ -12,7 +12,7 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 
@@ -115,6 +115,87 @@ class CompiledSpec:
             spelling (str): dashed spelling as typed.
         """
         return self.dest.get(spelling, spelling)
+
+
+# git's notation for an option parse-options also answers as
+# `--no-<name>`, and the prefix itself.
+NEGATABLE = "[no-]"
+NO = "no-"
+
+
+def _git_spelling(long: str, unset: bool) -> str:
+    """The long spelling one of git's options answers to, negated or not.
+
+    Args:
+        long (str): the option's name in git's table.
+        unset (bool): whether it was matched negated.
+    """
+    if not unset:
+        return f"--{long}"
+    return f"--{long[len(NO):]}" if long.startswith(NO) else f"--{NO}{long}"
+
+
+def _git_shown(long: str, unset: bool) -> str:
+    """How git names a candidate in its ambiguity refusal.
+
+    Args:
+        long (str): the option's name in git's table.
+        unset (bool): whether it was matched negated.
+    """
+    return f"--{NO if unset else ''}{long}"
+
+
+def expand_git_long(table: Sequence[str],
+                    typed: str) -> str | tuple[str, str] | None:
+    """git's parse-options resolution of one long option against the
+    program's own table, which lists each option in git's ``--[no-]``
+    notation.
+
+    An exact name wins at once, a negatable option answering to its
+    ``--no-`` form too. Otherwise the word may abbreviate one option,
+    ``--no-`` abbreviating a negation, and a word that abbreviates two
+    is ambiguous: git names the last two it found, each with the ``no-``
+    it was matched under. A word matching nothing is None, and the
+    caller decides what that is. A string is the spelling the table
+    resolves to, which the spec may or may not declare; a pair is the
+    two candidates of an ambiguity.
+
+    Args:
+        table (Sequence[str]): the program's long options, e.g.
+            ``("[no-]verbose", "contains")``.
+        typed (str): the word as typed, ``--`` included and any
+            ``=value`` removed.
+    """
+    arg = typed[2:]
+    found: tuple[str, bool] | None = None
+    earlier: tuple[str, bool] | None = None
+    for entry in table:
+        negatable = entry.startswith(NEGATABLE)
+        long = entry[len(NEGATABLE):] if negatable else entry
+        inverted = (not arg.startswith(NO) and negatable
+                    and long.startswith(NO))
+        name = long[len(NO):] if inverted else long
+        unset = False
+        exact = arg == name
+        abbreviated = not exact and name.startswith(arg)
+        if not exact and not abbreviated and negatable:
+            if NO.startswith(arg):
+                unset = True
+                abbreviated = True
+            elif arg.startswith(NO):
+                unset = True
+                exact = arg[len(NO):] == name
+                abbreviated = not exact and name.startswith(arg[len(NO):])
+        if exact:
+            return _git_spelling(long, unset != inverted)
+        if abbreviated:
+            earlier = found
+            found = (long, unset != inverted)
+    if found is None:
+        return None
+    if earlier is not None:
+        return _git_shown(*earlier), _git_shown(*found)
+    return _git_spelling(*found)
 
 
 def expand_long(cs: CompiledSpec,

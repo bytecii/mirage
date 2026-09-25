@@ -120,7 +120,7 @@ def _render(repo: BaseRepo, revision: str, flags: ShowFlags,
     header = _header(commit, flags, abbrev_for(repo), decor)
     bodies = commit_output(repo, commit, flags.diff)
     return join_output(commit, header, bodies, flags.pretty.kind,
-                       abbrev_for(repo), flags.diff.summary
+                       abbrev_for(repo), flags.diff, flags.diff.summary
                        and not flags.diff.no_patch)
 
 

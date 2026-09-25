@@ -14,6 +14,7 @@
 
 import type { Runtime } from '../../runtime/base.ts'
 import { EXTERNAL_COMMANDS } from '../../runtime/constants.ts'
+import { LanguageRuntime } from '../../runtime/language.ts'
 import { isLineExecutor, isProcessExecutor } from '../../runtime/mixin.ts'
 import type { RouteDecision } from '../../runtime/routing/types.ts'
 import { headVisible, nodeVisible } from '../../policy/match/allow.ts'
@@ -243,8 +244,10 @@ export function lookupAll(
  * same name, since the builtin is what runs. Nor does a name only the
  * external fallback capture takes: it takes any word, so like bash's
  * `command_not_found_handle` it runs a name without making it a program.
- * A function shadowing a program leaves the file in place, as it does on
- * PATH.
+ * An interpreter (python3, node) is a program only where a language
+ * runtime is bound to it: without one it answers 127, as it does on a
+ * system that never installed it. A function shadowing a program leaves
+ * the file in place, as it does on PATH.
  */
 export function program(
   name: string,
@@ -255,6 +258,12 @@ export function program(
   for (const consumer of layers(name, session, registry)) {
     if (consumer === Consumer.FUNCTION) continue
     if (consumer === Consumer.SESSION && SHELL_ONLY_BUILTINS.has(name)) return null
+    if (
+      consumer === Consumer.SESSION &&
+      INTERPRETER_NAMES.has(name) &&
+      !(runtimeFor(name, registry) instanceof LanguageRuntime)
+    )
+      return null
     if (consumer === Consumer.EXTERNAL && runtimeFor(name, registry) === undefined) return null
     return consumer
   }

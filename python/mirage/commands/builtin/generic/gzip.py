@@ -106,6 +106,18 @@ def parse_flags(flags: Mapping[str, FlagValue]) -> GzipFlags:
     )
 
 
+def gzip_writes(flags: Mapping[str, FlagValue], paths: list[PathSpec]) -> bool:
+    """Whether a gzip invocation writes: each operand is replaced by its
+    archive unless ``-c`` sends the result to stdout, and with no operand
+    gzip filters stdin to stdout.
+
+    Args:
+        flags (Mapping[str, FlagValue]): the parsed flag bag.
+        paths (list[PathSpec]): the operands the mount received.
+    """
+    return bool(paths) and not parse_flags(flags).to_stdout
+
+
 async def gzip_generic(
     paths: list[PathSpec],
     texts: list[str],

@@ -31,7 +31,7 @@ import {
   tailBytes,
   type TailCounts,
 } from '../tail_counts.ts'
-import { fsErrorLine, fsStrerror, isEisdir, isFsError } from '../../../utils/errors.ts'
+import { eisdir, fsErrorLine, fsStrerror, isEisdir, isFsError } from '../../../utils/errors.ts'
 import { readStdinAsync } from '../utils/stream.ts'
 import { quoteText } from '../../quote.ts'
 
@@ -423,7 +423,7 @@ export async function tailGeneric(
       try {
         const found = await stat(p)
         if (found.type === FileType.DIRECTORY) {
-          err += `tail: ${p.rawPath}: Is a directory\n`
+          err += fsErrorLine('tail', p, eisdir(p))
           continue
         }
         readable.push(p)

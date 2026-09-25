@@ -16,6 +16,7 @@ from collections.abc import Iterator, Sequence
 
 from mirage.policy.match import head_visible, node_visible
 from mirage.runtime.constants import EXTERNAL_COMMANDS
+from mirage.runtime.language import LanguageRuntime
 from mirage.runtime.mixin import LineExecutorMixin, ProcessExecutorMixin
 from mirage.runtime.routing.types import RouteDecision
 from mirage.utils.quote import shell_quote
@@ -243,8 +244,11 @@ def program(name: str, session: SessionState,
     when a mount registers the same name, since the builtin is what
     runs. Nor does a name only the external fallback capture takes: it
     takes any word, so like bash's ``command_not_found_handle`` it runs
-    a name without making it a program. A function shadowing a program
-    leaves the file in place, as it does on PATH.
+    a name without making it a program. An interpreter (python3, node)
+    is a program only where a language runtime is bound to it: without
+    one it answers 127, as it does on a system that never installed it.
+    A function shadowing a program leaves the file in place, as it does
+    on PATH.
 
     Args:
         name (str): the command word.
@@ -258,6 +262,10 @@ def program(name: str, session: SessionState,
         if consumer is Consumer.FUNCTION:
             continue
         if consumer is Consumer.SESSION and name in SHELL_ONLY_BUILTINS:
+            return None
+        if (consumer is Consumer.SESSION
+                and name in INTERPRETER_NAMES and not isinstance(
+                    registry.runtime_bindings.get(name), LanguageRuntime)):
             return None
         if (consumer is Consumer.EXTERNAL
                 and name not in registry.runtime_bindings):

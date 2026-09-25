@@ -6,6 +6,7 @@
   "scripts": {
     "airtable:server": "tsx server/airtable/main.ts",
     "airtable:selftest": "tsx server/airtable/selftest.ts",
+    "airtable:atlas": "tsx airtable_atlas.ts",
     "battery": "tsx runners/typescript/main.ts",
     "box:server": "tsx server/box/main.ts",
     "databricks:server": "tsx server/databricks/main.ts",

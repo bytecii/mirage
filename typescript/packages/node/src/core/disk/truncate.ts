@@ -18,7 +18,7 @@ import { invalidateAfterWrite } from '@struktoai/mirage-core/cache/context'
 import { record, startOp } from '@struktoai/mirage-core/observe/context'
 import { VFSName } from '@struktoai/mirage-core/types'
 import type { PathSpec } from '@struktoai/mirage-core/types'
-import { resolveSafe } from './utils.ts'
+import { resolveInside } from './utils.ts'
 
 export async function truncate(
   accessor: DiskAccessor,
@@ -26,7 +26,7 @@ export async function truncate(
   length: number,
 ): Promise<void> {
   const timer = startOp()
-  const full = resolveSafe(accessor.root, path.mountPath)
+  const full = await resolveInside(accessor.root, path)
   let data: Buffer
   try {
     data = await readFile(full)

@@ -12,13 +12,14 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { teeGeneric } from '../../generic/tee.ts'
+import { teeGeneric, teeWrites } from '../../generic/tee.ts'
 import { type Builder, resolveGlobOf } from '../adapter.ts'
 
 export const TEE_BUILDER: Builder = {
   name: 'tee',
   write: true,
   requirements: ['write'],
+  writes: teeWrites,
   fn: async (ops, accessor, paths, texts, opts) => {
     const idx = opts.index ?? undefined
     const { write, append } = ops

@@ -144,24 +144,22 @@ describe('parseCommand — positional classification', () => {
   })
 })
 
-describe('parseCommand — --cache extraction', () => {
-  const spec = new CommandSpec({ rest: new Operand({ type: 'path' }) })
-
-  it('greedily consumes non-flag args into cachePaths, matching Python', () => {
-    const p = parseCommand(spec, ['--cache', '/ram/cached', '/ram/x'], '/')
-    expect(p.cachePaths).toEqual(['/ram/cached', '/ram/x'])
-    expect(p.paths()).toEqual([])
+describe('parseCommand — --cache is an ordinary word', () => {
+  it('refuses --cache as an unrecognized option', () => {
+    const p = parseCommand(specOf('grep'), ['--cache', '/c', 'bar', 'f.txt'], '/data', 'grep')
+    expect(p.invalidOptions).toEqual(['--cache'])
+    expect(p.args).toEqual([
+      ['/c', 'str'],
+      ['/data/bar', 'path'],
+      ['/data/f.txt', 'path'],
+    ])
+    expect(p.wordKinds).toEqual(['str', 'str', 'path', 'path'])
   })
 
-  it('stops --cache loop at the next flag token', () => {
-    const spec2 = new CommandSpec({
-      options: [new Option({ short: '-l' })],
-      rest: new Operand({ type: 'path' }),
-    })
-    const p = parseCommand(spec2, ['--cache', '/ram/cached', '-l', '/ram/x'], '/')
-    expect(p.cachePaths).toEqual(['/ram/cached'])
-    expect(p.flags['-l']).toBe(true)
-    expect(p.paths()).toEqual(['/ram/x'])
+  it('reads --cache after end of options as an operand', () => {
+    const p = parseCommand(specOf('cat'), ['--', '--cache'], '/data', 'cat')
+    expect(p.invalidOptions).toEqual([])
+    expect(p.args).toEqual([['/data/--cache', 'path']])
   })
 })
 

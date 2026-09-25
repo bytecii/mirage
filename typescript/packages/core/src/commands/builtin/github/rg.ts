@@ -50,6 +50,10 @@ async function rgCommand(
       true,
       fl.asBool('w'),
       opts.index ?? undefined,
+      // A narrowing holds only files matching the searched literal: -v and
+      // --files-without-match print from the rest, and -f adds patterns code
+      // search never saw.
+      fl.asBool('v') || fl.asBool('files_without_match') || Boolean(fl.raw('f')),
     )
     resolved = narrowed.resolved
     if (narrowed.usedSearch) {

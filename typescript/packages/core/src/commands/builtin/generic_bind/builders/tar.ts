@@ -16,13 +16,14 @@ import type { FileStat, PathSpec } from '../../../../types.ts'
 import { specOf } from '../../../spec/builtins.ts'
 import { FlagView } from '../../../spec/flag_view.ts'
 import { readBytesOp, statOp } from '../../generic/crossmount/utils.ts'
-import { tarGeneric } from '../../generic/tar.ts'
+import { tarGeneric, tarWrites } from '../../generic/tar.ts'
 import { type Builder, resolveGlobOf } from '../adapter.ts'
 import { isDirOf, walkOf } from '../archive_io.ts'
 
 export const TAR_BUILDER: Builder = {
   name: 'tar',
   write: true,
+  writes: tarWrites,
   requirements: ['write', 'mkdir'],
   fn: async (ops, accessor, paths, texts, opts) => {
     const idx = opts.index ?? undefined

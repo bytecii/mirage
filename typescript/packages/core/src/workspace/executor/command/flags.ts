@@ -90,6 +90,9 @@ export function parseFlags(
   // parseCommand. True only for an installed CLI's node, whose spec is
   // deliberately partial.
   unknownIsOperand = false,
+  // The program's own long-option table, when it resolves abbreviations
+  // against it (git's parse-options), passed straight to parseCommand.
+  abbreviations?: readonly string[],
 ): ParsedCommand {
   const argv: string[] = parts.map((item) =>
     item instanceof PathSpec ? (item.rawPath === '-' ? '-' : item.virtual) : item,
@@ -113,7 +116,7 @@ export function parseFlags(
   }
 
   if (spec !== null) {
-    const parsed = parseCommand(spec, argv, cwd, cmdName, env, unknownIsOperand)
+    const parsed = parseCommand(spec, argv, cwd, cmdName, env, unknownIsOperand, abbreviations)
     const flagKwargs = parseToKwargs(parsed)
 
     for (const [key, value] of Object.entries(flagKwargs)) {

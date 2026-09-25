@@ -17,13 +17,14 @@ import zipfile
 
 import pytest
 
-from mirage.commands.builtin.generic.unzip import (CORRUPT_CDIR, EXTRA_BYTES,
-                                                   MISSING_BYTES, NO_EOCD,
-                                                   UNZIP_NO_DIRECTORY,
-                                                   ZERO_TESTED,
-                                                   ZIPINFO_NO_DIRECTORY, unzip)
 from mirage.commands.errors import UsageError
+from mirage.commands.spec import SPECS
 from mirage.types import PathSpec
+from mirage.workspace.executor.command.flags import parse_flags
+
+from mirage.commands.builtin.generic.unzip import (  # isort: skip
+    CORRUPT_CDIR, EXTRA_BYTES, MISSING_BYTES, NO_EOCD, UNZIP_NO_DIRECTORY,
+    ZERO_TESTED, ZIPINFO_NO_DIRECTORY, unzip, unzip_writes)
 
 WORKBOOK = b"WORKBOOK-CONTENT\n"
 SHEET = b"SHEET1-CONTENT\n"
@@ -582,3 +583,19 @@ async def test_p_excludes_and_cautions_on_stderr():
     assert res.exit_code == 0
     assert _stderr_text(res) == (
         "caution: excluded filename not matched:  nomatch\n")
+
+
+@pytest.mark.parametrize("argv,writes", [
+    ([], False),
+    (["a.zip"], True),
+    (["-o", "a.zip"], True),
+    (["-d", "out", "a.zip"], True),
+    (["-l", "a.zip"], False),
+    (["-t", "a.zip"], False),
+    (["-p", "a.zip", "f.txt"], False),
+    (["-Z", "a.zip"], False),
+    (["-Z", "-1", "a.zip"], False),
+])
+def test_unzip_writes_only_when_it_extracts(argv: list[str], writes: bool):
+    parsed = parse_flags(argv, SPECS["unzip"], "unzip", "/data")
+    assert unzip_writes(parsed.flag_kwargs, parsed.paths) is writes

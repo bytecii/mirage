@@ -590,6 +590,10 @@ jobs:
         working-directory: integ
         run: pnpm run slack:atlas
 
+      - name: Replay MCP-Atlas live Airtable recordings
+        working-directory: integ
+        run: pnpm run airtable:atlas
+
       # github's corpus coverage is the `gh` porcelain, which never builds
       # history: a client that does calls POST /git/trees then /git/commits, and
       # that is the only path on which a commit can state its own author and
@@ -653,7 +657,7 @@ jobs:
       - name: Diff python and typescript battery output
         run: >-
           ./python/.venv/bin/python integ/runners/parity.py
-          ram disk redis ram-history
+          ram disk disk-host-links redis ram-history
 
   # One job per backend family with both hosts inside it. The postgres, chroma,
   # qdrant and mongodb fleet is the expensive part and was being started twice,

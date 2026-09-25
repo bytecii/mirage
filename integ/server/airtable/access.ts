@@ -79,10 +79,16 @@ export async function baseFor(ctx: Ctx<C>, who: Principal, baseId: string): Prom
   return world ?? refuse(modelNotFound())
 }
 
-// A table is named by id or by name, interchangeably; an unknown one is the
-// same 403 an ungranted base is.
+// A table is named by id or by name, interchangeably, and a name in any case:
+// `sales expenses` reads "Sales Expenses" (MCP-Atlas's recorded list_records,
+// replayed by integ/airtable_atlas.ts, and live Airtable on 2026-09-25). An
+// unknown one is the same 403 an ungranted base is.
 export function tableOf(world: World, ref: string): TableRow {
-  const found = world.tables.find((t) => t.id === ref) ?? world.tables.find((t) => t.name === ref)
+  const lower = ref.toLowerCase()
+  const found =
+    world.tables.find((t) => t.id === ref) ??
+    world.tables.find((t) => t.name === ref) ??
+    world.tables.find((t) => t.name.toLowerCase() === lower)
   return found ?? refuse(modelNotFound())
 }
 

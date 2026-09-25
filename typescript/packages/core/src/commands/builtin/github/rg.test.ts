@@ -82,6 +82,15 @@ async function runRg(
   return cmd.fn(makeAccessor(), [scope()], ['needle'], opts)
 }
 
+async function exactFileSet(flags: CommandOpts['flags']): Promise<unknown> {
+  const cmd = GITHUB_RG[0]
+  if (cmd === undefined) throw new Error('rg not registered')
+  const root = new PathSpec({ virtual: '/', directory: '/', vfsPath: '' })
+  const opts: CommandOpts = { stdin: null, flags, filetypeFns: null, cwd: '/', index: null }
+  await cmd.fn(makeAccessor(), [root], ['import'], opts)
+  return narrow.mock.calls[0]?.[7]
+}
+
 beforeEach(() => {
   narrow.mockReset()
   generic.mockReset()
@@ -140,5 +149,17 @@ describe('github rg push-down', () => {
     expect(out).toEqual(new Uint8Array())
     expect(io.exitCode).toBe(1)
     expect(generic).not.toHaveBeenCalled()
+  })
+
+  it.each<[string, CommandOpts['flags']]>([
+    ['-v', { w: true, v: true }],
+    ['--files-without-match', { w: true, files_without_match: true }],
+    ['-f', { w: true, f: ['/docs/patterns.txt'] }],
+  ])('treats %s as needing every file', async (_flag, flags) => {
+    expect(await exactFileSet(flags)).toBe(true)
+  })
+
+  it('still narrows a plain -w search', async () => {
+    expect(await exactFileSet({ w: true })).toBe(false)
   })
 })

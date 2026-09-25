@@ -328,9 +328,9 @@ async function meta(origin: string): Promise<void> {
   )
   const features = tables[0] ?? {}
   eq(
-    'a table renders id, name, primaryFieldId, description, fields, views',
+    'a table renders id, name, description, primaryFieldId, fields, views',
     Object.keys(features),
-    ['id', 'name', 'primaryFieldId', 'description', 'fields', 'views'],
+    ['id', 'name', 'description', 'primaryFieldId', 'fields', 'views'],
   )
   eq('Features primary field', features.primaryFieldId, 'fldFeatName000001')
   const fields = list(features.fields).map(obj)
@@ -356,6 +356,12 @@ async function meta(origin: string): Promise<void> {
       'Last modified',
     ],
   )
+  eq('a field renders type and options ahead of id and name', Object.keys(fields[2] ?? {}), [
+    'type',
+    'options',
+    'id',
+    'name',
+  ])
   eq('a field with a description and no options', fields[0], {
     id: 'fldFeatName000001',
     name: 'Name',
@@ -434,7 +440,7 @@ async function reads(origin: string): Promise<void> {
   await reset(origin, 'reads')
   const all = await listAll(features)
   eq(
-    'default order is fixture order, paged by the fixture pageCap',
+    'with no view, records come in record-id order, paged by the fixture pageCap',
     all.ids,
     [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(F),
   )
@@ -447,6 +453,8 @@ async function reads(origin: string): Promise<void> {
   )
   const byName = await listAll(`${v0}/${ROADMAP}/Features`)
   eq('a table is reachable by name', byName.ids, all.ids)
+  const lower = await listAll(`${v0}/${ROADMAP}/features`)
+  eq('a table name matches in any case', lower.ids, all.ids)
   const backlog = await listAll(`${v0}/${ROADMAP}/Backlog`)
   eq('Backlog holds 25 records over seven pages', backlog.sizes, [4, 4, 4, 4, 4, 4, 1])
   const capped = await listAll(`${v0}/${ROADMAP}/Backlog`, [['maxRecords', '21']])
@@ -758,6 +766,9 @@ async function formulas(origin: string): Promise<void> {
     ["{Tags} = 'backend, infra'", [1, 4]],
     ["{Release} = 'v1.0'", [1, 3, 7]],
     ["SEARCH('2026-06', {Release date})", [1, 3, 7]],
+    ["{Due} = '2026-06-15T00:00:00.000Z'", [1]],
+    ["{Due} = '2026-06-15'", []],
+    ["FIND('T00:00:00.000Z', {Due} & '')", [1, 2, 3, 4, 7]],
     ["{Ticket} = 'FT-3'", [3]],
     ["{Status} = ''", [9]],
     ['{Notes}', [1, 2, 4, 6, 8, 9, 10]],

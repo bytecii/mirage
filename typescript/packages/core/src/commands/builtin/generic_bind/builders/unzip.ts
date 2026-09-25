@@ -14,12 +14,13 @@
 
 import type { PathSpec } from '../../../../types.ts'
 import { readBytesOp, statOp } from '../../generic/crossmount/utils.ts'
-import { unzipGeneric } from '../../generic/unzip.ts'
+import { unzipGeneric, unzipWrites } from '../../generic/unzip.ts'
 import { type Builder, resolveGlobOf } from '../adapter.ts'
 
 export const UNZIP_BUILDER: Builder = {
   name: 'unzip',
   write: true,
+  writes: unzipWrites,
   requirements: ['write', 'mkdir'],
   fn: async (ops, accessor, paths, texts, opts) => {
     const idx = opts.index ?? undefined

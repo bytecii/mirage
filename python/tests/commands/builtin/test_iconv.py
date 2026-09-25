@@ -14,9 +14,14 @@
 
 import asyncio
 
+import pytest
+
+from mirage.commands.builtin.generic.iconv import iconv_writes
+from mirage.commands.spec import SPECS
 from mirage.types import MountMode
 from mirage.vfs.ram import RAMVFS
 from mirage.workspace import Workspace
+from mirage.workspace.executor.command.flags import parse_flags
 
 
 def _ws():
@@ -61,3 +66,13 @@ def test_iconv_output_path_writes_file():
     assert io.exit_code == 0
     stdout, _ = _run_raw(ws, "cat /data/out.txt")
     assert _bytes(stdout).strip() != b""
+
+
+@pytest.mark.parametrize("argv,writes", [
+    (["-f", "latin1", "-t", "utf-8"], False),
+    (["-f", "latin1", "-t", "utf-8", "in.txt"], False),
+    (["-f", "latin1", "-t", "utf-8", "-o", "out.txt", "in.txt"], True),
+])
+def test_iconv_writes_only_to_its_output_file(argv: list[str], writes: bool):
+    parsed = parse_flags(argv, SPECS["iconv"], "iconv", "/data")
+    assert iconv_writes(parsed.flag_kwargs, parsed.paths) is writes

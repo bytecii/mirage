@@ -12,12 +12,13 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { gzipGeneric } from '../../generic/gzip.ts'
+import { gzipGeneric, gzipWrites } from '../../generic/gzip.ts'
 import { type Builder, resolveGlobOf } from '../adapter.ts'
 
 export const GZIP_BUILDER: Builder = {
   name: 'gzip',
   write: true,
+  writes: gzipWrites,
   requirements: ['write', 'unlink'],
   fn: async (ops, accessor, paths, _texts, opts) => {
     const idx = opts.index ?? undefined

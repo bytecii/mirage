@@ -51,7 +51,15 @@ async function grepCommand(
       recursive,
       fl.asBool('w'),
       opts.index ?? undefined,
-      fl.asBool('v') || fl.asBool('c') || fl.asBool('text') || fl.asStr('binary_files') === 'text',
+      // A narrowing holds only files matching the searched literal: -v, -c
+      // and -L also print from the rest, and -f adds patterns code search
+      // never saw.
+      fl.asBool('v') ||
+        fl.asBool('c') ||
+        fl.asBool('files_without_match') ||
+        Boolean(fl.raw('file')) ||
+        fl.asBool('text') ||
+        fl.asStr('binary_files') === 'text',
     )
     if (narrowed.usedSearch) opts = labelled(opts)
     resolved = narrowed.resolved

@@ -16,6 +16,8 @@ import functools
 
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.generic.cp import walk
+from mirage.commands.builtin.generic.rm_cmd import (rm_without_operands,
+                                                    rm_writes)
 from mirage.commands.builtin.generic_bind.adapter import (Builder, CommandIO,
                                                           Operation)
 from mirage.commands.builtin.utils.output import format_optional_records
@@ -38,7 +40,9 @@ async def rm(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
     f = fl.as_bool("f")
     v = fl.as_bool("v")
     d = fl.as_bool("d")
-    if not ops.is_mounted(accessor) or not paths:
+    if not paths:
+        return rm_without_operands(f)
+    if not ops.is_mounted(accessor):
         raise ValueError("rm: missing operand")
     paths = await ops.resolve_glob(accessor, paths, opts.index)
     recursive = fl.as_bool("r") or fl.as_bool("R")
@@ -126,4 +130,5 @@ async def rm(ops: CommandIO, accessor: Accessor, paths: list[PathSpec],
 BUILDER = Builder('rm',
                   rm,
                   write=True,
-                  requirements=frozenset({Operation.UNLINK}))
+                  requirements=frozenset({Operation.UNLINK}),
+                  writes=rm_writes)

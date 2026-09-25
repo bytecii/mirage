@@ -445,7 +445,7 @@ def _at_path(repo: BaseRepo, rev: str, path: str, revision: str) -> ShaFile:
     return _object_by_id(repo, sha, revision)
 
 
-def _tag_object(repo: BaseRepo, stem: str) -> Tag | None:
+def tag_object(repo: BaseRepo, stem: str) -> Tag | None:
     """The tag object a name or id denotes, None when it names no tag.
 
     Read before the stem is resolved, and only for ``^{tag}``: every
@@ -538,7 +538,7 @@ def resolve_object(repo: BaseRepo, revision: str) -> ShaFile:
     # ``^{tag}`` and ``^{object}`` are the two spellings that have to
     # stop above it; every other operator unwraps the tag itself, which
     # is git's own rule and costs nothing here.
-    held = _tag_object(repo, base)
+    held = tag_object(repo, base)
     obj = held if held is not None else resolve_object(repo, base)
     for op in ops:
         if isinstance(op, PeelStep):

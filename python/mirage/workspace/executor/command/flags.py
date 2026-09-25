@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 from collections import defaultdict, deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from mirage.commands.spec import (CommandSpec, flag_kwarg_name, parse_command,
                                   parse_to_kwargs)
@@ -84,6 +84,7 @@ def parse_flags(
     env: Mapping[str, str] | None = None,
     *,
     unknown_is_operand: bool = False,
+    abbreviations: Sequence[str] | None = None,
 ) -> ParsedCommand:
     """Parse flags from classified parts, recovering PathSpec for PATH values.
 
@@ -112,6 +113,9 @@ def parse_flags(
             line after mirage, passed straight to parse_command. True
             only for an installed CLI's node, whose spec is deliberately
             partial.
+        abbreviations (Sequence[str] | None): the program's own
+            long-option table, when it resolves abbreviations against it
+            (git's parse-options), passed straight to parse_command.
 
     Returns:
         ParsedCommand: positional paths, positional texts, parsed flag dict
@@ -139,7 +143,8 @@ def parse_flags(
                                cwd=cwd,
                                cmd_name=cmd_name,
                                env=env,
-                               unknown_is_operand=unknown_is_operand)
+                               unknown_is_operand=unknown_is_operand,
+                               abbreviations=abbreviations)
         # Widens from ParsedFlagValue to FlagValue: PATH values
         # become PathSpec just below.
         flag_kwargs: dict[str, FlagValue] = dict(parse_to_kwargs(parsed))

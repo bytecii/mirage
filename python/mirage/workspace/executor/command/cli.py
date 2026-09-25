@@ -21,7 +21,7 @@ from typing import Any
 from mirage.commands.builtin.general.interpreter import run_output
 from mirage.commands.builtin.utils.limit import (maybe_with_timeout,
                                                  run_with_timeout)
-from mirage.commands.cli.constants import CLI_CONFIG_ENV
+from mirage.commands.cli.constants import CLI_CONFIG_ENV, GIT_LONG_OPTIONS
 from mirage.commands.cli.refusal import (CLAP_EXIT, clap_missing_operands,
                                          leaf_refusal)
 from mirage.commands.cli.types import CLIDoors, CLIInvocation, CLISpec
@@ -318,12 +318,18 @@ async def handle_cli(
     # The environment goes into the parse, not on top of it: an option
     # declaring one is coerced, choice-checked, path-resolved and
     # credited against required exactly as a typed value is.
+    # git resolves an abbreviated long option against the verb's own full
+    # table (parse-options), and its revision walkers take whole words
+    # only.
+    abbreviations = (GIT_LONG_OPTIONS.get(" ".join(result.path), ())
+                     if install.spec.name == "git" else None)
     parsed = parse_flags(list(result.argv),
                          parse_spec,
                          prog,
                          session.cwd,
                          env=env_snapshot(session),
-                         unknown_is_operand=True)
+                         unknown_is_operand=True,
+                         abbreviations=abbreviations)
     if mirage_help and parsed.flag_kwargs.get("help") is True:
         help_text = render_help(prog, parse_spec, style=style).encode()
         return help_text, IOResult(), ExecutionNode(command=cmd_str,
