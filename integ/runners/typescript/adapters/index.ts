@@ -112,6 +112,7 @@ import {
   makeMockRoot,
 } from '../../../../typescript/packages/browser/src/test-utils.ts'
 import { integRoot, walkFiles } from '../harness.ts'
+import { commit as hubCommit } from '@struktoai/mirage-node/core/hf_hub/commit'
 import type { ExecWorkspace, Mount, Target } from '../harness.ts'
 import { buildSecretsEnv } from './secrets.ts'
 import { start as startKitFake } from '../../../server/kit/typescript/index.ts'
@@ -126,6 +127,10 @@ export interface Open {
   // once expose it; the rest leave it undefined and the runner reports their
   // consistency cases as skipped instead of silently dropping them.
   shadow?: () => ExecWorkspace
+  // How a consistency scenario changes a file out of band, for a backend whose
+  // mount cannot take a write: a Hub repo mount is read-only, and a change to
+  // it is a commit. Absent, the scenario writes through the shadow's shell.
+  mutate?: (path: string, content: Uint8Array) => Promise<void>
 }
 
 export interface OpenConsistency extends Open {
@@ -677,7 +682,7 @@ async function openHf(target: Target, options?: OpenOptions): Promise<Open> {
   return { ws: opened.ws, shadow: opened.shadow, cleanup: opened.closeAll }
 }
 
-async function openHfHub(target: Target): Promise<Open> {
+async function openHfHub(target: Target, options?: OpenOptions): Promise<Open> {
   let endpoint = process.env.HF_HUB_URL ?? ''
   while (endpoint.endsWith('/')) endpoint = endpoint.slice(0, -1)
   if (endpoint === '') throw new Error('hf-hub target requires HF_HUB_URL')
@@ -689,19 +694,24 @@ async function openHfHub(target: Target): Promise<Open> {
   // repository and mounting never creates one, so the repositories the target
   // mounts have to exist before the mount is built. File CONTENT still arrives
   // the ordinary way, through each mount's own `fixture:` seed, which writes
-  // over the VFS's commit path rather than behind it.
+  // over the VFS's commit path rather than behind it. Once, before any build:
+  // the shadow workspace reads the same repositories, not a reset copy.
   const reset = await fetch(`${endpoint}/reset`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tenants: [token], fixture: 'v1' }),
   })
   if (!reset.ok) throw new Error(`hf-hub /reset failed: ${String(reset.status)}`)
-  const mounts: Record<string, HfModelsVFS | HfDatasetsVFS | HfSpacesVFS | RAMVFS> = {}
-  for (const m of target.mounts) {
-    if (m.vfs === 'ram') {
-      mounts[m.path] = new RAMVFS()
-      continue
-    }
+  // Every kind is named, and an unrecognized one throws. The three differ
+  // only by the `repo_type` they send, so falling back to models for an
+  // unknown name does not fail: it silently exercises the wrong endpoints
+  // and reports the models implementation as the one under test.
+  const kinds = {
+    hf_models: HfModelsVFS,
+    hf_datasets: HfDatasetsVFS,
+    hf_spaces: HfSpacesVFS,
+  }
+  const hubMount = (m: Mount): HfModelsVFS | HfDatasetsVFS | HfSpacesVFS => {
     // A Hub mount NAMES a repository, so an absent one is a broken target
     // rather than a default: `repoId: ''` would reach the fake as a request
     // for the repository called nothing.
@@ -712,26 +722,42 @@ async function openHfHub(target: Target): Promise<Open> {
       endpoint,
       ...(m.prefix !== undefined ? { keyPrefix: m.prefix } : {}),
     }
-    // Every kind is named, and an unrecognized one throws. The three differ
-    // only by the `repo_type` they send, so falling back to models for an
-    // unknown name does not fail: it silently exercises the wrong endpoints
-    // and reports the models implementation as the one under test.
-    const kinds = {
-      hf_models: HfModelsVFS,
-      hf_datasets: HfDatasetsVFS,
-      hf_spaces: HfSpacesVFS,
-    }
     const kind = kinds[m.vfs as keyof typeof kinds] as
       | (new (c: typeof config) => HfModelsVFS | HfDatasetsVFS | HfSpacesVFS)
       | undefined
     if (kind === undefined) throw new Error(`hf-hub cannot mount ${m.vfs}`)
-    mounts[m.path] = new kind(config)
+    return new kind(config)
   }
-  const ws = new Workspace(mounts, { mode: MountMode.WRITE })
+  const build = (): MountMap => {
+    const mounts: Record<string, HfModelsVFS | HfDatasetsVFS | HfSpacesVFS | RAMVFS> = {}
+    for (const m of target.mounts) mounts[m.path] = m.vfs === 'ram' ? new RAMVFS() : hubMount(m)
+    return mounts
+  }
+  const opened = openWorkspaces(build, options)
+  // The CLI rides the workspace the cases run in; the shadow is only ever
+  // mutated through, so registering it there too would be dead weight.
   if (target.clis?.includes('hf') === true) {
-    ws.registerCli('hf', HF, { token, endpoint })
+    ;(opened.ws as unknown as Workspace).registerCli('hf', HF, { token, endpoint })
   }
-  return { ws: ws as unknown as ExecWorkspace, cleanup: () => ws.close() }
+  // A Hub repo mount is read-only (a write is a commit, the `hf` CLI's verb),
+  // so a scenario's out-of-band change is a commit through the backend's own
+  // client, against the same repository the read side mounts.
+  const mutate = async (path: string, content: Uint8Array): Promise<void> => {
+    const m = target.mounts.find(
+      (x) => path === x.path || path.startsWith(`${x.path.replace(/\/+$/, '')}/`),
+    )
+    if (m === undefined || m.vfs === 'ram') throw new Error(`hf-hub cannot commit ${path}`)
+    const vfs = hubMount(m)
+    const rel = path.slice(m.path.replace(/\/+$/, '').length)
+    try {
+      await hubCommit(vfs.accessor, {
+        additions: [{ path: vfs.accessor.repoPath(rel), data: content }],
+      })
+    } finally {
+      await vfs.close()
+    }
+  }
+  return { ws: opened.ws, shadow: opened.shadow, mutate, cleanup: opened.closeAll }
 }
 
 // The seeding calls have to reach the SAME account the mount will read, and
@@ -2151,11 +2177,11 @@ export async function openConsistency(
     return null
   }
   const shadow = opened.shadow()
-  const mutate = async (path: string, content: Uint8Array): Promise<void> => {
+  const tee = async (path: string, content: Uint8Array): Promise<void> => {
     const result = await shadow.shell(`tee ${path} > /dev/null`, { stdin: content })
     if (result.exitCode !== 0) {
       throw new Error(new TextDecoder().decode(result.stderr))
     }
   }
-  return { ws: opened.ws, mutate, cleanup: opened.cleanup }
+  return { ws: opened.ws, mutate: opened.mutate ?? tee, cleanup: opened.cleanup }
 }

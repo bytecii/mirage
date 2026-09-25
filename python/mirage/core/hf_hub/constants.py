@@ -95,3 +95,9 @@ GLOB_CHARS = ("*", "?", "[")
 # a non-empty summary, and a write reaching the backend through `cp` or a
 # redirect has no message of its own to offer.
 DEFAULT_COMMIT_MESSAGE = "Update from mirage"
+
+# The statuses a refused tree walk comes back with when the repository,
+# revision or subtree cannot be seen. A mount reports them as errors; `hf
+# download` alone folds them into an empty listing, so its failure path can
+# ask the Hub which absence it was and name it in upstream's words.
+ABSENT_STATUSES = frozenset({401, 403, 404})

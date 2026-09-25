@@ -291,10 +291,9 @@ describe('path_in_repo', () => {
 })
 
 describe('why nothing was selected', () => {
-  // fetchTree folds 401/403/404 into an empty listing so a mount can render
-  // an unreadable repository as an empty directory. Three different failures
-  // would otherwise all read as "no files matched", so the CLI asks the Hub
-  // which one it was.
+  // download folds a refused tree walk (401/403/404) into an empty listing
+  // itself. Three different failures would then all read as "no files
+  // matched", so the CLI asks the Hub which one it was.
   const doors = { dispatch: vi.fn() } as unknown as CLIDoors
 
   it.each([

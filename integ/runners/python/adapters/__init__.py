@@ -48,6 +48,7 @@ from mirage.commands.cli.types import CLISpec
 from mirage.core.databricks_volume.path import configured_root
 from mirage.core.discord.config import DiscordConfig
 from mirage.core.email.config import EmailConfig
+from mirage.core.hf_hub.commit import Addition, commit
 from mirage.runtime.types import ScriptSource
 from mirage.shell.console import JobConsole
 from mirage.shell.console.redis import RedisConsoleStore
@@ -2786,6 +2787,27 @@ async def mutate_write(shadow_ws: Workspace, path: str,
     await shadow_ws.vfs.write(path, content)
 
 
+async def mutate_commit(shadow_ws: Workspace, path: str,
+                        content: bytes) -> None:
+    """Change a Hub file the way the Hub changes: one commit.
+
+    A Hub repo mount is read-only (a write is a commit, which is the `hf`
+    CLI's verb, not a POSIX one), so the out-of-band change a consistency
+    case needs goes through the backend's own commit call on the shadow
+    mount's accessor, against the same fake the read side is looking at.
+
+    Args:
+        shadow_ws (Workspace): the workspace the case does not read from.
+        path (str): the virtual path to change.
+        content (bytes): the new content.
+    """
+    mount = shadow_ws.mount(path)
+    accessor = mount.vfs.accessor
+    rel = path[len(mount.prefix.rstrip("/")):]
+    await commit(accessor,
+                 additions=[Addition(accessor.repo_path(rel), content)])
+
+
 async def teardown_target(
     workspaces: list[Workspace],
     cleanups: list[Callable[[], Awaitable[None]]],
@@ -2909,9 +2931,11 @@ async def open_consistency(
     # would silently run under a different one.
     read_ws.env = {**read_ws.env, **target.get("env", {})}
     shadow_ws.env = {**shadow_ws.env, **target.get("env", {})}
+    mutate = (mutate_commit
+              if target.get("service") == "hf-hub" else mutate_write)
     return (
         read_ws,
-        functools.partial(mutate_write, shadow_ws),
+        functools.partial(mutate, shadow_ws),
         functools.partial(teardown_target, [read_ws, shadow_ws],
                           [*read_cleanups, *shadow_cleanups], service),
     )

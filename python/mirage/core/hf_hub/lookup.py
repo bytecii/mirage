@@ -18,7 +18,8 @@ from mirage.accessor.hf_hub import HfHubAccessor
 from mirage.cache.index import (NULL_INDEX, IndexCacheStore, IndexEntry,
                                 LookupStatus)
 from mirage.cache.index.lock import index_lock
-from mirage.core.hf_hub.tree import ensure_live_index, local_rows, refill_index
+from mirage.core.hf_hub.tree import (ensure_live_index, fetch_path, index_rows,
+                                     local_rows, refill_index)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +92,75 @@ async def lookup(
                 result = await index.get(key)
                 listing = await index.list_dir(key)
         return Found(entry=result.entry, children=listing.entries)
+
+
+async def lookup_retrying(
+    accessor: HfHubAccessor,
+    index: IndexCacheStore,
+    prefix: str,
+    key: str,
+) -> Found:
+    """``lookup``, asked once more if the index was cleared under it.
+
+    A reconcile verdict clears the mount index, and one landing between
+    the refill and the read leaves a miss that only says the store is
+    empty. Read as absence, that miss reaches ``on_op_missing`` through a
+    dispatcher door and drops the path's overlay for good. The root
+    listing tells the two apart: a live index always has one.
+
+    Args:
+        accessor (HfHubAccessor): the mount's accessor.
+        index (IndexCacheStore): the mount's index, or NULL_INDEX.
+        prefix (str): the mount prefix the keys are built against.
+        key (str): the mount-absolute path to resolve.
+
+    Returns:
+        Found: the row and/or listing at that key.
+    """
+    found = await lookup(accessor, index, prefix, key)
+    if found.exists or index is NULL_INDEX:
+        return found
+    root = await index.list_dir(prefix.rstrip("/") or "/")
+    if root.status is not LookupStatus.NOT_FOUND:
+        return found
+    return await lookup(accessor, index, prefix, key)
+
+
+async def point_lookup(
+    accessor: HfHubAccessor,
+    index: IndexCacheStore,
+    prefix: str,
+    rel: str,
+) -> Found | None:
+    """Answer one path with one request, where a whole walk would be waste.
+
+    Taken only when the index holds no tree at all while the mount has
+    loaded one before: the throwaway store reconcile and the drift check
+    stat through, or a mount index a verdict just cleared. A mount that
+    never loaded its tree seeds it as it always has, and a live or expired
+    index keeps its own answer. Nothing is written back: one row is not a
+    listing, and seeding it would make every other path read as absent.
+
+    The row's id is the git oid a tree row carries. Its mtime can differ
+    from the tree's: paths-info expands commits only when the mount forces
+    it, while the tree's own default expands a repository small enough.
+
+    Args:
+        accessor (HfHubAccessor): the mount's accessor.
+        index (IndexCacheStore): the index the caller passed.
+        prefix (str): the mount prefix the keys are built against.
+        rel (str): the path as the mount sees it.
+
+    Returns:
+        Found | None: the answer, or None when the index should answer.
+    """
+    if index is NULL_INDEX or not accessor.tree_loaded:
+        return None
+    root = await index.list_dir(prefix.rstrip("/") or "/")
+    if root.status is not LookupStatus.NOT_FOUND:
+        return None
+    entries, _ = index_rows(await fetch_path(accessor, rel), prefix)
+    return Found(entry=entries.get(key_of(prefix, rel)))
 
 
 def key_of(prefix: str, local: str) -> str:

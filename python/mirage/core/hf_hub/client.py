@@ -13,7 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any
 from urllib.parse import quote
 
@@ -361,12 +361,64 @@ async def hub_bytes(
     return content
 
 
+async def hub_bytes_tagged(
+    token: SecretStr | None,
+    url: str,
+    window: ByteWindow | None = None,
+    *,
+    session: SessionArg = None,
+) -> tuple[bytes, str]:
+    """Fetch file content together with the ETag the bytes came with.
+
+    The ETag is the final response's, after the redirect to the CDN: the
+    first hop answers for the LFS object, the last one for the bytes
+    actually served, which is the only one that can vouch for them.
+
+    Args:
+        token (SecretStr | None): the user access token.
+        url (str): the resolve URL.
+        window (ByteWindow | None): the byte range to ask for.
+        session (SessionArg): pool or live session to ride.
+
+    Returns:
+        tuple[bytes, str]: the content, trimmed to the window when the CDN
+        ignored the Range header, and the raw ETag header ("" when none).
+    """
+    response: ApiResponse = await api_request(
+        "GET",
+        url,
+        error_of=_error_of,
+        headers=hub_headers(token),
+        retry=RETRY,
+        read="bytes_response",
+        window=window,
+        session=session,
+    )
+    return response.data, response.headers.get("etag", "")
+
+
+def etag_value(raw: str) -> str:
+    """An ETag header's value, without the weak marker or the quotes.
+
+    Args:
+        raw (str): the header as sent, e.g. ``W/"abc"``.
+
+    Returns:
+        str: the bare value, e.g. ``abc``.
+    """
+    value = raw.strip()
+    if value.startswith("W/"):
+        value = value[2:]
+    return value.strip('"')
+
+
 async def hub_stream(
     token: SecretStr | None,
     url: str,
     chunk_size: int,
     *,
     session: SessionArg = None,
+    on_response: Callable[[Mapping[str, str]], None] | None = None,
 ) -> AsyncIterator[bytes]:
     """Stream file content without holding it whole in memory.
 
@@ -379,6 +431,9 @@ async def hub_stream(
         url (str): the resolve URL.
         chunk_size (int): bytes per yielded chunk.
         session (SessionArg): pool or live session to ride.
+        on_response (Callable | None): told the final response's headers,
+            lower-cased, once and before the first chunk, so an empty file
+            reports them too.
 
     Yields:
         bytes: the next chunk of content.
@@ -391,6 +446,11 @@ async def hub_stream(
         async with sess.get(url, headers=hub_headers(token)) as resp:
             if resp.status >= 400:
                 raise _error_of(resp, await resp.text())
+            if on_response is not None:
+                on_response({
+                    key.lower(): value
+                    for key, value in resp.headers.items()
+                })
             async for chunk in resp.content.iter_chunked(chunk_size):
                 yield chunk
     finally:
@@ -401,7 +461,9 @@ async def hub_stream(
 __all__ = [
     "HfHubError",
     "api_url",
+    "etag_value",
     "hub_bytes",
+    "hub_bytes_tagged",
     "hub_get",
     "hub_get_response",
     "hub_headers",

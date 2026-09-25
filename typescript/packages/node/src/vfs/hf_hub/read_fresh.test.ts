@@ -191,15 +191,23 @@ describe('hf_hub snapshot pins', () => {
   it('asks one path when the drift check runs on a loaded mount', async () => {
     const fake = await hub({ 'a.txt': OLD })
     const vfs = await vfsOf(fake)
-    const state = await pinnedState(fake, vfs)
-    fake.files().set('a.txt', NEW)
-    const walks = fake.count('tree')
-    await expect(load(state, vfs)).rejects.toBeInstanceOf(ContentDriftError)
-    expect(fake.count('tree')).toBe(walks)
-    expect(fake.count('paths_info')).toBeGreaterThanOrEqual(1)
-    fake.fail.set('paths_info', [401, ''])
-    const err = await load(state, vfs).catch((e: unknown) => e)
-    expect(err).not.toBeInstanceOf(ContentDriftError)
+    const w = ws(vfs)
+    try {
+      await out(w, 'cat /m/a.txt')
+      const state = await toStateDict(w)
+      // The live mount is handed over, so it has loaded its tree and the check
+      // asks for the one path rather than walking again.
+      fake.files().set('a.txt', NEW)
+      const walks = fake.count('tree')
+      await expect(load(state, vfs)).rejects.toBeInstanceOf(ContentDriftError)
+      expect(fake.count('tree')).toBe(walks)
+      expect(fake.count('paths_info')).toBeGreaterThanOrEqual(1)
+      fake.fail.set('paths_info', [401, ''])
+      const err = await load(state, vfs).catch((e: unknown) => e)
+      expect(err).not.toBeInstanceOf(ContentDriftError)
+    } finally {
+      await w.close()
+    }
   })
 })
 
@@ -207,8 +215,9 @@ describe('hf_hub snapshot pins', () => {
 // one reconcile probe, and a warm read makes no tree walk and no download.
 const WARM: [string, number | null][] = [
   ['cat /m/a.txt', 2],
-  ['cat /m/a.txt | head -c 1', null],
-  ['cp /m/a.txt /r/a.txt', null],
+  ['cat /m/a.txt | head -c 1', 2],
+  // Cross-mount cp skips routing's probe; only the cache door asks.
+  ['cp /m/a.txt /r/a.txt', 1],
 ]
 
 describe('hf_hub warm read cost', () => {

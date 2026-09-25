@@ -180,10 +180,9 @@ async def test_download_refuses_when_nothing_matched(mock_tree, doors):
 @pytest.mark.asyncio
 @patch("mirage.commands.cli.builtin.hf.download.fetch_tree")
 async def test_download_tells_the_three_absences_apart(mock_tree, doors):
-    """fetch_tree folds 401/403/404 into an empty listing so a mount can
-    render an unreadable repository as an empty directory. Three
-    different failures would otherwise all read as "no files matched",
-    so the CLI asks the Hub which one it was."""
+    """download folds a refused tree walk (401/403/404) into an empty
+    listing itself. Three different failures would then all read as "no
+    files matched", so the CLI asks the Hub which one it was."""
     record, _, _, _ = doors
     mock_tree.return_value = {}
     cases = [(Absence.REPO, (), "Repository Not Found"),

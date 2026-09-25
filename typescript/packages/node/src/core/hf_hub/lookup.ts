@@ -16,7 +16,7 @@ import { IndexEntry } from '@struktoai/mirage-core/cache/index/config'
 import type { IndexCacheStore } from '@struktoai/mirage-core/cache/index/store'
 import { LookupStatus } from '@struktoai/mirage-core/cache/index/config'
 import type { HfHubAccessor } from '../../accessor/hf_hub.ts'
-import { ensureLiveIndex, localRows, refillIndex } from './tree.ts'
+import { ensureLiveIndex, fetchPath, indexRows, localRows, refillIndex } from './tree.ts'
 import { withIndexLock } from '@struktoai/mirage-core/cache/index/lock'
 
 /**
@@ -78,6 +78,55 @@ export async function lookup(
     }
     return { entry: result.entry ?? null, children: listing.entries ?? null }
   })
+}
+
+/**
+ * `lookup`, asked once more if the index was cleared under it.
+ *
+ * A reconcile verdict clears the mount index, and one landing between the
+ * refill and the read leaves a miss that only says the store is empty. Read as
+ * absence, that miss reaches `onOpMissing` through a dispatcher door and drops
+ * the path's overlay for good. The root listing tells the two apart: a live
+ * index always has one.
+ */
+export async function lookupRetrying(
+  accessor: HfHubAccessor,
+  index: IndexCacheStore | undefined,
+  prefix: string,
+  key: string,
+): Promise<Found> {
+  const found = await lookup(accessor, index, prefix, key)
+  if (exists(found) || index === undefined) return found
+  const root = await index.listDir(keyOf(prefix, ''))
+  if (root.status !== LookupStatus.NOT_FOUND) return found
+  return lookup(accessor, index, prefix, key)
+}
+
+/**
+ * Answer one path with one request, where a whole walk would be waste.
+ *
+ * Taken only when the index holds no tree at all while the mount has loaded
+ * one before: the throwaway store reconcile and the drift check stat through,
+ * or a mount index a verdict just cleared. A mount that never loaded its tree
+ * seeds it as it always has, and a live or expired index keeps its own answer.
+ * Nothing is written back: one row is not a listing, and seeding it would make
+ * every other path read as absent.
+ *
+ * The row's id is the git oid a tree row carries. Its mtime can differ from
+ * the tree's: paths-info expands commits only when the mount forces it, while
+ * the tree's own default expands a repository small enough.
+ */
+export async function pointLookup(
+  accessor: HfHubAccessor,
+  index: IndexCacheStore | undefined,
+  prefix: string,
+  rel: string,
+): Promise<Found | null> {
+  if (index === undefined || !accessor.treeLoaded) return null
+  const root = await index.listDir(keyOf(prefix, ''))
+  if (root.status !== LookupStatus.NOT_FOUND) return null
+  const { entries } = indexRows(await fetchPath(accessor, rel), prefix)
+  return { entry: entries.get(keyOf(prefix, rel)) ?? null, children: null }
 }
 
 /** The mount-absolute key for a mount-local path. */

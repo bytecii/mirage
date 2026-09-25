@@ -35,14 +35,16 @@ def _hub(files: dict[str, bytes], **kwargs) -> FakeHub:
 
 
 def _vfs(hub: FakeHub):
-    return build_vfs("hf_models", {"repo_id": "acme/widget",
-                                   "endpoint": hub.url})
+    return build_vfs("hf_models", {
+        "repo_id": "acme/widget",
+        "endpoint": hub.url
+    })
 
 
 def _ws(vfs, policy: ReadPolicy = ReadPolicy.FRESH) -> Workspace:
     return Workspace({
-        "/m": Mount(vfs=vfs, mode=MountMode.READ,
-                    read=ReadSpec(policy=policy)),
+        "/m":
+        Mount(vfs=vfs, mode=MountMode.READ, read=ReadSpec(policy=policy)),
         "/r": (RAMVFS(), MountMode.WRITE),
     })
 
@@ -192,18 +194,20 @@ async def test_a_drift_check_on_a_loaded_mount_asks_one_path():
         try:
             await _out(ws, "cat /m/a.txt")
             state = await to_state_dict(ws)
+            # The live mount is handed over, so it has loaded its tree and
+            # the check asks for the one path rather than walking again.
+            _files(hub)["a.txt"] = NEW
+            walks = hub.count("tree")
+            with pytest.raises(ContentDriftError):
+                await _load(state, vfs)
+            assert hub.count("tree") == walks
+            assert hub.count("paths_info") >= 1
+            hub.fail["paths_info"] = (401, "")
+            with pytest.raises(Exception) as caught:
+                await _load(state, vfs)
+            assert not isinstance(caught.value, ContentDriftError)
         finally:
             await ws.close()
-        _files(hub)["a.txt"] = NEW
-        walks = hub.count("tree")
-        with pytest.raises(ContentDriftError):
-            await _load(state, vfs)
-        assert hub.count("tree") == walks
-        assert hub.count("paths_info") >= 1
-        hub.fail["paths_info"] = (401, "")
-        with pytest.raises(Exception) as caught:
-            await _load(state, vfs)
-        assert not isinstance(caught.value, ContentDriftError)
 
 
 # Measured on the first green run, then pinned (test plan T31): each
@@ -211,8 +215,9 @@ async def test_a_drift_check_on_a_loaded_mount_asks_one_path():
 # download.
 WARM = [
     ("cat /m/a.txt", 2),
-    ("cat /m/a.txt | head -c 1", None),
-    ("cp /m/a.txt /r/a.txt", None),
+    ("cat /m/a.txt | head -c 1", 2),
+    # Cross-mount cp skips routing's probe; only the cache door asks.
+    ("cp /m/a.txt /r/a.txt", 1),
 ]
 
 
@@ -260,8 +265,10 @@ async def test_a_ranged_read_stamps_the_whole_files_oid(override, expected):
         vfs = _vfs(hub)
         scope = RecordingScope()
         try:
-            data = await read_bytes(vfs.accessor, _spec("a.txt"),
-                                    offset=2, size=3)
+            data = await read_bytes(vfs.accessor,
+                                    _spec("a.txt"),
+                                    offset=2,
+                                    size=3)
         finally:
             scope.close()
             await vfs.accessor.close()
