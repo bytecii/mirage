@@ -12,19 +12,49 @@
 # limitations under the License.
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.generic_bind.adapter import with_write_guards
 from mirage.commands.builtin.utils.output import format_optional_records
 from mirage.commands.config import CommandOpts
+from mirage.commands.errors import UsageError
 from mirage.commands.registry import command
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.types import PathSpec
 from mirage.utils.errors import FS_ERRORS, fs_strerror
+
+
+def rm_writes(flags: Mapping[str, FlagValue], paths: list[PathSpec]) -> bool:
+    """Whether an rm invocation writes: it removes its operands, and with
+    none it removes nothing.
+
+    Args:
+        flags (Mapping[str, FlagValue]): the parsed flag bag.
+        paths (list[PathSpec]): the operands the mount received.
+    """
+    return bool(paths)
+
+
+def rm_without_operands(force: bool) -> tuple[ByteSource | None, IOResult]:
+    """rm's answer to a line with no operand, in GNU's words: nothing at
+    all under ``-f``, and a missing-operand usage error otherwise
+    (coreutils 9.7).
+
+    Args:
+        force (bool): ``-f``, under which a missing operand is no error.
+
+    Raises:
+        UsageError: without ``-f``.
+    """
+    if force:
+        return None, IOResult()
+    raise UsageError(
+        "rm: missing operand\nTry 'rm --help' for more information.", 1)
 
 
 def make_rm(
@@ -50,18 +80,18 @@ def make_rm(
     """
     unlink = with_write_guards(unlink)
 
-    @command("rm", vfs=vfs, spec=SPECS["rm"], write=True)
+    @command("rm", vfs=vfs, spec=SPECS["rm"], write=True, writes=rm_writes)
     async def rm(
         accessor: Accessor,
         paths: list[PathSpec],
         texts: list[str],
         opts: CommandOpts,
     ) -> tuple[ByteSource | None, IOResult]:
-        if not paths:
-            raise ValueError("rm: missing operand")
         fl = FlagView(opts.flags, spec=SPECS["rm"])
         f = fl.as_bool("f")
         v = fl.as_bool("v")
+        if not paths:
+            return rm_without_operands(f)
         paths = await glob_fn(accessor, paths, opts.index)
         verbose_parts: list[str] = []
         errors: list[str] = []

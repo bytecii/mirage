@@ -18,6 +18,7 @@ from typing import Any
 
 from mirage.accessor.base import Accessor
 from mirage.commands.builtin.generic.tee import tee as generic_tee
+from mirage.commands.builtin.generic.tee import tee_writes
 from mirage.commands.builtin.generic_bind.adapter import CommandIO, Operation
 from mirage.commands.config import CommandOpts
 from mirage.commands.registry import command
@@ -39,9 +40,8 @@ def make_tee(vfs: str, io: CommandIO) -> Callable[..., Any]:
 
     async def tee(accessor: Accessor, paths: list[PathSpec], texts: list[str],
                   opts: CommandOpts) -> tuple[ByteSource | None, IOResult]:
-        if not paths:
-            raise ValueError("tee: missing operand")
-        paths = await resolve_glob(accessor, paths, opts.index)
+        paths = await resolve_glob(accessor, paths,
+                                   opts.index) if paths else []
         # The wrapper is wiring only: every flag semantic, the write to
         # each operand and the append fallback live in the generic.
         return await generic_tee(paths,
@@ -56,5 +56,6 @@ def make_tee(vfs: str, io: CommandIO) -> Callable[..., Any]:
     wrapped: Callable[..., Any] = command("tee",
                                           vfs=vfs,
                                           spec=SPECS["tee"],
-                                          write=True)(tee)
+                                          write=True,
+                                          writes=tee_writes)(tee)
     return wrapped
