@@ -26,7 +26,7 @@ import { runTar } from './tar.ts'
 import { runUnzip } from './unzip.ts'
 import { runWc } from './wc.ts'
 import { runZip } from './zip_cmd.ts'
-import { Cmd, type CrossResult, type DispatchFn } from '../types.ts'
+import { Cmd, type CrossResult, type DispatchFn, type RunSingle } from '../types.ts'
 import type { FlagValue } from '../../../../spec/types.ts'
 import type { NamespaceView, SessionView } from '../../../../../ops/types.ts'
 
@@ -40,6 +40,9 @@ export async function runRelay(
   textArgs: string[],
   flagKwargs: Record<string, FlagValue>,
   dispatch: DispatchFn,
+  // Single-mount runner: wc counts each operand with its own mount's wc,
+  // since a mount can count without reading; only its layout spans the line.
+  runSingle: RunSingle,
   // Maps an operand to its storage identity, for the transfer commands
   // that must tell a real move from one whose two prefixes address a
   // single store.
@@ -53,7 +56,7 @@ export async function runRelay(
   sessionView?: SessionView,
   stdin: ByteSource | null = null,
 ): Promise<CrossResult> {
-  if (cmdName === Cmd.WC) return runWc(scopes, flagKwargs, dispatch, stdin)
+  if (cmdName === Cmd.WC) return runWc(scopes, flagKwargs, dispatch, runSingle)
   if (cmdName === Cmd.LS) return runLs(scopes, flagKwargs, dispatch, ns, sessionView)
   if (cmdName === Cmd.CP) return runCp(scopes, flagKwargs, dispatch, storageKey)
   if (cmdName === Cmd.MV) return runMv(scopes, flagKwargs, dispatch, storageKey)

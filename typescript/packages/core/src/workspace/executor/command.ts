@@ -412,8 +412,8 @@ export async function handleCommand(
     let csScopes = pathScopes
     if (strategyFor(cmdName as Cmd, csFlags) === Strategy.RELAY) {
       // STREAM and FANOUT run each operand natively on its mount, which
-      // expands the operand's glob. RELAY bypasses the mount command
-      // wrappers entirely, so its glob operands must expand here; an
+      // expands the operand's glob. RELAY sees every operand at once (wc's
+      // layout, cp's sources), so its glob operands must expand here; an
       // unmatched glob stays the literal word, like bash.
       const expanded = await resolveGlobs(
         pathScopes,

@@ -13,9 +13,9 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { mountKey } from '../../../../utils/key_prefix.ts'
-import { eisdir, fsErrorLine, isFsError } from '../../../../utils/errors.ts'
+import { fsErrorLine, isFsError } from '../../../../utils/errors.ts'
 import { IOResult, materialize } from '../../../../io/types.ts'
-import { type FileStat, FileType, PathSpec } from '../../../../types.ts'
+import { type FileStat, PathSpec } from '../../../../types.ts'
 import type { CommandOpts } from '../../../config.ts'
 import type { DispatchFn, OperandRun, RunSingle } from './types.ts'
 import type { FlagValue } from '../../../spec/types.ts'
@@ -153,23 +153,6 @@ export function readBytesOp(dispatch: DispatchFn): (p: PathSpec) => Promise<Uint
     const [data] = await dispatch('read', p)
     return (data as Uint8Array | null) ?? new Uint8Array()
   }
-}
-
-/** A directory-aware whole-file reader that preserves cache and read accounting. */
-export function fileStreamOp(
-  dispatch: DispatchFn,
-  io: IOResult,
-): (p: PathSpec) => AsyncIterable<Uint8Array> {
-  const stat = statOp(dispatch)
-  const read = readBytesOp(dispatch)
-  async function* stream(path: PathSpec): AsyncIterable<Uint8Array> {
-    if ((await stat(path)).type === FileType.DIRECTORY) throw eisdir(path)
-    const data = await read(path)
-    io.reads[path.virtual] = data
-    if (!io.cache.includes(path.virtual)) io.cache.push(path.virtual)
-    yield data
-  }
-  return stream
 }
 
 export function streamOp(dispatch: DispatchFn): (p: PathSpec) => AsyncIterable<Uint8Array> {

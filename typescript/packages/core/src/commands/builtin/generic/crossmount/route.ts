@@ -68,6 +68,7 @@ export async function handleCrossMount(
         textArgs,
         flagKwargs,
         dispatch,
+        runSingle,
         storageKey,
         ns,
         sessionView,

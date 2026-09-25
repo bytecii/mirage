@@ -97,6 +97,6 @@ describe('gunzipStream', () => {
 })
 
 it('preserves buffered output in a large member', async () => {
-  const data = ENC.encode('x'.repeat(GZIP_CHUNK_SIZE * 20 + 13))
-  expect(await gunzipChecked(await gzip(data))).toEqual(data)
+  const text = 'x'.repeat(GZIP_CHUNK_SIZE * 20 + 13)
+  expect(DEC.decode(await gunzipChecked(await gzip(ENC.encode(text))))).toBe(text)
 })
