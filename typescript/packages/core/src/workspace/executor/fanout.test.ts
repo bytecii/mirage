@@ -745,3 +745,35 @@ describe('traversal cancellation', () => {
     }
   })
 })
+
+// A walk into a nested mount sets each file's context off with `--`, as one run
+// does: ripgrep 14.1.1 and GNU grep 3.11 both separate one file's context from
+// the next file's.
+describe('fanOutTraversal context across a nested mount', () => {
+  async function runLine(cmd: string): Promise<string> {
+    const parser = await getTestParser()
+    const parent = new RAMVFS()
+    parent.store.files.set('/top.txt', new TextEncoder().encode('x\nhit\ny\n'))
+    parent.store.dirs.add('/inner')
+    const child = new RAMVFS()
+    child.store.files.set('/real.txt', new TextEncoder().encode('hit\nz\n'))
+    const registry = new OpsRegistry()
+    registry.registerVfs(parent)
+    registry.registerVfs(child)
+    const ws = new Workspace(
+      { '/base': parent, '/base/inner': child },
+      { mode: MountMode.WRITE, ops: registry, shellParser: parser },
+    )
+    try {
+      return stdoutStr(await ws.shell(cmd))
+    } finally {
+      await ws.close()
+    }
+  }
+
+  it.each([['rg -A1 hit /base'], ['grep -r -A1 hit /base']])('separates %s', async (line) => {
+    expect(await runLine(line)).toBe(
+      '/base/top.txt:hit\n/base/top.txt-y\n--\n/base/inner/real.txt:hit\n/base/inner/real.txt-z\n',
+    )
+  })
+})

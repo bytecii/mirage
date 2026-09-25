@@ -214,7 +214,9 @@ describe('rgFull single-file context', () => {
     expect(out).toEqual(['error: disk full', 'warning: low memory'])
   })
 
-  it('skips context on directory walks (documented divergence)', async () => {
+  it('prints labelled context on directory walks', async () => {
+    // ripgrep 14.1.1 prints context in a walk too, each line led by its
+    // file's name: `name:` on a match, `name-` on context.
     const out = await rgFull(
       logReaddirFn,
       logStatFn,
@@ -224,7 +226,7 @@ describe('rgFull single-file context', () => {
       opts({ contextAfter: 1 }),
       null,
     )
-    expect(out).toEqual(['/log/app.log:warning: low memory'])
+    expect(out).toEqual(['/log/app.log:warning: low memory', '/log/app.log-info: all good'])
   })
 })
 
@@ -720,5 +722,52 @@ describe('rgFull --files-without-match', () => {
       await raw('/raw/m.txt', 'a', { countOnly: true }),
     )
     expect(await raw('/raw/m.txt', 'zzz', { filesWithoutMatch: true, maxCount: 0 })).toEqual([])
+  })
+})
+
+// A walk prints context the way ripgrep 14.1.1 does: every line leads with its
+// file's name, `name:` on a match and `name-` on context, and `--` sits between
+// one file's context and the next file's.
+describe('rgFull walk context', () => {
+  const WALK: Record<string, string> = {
+    '/w/a.txt': 'x\nhit\ny\n',
+    '/w/b.txt': 'miss\n',
+    '/w/c.txt': 'hit\nz\n',
+  }
+  const readdirFn = (path: string): Promise<string[]> =>
+    path === '/w'
+      ? Promise.resolve(Object.keys(WALK))
+      : Promise.reject(new Error(`ENOTDIR: ${path}`))
+  const statFn = (path: string): Promise<FileStat> =>
+    path === '/w'
+      ? Promise.resolve(new FileStat({ name: 'w', type: FileType.DIRECTORY }))
+      : Promise.resolve(new FileStat({ name: path.slice(3), type: FileType.FILE }))
+  const readBytesFn = (path: string): Promise<Uint8Array> =>
+    Promise.resolve(ENC.encode(WALK[path] ?? ''))
+
+  it('labels every line and separates the files that print', async () => {
+    const out = await rgFull(
+      readdirFn,
+      statFn,
+      readBytesFn,
+      '/w',
+      'hit',
+      opts({ contextAfter: 1, lineNumbers: true }),
+      null,
+    )
+    expect(out).toEqual(['/w/a.txt:2:hit', '/w/a.txt-3-y', '--', '/w/c.txt:1:hit', '/w/c.txt-2-z'])
+  })
+
+  it('gives counts no separator', async () => {
+    const out = await rgFull(
+      readdirFn,
+      statFn,
+      readBytesFn,
+      '/w',
+      'hit',
+      opts({ contextAfter: 1, countOnly: true }),
+      null,
+    )
+    expect(out).toEqual(['/w/a.txt:1', '/w/c.txt:1'])
   })
 })

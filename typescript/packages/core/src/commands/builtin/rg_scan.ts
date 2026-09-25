@@ -91,6 +91,19 @@ export interface RgFullOptions {
   filesWithoutMatch?: boolean
 }
 
+// Whether the output shows -A/-B/-C context. Only printed lines carry it: -c,
+// -l and --files-without-match answer per file, and -o drops it (ripgrep
+// prints -o's context its own way).
+function printsContext(opts: RgFullOptions): boolean {
+  return (
+    (opts.contextBefore > 0 || opts.contextAfter > 0) &&
+    !opts.countOnly &&
+    !opts.filesOnly &&
+    opts.filesWithoutMatch !== true &&
+    !opts.onlyMatching
+  )
+}
+
 /**
  * Search one already-read file. `io`, when given, receives exit status 0 as
  * soon as a line is selected: under -o a zero-width match selects the line and
@@ -114,6 +127,28 @@ function searchFile(
   const count = { n: 0 }
   const byteOffsets = opts.byteOffsets === true
   const withoutMatch = opts.filesWithoutMatch === true && !opts.countOnly
+  if (printsContext(opts)) {
+    // Context rides the shared renderer: match lines `N:`, context lines
+    // `N-`, `--` between groups, all led by the label when the search prints
+    // one, and a trailing line that would be selected past -m printed as
+    // selected, as ripgrep prints it.
+    const rendered = grepContextLines(
+      data,
+      compiled,
+      opts.invert,
+      opts.lineNumbers,
+      opts.maxCount,
+      opts.contextAfter,
+      opts.contextBefore,
+      byteOffsets,
+      prefixPath,
+      true,
+    )
+    if (rendered.length > 0 && io !== null) io.exitCode = 0
+    // `decodeLine` because the renderer puts a smuggled byte back as itself,
+    // and `formatRecords` puts it out as itself too.
+    return rendered.map((chunk) => decodeLine(chunk).replace(/\n$/, ''))
+  }
   const offsets = byteOffsets ? lineOffsets(data) : []
   const globalRe = opts.onlyMatching
     ? new RegExp(
@@ -215,37 +250,12 @@ export async function rgFull(
       if (warnings !== null) warnings.push(`rg: ${path}: ${fsStrerror(err) ?? String(err)}`)
       return []
     }
-    if (
-      (opts.contextBefore > 0 || opts.contextAfter > 0) &&
-      !opts.filesOnly &&
-      !(opts.filesWithoutMatch === true && !opts.countOnly) &&
-      !opts.countOnly &&
-      !opts.onlyMatching &&
-      filePrefix === null
-    ) {
-      // Single-file context rides the shared grep renderer (match lines
-      // `N:`, context lines `N-`, `--` between groups). Directory search
-      // and filename-prefixed fanout skip context, mirroring grep's -H
-      // divergence.
-      const rendered = grepContextLines(
-        data,
-        compiled,
-        opts.invert,
-        opts.lineNumbers,
-        opts.maxCount,
-        opts.contextAfter,
-        opts.contextBefore,
-        opts.byteOffsets === true,
-      )
-      if (rendered.length > 0 && io !== null) io.exitCode = 0
-      // `decodeLine` because the renderer now puts a smuggled byte back as
-      // itself, and `formatRecords` puts it out as itself too, which
-      // `formatRecords` encodes.
-      return rendered.map((chunk) => decodeLine(chunk).replace(/\n$/, ''))
-    }
     return searchFile(path, data, compiled, opts, filePrefix, io)
   }
 
+  // ripgrep puts `--` between one file's context and the next file's,
+  // labelled or not.
+  const context = printsContext(opts)
   const results: string[] = []
   let entries: string[]
   try {
@@ -281,6 +291,7 @@ export async function rgFull(
         null,
         io,
       )
+      if (context && results.length > 0 && sub.length > 0) results.push('--')
       results.push(...sub)
       continue
     }
@@ -300,6 +311,7 @@ export async function rgFull(
     // paths (they are the output).
     const walkPrefix = opts.noFilename === true && !opts.filesOnly ? null : entry
     const fileResults = searchFile(entry, data, compiled, opts, walkPrefix, io)
+    if (context && results.length > 0 && fileResults.length > 0) results.push('--')
     results.push(...fileResults)
   }
 

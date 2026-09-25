@@ -18,7 +18,8 @@ def _render(lines, pat=ABC, **kw):
                               kw.get("line_numbers", False),
                               kw.get("max_count"), kw.get("after_context", 0),
                               kw.get("before_context", 0),
-                              kw.get("byte_offsets", False))
+                              kw.get("byte_offsets", False), kw.get("label"),
+                              kw.get("trailing_matches", False))
 
 
 class TestMaxCountZeroSelectsNothing:
@@ -163,7 +164,8 @@ def _stream(source, pat=ABC, **kw):
                 source, pat, kw.get("invert", False),
                 kw.get("line_numbers", False), kw.get("max_count"),
                 kw.get("after_context", 0), kw.get("before_context", 0),
-                kw.get("byte_offsets", False))
+                kw.get("byte_offsets", False), kw.get("label"),
+                kw.get("trailing_matches", False))
         ]
 
     return asyncio.run(drain())
@@ -187,6 +189,16 @@ def _stream(source, pat=ABC, **kw):
         "after_context": 1,
         "invert": True
     },
+    {
+        "after_context": 1,
+        "line_numbers": True,
+        "label": "f"
+    },
+    {
+        "after_context": 3,
+        "max_count": 1,
+        "trailing_matches": True
+    },
 ])
 def test_stream_renders_what_the_lines_render(kw):
     data = ("\n".join(LINES) + "\n").encode()
@@ -201,3 +213,69 @@ def test_stream_stops_once_max_count_and_its_context_are_out():
                   max_count=1,
                   after_context=1)
     assert out == [b"two abc\n", b"three\n"]
+
+
+class TestLabelledLines:
+    """A labelled line leads with its file's name, the separator bare.
+
+    `name:` on a selected line and `name-` on a context line, the `--`
+    between groups carrying no name (`rg -n -A1 abc f` and `grep -H -n -A1
+    abc f` agree on this).
+    """
+
+    def test_selected_and_context_lines_lead_with_the_name(self):
+        assert _render(LINES,
+                       line_numbers=True,
+                       after_context=1,
+                       before_context=1,
+                       label="f") == [
+                           b"f-1-one\n", b"f:2:two abc\n", b"f-3-three\n",
+                           b"f-4-four\n", b"f:5:five abc\n", b"f-6-six\n"
+                       ]
+
+    def test_the_separator_carries_no_name(self):
+        assert _render(LINES, line_numbers=True, after_context=1,
+                       label="f") == [
+                           b"f:2:two abc\n", b"f-3-three\n", b"--\n",
+                           b"f:5:five abc\n", b"f-6-six\n"
+                       ]
+
+
+class TestTrailingMatches:
+    """A line past -m that would be selected, inside the trailing context.
+
+    ripgrep 14.1.1 prints it as selected and still counts it as context:
+    `rg -n -m1 -A3 o` over hello/world/foo/bar prints `1:hello`,
+    `2:world`, `3:foo`, `4-bar`. GNU grep 3.11 prints it as context:
+    `grep -n -m1 -A2 o` prints `1:hello`, `2-world`, `3-foo`.
+    """
+
+    WORDS = ["hello", "world", "foo", "bar", "baz"]
+    PAT = re.compile("o")
+
+    def test_ripgrep_prints_it_as_selected(self):
+        assert _render(self.WORDS,
+                       self.PAT,
+                       line_numbers=True,
+                       max_count=1,
+                       after_context=3,
+                       trailing_matches=True) == [
+                           b"1:hello\n", b"2:world\n", b"3:foo\n", b"4-bar\n"
+                       ]
+
+    def test_gnu_prints_it_as_context(self):
+        assert _render(
+            self.WORDS,
+            self.PAT,
+            line_numbers=True,
+            max_count=1,
+            after_context=2) == [b"1:hello\n", b"2-world\n", b"3-foo\n"]
+
+    def test_it_still_counts_as_context(self):
+        # `rg -n -m1 -A1 o` stops after one trailing line, selected or not.
+        assert _render(self.WORDS,
+                       self.PAT,
+                       line_numbers=True,
+                       max_count=1,
+                       after_context=1,
+                       trailing_matches=True) == [b"1:hello\n", b"2:world\n"]

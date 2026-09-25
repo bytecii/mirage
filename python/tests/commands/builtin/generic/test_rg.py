@@ -620,9 +620,9 @@ async def test_rg_context_separates_distant_groups():
 
 
 @pytest.mark.asyncio
-async def test_rg_dir_search_ignores_context():
-    # Deliberate divergence: directory search skips context lines,
-    # mirroring grep's -H divergence.
+async def test_rg_dir_search_prints_labelled_context():
+    # ripgrep 14.1.1 prints context in a walk too, each line led by its
+    # file's name: `name:` on a match, `name-` on context.
     readdir, stat, rb, rs = _make_backend({"/dir/app.log": LOG})
     output, _ = await rg(
         [_spec("/dir")],
@@ -634,7 +634,8 @@ async def test_rg_dir_search_ignores_context():
         read_stream=rs,
     )
     decoded = (await _drain_async(output)).decode()
-    assert decoded == "/dir/app.log:warning: low memory\n"
+    assert decoded == ("/dir/app.log:warning: low memory\n"
+                       "/dir/app.log-info: all good\n")
 
 
 @pytest.mark.asyncio
@@ -1060,3 +1061,73 @@ async def test_rg_no_operand_cancellation_closes_stdin(monkeypatch):
         await _run([], ["needle"], {"o": True, "byte_offset": True}, source())
     assert closed
     assert calls < 100000
+
+
+A_TXT = b"hello\nworld\nfoo\nbar\nbaz\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags, paths, want", [
+    ({
+        "A": "1"
+    }, ["/a.txt", "/a.txt"
+        ], b"/a.txt:world\n/a.txt-foo\n--\n/a.txt:world\n/a.txt-foo\n"),
+    ({
+        "H": True,
+        "n": True,
+        "C": "1"
+    }, ["/a.txt"], b"/a.txt-1-hello\n/a.txt:2:world\n/a.txt-3-foo\n"),
+    ({
+        "args_I": True,
+        "A": "1"
+    }, ["/a.txt", "/a.txt"], b"world\nfoo\n--\nworld\nfoo\n"),
+])
+async def test_rg_labelled_search_prints_context(flags, paths, want):
+    # ripgrep 14.1.1 leads a context line with `name-` and a match with
+    # `name:`, and puts `--` between one file's context and the next
+    # file's, labelled or not.
+    out, io = await _run([_spec(p) for p in paths], ["world"], flags, None,
+                         {"/a.txt": A_TXT})
+    assert (out, io.exit_code) == (want, 0)
+
+
+@pytest.mark.asyncio
+async def test_rg_labelled_stdin_prints_context_beside_a_file():
+    # `printf 'a\nb\nc\n' | rg -C1 b - a.txt` on ripgrep 14.1.1.
+    out, io = await _run([_stdin_operand(), _spec("/a.txt")], ["b"],
+                         {"C": "1"}, b"a\nb\nc\n", {"/a.txt": A_TXT})
+    assert (out, io.exit_code) == (b"<stdin>-a\n<stdin>:b\n<stdin>-c\n--\n"
+                                   b"/a.txt-foo\n/a.txt:bar\n/a.txt:baz\n", 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags, want", [
+    ({}, b"/sub/nested.txt:content\n"),
+    ({
+        "c": True
+    }, b"/sub/nested.txt:1\n"),
+])
+async def test_rg_walks_a_directory_named_after_a_file(flags, want):
+    # `rg content a.txt sub` on ripgrep 14.1.1. Only the first operand was
+    # probed, so a later directory was read as a file and reported.
+    files = {"/a.txt": A_TXT, "/sub/nested.txt": b"nested\ncontent\n"}
+    out, io = await _run([_spec("/a.txt"), _spec("/sub")], ["content"], flags,
+                         None, files)
+    assert (out, io.exit_code) == (want, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paths, stdin", [
+    (["/a.txt"], None),
+    ([], A_TXT),
+])
+async def test_rg_m_prints_a_selected_trailing_line_as_selected(paths, stdin):
+    # `rg -n -m1 -A1 o a.txt` prints `2:world` on ripgrep 14.1.1, where
+    # GNU grep prints `2-world`: past -m, a trailing line that would be
+    # selected still prints as selected.
+    out, io = await _run([_spec(p) for p in paths], ["o"], {
+        "n": True,
+        "m": "1",
+        "A": "1"
+    }, stdin, {"/a.txt": A_TXT})
+    assert (out, io.exit_code) == (b"1:hello\n2:world\n", 0)

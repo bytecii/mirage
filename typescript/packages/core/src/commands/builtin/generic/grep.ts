@@ -149,6 +149,21 @@ export function parseFlags(fl: FlagView): FlagSet {
   }
 }
 
+/**
+ * Whether grep's output shows -A/-B/-C context. Only printed lines carry it:
+ * -c, -l, -L and -q print none, and -o drops it.
+ */
+export function printsContext(f: FlagSet): boolean {
+  return (
+    (f.afterContext > 0 || f.beforeContext > 0) &&
+    !f.countOnly &&
+    !f.filesOnly &&
+    !f.filesWithoutMatch &&
+    !f.quiet &&
+    !f.onlyMatching
+  )
+}
+
 function makeSpec(path: string, template: PathSpec): PathSpec {
   return new PathSpec({
     virtual: path,

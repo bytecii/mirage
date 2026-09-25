@@ -19,7 +19,7 @@ from mirage.commands.builtin.generic.crossmount.fanout.wc import combine_wc
 from mirage.commands.builtin.generic.crossmount.types import (Cmd, CrossResult,
                                                               RunSingle)
 from mirage.commands.builtin.generic.crossmount.utils import (
-    merge_operand_ios, run_operands)
+    context_separated, merge_operand_ios, run_operands)
 from mirage.commands.builtin.generic.wc import parse_flags as parse_wc_flags
 from mirage.commands.spec import SPECS
 from mirage.commands.spec.flag_view import FlagView
@@ -112,6 +112,10 @@ async def run_fanout(cmd_name: str,
         # Blank line between per-operand blocks, like one native run
         # separates its own file blocks.
         body = b"\n".join(r.data for r in results if r.data)
+    elif context_separated(cmd_name, flags):
+        # grep and ripgrep put `--` between one file's context and the
+        # next file's, as one native run separates its own files.
+        body = b"--\n".join(r.data for r in results if r.data)
     else:
         body = b"".join(r.data for r in results)
 

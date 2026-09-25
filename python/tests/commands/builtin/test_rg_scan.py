@@ -884,3 +884,46 @@ class TestFilesWithoutMatch:
                         "foo",
                         max_count=0,
                         files_without_match=True) == []
+
+
+class TestWalkContext:
+    """A walk prints context the way ripgrep 14.1.1 does.
+
+    Every line leads with its file's name, `name:` on a match and
+    `name-` on context, and `--` sits between one file's context and the
+    next file's.
+    """
+
+    @pytest.mark.anyio
+    async def test_labels_every_line_and_separates_files(self, backend):
+        await _mkdir(backend, "/tmp/w")
+        await _write(backend, "/tmp/w/a.txt", "x\nhit\ny\n")
+        await _write(backend, "/tmp/w/b.txt", "hit\nz\n")
+        assert await rg(backend, "/tmp/w", "hit", context_after=1) == [
+            "/tmp/w/a.txt:2:hit", "/tmp/w/a.txt-3-y", "--",
+            "/tmp/w/b.txt:1:hit", "/tmp/w/b.txt-2-z"
+        ]
+
+    @pytest.mark.anyio
+    async def test_a_file_with_nothing_printed_adds_no_separator(
+            self, backend):
+        await _mkdir(backend, "/tmp/w")
+        await _write(backend, "/tmp/w/a.txt", "hit\n")
+        await _write(backend, "/tmp/w/b.txt", "miss\n")
+        await _write(backend, "/tmp/w/c.txt", "hit\n")
+        assert await rg(backend, "/tmp/w", "hit", context_after=1) == [
+            "/tmp/w/a.txt:1:hit", "--", "/tmp/w/c.txt:1:hit"
+        ]
+
+    @pytest.mark.anyio
+    async def test_counts_take_no_separator(self, backend):
+        await _mkdir(backend, "/tmp/w")
+        await _write(backend, "/tmp/w/a.txt", "hit\n")
+        await _write(backend, "/tmp/w/b.txt", "hit\n")
+        assert await rg(backend,
+                        "/tmp/w",
+                        "hit",
+                        context_after=1,
+                        count_only=True) == [
+                            "/tmp/w/a.txt:1", "/tmp/w/b.txt:1"
+                        ]
