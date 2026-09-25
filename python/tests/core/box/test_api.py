@@ -231,11 +231,30 @@ async def test_realtime_server_asks_options_events(tm):
 
 
 @pytest.mark.asyncio
-async def test_events_since_keeps_its_position_on_a_page_without_one(tm):
+@pytest.mark.parametrize("stuck", [None, "10", 10])
+async def test_events_since_refuses_events_that_do_not_advance(tm, stuck):
+    page = {
+        "chunk_size": 1,
+        "next_stream_position": stuck,
+        "entries": [{
+            "event_id": "a"
+        }]
+    }
+    with patch("mirage.core.box.api.box_get",
+               new_callable=AsyncMock,
+               side_effect=[page, page, {
+                   "entries": []
+               }]):
+        with pytest.raises(RuntimeError, match="did not advance"):
+            await events_since(tm, "10", "changes")
+
+
+@pytest.mark.asyncio
+async def test_events_since_keeps_its_position_on_an_empty_page(tm):
     pages = [
         {
             "chunk_size": 1,
-            "next_stream_position": None,
+            "next_stream_position": "11",
             "entries": [{
                 "event_id": "a"
             }]
@@ -250,7 +269,7 @@ async def test_events_since_keeps_its_position_on_a_page_without_one(tm):
                side_effect=pages):
         found, position = await events_since(tm, "10", "changes")
     assert [e["event_id"] for e in found] == ["a"]
-    assert position == "10"
+    assert position == "11"
 
 
 @pytest.mark.asyncio

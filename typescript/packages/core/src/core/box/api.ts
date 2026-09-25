@@ -149,7 +149,9 @@ export async function eventsNow(tm: BoxTokenManager, streamType: string): Promis
  * Every user event after `streamPosition`, and the new position.
  *
  * Box may answer with fewer events than `limit` while more remain, so only an
- * empty page ends the read.
+ * empty page ends the read. A page of events that does not move the position
+ * on is refused: reading it again would return the same page for as long as
+ * the server keeps answering that way.
  */
 export async function eventsSince(
   tm: BoxTokenManager,
@@ -166,10 +168,14 @@ export async function eventsSince(
       stream_position: position,
       limit,
     })) as EventsResponse
-    position = nextPosition(data) ?? position
     const entries = data.entries ?? []
-    if (entries.length === 0) return { entries: out, position }
+    const advanced = nextPosition(data)
+    if (entries.length === 0) return { entries: out, position: advanced ?? position }
+    if (advanced === null || advanced === position) {
+      throw new Error('Box GET /events returned events but did not advance next_stream_position')
+    }
     out.push(...entries)
+    position = advanced
   }
 }
 

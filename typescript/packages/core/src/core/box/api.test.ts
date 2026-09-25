@@ -78,17 +78,26 @@ describe('box events api', () => {
     expect(vi.mocked(client.boxOptions).mock.calls[0]?.[1]).toBe('https://api.box.com/2.0/events')
   })
 
-  it('keeps its position on a page without one', async () => {
+  it.each([null, '10', 10])('refuses events that do not advance (%s)', async (stuck) => {
+    vi.mocked(client.boxGet).mockResolvedValueOnce({
+      chunk_size: 1,
+      next_stream_position: stuck,
+      entries: [{ event_id: 'a' }],
+    })
+    await expect(eventsSince(TM, '10', 'changes')).rejects.toThrow('did not advance')
+  })
+
+  it('keeps its position on an empty page without one', async () => {
     vi.mocked(client.boxGet)
       .mockResolvedValueOnce({
         chunk_size: 1,
-        next_stream_position: null,
+        next_stream_position: '11',
         entries: [{ event_id: 'a' }],
       })
       .mockResolvedValueOnce({ chunk_size: 0, entries: [] })
     const found = await eventsSince(TM, '10', 'changes')
     expect(found.entries.map((e) => e.event_id)).toEqual(['a'])
-    expect(found.position).toBe('10')
+    expect(found.position).toBe('11')
   })
 
   it('refuses a stream head without a position', async () => {

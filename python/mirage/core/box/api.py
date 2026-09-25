@@ -124,7 +124,9 @@ async def events_since(
     """Every user event after ``stream_position``, and the new position.
 
     Box may answer with fewer events than ``limit`` while more remain,
-    so only an empty page ends the read.
+    so only an empty page ends the read. A page of events that does not
+    move the position on is refused: reading it again would return the
+    same page for as long as the server keeps answering that way.
 
     Args:
         tm (BoxTokenManager): token manager.
@@ -142,11 +144,15 @@ async def events_since(
                                  "stream_position": position,
                                  "limit": limit,
                              })
-        position = _next_position(data) or position
         entries = data.get("entries") or []
+        advanced = _next_position(data)
         if not entries:
-            return out, position
+            return out, advanced or position
+        if advanced is None or advanced == position:
+            raise RuntimeError("Box GET /events returned events but did not "
+                               "advance next_stream_position")
         out.extend(entries)
+        position = advanced
 
 
 async def realtime_server(tm: BoxTokenManager) -> dict[str, Any]:
