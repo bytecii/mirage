@@ -386,9 +386,10 @@ async def build_onedrive(spec: dict) -> Pair | None:
 async def build_box(spec: dict) -> Pair | None:
     """Box battery against the external box fake.
 
-    The second ReaddirWalk target, and the one that proves the walk is
-    not Graph-shaped: Box addresses folders by its own ids and answers a
-    different listing endpoint.
+    Box pulls through the fake's ``/events`` stream, with the per-folder
+    walk (Box addresses folders by its own ids) as the baseline and the
+    reset, so a case passes only if the event it caused is placed on the
+    right path.
 
     Args:
         spec (dict): Parsed case file.
