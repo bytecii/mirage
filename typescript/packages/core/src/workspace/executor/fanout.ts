@@ -33,16 +33,23 @@ import {
 import { parseFindExpression, type FindExpr } from '../../commands/builtin/find_parse.ts'
 import { FindParseError, UsageError } from '../../commands/errors.ts'
 import type { FlagValue } from '../../commands/spec/types.ts'
-import type { RunSingle } from '../../commands/builtin/generic/crossmount/types.ts'
-import { runSeparator } from '../../commands/builtin/generic/crossmount/utils.ts'
+import type { DispatchFn, RunSingle } from '../../commands/builtin/generic/crossmount/types.ts'
+import {
+  crossOpts,
+  flatten,
+  readdirOp,
+  statOp,
+  streamOp,
+  runSeparator,
+} from '../../commands/builtin/generic/crossmount/utils.ts'
 import type { NamespaceView, StatPath } from '../../ops/types.ts'
 import { inMtimeWindow } from '../../utils/dates.ts'
 import { modifiedTs } from '../../core/generic/find.ts'
 import { mergeDuBlocks } from '../../commands/builtin/generic/crossmount/fanout/du.ts'
 import { compareCodePoints } from '../../utils/sort.ts'
 import { filenameMode } from '../../commands/builtin/generic/grep.ts'
-import { labelFlags, walksDescendantMounts } from '../../commands/builtin/generic/rg.ts'
-import { FlagView } from '../../commands/spec/flag_view.ts'
+import { labelFlags, rgGeneric, walksDescendantMounts } from '../../commands/builtin/generic/rg.ts'
+import { FlagView, flagOccurrences } from '../../commands/spec/flag_view.ts'
 import { specOf } from '../../commands/spec/builtins.ts'
 
 type Result = [ByteSource | null, IOResult, ExecutionNode]
@@ -159,6 +166,7 @@ function adjustDepthFlags(
   const mountDepth = pathSegments(mountPrefix).length
   const delta = mountDepth - parentDepth
   const out: Record<string, FlagValue> = { ...flagKwargs }
+  flagOccurrences(out).push(...flagOccurrences(flagKwargs))
   const first = (v: string | boolean | number | string[]): string | boolean | number =>
     Array.isArray(v) ? (v[0] ?? '') : v
   if ('maxdepth' in out) {
@@ -403,8 +411,55 @@ export async function fanOutTraversal(
   ns?: NamespaceView,
   statPath: StatPath | null = null,
   signal?: AbortSignal,
+  dispatch?: DispatchFn,
 ): Promise<Result> {
   signal?.throwIfAborted()
+  if (
+    cmdName === 'rg' &&
+    dispatch !== undefined &&
+    ['max_depth', 'sort', 'sortr', 'sort_files'].some(
+      (name) => new FlagView(flagKwargs, specOf('rg')).raw(name) !== undefined,
+    )
+  ) {
+    let stdout: ByteSource | null = null
+    let io = new IOResult()
+    try {
+      const result = await rgGeneric(
+        flatten([...paths]),
+        [...texts],
+        { ...crossOpts(flagKwargs), cwd, stdin, ...(signal !== undefined ? { signal } : {}) },
+        statOp(dispatch),
+        readdirOp(dispatch),
+        streamOp(dispatch),
+      )
+      if (result !== null) {
+        io = result[1]
+        stdout = await materialize(result[0])
+      }
+    } catch (err) {
+      if (!(err instanceof UsageError)) throw err
+      io = new IOResult({
+        exitCode: err.exitCode,
+        stderr: new TextEncoder().encode(`${err.message}\n`),
+      })
+    }
+    io.producer = {
+      command: cmdName,
+      prefixes: [primaryMount, ...allowedDescendants(registry, paths[0]?.virtual ?? cwd)].map(
+        (m) => m.prefix,
+      ),
+      declared: null,
+    }
+    return [
+      stdout,
+      io,
+      new ExecutionNode({
+        command: cmdStr,
+        exitCode: io.exitCode,
+        stderr: await materialize(io.stderr),
+      }),
+    ]
+  }
   const targetPath = paths[0]?.virtual ?? cwd
   let descendants = allowedDescendants(registry, targetPath)
   if (cmdName === 'ls') descendants = await lsBlockMounts(descendants, statPath)
@@ -482,6 +537,7 @@ export async function fanOutTraversal(
             ]
           : [...paths]
       subFlags = { ...flags }
+      flagOccurrences(subFlags).push(...flagOccurrences(flags))
       subTexts = [...texts]
     } else {
       const mountRoot = rstripSlash(mount.prefix) || '/'
@@ -681,6 +737,7 @@ export function runWithFanout(
   ensureOpen: ((vfs: VFS) => Promise<void>) | undefined,
   statPath: StatPath | null = null,
   signal?: AbortSignal,
+  dispatch?: DispatchFn,
 ): RunSingle {
   return async (cmdName, paths, texts, flagKwargs, opts) => {
     const stdin = opts?.stdin ?? null
@@ -710,6 +767,7 @@ export function runWithFanout(
       ns,
       statPath,
       signal,
+      dispatch,
     )
     return [stdout, io]
   }

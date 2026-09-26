@@ -188,3 +188,43 @@ async def test_only_matching_offsets_count_bytes():
                            only_matching=True,
                            byte_offset=True)
     assert out == "6:abc\n10:abc\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags, expected", [
+    ({
+        "line_number": True,
+        "byte_offset": True
+    }, "1:0:a\0"
+     "5:8:a\0"),
+    ({
+        "count": True
+    }, "2\0"),
+    ({
+        "files_with_matches": True
+    }, "f\0"),
+    ({
+        "after_context": "1"
+    }, "a\0b\0--\0a\0"),
+    ({
+        "only_matching": True
+    }, "a\0a\0"),
+    ({
+        "max_count": "1"
+    }, "a\0"),
+])
+async def test_null_data_records(flags, expected):
+    actual, selected = await _search(b"a\0b\0c\0d\0a",
+                                     "a",
+                                     null_data=True,
+                                     **flags)
+    assert actual == expected
+    assert selected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flags", [{}, {"line_regexp": True}])
+async def test_null_data_anchors_match_embedded_newlines(flags):
+    actual, selected = await _search(b"a\nb\0", "^a$", null_data=True, **flags)
+    assert actual == "a\nb\0"
+    assert selected

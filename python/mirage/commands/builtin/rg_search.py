@@ -55,6 +55,7 @@ class RgFlags:
         max_columns (int | None): -M, None or 0 for no limit.
         max_columns_preview (bool): --max-columns-preview.
         null (bool): -0, NUL after every printed path.
+        null_data (bool): --null-data, NUL-delimited input and output records.
         path_separator (str | None): --path-separator, the byte printed
             paths spell ``/`` with, None for ``/`` itself.
         quiet (bool): -q.
@@ -147,6 +148,7 @@ class RgFlags:
     sort: str | None
     sort_reverse: bool
     no_messages: bool
+    null_data: bool = False
 
 
 def prints_context(f: RgFlags) -> bool:
@@ -620,7 +622,7 @@ class RgPrinter:
         if f.max_columns and (_byte_len(body) + int(terminated)
                               > f.max_columns):
             body = self._exceeded(body, spans, is_match, count)
-        return encode_line(f"{head}{body}\n")
+        return encode_line(f"{head}{body}") + (b"\0" if f.null_data else b"\n")
 
     def _exceeded(self, body: str, spans: list[tuple[int, int]],
                   is_match: bool, count: int) -> str:
@@ -697,6 +699,22 @@ def nonmatch_stop(f: RgFlags) -> NonmatchStop:
     return NonmatchStop(f.stop_on_nonmatch, f.invert and not f.passthru)
 
 
+async def _records(lines: AsyncLineIterator,
+                   f: RgFlags) -> AsyncIterator[bytes]:
+    """Read records through the delimiter selected by rg.
+
+    Args:
+        lines (AsyncLineIterator): The input cursor.
+        f (RgFlags): The parsed flags.
+    """
+    delimiter = b"\0" if f.null_data else b"\n"
+    while True:
+        raw, terminated = await lines.read_until(delimiter)
+        if not terminated and not raw:
+            return
+        yield raw
+
+
 async def _listing(lines: AsyncLineIterator, pat: re.Pattern[str], f: RgFlags,
                    tally: Tally) -> None:
     """Read no further than the first selected line (-q, -l and
@@ -708,7 +726,7 @@ async def _listing(lines: AsyncLineIterator, pat: re.Pattern[str], f: RgFlags,
         f (RgFlags): the parsed flags.
         tally (Tally): receives the selection.
     """
-    async for raw in lines:
+    async for raw in _records(lines, f):
         if _selects(pat, decode_line(raw), f.invert):
             tally.selected = True
             return
@@ -727,7 +745,7 @@ async def _count(lines: AsyncLineIterator, pat: re.Pattern[str], f: RgFlags,
     count = 0
     selected = 0
     stop = nonmatch_stop(f)
-    async for raw in lines:
+    async for raw in _records(lines, f):
         text = decode_line(raw)
         if not _selects(pat, text, f.invert):
             if stop.armed:
@@ -782,7 +800,7 @@ async def _lines(lines: AsyncLineIterator, printer: RgPrinter,
     last_printed = -1
     after_left = 0
     stop = nonmatch_stop(f)
-    async for raw in lines:
+    async for raw in _records(lines, f):
         index += 1
         start = position
         position += len(raw) + 1
@@ -809,7 +827,8 @@ async def _lines(lines: AsyncLineIterator, printer: RgPrinter,
                 first = held[0][0] if held else index
                 if (last_printed >= 0 and first > last_printed + 1
                         and f.context_separator is not None):
-                    yield encode_line(f.context_separator) + b"\n"
+                    yield encode_line(f.context_separator) + (
+                        b"\0" if f.null_data else b"\n")
                 for i, s, t in held:
                     for chunk in printer.context(i, s, t):
                         yield chunk
@@ -865,7 +884,8 @@ async def search_haystack(source: AsyncIterator[bytes], pat: re.Pattern[str],
         if f.quiet or f.files_only or f.files_without_match:
             await _listing(lines, pat, f, tally)
             if not f.quiet and tally.selected == f.files_only:
-                yield encode_line(name) + (b"\0" if f.null else b"\n")
+                yield encode_line(name) + (b"\0"
+                                           if f.null or f.null_data else b"\n")
             return
         if f.count_only or f.count_matches:
             count = await _count(lines, pat, f, tally)
@@ -873,7 +893,8 @@ async def search_haystack(source: AsyncIterator[bytes], pat: re.Pattern[str],
                 head = b""
                 if label is not None:
                     head = encode_line(label) + (b"\0" if f.null else b":")
-                yield head + str(count).encode() + b"\n"
+                yield head + str(count).encode() + (b"\0"
+                                                    if f.null_data else b"\n")
             return
         printer = RgPrinter(f, pat, None if f.heading else label)
         async for chunk in _lines(lines, printer, pat, f, tally):

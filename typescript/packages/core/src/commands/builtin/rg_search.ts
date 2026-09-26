@@ -55,6 +55,7 @@ export interface RgFlags {
   maxColumns: number | null
   maxColumnsPreview: boolean
   null: boolean
+  nullData: boolean
   pathSeparator: string | null
   quiet: boolean
   countOnly: boolean
@@ -555,7 +556,7 @@ export class RgPrinter {
         body = this.exceeded(body, kept, isMatch, count)
       }
     }
-    return encodeLine(`${head}${body}\n`)
+    return encodeLine(`${head}${body}${f.nullData ? '\0' : '\n'}`)
   }
 
   // What -M prints for a line longer than its limit.
@@ -625,6 +626,15 @@ export function nonmatchStop(f: RgFlags): NonmatchStop {
   return new NonmatchStop(f.stopOnNonmatch, f.invert && !f.passthru)
 }
 
+async function readRecord(
+  lines: AsyncLineIterator,
+  f: RgFlags,
+  signal?: AbortSignal,
+): Promise<Uint8Array | null> {
+  const [raw, terminated] = await lines.readUntil(f.nullData ? 0 : 10, signal)
+  return terminated || raw.length > 0 ? raw : null
+}
+
 // Read no further than the first selected line (-q, -l and
 // --files-without-match need only that one bit).
 async function listing(
@@ -634,7 +644,11 @@ async function listing(
   tally: Tally,
   signal?: AbortSignal,
 ): Promise<void> {
-  for (let raw = await lines.readline(signal); raw !== null; raw = await lines.readline(signal)) {
+  for (
+    let raw = await readRecord(lines, f, signal);
+    raw !== null;
+    raw = await readRecord(lines, f, signal)
+  ) {
     if (selects(pat, decodeLine(raw), f.invert)) {
       tally.selected = true
       return
@@ -653,7 +667,11 @@ async function count(
   let total = 0
   let selected = 0
   const stop = nonmatchStop(f)
-  for (let raw = await lines.readline(signal); raw !== null; raw = await lines.readline(signal)) {
+  for (
+    let raw = await readRecord(lines, f, signal);
+    raw !== null;
+    raw = await readRecord(lines, f, signal)
+  ) {
     const text = decodeLine(raw)
     if (!selects(pat, text, f.invert)) {
       if (stop.armed) break
@@ -705,7 +723,11 @@ async function* printedLines(
   let lastPrinted = -1
   let afterLeft = 0
   const stop = nonmatchStop(f)
-  for (let raw = await lines.readline(signal); raw !== null; raw = await lines.readline(signal)) {
+  for (
+    let raw = await readRecord(lines, f, signal);
+    raw !== null;
+    raw = await readRecord(lines, f, signal)
+  ) {
     index += 1
     const start = position
     position += raw.byteLength + 1
@@ -732,7 +754,7 @@ async function* printedLines(
       if (context) {
         const first = held[0]?.[0] ?? index
         if (lastPrinted >= 0 && first > lastPrinted + 1 && f.contextSeparator !== null) {
-          yield encodeLine(f.contextSeparator + '\n')
+          yield encodeLine(f.contextSeparator + (f.nullData ? '\0' : '\n'))
         }
         for (const [i, s, t] of held) yield* printer.context(i, s, t)
         held.length = 0
@@ -786,7 +808,7 @@ export async function* searchHaystack(
     if (f.quiet || f.filesOnly || f.filesWithoutMatch) {
       await listing(lines, pat, f, tally, signal)
       if (!f.quiet && tally.selected === f.filesOnly) {
-        yield encodeLine(name + (f.null ? '\0' : '\n'))
+        yield encodeLine(name + (f.null || f.nullData ? '\0' : '\n'))
       }
       return
     }
@@ -794,7 +816,7 @@ export async function* searchHaystack(
       const total = await count(lines, pat, f, tally, signal)
       if (tally.selected || f.includeZero) {
         const head = label === null ? '' : label + (f.null ? '\0' : ':')
-        yield encodeLine(`${head}${String(total)}\n`)
+        yield encodeLine(`${head}${String(total)}${f.nullData ? '\0' : '\n'}`)
       }
       return
     }

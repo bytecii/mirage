@@ -202,3 +202,21 @@ describe('searchHaystack', () => {
     )
   })
 })
+
+it.each([
+  [{ line_number: true, byte_offset: true }, '1:0:a\0' + '5:8:a\0'],
+  [{ count: true }, '2\0'],
+  [{ files_with_matches: true }, 'f\0'],
+  [{ after_context: '1' }, 'a\0b\0--\0a\0'],
+  [{ only_matching: true }, 'a\0a\0'],
+  [{ max_count: '1' }, 'a\0'],
+])('reads and prints NUL records with %j', async (flags, expected) => {
+  expect(await search('a\0b\0c\0d\0a', 'a', { ...flags, null_data: true })).toBe(expected)
+})
+
+it.each([{}, { line_regexp: true }])(
+  'NUL data anchors match embedded newlines with %j',
+  async (flags) => {
+    expect(await search('a\nb\0', '^a$', { ...flags, null_data: true })).toBe('a\nb\0')
+  },
+)

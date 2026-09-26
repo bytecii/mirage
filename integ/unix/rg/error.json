@@ -416,6 +416,38 @@
       "flags": [
         "C"
       ]
+    },
+    {
+      "id": "rg_created_sort_reports_missing_capability",
+      "seq": 612302,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "rg --sort created hello /data/a.txt",
+      "expect": {
+        "exit": 2,
+        "stdout": "",
+        "stderr": "rg: sorting by creation time is not supported by the virtual filesystem\n"
+      }
     }
   ]
 }

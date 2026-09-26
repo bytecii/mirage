@@ -99,6 +99,7 @@ SPECS: dict[str, CommandSpec] = {
             Option(long="--max-columns-preview"),
             Option(long="--no-max-columns-preview"),
             Option(short="-0", long="--null"),
+            Option(long="--null-data"),
             Option(long="--path-separator", type="str"),
             Option(short="-q", long="--quiet"),
             Option(short="-c", long="--count"),

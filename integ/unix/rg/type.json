@@ -100,6 +100,38 @@
         "stdout": "/data/sub/nested.txt:content\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "rg_interleaved_type_occurrences",
+      "seq": 612300,
+      "targets": [
+        "ram",
+        "disk",
+        "redis",
+        "opfs",
+        "s3",
+        "databricks",
+        "gridfs",
+        "s3-prefix",
+        "databricks-prefix",
+        "gridfs-prefix",
+        "dropbox",
+        "dropbox-root",
+        "onedrive",
+        "sharepoint",
+        "sharepoint-prefix",
+        "ssh",
+        "nextcloud",
+        "gdrive",
+        "gdrive-folder",
+        "box"
+      ],
+      "command": "mkdir -p /data/rgorder; touch /data/rgorder/a.x /data/rgorder/b.y; rg --files --type-add 'foo:*.x' --type-clear foo --type-add 'foo:*.y' -t foo /data/rgorder; rg --files --type-add 'foo:*.y' -t foo -T foo -t foo /data/rgorder",
+      "expect": {
+        "exit": 0,
+        "stdout": "/data/rgorder/b.y\n/data/rgorder/b.y\n",
+        "stderr": ""
+      }
     }
   ]
 }

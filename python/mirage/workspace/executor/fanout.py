@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import dataclasses
+import functools
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -23,20 +24,23 @@ from mirage.commands.builtin.find_parse import parse_find_expression
 from mirage.commands.builtin.generic.crossmount.fanout.du import \
     merge_du_blocks
 from mirage.commands.builtin.generic.crossmount.types import RunSingle
-from mirage.commands.builtin.generic.crossmount.utils import run_separator
+from mirage.commands.builtin.generic.crossmount.utils import (flat_scopes,
+                                                              relay,
+                                                              run_separator)
 from mirage.commands.builtin.generic.grep import filename_mode
-from mirage.commands.builtin.generic.rg import (label_flags,
+from mirage.commands.builtin.generic.rg import (label_flags, rg,
                                                 walks_descendant_mounts)
-from mirage.commands.config import ExecContext
+from mirage.commands.config import CommandOpts, ExecContext
 from mirage.commands.errors import FindParseError, UsageError
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.flag_view import FlagBag, FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.context import path_allowed
 from mirage.io import IOResult
 from mirage.io.stream import materialize
 from mirage.io.types import ByteSource
 from mirage.ops.types import NamespaceView, StatPath
+from mirage.runtime.types import DispatchFn
 from mirage.types import FileType, PathSpec, Producer
 from mirage.utils.dates import in_mtime_window, iso_timestamp
 from mirage.utils.path import respell_one
@@ -201,7 +205,7 @@ def _adjust_depth_flags(
     parent_depth = len(_path_segments(parent_path))
     mount_depth = len(_path_segments(mount_prefix))
     delta = mount_depth - parent_depth
-    new = dict(flag_kwargs)
+    new = FlagBag(flag_kwargs)
     if "maxdepth" in new:
         raw_md = _depth_flag_value(new["maxdepth"])
         md = raw_md - delta if raw_md is not None else None
@@ -474,6 +478,7 @@ async def _fan_out_traversal(
     stdin: ByteSource | None,
     ns: NamespaceView | None = None,
     stat_path: StatPath | None = None,
+    dispatch: DispatchFn | None = None,
 ) -> tuple[ByteSource | None, IOResult, ExecutionNode]:
     """Run a traversal command across the parent mount + descendant mounts.
 
@@ -483,6 +488,9 @@ async def _fan_out_traversal(
     lines are path-sorted (see below). The parent mount's output is
     filtered to drop lines that fall under any descendant mount (avoids
     duplicates when the parent's VFS has shadowed keys).
+
+    rg with depth or sorting options uses one dispatcher-backed walk,
+    so mount boundaries do not reset depth or split the sorted output.
 
     For `find`, mount-prefix paths themselves are injected as synthetic
     directory entries (subject to depth and -type filters) because
@@ -497,6 +505,35 @@ async def _fan_out_traversal(
     never receives them reports a tree with every link missing, and a
     nested mount is not a reason for ``find`` to stop seeing one.
     """
+    if cmd_name == "rg" and dispatch is not None and any(
+            FlagView(flag_kwargs, spec=SPECS["rg"]).raw(name) is not None
+            for name in ("max_depth", "sort", "sortr", "sort_files")):
+        try:
+            stdout, io = await rg(
+                flat_scopes(paths),
+                texts,
+                CommandOpts(flags=flag_kwargs,
+                            cwd=PathSpec(virtual=cwd,
+                                         directory=cwd,
+                                         vfs_path=cwd.strip("/"))),
+                readdir=functools.partial(relay, dispatch, "readdir"),
+                stat=functools.partial(relay, dispatch, "stat"),
+                read_bytes=functools.partial(relay, dispatch, "read"),
+                read_stream=None,
+                stdin=stdin)
+            stdout = await materialize(stdout)
+        except UsageError as exc:
+            stdout = None
+            io = IOResult(exit_code=exc.exit_code, stderr=f"{exc}\n".encode())
+        io.producer = Producer(
+            command=cmd_name,
+            prefixes=tuple(m.prefix for m in [
+                primary_mount,
+                *_allowed_descendants(registry, paths[0].virtual)
+            ]))
+        return stdout, io, ExecutionNode(command=cmd_str,
+                                         exit_code=io.exit_code,
+                                         stderr=await materialize(io.stderr))
     target_path = paths[0].virtual
     descendants = _allowed_descendants(registry, target_path)
     if cmd_name == "ls":
@@ -555,7 +592,7 @@ async def _fan_out_traversal(
             sub_paths = [
                 dataclasses.replace(paths[0], raw_path=target_path), *paths[1:]
             ] if du_merge else list(paths)
-            sub_flags = dict(flag_kwargs)
+            sub_flags: dict[str, FlagValue] = FlagBag(flag_kwargs)
             sub_texts = list(texts)
         else:
             mount_root = mount.prefix.rstrip("/") or "/"
@@ -723,6 +760,7 @@ async def run_with_fanout(
     *,
     stdin: ByteSource | None = None,
     resolve_hint: PathSpec | None = None,
+    dispatch: DispatchFn | None = None,
 ) -> tuple[ByteSource | None, IOResult]:
     """One operand's native run, fanned out over the mounts nested in it.
 
@@ -742,6 +780,7 @@ async def run_with_fanout(
         ns (NamespaceView | None): the name plane's facts, offered
             whole to the sub-runs.
         stat_path (StatPath | None): dispatcher-backed stat of one path.
+        dispatch (DispatchFn | None): Operations for a unified rg walk.
         cmd_name (str): command name.
         paths (list[PathSpec]): this operand, as a one-element list.
         texts (list[str]): positional text operands.
@@ -781,5 +820,6 @@ async def run_with_fanout(
                                              cmd_name,
                                              stdin,
                                              ns=ns,
-                                             stat_path=stat_path)
+                                             stat_path=stat_path,
+                                             dispatch=dispatch)
     return stdout, io

@@ -29,7 +29,7 @@ from mirage.commands.builtin.utils.wrap import (call_read_bytes, call_readdir,
 from mirage.commands.config import CommandOpts
 from mirage.commands.errors import UsageError
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.flag_view import FlagBag, FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.io.types import ByteSource, IOResult
 from mirage.ops.types import MountIsRoot
@@ -288,6 +288,9 @@ def parse_flags(fl: FlagView) -> RgFlags:
     --sort/--sortr/--sort-files/--no-sort-files, and
     --context-separator/--no-context-separator.
 
+    Unlike ripgrep 14.1.1, creation-time sorting is refused: FileStat
+    has no birth timestamp, so accepting it would silently do nothing.
+
     Args:
         fl (FlagView): spec-validated view over the raw flag kwargs.
 
@@ -322,13 +325,16 @@ def parse_flags(fl: FlagView) -> RgFlags:
         sort = _choice(fl, sort_flag, f"--{sort_flag}", SORT_KEYS)
     separator = _last(fl, "context_separator", "no_context_separator")
     typed_separator = fl.as_str("context_separator")
-    selections: list[tuple[str, bool]] = []
-    for name in fl.typed_order("type", "type_not"):
-        selections += [(t, name == "type_not") for t in fl.as_list(name)]
-    changes: list[tuple[str, str]] = []
-    for name in fl.typed_order("type_clear", "type_add"):
-        kind = "clear" if name == "type_clear" else "add"
-        changes += [(kind, value) for value in fl.as_list(name)]
+    if sort == "created":
+        raise UsageError(
+            "rg: sorting by creation time is not supported by the virtual "
+            "filesystem")
+    selections = [(value, name == "type_not")
+                  for name, value in fl.occurrences("type", "type_not")
+                  if isinstance(value, str)]
+    changes = [("clear" if name == "type_clear" else "add", value)
+               for name, value in fl.occurrences("type_clear", "type_add")
+               if isinstance(value, str)]
     return RgFlags(
         ignore_case=case == "ignore_case",
         smart_case=case == "smart_case",
@@ -351,6 +357,7 @@ def parse_flags(fl: FlagView) -> RgFlags:
             fl, "max_columns_preview",
             "no_max_columns_preview") == "max_columns_preview",
         null=fl.as_bool("null"),
+        null_data=fl.as_bool("null_data"),
         path_separator=path_separator(fl),
         quiet=fl.as_bool("quiet"),
         count_only=listing == "count",
@@ -421,7 +428,8 @@ def rg_matcher(pattern: str, never_match: bool, f: RgFlags) -> re.Pattern[str]:
         source = rf"(?<!\w)(?:{source})(?!\w)"
     # ASCII like grep's matcher: mirage's rg shares its LC_ALL=C classes.
     folds = re.IGNORECASE if folds_case(pattern, fixed, f) else 0
-    return re.compile(source, re.ASCII | folds)
+    return re.compile(source, re.ASCII | folds
+                      | (re.MULTILINE if f.null_data else 0))
 
 
 def folds_case(pattern: str, fixed: bool, f: RgFlags) -> bool:
@@ -467,7 +475,7 @@ def needs_every_file(fl: FlagView, f: RgFlags) -> bool:
         f (RgFlags): the same flags parsed.
     """
     return (f.invert or f.files_without_match or f.list_files or f.passthru
-            or f.include_zero or f.max_filesize is not None
+            or f.include_zero or f.null_data or f.max_filesize is not None
             or bool(fl.raw("file")))
 
 
@@ -738,7 +746,8 @@ async def _settled(chunks: AsyncIterator[bytes], f: RgFlags, label: str | None,
     printed = False
     async for chunk in chunks:
         if not printed and label is not None and _headed(f):
-            yield encode_line(label) + (b"\0" if f.null else b"\n")
+            yield encode_line(label) + (b"\0"
+                                        if f.null or f.null_data else b"\n")
         printed = True
         yield chunk
     listed = printed if f.files_without_match and not f.quiet else None
@@ -928,7 +937,9 @@ async def _search_all(found: AsyncIterator[Haystack], paths: list[PathSpec],
             if label is not None and _headed(f):
                 if printed:
                     out.append(b"\n")
-                out.append(encode_line(label) + (b"\0" if f.null else b"\n"))
+                out.append(
+                    encode_line(label) +
+                    (b"\0" if f.null or f.null_data else b"\n"))
             elif context and printed and f.context_separator is not None:
                 out.append(encode_line(f.context_separator) + b"\n")
             out.extend(chunks)
@@ -960,9 +971,10 @@ def label_flags(flags: Mapping[str, FlagValue]) -> dict[str, FlagValue]:
     Args:
         flags (Mapping[str, FlagValue]): the raw flag kwargs.
     """
-    if filename_flag(FlagView(flags, spec=SPECS["rg"])) == "no_filename":
-        return dict(flags)
-    return {**flags, "with_filename": True}
+    labelled_flags = FlagBag(flags)
+    if filename_flag(FlagView(flags, spec=SPECS["rg"])) != "no_filename":
+        labelled_flags["with_filename"] = True
+    return labelled_flags
 
 
 def labelled(opts: CommandOpts) -> CommandOpts:

@@ -21,7 +21,7 @@ from mirage.commands.builtin.generic.crossmount.utils import (
     merge_operand_ios, run_operands, run_separator)
 from mirage.commands.builtin.generic.rg import label_flags
 from mirage.commands.spec import SPECS
-from mirage.commands.spec.flag_view import FlagView
+from mirage.commands.spec.flag_view import FlagBag, FlagView
 from mirage.commands.spec.types import FlagValue
 from mirage.io.stream import materialize
 from mirage.io.types import ByteSource
@@ -51,7 +51,7 @@ async def run_fanout(cmd_name: str,
         run_single (RunSingle): Executor-injected single-mount runner.
         stdin (ByteSource | None): Original stdin, re-fed per operand (tee).
     """
-    flags = dict(flag_kwargs)
+    flags: dict[str, FlagValue] = FlagBag(flag_kwargs)
     stdin_bytes: bytes | None = None
     if cmd_name == Cmd.TEE:
         stdin_bytes = await materialize(stdin) if stdin is not None else b""

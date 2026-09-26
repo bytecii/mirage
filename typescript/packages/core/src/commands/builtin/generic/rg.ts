@@ -21,7 +21,7 @@ import { fsStrerror, isFsError, isWalkError } from '../../../utils/errors.ts'
 import type { CommandFnResult, CommandOpts } from '../../config.ts'
 import { UsageError } from '../../errors.ts'
 import { specOf } from '../../spec/builtins.ts'
-import { FlagView } from '../../spec/flag_view.ts'
+import { FlagView, flagOccurrences } from '../../spec/flag_view.ts'
 import type { FlagValue } from '../../spec/types.ts'
 import { decodeLine, encodeLine } from '../grep_offsets.ts'
 import { buildPatternStr, resolvePattern } from '../grep_pattern.ts'
@@ -282,14 +282,16 @@ export function parseFlags(fl: FlagView): RgFlags {
   }
   const separator = last(fl, 'context_separator', 'no_context_separator')
   const typedSeparator = fl.asStr('context_separator')
+  if (sort === 'created') {
+    throw new UsageError('rg: sorting by creation time is not supported by the virtual filesystem')
+  }
   const selections: TypeSelection[] = []
-  for (const name of fl.typedOrder('type', 'type_not')) {
-    for (const t of fl.asList(name)) selections.push([t, name === 'type_not'])
+  for (const [name, value] of fl.occurrences('type', 'type_not')) {
+    if (typeof value === 'string') selections.push([value, name === 'type_not'])
   }
   const changes: TypeChange[] = []
-  for (const name of fl.typedOrder('type_clear', 'type_add')) {
-    const kind = name === 'type_clear' ? 'clear' : 'add'
-    for (const value of fl.asList(name)) changes.push([kind, value])
+  for (const [name, value] of fl.occurrences('type_clear', 'type_add')) {
+    if (typeof value === 'string') changes.push([name === 'type_clear' ? 'clear' : 'add', value])
   }
   return {
     ignoreCase: caseMode === 'ignore_case',
@@ -309,6 +311,7 @@ export function parseFlags(fl: FlagView): RgFlags {
     maxColumnsPreview:
       last(fl, 'max_columns_preview', 'no_max_columns_preview') === 'max_columns_preview',
     null: fl.asBool('null'),
+    nullData: fl.asBool('null_data'),
     pathSeparator: pathSeparator(fl),
     quiet: fl.asBool('quiet'),
     countOnly: listing === 'count',
@@ -371,7 +374,7 @@ export function rgMatcher(pattern: string, neverMatch: boolean, f: RgFlags): Reg
   let source = buildPatternStr(fixed ? pattern : hostNamedGroups(pattern), fixed)
   if (f.lineRegexp) source = `^(?:${source})$`
   else if (f.wholeWord) source = `(?<!\\w)(?:${source})(?!\\w)`
-  return new RegExp(source, foldsCase(pattern, fixed, f) ? 'i' : '')
+  return new RegExp(source, (foldsCase(pattern, fixed, f) ? 'i' : '') + (f.nullData ? 'm' : ''))
 }
 
 // What the walk keeps, the globs and types compiled; a glob or a type
@@ -404,6 +407,7 @@ export function needsEveryFile(fl: FlagView, f: RgFlags): boolean {
     f.listFiles ||
     f.passthru ||
     f.includeZero ||
+    f.nullData ||
     f.maxFilesize !== null ||
     (Array.isArray(file) ? file.length > 0 : file !== undefined)
   )
@@ -620,7 +624,8 @@ async function* settled(
 ): AsyncGenerator<Uint8Array> {
   let printed = false
   for await (const chunk of chunks) {
-    if (!printed && label !== null && headed(f)) yield encodeLine(label + (f.null ? '\0' : '\n'))
+    if (!printed && label !== null && headed(f))
+      yield encodeLine(label + (f.null || f.nullData ? '\0' : '\n'))
     printed = true
     yield chunk
   }
@@ -795,7 +800,7 @@ async function searchAll(
     if (chunks.length > 0) {
       if (label !== null && headed(f)) {
         if (printed) out.push(ENC.encode('\n'))
-        out.push(encodeLine(label + (f.null ? '\0' : '\n')))
+        out.push(encodeLine(label + (f.null || f.nullData ? '\0' : '\n')))
       } else if (context && printed && f.contextSeparator !== null) {
         out.push(encodeLine(f.contextSeparator + '\n'))
       }
@@ -820,8 +825,10 @@ async function searchAll(
 
 // The flags with -H added, unless -I is the line's last word on it.
 export function labelFlags(bag: Record<string, FlagValue>): Record<string, FlagValue> {
-  if (filenameFlag(new FlagView(bag, specOf('rg'))) === 'no_filename') return { ...bag }
-  return { ...bag, with_filename: true }
+  const flags = { ...bag }
+  flagOccurrences(flags).push(...flagOccurrences(bag))
+  if (filenameFlag(new FlagView(bag, specOf('rg'))) !== 'no_filename') flags.with_filename = true
+  return flags
 }
 
 /**

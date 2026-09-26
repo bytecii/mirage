@@ -205,6 +205,7 @@ export const SPECS: Record<string, CommandSpec> = {
       new Option({ long: '--max-columns-preview' }),
       new Option({ long: '--no-max-columns-preview' }),
       new Option({ short: '-0', long: '--null' }),
+      new Option({ long: '--null-data' }),
       new Option({ long: '--path-separator', type: 'str' }),
       new Option({ short: '-q', long: '--quiet' }),
       new Option({ short: '-c', long: '--count' }),

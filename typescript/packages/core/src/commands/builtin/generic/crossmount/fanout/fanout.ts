@@ -19,7 +19,7 @@ import { duTotal } from './du.ts'
 import { Cmd, type CrossResult, type OperandRun, type RunSingle } from '../types.ts'
 import { mergeOperandIos, runOperands, runSeparator } from '../utils.ts'
 import { labelFlags } from '../../rg.ts'
-import { FlagView } from '../../../../spec/flag_view.ts'
+import { FlagView, flagOccurrences } from '../../../../spec/flag_view.ts'
 import { type FlagValue } from '../../../../spec/types.ts'
 import { specOf } from '../../../../spec/builtins.ts'
 
@@ -70,6 +70,7 @@ export async function runFanout(
   stdin: ByteSource | null = null,
 ): Promise<CrossResult> {
   let flags = { ...flagKwargs }
+  flagOccurrences(flags).push(...flagOccurrences(flagKwargs))
   let stdinBytes: Uint8Array | null = null
   if (cmdName === Cmd.TEE) {
     stdinBytes = stdin !== null ? await materialize(stdin) : new Uint8Array()
