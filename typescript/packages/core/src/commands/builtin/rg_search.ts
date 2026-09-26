@@ -31,12 +31,12 @@ const REPETITION = /\{[0-9]*(,[0-9]*)?\}/y
 const ALNUM = /^[\p{L}\p{N}]$/u
 
 /**
- * Parsed rg flags (Python RgFlags parity); the complete set rg honors.
- * `ignoreCase` and `smartCase` are the last of -i/-s/-S; `lineNumbers` is
- * -n/-N with --column and --vimgrep resolved; `null` is -0, NUL after every
- * printed path; `pathSeparator` is the byte printed paths spell `/` with;
- * `contextSeparator` is null under --no-context-separator; `binary` is
- * -a/--binary/-uuu, which search the binary-extension files a walk skips.
+ * Normalized rg options, mirrored by Python's RgFlags.
+ *
+ * parseFlags resolves mutually overriding options in command-line order.
+ * maxDepth counts children at depth 1. null terminates filenames;
+ * nullData selects NUL-delimited records. typeChanges preserves add/clear
+ * order; typeSelections pairs each type name with an exclusion bit.
  */
 export interface RgFlags {
   ignoreCase: boolean

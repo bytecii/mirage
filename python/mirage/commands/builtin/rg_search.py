@@ -35,68 +35,12 @@ _REPETITION = re.compile(r"\{[0-9]*(,[0-9]*)?\}")
 
 @dataclass(frozen=True, slots=True)
 class RgFlags:
-    """Parsed rg flags (TS RgFlags parity); the complete set rg honors.
+    """Normalized rg options, mirrored by TypeScript's RgFlags.
 
-    Args:
-        ignore_case (bool): -i, the last of -i/-s/-S.
-        smart_case (bool): -S, the last of -i/-s/-S: fold case only when
-            the pattern is all lowercase.
-        invert (bool): -v, select the lines that do not match.
-        whole_word (bool): -w.
-        line_regexp (bool): -x, the pattern must match the whole line.
-        fixed_string (bool): -F.
-        line_numbers (bool): -n/-N, --column and --vimgrep resolved.
-        column (bool): --column, or --vimgrep.
-        vimgrep (bool): --vimgrep, one record per match.
-        byte_offsets (bool): -b.
-        only_matching (bool): -o.
-        replace (str | None): -r's replacement template.
-        trim (bool): --trim.
-        max_columns (int | None): -M, None or 0 for no limit.
-        max_columns_preview (bool): --max-columns-preview.
-        null (bool): -0, NUL after every printed path.
-        null_data (bool): --null-data, NUL-delimited input and output records.
-        path_separator (str | None): --path-separator, the byte printed
-            paths spell ``/`` with, None for ``/`` itself.
-        quiet (bool): -q.
-        count_only (bool): -c.
-        count_matches (bool): --count-matches.
-        include_zero (bool): --include-zero.
-        files_only (bool): -l.
-        files_without_match (bool): --files-without-match.
-        list_files (bool): --files.
-        type_list (bool): --type-list.
-        with_filename (bool): -H.
-        no_filename (bool): -I.
-        heading (bool): --heading.
-        passthru (bool): --passthru, every line printed.
-        max_count (int | None): -m.
-        stop_on_nonmatch (bool): --stop-on-nonmatch, stop reading a file
-            at the first unselected line after a selected one.
-        context_after (int): -A.
-        context_before (int): -B.
-        context_separator (str | None): the line between context groups,
-            None under --no-context-separator.
-        field_match_separator (str): the field separator on a match line.
-        field_context_separator (str): the field separator on a context
-            line.
-        globs (tuple[str, ...]): -g, in line order.
-        iglobs (tuple[str, ...]): --iglob, in line order.
-        glob_case_insensitive (bool): --glob-case-insensitive.
-        type_changes (tuple[tuple[str, str], ...]): --type-clear and
-            --type-add, as ``("clear", name)`` / ``("add", definition)``.
-        type_selections (tuple[tuple[str, bool], ...]): -t and -T, each
-            with whether it negates.
-        hidden (bool): --hidden/-., or -uu.
-        max_depth (int | None): -d.
-        max_filesize (int | None): --max-filesize, in bytes.
-        one_file_system (bool): --one-file-system, keep the walk out of
-            the mounts below the one it starts in.
-        binary (bool): -a/--binary/-uuu, search binary-extension files a
-            walk would skip.
-        sort (str | None): --sort/--sortr's key.
-        sort_reverse (bool): --sortr.
-        no_messages (bool): --no-messages.
+    parse_flags resolves mutually overriding options in command-line order.
+    max_depth counts children at depth 1. null terminates filenames;
+    null_data selects NUL-delimited records. type_changes preserves add/clear
+    order; type_selections pairs each type name with an exclusion bit.
     """
 
     ignore_case: bool
