@@ -797,7 +797,9 @@ def between_files(f: RgFlags) -> bytes:
 
     A blank line between --heading groups; otherwise the context
     separator, when context is shown and a separator is set; otherwise
-    nothing.
+    nothing. ripgrep 14.1.1 keeps this inter-file separator newline-
+    terminated even under --null-data; only intra-file context separators
+    use the record terminator.
 
     Args:
         f (RgFlags): the parsed flags.

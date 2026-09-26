@@ -660,7 +660,9 @@ export function walksDescendantMounts(bag: Record<string, FlagValue>): boolean {
  * What ripgrep prints between one file's output and the next's, for output
  * split over several runs that each labelled their files: a blank line
  * between --heading groups; otherwise the context separator, when context is
- * shown and a separator is set; otherwise nothing.
+ * shown and a separator is set; otherwise nothing. ripgrep 14.1.1 keeps this
+ * inter-file separator newline-terminated under --null-data; only intra-file
+ * context separators use the record terminator.
  */
 export function betweenFiles(f: RgFlags): string {
   if (headed(f) && !f.noFilename) return '\n'
