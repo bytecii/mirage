@@ -92,6 +92,27 @@ async def create_workspace(
     """
     registry = request.app.state.registry
     digest = config_digest(req.config)
+    # The registry id and the state-store scope must be the same identity,
+    # so resolve it before construction: explicit REST id, then the
+    # config's workspace_id, then a fresh mint. A held id is answered or
+    # refused here, before its secrets resolve or its mounts build, and
+    # before a second Workspace opens the live one's state; one being
+    # deleted is refused, since its state is about to go.
+    wid = (
+        req.id
+        if req.id is not None
+        else req.config.workspace_id or new_workspace_id()
+    )
+    _refuse_dot_id(wid)
+    if wid in registry:
+        held = registry.get(wid)
+        if registry.removing(wid) or held.config_digest != digest:
+            raise HTTPException(
+                status_code=409,
+                detail=f"workspace id already exists: {wid!r}",
+            )
+        response.status_code = 200
+        return await make_detail(held)
     try:
         # Map runtime entries construct their instances here, so a bad
         # entry (a wasi build dir that does not exist, an unknown
@@ -105,25 +126,6 @@ async def create_workspace(
         TypeError,
     ) as e:
         raise HTTPException(status_code=400, detail=str(e))
-    # The registry id and the state-store scope must be the same identity,
-    # so resolve it before construction: explicit REST id, then the
-    # config's workspace_id, then a fresh mint. A held id is answered or
-    # refused here, before a second Workspace opens the live one's state.
-    wid = (
-        req.id
-        if req.id is not None
-        else kwargs.get("workspace_id") or new_workspace_id()
-    )
-    _refuse_dot_id(wid)
-    if wid in registry:
-        held = registry.get(wid)
-        if held.config_digest != digest:
-            raise HTTPException(
-                status_code=409,
-                detail=f"workspace id already exists: {wid!r}",
-            )
-        response.status_code = 200
-        return await make_detail(held)
     kwargs["workspace_id"] = wid
     # Daemon default is disk (a created workspace survives restart with
     # zero infrastructure, like git init); the library default stays ram.

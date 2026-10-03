@@ -14,8 +14,6 @@
 
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import { tool } from '@openai/agents'
-import { mediaMimeOf } from '../read_file.ts'
-import { READ_FILE_MIME } from '../read_file/constants.ts'
 import {
   EDIT_DESCRIPTION,
   EDIT_INPUT,
@@ -63,17 +61,17 @@ export function mirageTools(ws: Workspace, options: MirageToolOperationsOptions 
       parameters: { ...READ_INPUT, additionalProperties: true } as never,
       strict: false,
       execute: async (args) => {
-        const path = (args as { path: string }).path
-        const mediaType = mediaMimeOf(path)
-        if (mediaType !== undefined && (await ws.vfs.isFile(path, options.sessionId))) {
-          const data = Uint8Array.from(await operations.readRaw(path))
-          if (mediaType === READ_FILE_MIME.PDF) {
-            const filename = path.slice(path.lastIndexOf('/') + 1)
-            return { type: 'file' as const, file: { data, mediaType, filename } }
+        const { path, offset, limit } = args as { path: string; offset?: number; limit?: number }
+        const out = await operations.readMedia(path, offset, limit)
+        if ('content' in out) return out.content[0]?.text ?? ''
+        const data = Uint8Array.from(out.data)
+        if (out.kind === 'file') {
+          return {
+            type: 'file' as const,
+            file: { data, mediaType: out.mimeType, filename: out.filename },
           }
-          return { type: 'image' as const, image: { data, mediaType } }
         }
-        return call('read', args)
+        return { type: 'image' as const, image: { data, mediaType: out.mimeType } }
       },
     }),
     mirageTool('write', WRITE_DESCRIPTION, WRITE_INPUT),

@@ -72,6 +72,17 @@ class WorkspaceRegistry:
     def __len__(self) -> int:
         return len(self._entries)
 
+    def removing(self, workspace_id: str) -> bool:
+        """Whether ``workspace_id`` is still registered only to be deleted.
+
+        Args:
+            workspace_id (str): id to check.
+
+        Returns:
+            bool: True while a ``remove`` of it is in flight.
+        """
+        return workspace_id in self._removals
+
     def get(self, workspace_id: str) -> WorkspaceEntry:
         if workspace_id not in self._entries:
             raise KeyError(workspace_id)

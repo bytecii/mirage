@@ -15,7 +15,6 @@
 import { encodeBase64 } from '@struktoai/mirage-core/utils/base64'
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import { jsonSchema, tool, type ToolSet } from 'ai'
-import { mediaMimeOf } from '../read_file.ts'
 import {
   EDIT_DESCRIPTION,
   EDIT_INPUT,
@@ -72,19 +71,19 @@ export function mirageTools(ws: Workspace, options: MirageToolOperationsOptions 
       description: `${READ_DESCRIPTION} Images and PDFs come back as files the model can see.`,
       inputSchema: jsonSchema<Record<string, unknown>>(READ_INPUT as never),
       execute: async (args: Record<string, unknown>): Promise<ReadAnswer> => {
-        const path = args.path as string
-        const mimeType = mediaMimeOf(path)
-        if (mimeType !== undefined && (await ws.vfs.isFile(path, options.sessionId))) {
-          const data = await operations.readRaw(path)
-          return {
-            kind: 'media',
-            path,
-            mimeType,
-            base64: encodeBase64(data),
-            bytes: data.byteLength,
-          }
+        const out = await operations.readMedia(
+          args.path as string,
+          args.offset as number | undefined,
+          args.limit as number | undefined,
+        )
+        if ('content' in out) return answer(out)
+        return {
+          kind: 'media',
+          path: out.path,
+          mimeType: out.mimeType,
+          base64: encodeBase64(out.data),
+          bytes: out.bytes,
         }
-        return answer(await operations.call('read', args))
       },
       toModelOutput: ({ output }) => {
         const out: ReadAnswer = output

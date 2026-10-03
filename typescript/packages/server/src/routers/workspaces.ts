@@ -119,6 +119,24 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       } catch (e) {
         return reply.status(400).send({ detail: (e as Error).message })
       }
+      // The registry id and the state-store scope must be the same identity,
+      // so resolve it before construction: explicit REST id, then the
+      // config's workspaceId, then a fresh mint. A held id is answered or
+      // refused here, before its secrets resolve or its mounts build, and
+      // before a second Workspace opens the live one's state: creating is
+      // idempotent for one config, so an id held by a workspace created
+      // from an identical config answers it with 200, and an id held by
+      // anything else, or by one being deleted, is refused.
+      const wid = body.id ?? cfg.workspaceId ?? newWorkspaceId()
+      if (DOT_IDS.has(wid)) return refuseId(reply, wid)
+      const digest = configDigest(config)
+      if (deps.registry.has(wid)) {
+        const held = deps.registry.get(wid)
+        if (deps.registry.removing(wid) || held.configDigest !== digest) {
+          return reply.status(409).send({ detail: `workspace id already exists: ${wid}` })
+        }
+        return reply.status(200).send(await makeDetail(held))
+      }
       let args: WorkspaceArgs
       try {
         args = await configToWorkspaceArgs(cfg)
@@ -134,23 +152,6 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       }
       // The Mounts ride through whole; see workspace_config.ts.
       const vfsMap: Record<string, MountSpec> = { ...args.mounts }
-      // The registry id and the state-store scope must be the same identity,
-      // so resolve it before construction: explicit REST id, then the
-      // config's workspaceId, then a fresh mint. A held id is answered or
-      // refused here, before a second Workspace opens the live one's state:
-      // creating is idempotent for one config, so an id held by a
-      // workspace created from an identical config answers it with 200,
-      // and an id held by anything else is refused.
-      const wid = body.id ?? args.options.workspaceId ?? newWorkspaceId()
-      if (DOT_IDS.has(wid)) return refuseId(reply, wid)
-      const digest = configDigest(config)
-      if (deps.registry.has(wid)) {
-        const held = deps.registry.get(wid)
-        if (held.configDigest !== digest) {
-          return reply.status(409).send({ detail: `workspace id already exists: ${wid}` })
-        }
-        return reply.status(200).send(await makeDetail(held))
-      }
       let ws: Workspace
       try {
         // Every option the config produced rides through: enumerating

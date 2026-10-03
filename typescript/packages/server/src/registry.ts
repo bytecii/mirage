@@ -51,6 +51,11 @@ export class WorkspaceRegistry {
     return this.entries.has(id)
   }
 
+  /** Whether `id` is still registered only to be deleted. */
+  removing(id: string): boolean {
+    return this.removals.has(id)
+  }
+
   get(id: string): WorkspaceEntry {
     const e = this.entries.get(id)
     if (e === undefined) throw new Error(`workspace not found: ${id}`)

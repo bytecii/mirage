@@ -104,6 +104,27 @@ describe('vercel mirageTools.read media', () => {
     expect(r.mimeType).toBe('application/pdf')
   })
 
+  it('sniffs an image whose name has no extension', async () => {
+    const ws = mkWs()
+    const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82])
+    await ws.vfs.mkdir('/archive')
+    await ws.vfs.write('/archive/document', png)
+    const r = await callTool<{ kind: string; mimeType: string; base64: string }>(
+      mirageTools(ws).read,
+      { path: '/archive/document' },
+    )
+    expect(r.kind).toBe('media')
+    expect(r.mimeType).toBe('image/png')
+    expect(Buffer.from(r.base64, 'base64')).toEqual(Buffer.from(png))
+  })
+
+  it('reads text whose name has no extension as numbered lines', async () => {
+    const ws = mkWs()
+    await ws.vfs.write('/NOTES', new TextEncoder().encode('one\ntwo\nthree\n'))
+    const r = await callTool<Answer>(mirageTools(ws).read, { path: '/NOTES', offset: 1, limit: 1 })
+    expect(r).toEqual({ text: '     2\ttwo\n', isError: false })
+  })
+
   it('counts a media read as a read of the whole file', async () => {
     const ws = mkWs()
     await ws.vfs.write('/photo.png', new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]))

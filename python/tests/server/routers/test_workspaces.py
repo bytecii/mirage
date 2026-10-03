@@ -19,10 +19,26 @@ import uuid
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic import BaseModel
 
 from mirage import Workspace
+from mirage.secrets.errors import SecretsError
+from mirage.secrets.registry import register_secrets
+from mirage.secrets.types import ResolvedSecret
 from mirage.server import build_app
 from mirage.server.registry import WorkspaceRegistry
+
+
+class HeldSourceConfig(BaseModel):
+    account: str = "default"
+
+
+async def answer_token(config: HeldSourceConfig, ref: str) -> ResolvedSecret:
+    return ResolvedSecret(fields={"credential": f"xoxb-{ref}"})
+
+
+async def refuse_token(config: HeldSourceConfig, ref: str) -> ResolvedSecret:
+    raise SecretsError("source unreachable")
 
 
 def _minimal_config() -> dict:
@@ -220,8 +236,22 @@ async def test_create_answers_a_held_config_id_without_building(monkeypatch):
         closed.append(self)
         await real_close(self)
 
+    register_secrets("held-src", HeldSourceConfig, answer_token)
     app, _ = _make_app_with_short_grace(grace=10.0)
-    body = {"config": {**_minimal_config()["config"], "workspace_id": "named"}}
+    slack = {
+        "vfs": "slack",
+        "mode": "READ",
+        "config": {
+            "token": {"from": "prod", "ref": "bot", "key": "credential"}
+        },
+    }
+    body = {
+        "config": {
+            "mounts": {"/": {"vfs": "ram", "mode": "WRITE"}, "/slack": slack},
+            "secrets": {"prod": {"source": "held-src"}},
+            "workspace_id": "named",
+        }
+    }
     other = {
         "config": {
             "mounts": {"/": {"vfs": "ram", "mode": "READ"}},
@@ -232,14 +262,42 @@ async def test_create_answers_a_held_config_id_without_building(monkeypatch):
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         first = await client.post("/v1/workspaces", json=body)
+        register_secrets("held-src", HeldSourceConfig, refuse_token)
         monkeypatch.setattr(Workspace, "close", spy)
         again = await client.post("/v1/workspaces", json=body)
         refused = await client.post("/v1/workspaces", json=other)
-    assert first.status_code == 201
-    assert again.status_code == 200
+        await app.state.registry.remove("named")
+    assert first.status_code == 201, first.text
+    assert again.status_code == 200, again.text
     assert again.json()["id"] == "named"
     assert refused.status_code == 409
     assert closed == []
+
+
+@pytest.mark.asyncio
+async def test_create_refuses_an_id_whose_deletion_is_in_flight():
+    app, _ = _make_app_with_short_grace(grace=10.0)
+    body = {"config": {**_minimal_config()["config"], "workspace_id": "going"}}
+    release = asyncio.Event()
+
+    async def cleanup() -> None:
+        await release.wait()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = await client.post("/v1/workspaces", json=body)
+        removal = asyncio.create_task(
+            app.state.registry.remove("going", cleanup)
+        )
+        await asyncio.sleep(0)
+        during = await client.post("/v1/workspaces", json=body)
+        release.set()
+        await removal
+        after = await client.post("/v1/workspaces", json=body)
+    assert first.status_code == 201
+    assert during.status_code == 409
+    assert after.status_code == 201
 
 
 @pytest.mark.asyncio

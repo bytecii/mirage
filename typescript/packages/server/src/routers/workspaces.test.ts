@@ -20,6 +20,7 @@ import { Workspace } from '@struktoai/mirage-node'
 import { buildApp } from '../app.ts'
 import { z } from '@struktoai/mirage-core/vfs/secrets'
 import { registerSecrets } from '@struktoai/mirage-core/secrets/registry'
+import { SecretsError } from '@struktoai/mirage-core/secrets/errors'
 
 const LoadAccountConfig = z.strictObject({ account: z.string().default('default') })
 type LoadAccountConfig = z.infer<typeof LoadAccountConfig>
@@ -51,14 +52,31 @@ describe('workspaces router', () => {
   })
 
   it('POST /v1/workspaces answers a held config id without building', async () => {
+    registerSecrets('held-src', LoadAccountConfig, (_config: LoadAccountConfig, ref: string) =>
+      Promise.resolve({ fields: { credential: `xoxb-${ref}` } }),
+    )
     const app = buildApp()
     const payload = {
-      config: { workspace_id: 'named', mounts: { '/': { vfs: 'ram', mode: 'write' } } },
+      config: {
+        workspace_id: 'named',
+        secrets: { prod: { source: 'held-src' } },
+        mounts: {
+          '/': { vfs: 'ram', mode: 'write' },
+          '/slack': {
+            vfs: 'slack',
+            mode: 'read',
+            config: { token: { from: 'prod', ref: 'bot', key: 'credential' } },
+          },
+        },
+      },
     }
     const other = {
       config: { workspace_id: 'named', mounts: { '/': { vfs: 'ram', mode: 'read' } } },
     }
     const first = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+    registerSecrets('held-src', LoadAccountConfig, () =>
+      Promise.reject(new SecretsError('source unreachable')),
+    )
     const close = vi.spyOn(Workspace.prototype, 'close')
     const again = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
     const refused = await app.inject({ method: 'POST', url: '/v1/workspaces', payload: other })
@@ -70,6 +88,30 @@ describe('workspaces router', () => {
     expect(refused.statusCode).toBe(409)
     expect(closed).toBe(0)
     await app.close()
+  })
+
+  it('POST /v1/workspaces refuses an id whose deletion is in flight', async () => {
+    const app = buildApp()
+    const payload = {
+      config: { workspace_id: 'going', mounts: { '/': { vfs: 'ram', mode: 'write' } } },
+    }
+    let release = (): void => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    try {
+      const first = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+      const removal = app.registry.remove('going', () => gate)
+      const during = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+      release()
+      await removal
+      const after = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+      expect(first.statusCode).toBe(201)
+      expect(during.statusCode).toBe(409)
+      expect(after.statusCode).toBe(201)
+    } finally {
+      await app.close()
+    }
   })
 
   it('POST /v1/workspaces installs the config clis section', async () => {

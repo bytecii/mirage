@@ -21,6 +21,7 @@ import type {
 } from '@struktoai/mirage-core/workspace/workspace/workspace'
 import { FileVersionTracker, StaleMirageFileError } from './file_version.ts'
 import { decode, ioToStr, replaceText } from './io_text.ts'
+import { mediaOf, type WorkspaceMediaRead } from './read_file.ts'
 
 export interface ToolResult {
   [key: string]: unknown
@@ -100,32 +101,52 @@ export class MirageToolOperations {
       try {
         data = await this.versions.read(path)
       } catch (err) {
-        if (!(await this.ws.vfs.exists(path))) {
-          return errorResult(`Error: file '${path}' not found`)
-        }
-        return errorResult(`Error: ${errorMessage(err)}`)
+        return this.readFailure(path, err)
       }
-      const text = decode(data)
-      const raw = text.length === 0 ? [] : text.split(/(?<=\n)/)
-      const lines = raw.length > 0 && raw[raw.length - 1] === '' ? raw.slice(0, -1) : raw
-      if (offset <= 0 && offset + limit >= lines.length) this.versions.markSeen(path)
-      const sliced = lines.slice(offset, offset + limit)
-      const numbered = sliced.map((line, i) => `${String(i + offset + 1).padStart(6)}\t${line}`)
-      return textResult(numbered.join(''))
+      return this.numbered(path, data, offset, limit)
     })
   }
 
   /**
-   * A file's bytes for a door that hands media to the model: read as
-   * `read` reads, so the file is stamped for a later edit and counts as
-   * seen in full.
+   * Read a file for a door that hands media to the model, in one fetch:
+   * an image or a PDF comes back as media and counts as seen in full;
+   * anything else is the `read` answer for the same bytes. Either way
+   * the file is stamped for a later edit.
    */
-  async readRaw(path: string): Promise<Uint8Array> {
+  async readMedia(
+    path: string,
+    offset = 0,
+    limit = 2000,
+  ): Promise<ToolResult | WorkspaceMediaRead> {
     return this.asSession(async () => {
-      const data = await this.versions.read(path)
+      let data: Uint8Array
+      try {
+        data = await this.versions.read(path)
+      } catch (err) {
+        return this.readFailure(path, err)
+      }
+      const media = await mediaOf(this.ws, path, data)
+      if (media === undefined) return this.numbered(path, data, offset, limit)
       this.versions.markSeen(path)
-      return data
+      return media
     })
+  }
+
+  private async readFailure(path: string, err: unknown): Promise<ToolResult> {
+    if (!(await this.ws.vfs.exists(path))) {
+      return errorResult(`Error: file '${path}' not found`)
+    }
+    return errorResult(`Error: ${errorMessage(err)}`)
+  }
+
+  private numbered(path: string, data: Uint8Array, offset: number, limit: number): ToolResult {
+    const text = decode(data)
+    const raw = text.length === 0 ? [] : text.split(/(?<=\n)/)
+    const lines = raw.length > 0 && raw[raw.length - 1] === '' ? raw.slice(0, -1) : raw
+    if (offset <= 0 && offset + limit >= lines.length) this.versions.markSeen(path)
+    const sliced = lines.slice(offset, offset + limit)
+    const numbered = sliced.map((line, i) => `${String(i + offset + 1).padStart(6)}\t${line}`)
+    return textResult(numbered.join(''))
   }
 
   /**

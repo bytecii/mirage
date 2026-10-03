@@ -23,6 +23,8 @@ export type WorkspaceFileReadResult =
   | (WorkspaceFileBase & { kind: 'file'; data: Uint8Array; filename: string })
   | (WorkspaceFileBase & { kind: 'binary'; note: string })
 
+export type WorkspaceMediaRead = Extract<WorkspaceFileReadResult, { kind: 'image' | 'file' }>
+
 export type WorkspaceFileReader = (path: string) => Promise<Uint8Array>
 
 function extOf(path: string): string {
@@ -46,18 +48,6 @@ function mimeForExtension(path: string): ReadFileMime | undefined {
   )
 }
 
-/**
- * The MIME type of a file a model takes as media, from its extension: an
- * image the models read, or a PDF. Undefined for anything else, which the
- * text read answers. Needs no fetch, so a door can choose its path before
- * reading.
- */
-export function mediaMimeOf(path: string): ReadFileMime | undefined {
-  const mime = MIME_FOR_EXTENSION[extOf(path)]
-  if (mime === undefined) return undefined
-  return MODEL_IMAGE_MIMES.has(mime) || mime === READ_FILE_MIME.PDF ? mime : undefined
-}
-
 function mimeForDetectedType(type: ContentType): ReadFileMime {
   return MIME_FOR_FILE_TYPE[type] ?? READ_FILE_MIME.BINARY
 }
@@ -67,6 +57,31 @@ function mimeFor(path: string, bytes: Uint8Array, stat: FileStat): ReadFileMime 
   if (extensionMime !== undefined) return extensionMime
   if (extOf(path) !== '') return READ_FILE_MIME.BINARY
   return mimeForDetectedType(detectFileType(bytes, stat))
+}
+
+/**
+ * A file a model takes as media, from the bytes already read: an image
+ * the models read, or a PDF. Its extension decides; a name with none is
+ * sniffed from its bytes and stat, as `readWorkspaceFile` does. Undefined
+ * for anything else, which the text read answers.
+ */
+export async function mediaOf(
+  ws: Workspace,
+  path: string,
+  data: Uint8Array,
+): Promise<WorkspaceMediaRead | undefined> {
+  const ext = extOf(path)
+  const mimeType =
+    ext === ''
+      ? mimeForDetectedType(detectFileType(data, await ws.vfs.stat(path)))
+      : MIME_FOR_EXTENSION[ext]
+  if (mimeType === undefined) return undefined
+  const base = { path, mimeType, bytes: data.byteLength }
+  if (MODEL_IMAGE_MIMES.has(mimeType)) return { ...base, kind: 'image', data }
+  if (mimeType === READ_FILE_MIME.PDF) {
+    return { ...base, kind: 'file', data, filename: filenameOf(path) }
+  }
+  return undefined
 }
 
 function isTextMime(mimeType: ReadFileMime): boolean {

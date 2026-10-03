@@ -76,4 +76,15 @@ describe('openai mirageTools', () => {
     expect(out.type).toBe('image')
     expect(out.image.mediaType).toBe('image/png')
   })
+
+  it('sniffs a PDF whose name has no extension', async () => {
+    const ws = mkWs()
+    await ws.vfs.write('/document', new TextEncoder().encode('%PDF-1.4\n%%EOF\n'))
+    const out = (await invoke(ws, 'read', { path: '/document' })) as {
+      type: string
+      file: { mediaType: string; filename: string }
+    }
+    expect(out.type).toBe('file')
+    expect(out.file).toMatchObject({ mediaType: 'application/pdf', filename: 'document' })
+  })
 })
