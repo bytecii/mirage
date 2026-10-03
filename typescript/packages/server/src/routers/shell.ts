@@ -42,9 +42,7 @@ const ShellBodySchema = z
 
 type ShellBody = z.infer<typeof ShellBodySchema>
 
-async function parseShellBody(
-  req: FastifyRequest,
-): Promise<[ShellBody, Uint8Array | undefined]> {
+async function parseShellBody(req: FastifyRequest): Promise<[ShellBody, Uint8Array | undefined]> {
   if (!req.isMultipart()) {
     const body = ShellBodySchema.parse(req.body)
     return [

@@ -181,11 +181,13 @@ export const GLOB_INPUT = {
   properties: {
     pattern: {
       type: 'string',
-      description: 'Pathname pattern such as **/*.py or src/*.ts; a relative one is matched under path.',
+      description:
+        'Pathname pattern such as **/*.py or src/*.ts; a relative one is matched under path.',
     },
     path: {
       type: 'string',
-      description: 'Absolute path of the directory a relative pattern is matched under (default /).',
+      description:
+        'Absolute path of the directory a relative pattern is matched under (default /).',
     },
   },
   required: ['pattern'],
