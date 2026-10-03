@@ -1,5 +1,8 @@
+import json
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
@@ -225,3 +228,46 @@ def test_an_unknown_session_is_refused(daemon, tree):
     assert refused.returncode == 2
     assert b"session not found: nope\n" in refused.stderr
     assert listed == []
+
+
+def test_a_refused_session_check_deletes_the_workspace(tree, tmp_path):
+    calls: list[str] = []
+
+    class RefusingDaemon(BaseHTTPRequestHandler):
+        def answer(self) -> None:
+            calls.append(f"{self.command} {self.path}")
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            refused = self.path.endswith("/sessions")
+            status = 500 if refused else 201 if self.command == "POST" else 200
+            body = (
+                {"detail": "sessions on fire"} if refused else {"id": "minted"}
+            )
+            data = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        do_GET = do_POST = do_DELETE = answer
+
+        def log_message(self, format: str, *args: str) -> None:
+            pass
+
+    stub = ThreadingHTTPServer(("127.0.0.1", 0), RefusingDaemon)
+    threading.Thread(target=stub.serve_forever, daemon=True).start()
+    try:
+        result = runner.invoke(
+            app,
+            ["mcp", str(tree / "workspace.yaml"), "-s", "agent"],
+            env={
+                "MIRAGE_DAEMON_URL": f"http://127.0.0.1:{stub.server_port}",
+                "MIRAGE_HOME": str(tmp_path),
+            },
+        )
+    finally:
+        stub.shutdown()
+        stub.server_close()
+    assert result.exit_code == 2
+    assert "daemon error 500: sessions on fire" in result.output
+    assert "DELETE /v1/workspaces/minted" in calls

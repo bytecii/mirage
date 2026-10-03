@@ -13,6 +13,8 @@
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import { createHash } from 'node:crypto'
+import type { Ops } from '@struktoai/mirage-core/ops/ops'
+import { Session } from '@struktoai/mirage-core/workspace/workspace/handle'
 import type { Workspace } from '@struktoai/mirage-core/workspace/workspace/workspace'
 
 export class StaleMirageFileError extends Error {
@@ -29,8 +31,8 @@ function fingerprint(content: Uint8Array | string): string {
   return createHash('sha256').update(content).digest('base64url')
 }
 
-async function readBuffer(ws: Workspace, path: string): Promise<Buffer> {
-  const bytes = await ws.vfs.read(path, { raw: true })
+async function readBuffer(vfs: Ops, path: string): Promise<Buffer> {
+  const bytes = await vfs.read(path, { raw: true })
   return Buffer.from(bytes)
 }
 
@@ -39,10 +41,22 @@ export class FileVersionTracker {
   private readonly editVersions = new Map<string, string>()
   private readonly seen = new Set<string>()
 
+  /** The op facade reads and writes run through, as the tracker's session. */
+  readonly vfs: Ops
+
+  /**
+   * @param ws The workspace to read and write through.
+   * @param enabled False serves every call unchecked.
+   * @param sessionId The session the reads and writes run as; the
+   *   workspace's default session when absent.
+   */
   constructor(
     private readonly ws: Workspace,
     private readonly enabled = true,
-  ) {}
+    sessionId?: string,
+  ) {
+    this.vfs = sessionId === undefined ? ws.vfs : new Session(ws, sessionId).vfs
+  }
 
   // The stamp key for a path: one key per file, not per spelling.
   // readFile and writeFile follow the namespace symlink table, so
@@ -55,8 +69,8 @@ export class FileVersionTracker {
   }
 
   private async currentVersion(path: string): Promise<string | null> {
-    if (!(await this.ws.vfs.exists(path))) return null
-    return fingerprint(await readBuffer(this.ws, path))
+    if (!(await this.vfs.exists(path))) return null
+    return fingerprint(await readBuffer(this.vfs, path))
   }
 
   private async assertVersion(path: string, expected: string): Promise<void> {
@@ -93,13 +107,13 @@ export class FileVersionTracker {
   }
 
   async read(path: string): Promise<Buffer> {
-    const content = await readBuffer(this.ws, path)
+    const content = await readBuffer(this.vfs, path)
     if (this.enabled) this.readVersions.set(this.key(path), fingerprint(content))
     return content
   }
 
   async readForEdit(path: string): Promise<Buffer> {
-    const content = await readBuffer(this.ws, path)
+    const content = await readBuffer(this.vfs, path)
     if (!this.enabled) return content
     const key = this.key(path)
     const version = fingerprint(content)
@@ -117,7 +131,7 @@ export class FileVersionTracker {
       const readVersion = this.readVersions.get(key)
       if (readVersion !== undefined) await this.assertVersion(path, readVersion)
     }
-    await this.ws.vfs.write(path, content)
+    await this.vfs.write(path, content)
     await this.recordWrite(path, key)
     if (this.enabled) this.seen.add(key)
   }
@@ -128,7 +142,7 @@ export class FileVersionTracker {
       const editVersion = this.editVersions.get(key)
       if (editVersion !== undefined) await this.assertVersion(path, editVersion)
     }
-    await this.ws.vfs.write(path, content)
+    await this.vfs.write(path, content)
     await this.recordWrite(path, key)
   }
 }

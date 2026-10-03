@@ -14,18 +14,14 @@
 
 import posixpath
 import shlex
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from mirage.agents.file_version import FileVersionTracker, StaleMirageFileError
 from mirage.agents.io_text import decode, io_to_str, replace_text
-from mirage.context.session_context import (
-    reset_current_session,
-    set_current_session,
-)
 from mirage.io.types import IOResult
+from mirage.ops.ops import Ops
 from mirage.utils.path import gnu_dirname
 from mirage.workspace.workspace import Workspace
 
@@ -82,23 +78,23 @@ def number_lines(text: str, offset: int, limit: int) -> str:
     )
 
 
-async def ensure_parents(ws: Workspace, path: str) -> None:
+async def ensure_parents(vfs: Ops, path: str) -> None:
     """Create the directories a new file needs, parents first.
 
     Args:
-        ws (Workspace): The workspace to create them in.
+        vfs (Ops): The op facade to create them through.
         path (str): Virtual path of the file about to be written.
     """
     parent = gnu_dirname(path)
     if parent in ("/", "", "."):
         return
-    if await ws.vfs.exists(parent):
+    if await vfs.exists(parent):
         return
-    await ensure_parents(ws, parent)
+    await ensure_parents(vfs, parent)
     try:
-        await ws.vfs.mkdir(parent)
+        await vfs.mkdir(parent)
     except OSError:
-        if not await ws.vfs.exists(parent):
+        if not await vfs.exists(parent):
             raise
 
 
@@ -122,18 +118,9 @@ class MirageToolOperations:
     ) -> None:
         self._ws = workspace
         self._session_id = session_id
-        self._versions = FileVersionTracker(workspace, stale_write_protection)
-
-    @contextmanager
-    def _as_session(self) -> Iterator[None]:
-        if self._session_id is None:
-            yield
-            return
-        token = set_current_session(self._ws.get_session(self._session_id))
-        try:
-            yield
-        finally:
-            reset_current_session(token)
+        self._versions = FileVersionTracker(
+            workspace, stale_write_protection, session_id
+        )
 
     async def shell(self, command: str) -> ToolResult:
         """Run a command line in the session's shell.
@@ -161,18 +148,17 @@ class MirageToolOperations:
         Returns:
             ToolResult: The numbered lines, or the failure.
         """
-        with self._as_session():
-            try:
-                data = await self._versions.read(path)
-            except (OSError, ValueError) as exc:
-                if not await self._ws.vfs.exists(path):
-                    return ToolResult(f"Error: file '{path}' not found", True)
-                return ToolResult(f"Error: {exc}", True)
-            text = decode(data)
-            lines = text.count("\n") + (1 if text and text[-1] != "\n" else 0)
-            if offset <= 0 and offset + limit >= lines:
-                self._versions.mark_seen(path)
-            return ToolResult(number_lines(text, offset, limit))
+        try:
+            data = await self._versions.read(path)
+        except (OSError, ValueError) as exc:
+            if not await self._versions.vfs.exists(path):
+                return ToolResult(f"Error: file '{path}' not found", True)
+            return ToolResult(f"Error: {exc}", True)
+        text = decode(data)
+        lines = text.count("\n") + (1 if text and text[-1] != "\n" else 0)
+        if offset <= 0 and offset + limit >= lines:
+            self._versions.mark_seen(path)
+        return ToolResult(number_lines(text, offset, limit))
 
     async def write(self, path: str, content: str) -> ToolResult:
         """Write a file; an existing one must have been read in full first.
@@ -189,21 +175,20 @@ class MirageToolOperations:
         Returns:
             ToolResult: The confirmation, or the failure.
         """
-        with self._as_session():
-            if await self._ws.vfs.exists(path) and not self._versions.has_read(
-                path
-            ):
-                return ToolResult(
-                    f"Error: file '{path}' exists; read all of it before "
-                    "overwriting it",
-                    True,
-                )
-            try:
-                await ensure_parents(self._ws, path)
-                await self._versions.write(path, content)
-            except (StaleMirageFileError, OSError, ValueError) as exc:
-                return ToolResult(f"Error: {exc}", True)
-            return ToolResult(f"Written: {path}")
+        if await self._versions.vfs.exists(
+            path
+        ) and not self._versions.has_read(path):
+            return ToolResult(
+                f"Error: file '{path}' exists; read all of it before "
+                "overwriting it",
+                True,
+            )
+        try:
+            await ensure_parents(self._versions.vfs, path)
+            await self._versions.write(path, content)
+        except (StaleMirageFileError, OSError, ValueError) as exc:
+            return ToolResult(f"Error: {exc}", True)
+        return ToolResult(f"Written: {path}")
 
     async def edit(
         self,
@@ -223,33 +208,32 @@ class MirageToolOperations:
         Returns:
             ToolResult: The confirmation, or the failure.
         """
-        with self._as_session():
-            try:
-                content = decode(await self._versions.read_for_edit(path))
-            except StaleMirageFileError as exc:
-                return ToolResult(f"Error: {exc}", True)
-            except (OSError, ValueError) as exc:
-                if not await self._ws.vfs.exists(path):
-                    return ToolResult(f"Error: file '{path}' not found", True)
-                return ToolResult(f"Error: {exc}", True)
-            new_content, count = replace_text(
-                content, old_string, new_string, replace_all
+        try:
+            content = decode(await self._versions.read_for_edit(path))
+        except StaleMirageFileError as exc:
+            return ToolResult(f"Error: {exc}", True)
+        except (OSError, ValueError) as exc:
+            if not await self._versions.vfs.exists(path):
+                return ToolResult(f"Error: file '{path}' not found", True)
+            return ToolResult(f"Error: {exc}", True)
+        new_content, count = replace_text(
+            content, old_string, new_string, replace_all
+        )
+        if count == 0:
+            return ToolResult(
+                f"Error: string not found in file: '{old_string}'", True
             )
-            if count == 0:
-                return ToolResult(
-                    f"Error: string not found in file: '{old_string}'", True
-                )
-            if count > 1 and not replace_all:
-                return ToolResult(
-                    f"Error: string appears {count} times. Pass replace_all=true",
-                    True,
-                )
-            try:
-                await self._versions.write_edit(path, new_content)
-            except (StaleMirageFileError, OSError, ValueError) as exc:
-                return ToolResult(f"Error: {exc}", True)
-            occurrences = count if replace_all else 1
-            return ToolResult(f"Edited: {path} ({occurrences} occurrence(s))")
+        if count > 1 and not replace_all:
+            return ToolResult(
+                f"Error: string appears {count} times. Pass replace_all=true",
+                True,
+            )
+        try:
+            await self._versions.write_edit(path, new_content)
+        except (StaleMirageFileError, OSError, ValueError) as exc:
+            return ToolResult(f"Error: {exc}", True)
+        occurrences = count if replace_all else 1
+        return ToolResult(f"Edited: {path} ({occurrences} occurrence(s))")
 
     async def ls(self, path: str) -> ToolResult:
         """List a directory.

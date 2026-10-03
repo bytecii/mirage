@@ -39,13 +39,21 @@ export function resolveMcpConfig(
   })
 }
 
-/** Whether a daemon workspace holds a session. */
+/**
+ * Whether a daemon workspace holds a session. A daemon refusal throws
+ * rather than exiting, so a minted workspace is deleted before the exit.
+ */
 async function hasSession(
   client: DaemonClient,
   workspacePath: string,
   sessionId: string,
 ): Promise<boolean> {
-  const rows = await handleResponse(await client.request('GET', `${workspacePath}/sessions`))
+  const r = await client.request('GET', `${workspacePath}/sessions`)
+  if (r.status >= 400) {
+    const { detail } = (await r.json()) as { detail?: unknown }
+    throw new Error(`daemon error ${String(r.status)}: ${String(detail)}`)
+  }
+  const rows: unknown = await r.json()
   return (
     Array.isArray(rows) &&
     rows.some((row) => (row as { sessionId?: unknown }).sessionId === sessionId)
@@ -103,19 +111,21 @@ async function runMcp(config: string | undefined, options: McpCommandOptions): P
   const url = `${client.settings.url}${workspacePath}/mcp${query}`
   const token = client.settings.authToken
   const headers: Record<string, string> = token === '' ? {} : { Authorization: `Bearer ${token}` }
-  if (
-    options.session !== undefined &&
-    !(await hasSession(client, workspacePath, options.session))
-  ) {
-    if (minted) await client.request('DELETE', workspacePath)
-    fail(`session not found: ${options.session}`, 2)
-  }
   const { relayStdio } = await import('@struktoai/mirage-server/mcp')
+  const session = options.session
+  let refusal: string | undefined
   try {
-    await relayStdio(url, headers)
+    if (session !== undefined) {
+      refusal = await hasSession(client, workspacePath, session).then(
+        (found) => (found ? undefined : `session not found: ${session}`),
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      )
+    }
+    if (refusal === undefined) await relayStdio(url, headers)
   } finally {
     if (minted) await client.request('DELETE', workspacePath)
   }
+  if (refusal !== undefined) fail(refusal, 2)
 }
 
 export function registerMcpCommand(program: Command): void {

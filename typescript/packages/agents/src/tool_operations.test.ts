@@ -16,6 +16,8 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { MountMode, RAMVFS, Workspace } from '@struktoai/mirage-node'
 import { MirageToolOperations } from './tool_operations.ts'
 import { parseSessionProfile } from '@struktoai/mirage-core/policy/profile'
+import { runWithSession } from '@struktoai/mirage-core/context/session_context'
+import { RAMWorkspaceStateStore } from '@struktoai/mirage-core/workspace/store/ram'
 
 let ws: Workspace
 let ops: MirageToolOperations
@@ -220,6 +222,38 @@ describe('a session', () => {
     for (const result of [written, edited, hidden]) {
       expect(result.isError).toBe(true)
       expect(textOf(result)).toMatch(/^Error: /)
+    }
+  })
+
+  it('keeps a session already bound rather than widening it', async () => {
+    const guarded = await guardedWs()
+    const wide = new MirageToolOperations(guarded, { sessionId: guarded.defaultSessionId })
+    const read = await runWithSession(guarded.getSession('agent'), () =>
+      wide.call('read', { path: '/vault/key.txt' }),
+    )
+    await guarded.close()
+    expect(textOf(read)).toBe("Error: file '/vault/key.txt' not found")
+  })
+
+  it('serves a stored session on the first call', async () => {
+    const store = new RAMWorkspaceStateStore()
+    const ram = new RAMVFS()
+    const open = (): Workspace =>
+      new Workspace({ '/': ram }, { mode: MountMode.WRITE, workspaceId: 'shared', store })
+    const writer = open()
+    writer.createSession('agent')
+    await writer.ensureSessionsLoaded()
+    await writer.flushSessions()
+    const attached = open()
+    try {
+      const written = await new MirageToolOperations(attached, { sessionId: 'agent' }).call(
+        'write',
+        { path: '/a.txt', content: 'x\n' },
+      )
+      expect(textOf(written)).toBe('Written: /a.txt')
+    } finally {
+      await writer.close()
+      await attached.close()
     }
   })
 })

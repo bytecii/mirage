@@ -14,6 +14,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer as createHttpServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { createServer, type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -89,19 +90,24 @@ async function freePort(): Promise<number> {
   return port
 }
 
-async function daemon(): Promise<Daemon> {
-  const port = await freePort()
-  const url = `http://127.0.0.1:${String(port)}`
+function daemonEnv(port: number): Record<string, string> {
   const env: Record<string, string> = {}
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v === 'string' && k !== ENV_AUTH_TOKEN && k !== ENV_TOKEN) env[k] = v
   }
   env.MIRAGE_HOME = mkTempDir()
-  env[ENV_DAEMON_URL] = url
+  env[ENV_DAEMON_URL] = `http://127.0.0.1:${String(port)}`
   env[ENV_DAEMON_PORT] = String(port)
   env[ENV_AUTH_MODE] = 'local'
   env[ENV_AUTH_TOKEN] = TOKEN
   env[ENV_TOKEN] = TOKEN
+  return env
+}
+
+async function daemon(): Promise<Daemon> {
+  const port = await freePort()
+  const url = `http://127.0.0.1:${String(port)}`
+  const env = daemonEnv(port)
   const child = spawn(process.execPath, [DAEMON], { env, stdio: 'ignore' })
   daemons.push(child)
   await until(async () => {
@@ -283,6 +289,36 @@ describe('mirage mcp over stdio', () => {
     expect(code).toBe(2)
     expect(stderr).toBe('session not found: nope\n')
     expect(await listWorkspaces(d)).toEqual([])
+  }, 60_000)
+
+  it('deletes its workspace when the daemon refuses the session check', async () => {
+    const calls: string[] = []
+    const stub = createHttpServer((req, res) => {
+      calls.push(`${req.method ?? ''} ${req.url ?? ''}`)
+      const refused = req.url?.endsWith('/sessions') === true
+      res.writeHead(refused ? 500 : req.method === 'POST' ? 201 : 200, {
+        'content-type': 'application/json',
+      })
+      res.end(JSON.stringify(refused ? { detail: 'sessions on fire' } : { id: 'minted' }))
+    })
+    await new Promise<void>((resolve) => stub.listen(0, '127.0.0.1', resolve))
+    try {
+      const { port } = stub.address() as AddressInfo
+      const child = spawn(process.execPath, [BIN, 'mcp', writeConfig(), '-s', 'agent'], {
+        env: daemonEnv(port),
+      })
+      let stderr = ''
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString()
+      })
+      child.stdin.end()
+      const code = await new Promise<number | null>((resolve) => child.on('close', resolve))
+      expect(code).toBe(2)
+      expect(stderr).toBe('daemon error 500: sessions on fire\n')
+      expect(calls).toContain('DELETE /v1/workspaces/minted')
+    } finally {
+      await new Promise((resolve) => stub.close(resolve))
+    }
   }, 60_000)
 
   it('takes a config or a workspace, not both', async () => {
