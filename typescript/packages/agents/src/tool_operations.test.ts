@@ -88,6 +88,17 @@ describe('glob', () => {
     expect((result.content[0]?.text ?? '').trim()).toBe('/src/deep/b.ts')
   })
 
+  it('follows a link to a file', async () => {
+    await ops.write('/src/a.ts', 'a')
+    await ops.shell('ln -s /src/a.ts /src/link.ts')
+    await ops.shell('ln -s /src/none.ts /src/dangling.ts')
+    const result = await ops.glob('*.ts', '/src')
+    expect((result.content[0]?.text ?? '').split(/\s+/).filter(Boolean)).toEqual([
+      '/src/a.ts',
+      '/src/link.ts',
+    ])
+  })
+
   it('skips directories', async () => {
     await ops.write('/cache.ts/inner.txt', 'x')
     await ops.write('/src/a.ts', 'a')

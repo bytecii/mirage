@@ -20,6 +20,7 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from mirage import Workspace
 from mirage.server import build_app
 from mirage.server.registry import WorkspaceRegistry
 
@@ -200,6 +201,28 @@ async def test_create_with_explicit_id():
 
         r = await client.post("/v1/workspaces", json=body)
         assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_refuses_a_held_config_id_without_building(monkeypatch):
+    closed: list[Workspace] = []
+    real_close = Workspace.close
+
+    async def spy(self: Workspace) -> None:
+        closed.append(self)
+        await real_close(self)
+
+    app, _ = _make_app_with_short_grace(grace=10.0)
+    body = {"config": {**_minimal_config()["config"], "workspace_id": "named"}}
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = await client.post("/v1/workspaces", json=body)
+        monkeypatch.setattr(Workspace, "close", spy)
+        second = await client.post("/v1/workspaces", json=body)
+    assert first.status_code == 201
+    assert second.status_code == 409
+    assert closed == []
 
 
 @pytest.mark.asyncio

@@ -199,6 +199,21 @@ describe('mirage mcp over stdio', () => {
     expect(ran.stdout).toBe('x')
   }, 60_000)
 
+  it('keeps a named workspace and attaches to it again', async () => {
+    const d = await daemon()
+    const named = join(mkTempDir(), 'named.yaml')
+    writeFileSync(named, 'workspace_id: demo?draft\nmounts:\n  /:\n    vfs: ram\n    mode: WRITE\n')
+    const first = await relay(d, named)
+    await first.callTool({ name: 'write', arguments: { path: '/kept.txt', content: 'x' } })
+    await first.close()
+    const second = await relay(d, named)
+    const read = await second.callTool({ name: 'read', arguments: { path: '/kept.txt' } })
+    await second.close()
+    const listed = (await listWorkspaces(d)) as { id: string }[]
+    expect(text(read.content)).toBe('     1\tx')
+    expect(listed.map((w) => w.id)).toEqual(['demo?draft'])
+  }, 60_000)
+
   it('takes a config or a workspace, not both', async () => {
     const child = spawn(process.execPath, [BIN, 'mcp', writeConfig(), '-w', 'ws_1'])
     const code = await new Promise<number | null>((resolve) => child.on('close', resolve))

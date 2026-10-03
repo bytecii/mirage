@@ -41,9 +41,11 @@ export function resolveMcpConfig(
 /**
  * Serve a workspace's MCP tools over stdio. The tools are the daemon's:
  * this relays stdio to the workspace's `/v1/workspaces/:id/mcp`
- * endpoint, starting the daemon when it is not running. A workspace
- * loaded from a config lives as long as this process, as a stdio
- * server's state does; one named with `--workspace` is left as it was.
+ * endpoint, starting the daemon when it is not running. A config with no
+ * `workspace_id` makes a workspace that lives as long as this process, as
+ * a stdio server's state does. A workspace with a name, the config's
+ * `workspace_id` or `--workspace`, outlives it: the config's is created
+ * when the daemon does not hold it yet, and attached to when it does.
  */
 async function runMcp(config: string | undefined, options: McpCommandOptions): Promise<void> {
   if (options.workspace !== undefined && config !== undefined) {
@@ -64,23 +66,34 @@ async function runMcp(config: string | undefined, options: McpCommandOptions): P
     fail(error instanceof Error ? error.message : String(error))
   }
   let workspaceId: string
+  let minted = false
   if (path !== undefined) {
     const { checkWorkspaceConfigFile } = await import('@struktoai/mirage-node/config')
-    const body = JSON.stringify({ config: checkWorkspaceConfigFile(path) })
-    const created = await handleResponse(await client.request('POST', '/v1/workspaces', { body }))
-    workspaceId = (created as { id: string }).id
+    const loaded = checkWorkspaceConfigFile(path)
+    const named = typeof loaded.workspace_id === 'string' ? loaded.workspace_id : ''
+    const body = JSON.stringify({ config: loaded })
+    const response = await client.request('POST', '/v1/workspaces', { body })
+    if (named !== '' && response.status === 409) {
+      workspaceId = named
+    } else {
+      workspaceId = ((await handleResponse(response)) as { id: string }).id
+      minted = named === ''
+    }
   } else {
     workspaceId = options.workspace ?? ''
-    await handleResponse(await client.request('GET', `/v1/workspaces/${workspaceId}`))
+    await handleResponse(
+      await client.request('GET', `/v1/workspaces/${encodeURIComponent(workspaceId)}`),
+    )
   }
-  const url = `${client.settings.url}/v1/workspaces/${workspaceId}/mcp`
+  const workspacePath = `/v1/workspaces/${encodeURIComponent(workspaceId)}`
+  const url = `${client.settings.url}${workspacePath}/mcp`
   const token = client.settings.authToken
   const headers: Record<string, string> = token === '' ? {} : { Authorization: `Bearer ${token}` }
   const { relayStdio } = await import('@struktoai/mirage-server/mcp')
   try {
     await relayStdio(url, headers)
   } finally {
-    if (path !== undefined) await client.request('DELETE', `/v1/workspaces/${workspaceId}`)
+    if (minted) await client.request('DELETE', workspacePath)
   }
 }
 

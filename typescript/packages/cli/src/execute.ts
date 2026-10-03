@@ -42,7 +42,8 @@ export function registerExecuteCommand(program: Command): void {
         if (opts.cwd !== undefined) body.cwd = opts.cwd
         if (opts.runtime !== undefined) body.runtime = opts.runtime
         const path =
-          `/v1/workspaces/${opts.workspace}/execute` + (opts.bg === true ? '?background=true' : '')
+          `/v1/workspaces/${encodeURIComponent(opts.workspace)}/execute` +
+          (opts.bg === true ? '?background=true' : '')
         const c = makeClient(loadDaemonSettings())
         await c.ensureRunning({ allowSpawn: false })
         let result: Response

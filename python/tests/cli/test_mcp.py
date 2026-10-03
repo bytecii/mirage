@@ -130,3 +130,18 @@ async def test_a_named_workspace_stays(daemon, tree):
         json={"command": "cat /kept.txt"},
     ).json()
     assert ran["stdout"] == "x"
+
+
+@pytest.mark.asyncio
+async def test_a_named_workspace_stays_and_is_attached_again(daemon, tmp_path):
+    named = tmp_path / "named.yaml"
+    named.write_text(
+        "workspace_id: demo?draft\nmounts:\n  /:\n    vfs: ram\n    mode: WRITE\n"
+    )
+    async with Client(relay(daemon, str(named))) as client:
+        await client.call_tool("write", {"path": "/kept.txt", "content": "x"})
+    async with Client(relay(daemon, str(named))) as client:
+        read = await client.call_tool("read", {"path": "/kept.txt"})
+    listed = httpx.get(f"{daemon['url']}/v1/workspaces").json()
+    assert read.content[0].text == "     1\tx"
+    assert [w["id"] for w in listed] == ["demo?draft"]

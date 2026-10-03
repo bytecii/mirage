@@ -14,6 +14,7 @@
 
 import asyncio
 from pathlib import Path
+from urllib.parse import quote
 
 import typer
 
@@ -66,34 +67,45 @@ def mcp_cmd(
 
     The tools are the daemon's: this relays stdio to the workspace's
     ``/v1/workspaces/{id}/mcp`` endpoint, starting the daemon when it is
-    not running. A workspace loaded from a config lives as long as this
-    process, as a stdio server's state does; one named with
-    ``--workspace`` is left as it was.
+    not running. A config with no ``workspace_id`` makes a workspace that
+    lives as long as this process, as a stdio server's state does. A
+    workspace with a name, the config's ``workspace_id`` or
+    ``--workspace``, outlives it: the config's is created when the daemon
+    does not hold it yet, and attached to when it does.
     """
-    if workspace_id is not None and config is not None:
+    if workspace_id is None:
+        try:
+            path = resolve_mcp_config(config)
+        except FileNotFoundError as e:
+            fail(str(e), exit_code=2)
+    elif config is not None:
         fail("pass a config or --workspace, not both", exit_code=2)
-    try:
-        path = None if workspace_id is not None else resolve_mcp_config(config)
-    except FileNotFoundError as e:
-        fail(str(e), exit_code=2)
+    minted = False
     with make_client() as client:
         try:
             client.ensure_running()
         except DaemonUnreachable as e:
             fail(str(e))
-        if path is not None:
+        if workspace_id is None:
             body = {"config": resolve_config(path)}
-            created = handle_response(
-                client.request("POST", "/v1/workspaces", json=body)
-            )
-            if not isinstance(created, dict):
-                fail(f"unexpected daemon response: {created!r}")
-            workspace_id = str(created["id"])
+            named = body["config"].get("workspace_id")
+            response = client.request("POST", "/v1/workspaces", json=body)
+            if named and response.status_code == 409:
+                workspace_id = str(named)
+            else:
+                created = handle_response(response)
+                if not isinstance(created, dict):
+                    fail(f"unexpected daemon response: {created!r}")
+                workspace_id = str(created["id"])
+                minted = not named
         else:
             handle_response(
-                client.request("GET", f"/v1/workspaces/{workspace_id}")
+                client.request(
+                    "GET", f"/v1/workspaces/{quote(workspace_id, safe='')}"
+                )
             )
-        url = f"{client.settings.url}/v1/workspaces/{workspace_id}/mcp"
+        workspace_path = f"/v1/workspaces/{quote(workspace_id, safe='')}"
+        url = f"{client.settings.url}{workspace_path}/mcp"
         token = client.settings.auth_token
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     # Imported here, as the TypeScript twin awaits mirage-server/mcp:
@@ -104,6 +116,6 @@ def mcp_cmd(
     try:
         asyncio.run(relay_stdio(url, headers))
     finally:
-        if path is not None:
+        if minted:
             with make_client() as client:
-                client.request("DELETE", f"/v1/workspaces/{workspace_id}")
+                client.request("DELETE", workspace_path)

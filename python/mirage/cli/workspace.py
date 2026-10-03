@@ -15,6 +15,7 @@
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import typer
 import yaml
@@ -203,7 +204,7 @@ def get_cmd(
     """Show full details for one workspace."""
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
-        path = f"/v1/workspaces/{workspace_id}"
+        path = f"/v1/workspaces/{quote(workspace_id, safe='')}"
         if verbose:
             path += "?verbose=true"
         r = client.request("GET", path)
@@ -215,7 +216,9 @@ def delete_cmd(workspace_id: str = typer.Argument(...)) -> None:
     """Stop and remove a workspace."""
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
-        r = client.request("DELETE", f"/v1/workspaces/{workspace_id}")
+        r = client.request(
+            "DELETE", f"/v1/workspaces/{quote(workspace_id, safe='')}"
+        )
     emit(handle_response(r), human=lambda d: f"Deleted workspace {d['id']}.")
 
 
@@ -259,7 +262,9 @@ def snapshot_cmd(
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
         r = client.request(
-            "POST", f"/v1/workspaces/{workspace_id}/snapshot", json=body
+            "POST",
+            f"/v1/workspaces/{quote(workspace_id, safe='')}/snapshot",
+            json=body,
         )
     emit(
         handle_response(r),
@@ -313,7 +318,9 @@ def commit_cmd(
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
         r = client.request(
-            "POST", f"/v1/workspaces/{workspace_id}/commit", json=body
+            "POST",
+            f"/v1/workspaces/{quote(workspace_id, safe='')}/commit",
+            json=body,
         )
     emit(
         handle_response(r),
@@ -334,7 +341,9 @@ def branch_cmd(
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
         r = client.request(
-            "POST", f"/v1/workspaces/{workspace_id}/branch", json=body
+            "POST",
+            f"/v1/workspaces/{quote(workspace_id, safe='')}/branch",
+            json=body,
         )
     emit(
         handle_response(r),
@@ -353,7 +362,9 @@ def log_cmd(
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
         r = client.request(
-            "GET", f"/v1/workspaces/{workspace_id}/versions?branch={branch}"
+            "GET",
+            f"/v1/workspaces/{quote(workspace_id, safe='')}/versions",
+            params={"branch": branch},
         )
     emit(handle_response(r), human=_format_version_log)
 
@@ -383,7 +394,9 @@ def diff_cmd(
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
         r = client.request(
-            "GET", f"/v1/workspaces/{workspace_id}/diff", params=params
+            "GET",
+            f"/v1/workspaces/{quote(workspace_id, safe='')}/diff",
+            params=params,
         )
     emit(handle_response(r), human=_format_diff)
 
@@ -409,7 +422,9 @@ def list_asks_cmd(
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
         r = client.request(
-            "GET", f"/v1/workspaces/{workspace_id}/asks", params=params
+            "GET",
+            f"/v1/workspaces/{quote(workspace_id, safe='')}/asks",
+            params=params,
         )
     emit(handle_response(r), human=_format_asks)
 
@@ -434,8 +449,10 @@ def allow_cmd(
     body = {"answer": "allow", "scope": scope, "note": note}
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
+        wid = quote(workspace_id, safe="")
+        aid = quote(ask_id, safe="")
         r = client.request(
-            "POST", f"/v1/workspaces/{workspace_id}/asks/{ask_id}", json=body
+            "POST", f"/v1/workspaces/{wid}/asks/{aid}", json=body
         )
     emit(
         handle_response(r),
@@ -457,8 +474,10 @@ def deny_cmd(
     body = {"answer": "deny", "note": note}
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
+        wid = quote(workspace_id, safe="")
+        aid = quote(ask_id, safe="")
         r = client.request(
-            "POST", f"/v1/workspaces/{workspace_id}/asks/{ask_id}", json=body
+            "POST", f"/v1/workspaces/{wid}/asks/{aid}", json=body
         )
     emit(handle_response(r), human=lambda d: f"Denied {d['id']}.")
 
@@ -473,6 +492,8 @@ def checkout_cmd(
     with make_client() as client:
         client.ensure_running(allow_spawn=False)
         r = client.request(
-            "POST", f"/v1/workspaces/{workspace_id}/checkout", json=body
+            "POST",
+            f"/v1/workspaces/{quote(workspace_id, safe='')}/checkout",
+            json=body,
         )
     emit(handle_response(r), human=_format_workspace_detail)

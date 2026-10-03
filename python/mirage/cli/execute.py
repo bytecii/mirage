@@ -15,6 +15,7 @@
 import json
 import sys
 from typing import Any
+from urllib.parse import quote
 
 import typer
 
@@ -61,7 +62,7 @@ def execute_cmd(
         payload["cwd"] = cwd
     if runtime:
         payload["runtime"] = runtime
-    path = f"/v1/workspaces/{workspace_id}/execute"
+    path = f"/v1/workspaces/{quote(workspace_id, safe='')}/execute"
     if background:
         path += "?background=true"
     with make_client() as client:

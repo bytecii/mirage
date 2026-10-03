@@ -87,9 +87,6 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       if (config === null || typeof config !== 'object' || Array.isArray(config)) {
         return reply.status(400).send({ detail: 'config must be a mapping' })
       }
-      if (body.id !== undefined && deps.registry.has(body.id)) {
-        return reply.status(409).send({ detail: `workspace id already exists: ${body.id}` })
-      }
       let cfg: WorkspaceConfigRaw
       try {
         cfg = loadWorkspaceConfig(config as Record<string, unknown>)
@@ -124,9 +121,13 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       const vfsMap: Record<string, MountSpec> = { ...args.mounts }
       // The registry id and the state-store scope must be the same identity,
       // so resolve it before construction: explicit REST id, then the
-      // config's workspaceId, then a fresh mint.
+      // config's workspaceId, then a fresh mint. A held id is refused here,
+      // before a second Workspace opens the live one's state.
       const wid = body.id ?? args.options.workspaceId ?? newWorkspaceId()
       if (DOT_IDS.has(wid)) return refuseId(reply, wid)
+      if (deps.registry.has(wid)) {
+        return reply.status(409).send({ detail: `workspace id already exists: ${wid}` })
+      }
       let ws: Workspace
       try {
         // Every option the config produced rides through: enumerating

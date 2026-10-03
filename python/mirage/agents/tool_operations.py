@@ -271,7 +271,8 @@ class MirageToolOperations:
 
         Only the pattern's last path component is matched, as ``find
         -name`` matches it, so ``src/**/*.py`` finds every ``.py`` file
-        under ``path``.
+        under ``path``. A symlink to a file counts, as ``find -L`` reads
+        it; a dangling one does not.
 
         Args:
             pattern (str): A file-name pattern such as ``*.py``.
@@ -283,7 +284,7 @@ class MirageToolOperations:
         name = pattern.rsplit("/", 1)[-1]
         return _io_result(
             await self._ws.shell(
-                f"find {shlex.quote(path)} -type f -name {shlex.quote(name)}",
+                f"find -L {shlex.quote(path)} -type f -name {shlex.quote(name)}",
                 session_id=self._session_id,
             )
         )

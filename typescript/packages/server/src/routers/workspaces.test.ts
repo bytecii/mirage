@@ -16,6 +16,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { Workspace } from '@struktoai/mirage-node'
 import { buildApp } from '../app.ts'
 import { z } from '@struktoai/mirage-core/vfs/secrets'
 import { registerSecrets } from '@struktoai/mirage-core/secrets/registry'
@@ -46,6 +47,22 @@ describe('workspaces router', () => {
     expect(res.statusCode).toBe(201)
     const body = res.json<{ id: string }>()
     expect(body.id).toMatch(UUID7_RE)
+    await app.close()
+  })
+
+  it('POST /v1/workspaces refuses a held config id without building it', async () => {
+    const app = buildApp()
+    const payload = {
+      config: { workspace_id: 'named', mounts: { '/': { vfs: 'ram', mode: 'write' } } },
+    }
+    const first = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+    const close = vi.spyOn(Workspace.prototype, 'close')
+    const second = await app.inject({ method: 'POST', url: '/v1/workspaces', payload })
+    const closed = close.mock.calls.length
+    close.mockRestore()
+    expect(first.statusCode).toBe(201)
+    expect(second.statusCode).toBe(409)
+    expect(closed).toBe(0)
     await app.close()
   })
 

@@ -61,10 +61,6 @@ async def create_workspace(
     req: CreateWorkspaceRequest, request: Request
 ) -> WorkspaceDetail:
     registry = request.app.state.registry
-    if req.id is not None and req.id in registry:
-        raise HTTPException(
-            status_code=409, detail=f"workspace id already exists: {req.id!r}"
-        )
     try:
         # Map runtime entries construct their instances here, so a bad
         # entry (a wasi build dir that does not exist, an unknown
@@ -80,13 +76,18 @@ async def create_workspace(
         raise HTTPException(status_code=400, detail=str(e))
     # The registry id and the state-store scope must be the same identity,
     # so resolve it before construction: explicit REST id, then the
-    # config's workspace_id, then a fresh mint.
+    # config's workspace_id, then a fresh mint. A held id is refused here,
+    # before a second Workspace opens the live one's state.
     wid = (
         req.id
         if req.id is not None
         else kwargs.get("workspace_id") or new_workspace_id()
     )
     _refuse_dot_id(wid)
+    if wid in registry:
+        raise HTTPException(
+            status_code=409, detail=f"workspace id already exists: {wid!r}"
+        )
     kwargs["workspace_id"] = wid
     # Daemon default is disk (a created workspace survives restart with
     # zero infrastructure, like git init); the library default stays ram.
