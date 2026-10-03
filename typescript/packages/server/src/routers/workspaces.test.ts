@@ -90,6 +90,44 @@ describe('workspaces router', () => {
     await app.close()
   })
 
+  it('POST /v1/workspaces builds one config once when two creates race', async () => {
+    registerSecrets(
+      'slow-src',
+      LoadAccountConfig,
+      async (_config: LoadAccountConfig, ref: string) => {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        return { fields: { credential: `xoxb-${ref}` } }
+      },
+    )
+    const app = buildApp()
+    const payload = {
+      config: {
+        workspace_id: 'racing',
+        secrets: { prod: { source: 'slow-src' } },
+        mounts: {
+          '/': { vfs: 'ram', mode: 'write' },
+          '/slack': {
+            vfs: 'slack',
+            mode: 'read',
+            config: { token: { from: 'prod', ref: 'bot', key: 'credential' } },
+          },
+        },
+      },
+    }
+    const close = vi.spyOn(Workspace.prototype, 'close')
+    try {
+      const answers = await Promise.all([
+        app.inject({ method: 'POST', url: '/v1/workspaces', payload }),
+        app.inject({ method: 'POST', url: '/v1/workspaces', payload }),
+      ])
+      expect(answers.map((r) => r.statusCode).sort()).toEqual([200, 201])
+      expect(close).not.toHaveBeenCalled()
+    } finally {
+      close.mockRestore()
+      await app.close()
+    }
+  })
+
   it('POST /v1/workspaces refuses an id whose deletion is in flight', async () => {
     const app = buildApp()
     const payload = {

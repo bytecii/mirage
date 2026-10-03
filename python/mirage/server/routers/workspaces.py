@@ -97,68 +97,70 @@ async def create_workspace(
     # config's workspace_id, then a fresh mint. A held id is answered or
     # refused here, before its secrets resolve or its mounts build, and
     # before a second Workspace opens the live one's state; one being
-    # deleted is refused, since its state is about to go.
+    # deleted is refused, since its state is about to go. Creates of one
+    # id run one at a time, so a second answers what the first built.
     wid = (
         req.id
         if req.id is not None
         else req.config.workspace_id or new_workspace_id()
     )
     _refuse_dot_id(wid)
-    if wid in registry:
-        held = registry.get(wid)
-        if registry.removing(wid) or held.config_digest != digest:
-            raise HTTPException(
-                status_code=409,
-                detail=f"workspace id already exists: {wid!r}",
+    async with registry.creating(wid):
+        if wid in registry:
+            held = registry.get(wid)
+            if registry.removing(wid) or held.config_digest != digest:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"workspace id already exists: {wid!r}",
+                )
+            response.status_code = 200
+            return await make_detail(held)
+        try:
+            # Map runtime entries construct their instances here, so a bad
+            # entry (a wasi build dir that does not exist, an unknown
+            # option) fails the create like any other config mistake.
+            kwargs = (await resolve_secrets(req.config)).to_workspace_kwargs()
+        except (
+            FileNotFoundError,
+            ImportError,
+            SecretsError,
+            ValueError,
+            TypeError,
+        ) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        kwargs["workspace_id"] = wid
+        # Daemon default is disk (a created workspace survives restart with
+        # zero infrastructure, like git init); the library default stays ram.
+        # A config with an explicit store: block always wins.
+        if "store" not in kwargs:
+            kwargs["store"] = DiskWorkspaceStateStore(
+                str(request.app.state.state_root)
             )
-        response.status_code = 200
-        return await make_detail(held)
-    try:
-        # Map runtime entries construct their instances here, so a bad
-        # entry (a wasi build dir that does not exist, an unknown
-        # option) fails the create like any other config mistake.
-        kwargs = (await resolve_secrets(req.config)).to_workspace_kwargs()
-    except (
-        FileNotFoundError,
-        ImportError,
-        SecretsError,
-        ValueError,
-        TypeError,
-    ) as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    kwargs["workspace_id"] = wid
-    # Daemon default is disk (a created workspace survives restart with
-    # zero infrastructure, like git init); the library default stays ram.
-    # A config with an explicit store: block always wins.
-    if "store" not in kwargs:
-        kwargs["store"] = DiskWorkspaceStateStore(
-            str(request.app.state.state_root)
-        )
-        kwargs["owns_store"] = True
-    try:
-        ws = Workspace(**kwargs)
-    except (FileNotFoundError, ImportError, SecretsError, ValueError) as e:
-        # Construction failures (a wasi build dir that does not exist, a
-        # missing runtime extra, a `secrets:` block naming a source the
-        # host cannot resolve) are the caller's to fix, not a 500.
-        raise HTTPException(status_code=400, detail=str(e))
-    try:
-        for prefix, (
-            backend,
-            mountpoint,
-        ) in req.config.kernel_mounts().items():
-            await run_blocking(
-                ws.add_fuse_mount, prefix, mountpoint, backend=backend
-            )
-        entry = registry.add(ws, workspace_id=wid)
-        entry.config_digest = digest
-    except ValueError as e:
-        await ws.close()
-        raise HTTPException(status_code=409, detail=str(e))
-    except Exception:
-        await ws.close()
-        raise
-    return await make_detail(entry)
+            kwargs["owns_store"] = True
+        try:
+            ws = Workspace(**kwargs)
+        except (FileNotFoundError, ImportError, SecretsError, ValueError) as e:
+            # Construction failures (a wasi build dir that does not exist, a
+            # missing runtime extra, a `secrets:` block naming a source the
+            # host cannot resolve) are the caller's to fix, not a 500.
+            raise HTTPException(status_code=400, detail=str(e))
+        try:
+            for prefix, (
+                backend,
+                mountpoint,
+            ) in req.config.kernel_mounts().items():
+                await run_blocking(
+                    ws.add_fuse_mount, prefix, mountpoint, backend=backend
+                )
+            entry = registry.add(ws, workspace_id=wid)
+            entry.config_digest = digest
+        except ValueError as e:
+            await ws.close()
+            raise HTTPException(status_code=409, detail=str(e))
+        except Exception:
+            await ws.close()
+            raise
+        return await make_detail(entry)
 
 
 @router.get("", response_model=list[WorkspaceBrief])

@@ -15,7 +15,8 @@
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any, Iterable
 
 from mirage import Workspace, WorkspaceRunner
@@ -60,6 +61,7 @@ class WorkspaceRegistry:
         """
         self._entries: dict[str, WorkspaceEntry] = {}
         self._removals: dict[str, asyncio.Task[WorkspaceEntry]] = {}
+        self._creates: dict[str, asyncio.Future[None]] = {}
         self.idle_grace_seconds = idle_grace_seconds
         self.exit_event = (
             exit_event if exit_event is not None else asyncio.Event()
@@ -71,6 +73,27 @@ class WorkspaceRegistry:
 
     def __len__(self) -> int:
         return len(self._entries)
+
+    @asynccontextmanager
+    async def creating(self, workspace_id: str) -> AsyncIterator[None]:
+        """Run one create of ``workspace_id`` at a time.
+
+        A create that arrives while another of the same id is building
+        waits for it, then finds the workspace it registered, rather than
+        building a second over its state and failing to register it.
+
+        Args:
+            workspace_id (str): the id being created.
+        """
+        while (pending := self._creates.get(workspace_id)) is not None:
+            await asyncio.wait({pending})
+        done = asyncio.get_running_loop().create_future()
+        self._creates[workspace_id] = done
+        try:
+            yield
+        finally:
+            del self._creates[workspace_id]
+            done.set_result(None)
 
     def removing(self, workspace_id: str) -> bool:
         """Whether ``workspace_id`` is still registered only to be deleted.

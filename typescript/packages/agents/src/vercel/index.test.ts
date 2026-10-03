@@ -12,7 +12,8 @@
 // limitations under the License.
 // ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { Ops } from '@struktoai/mirage-core/ops/ops'
 import { OpsRegistry } from '@struktoai/mirage-core/ops/registry'
 import { RAMVFS } from '@struktoai/mirage-core/vfs/ram/ram'
 import { MountMode } from '@struktoai/mirage-core/types'
@@ -118,11 +119,15 @@ describe('vercel mirageTools.read media', () => {
     expect(Buffer.from(r.base64, 'base64')).toEqual(Buffer.from(png))
   })
 
-  it('reads text whose name has no extension as numbered lines', async () => {
+  it('reads text whose name has no extension as numbered lines, without a stat', async () => {
     const ws = mkWs()
     await ws.vfs.write('/NOTES', new TextEncoder().encode('one\ntwo\nthree\n'))
+    const stat = vi.spyOn(Ops.prototype, 'stat')
     const r = await callTool<Answer>(mirageTools(ws).read, { path: '/NOTES', offset: 1, limit: 1 })
+    const stats = stat.mock.calls.length
+    stat.mockRestore()
     expect(r).toEqual({ text: '     2\ttwo\n', isError: false })
+    expect(stats).toBe(0)
   })
 
   it('counts a media read as a read of the whole file', async () => {

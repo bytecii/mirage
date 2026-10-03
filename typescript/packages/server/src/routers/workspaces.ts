@@ -126,65 +126,68 @@ export function registerWorkspacesRoutes(app: FastifyInstance, deps: WorkspaceRo
       // before a second Workspace opens the live one's state: creating is
       // idempotent for one config, so an id held by a workspace created
       // from an identical config answers it with 200, and an id held by
-      // anything else, or by one being deleted, is refused.
+      // anything else, or by one being deleted, is refused. Creates of one
+      // id run one at a time, so a second answers what the first built.
       const wid = body.id ?? cfg.workspaceId ?? newWorkspaceId()
       if (DOT_IDS.has(wid)) return refuseId(reply, wid)
       const digest = configDigest(config)
-      if (deps.registry.has(wid)) {
-        const held = deps.registry.get(wid)
-        if (deps.registry.removing(wid) || held.configDigest !== digest) {
-          return reply.status(409).send({ detail: `workspace id already exists: ${wid}` })
+      return deps.registry.creating(wid, async () => {
+        if (deps.registry.has(wid)) {
+          const held = deps.registry.get(wid)
+          if (deps.registry.removing(wid) || held.configDigest !== digest) {
+            return reply.status(409).send({ detail: `workspace id already exists: ${wid}` })
+          }
+          return reply.status(200).send(await makeDetail(held))
         }
-        return reply.status(200).send(await makeDetail(held))
-      }
-      let args: WorkspaceArgs
-      try {
-        args = await configToWorkspaceArgs(cfg)
-      } catch (e) {
-        if (e instanceof SecretsError || e instanceof z.ZodError || e instanceof VFSConfigError) {
-          // A `secrets:` block the host cannot resolve is the caller's
-          // config, not a backend that would not answer. Resolution moved
-          // into configToWorkspaceArgs, so without this the same body that
-          // python's create route refuses with 400 got a 502 here.
-          return reply.status(400).send({ detail: e.message })
+        let args: WorkspaceArgs
+        try {
+          args = await configToWorkspaceArgs(cfg)
+        } catch (e) {
+          if (e instanceof SecretsError || e instanceof z.ZodError || e instanceof VFSConfigError) {
+            // A `secrets:` block the host cannot resolve is the caller's
+            // config, not a backend that would not answer. Resolution moved
+            // into configToWorkspaceArgs, so without this the same body that
+            // python's create route refuses with 400 got a 502 here.
+            return reply.status(400).send({ detail: e.message })
+          }
+          return reply.status(502).send({ detail: `VFS build failed: ${(e as Error).message}` })
         }
-        return reply.status(502).send({ detail: `VFS build failed: ${(e as Error).message}` })
-      }
-      // The Mounts ride through whole; see workspace_config.ts.
-      const vfsMap: Record<string, MountSpec> = { ...args.mounts }
-      let ws: Workspace
-      try {
-        // Every option the config produced rides through: enumerating
-        // them by hand silently dropped `clis` and `guards`, so a yaml
-        // clis block parsed, validated, and then installed nothing.
-        // Only identity and the store default are the daemon's to
-        // decide.
-        ws = new Workspace(vfsMap, {
-          ...args.options,
-          workspaceId: wid,
-          // Daemon default is disk (a created workspace survives restart
-          // with zero infrastructure, like git init); the library default
-          // stays ram. An explicit store always wins.
-          store: args.options.store ?? new DiskWorkspaceStateStore({ root: deps.stateRoot }),
-          // Whichever of the two built it, no sibling workspace shares
-          // it, so this workspace is the one that closes it.
-          ownsStore: true,
-        })
-      } catch (e) {
-        return reply.status(400).send({ detail: (e as Error).message })
-      }
-      let entry
-      try {
-        for (const [prefix, [backend, mountpoint]] of Object.entries(args.kernelMounts)) {
-          await ws.addFuseMount(prefix, mountpoint, undefined, backend)
+        // The Mounts ride through whole; see workspace_config.ts.
+        const vfsMap: Record<string, MountSpec> = { ...args.mounts }
+        let ws: Workspace
+        try {
+          // Every option the config produced rides through: enumerating
+          // them by hand silently dropped `clis` and `guards`, so a yaml
+          // clis block parsed, validated, and then installed nothing.
+          // Only identity and the store default are the daemon's to
+          // decide.
+          ws = new Workspace(vfsMap, {
+            ...args.options,
+            workspaceId: wid,
+            // Daemon default is disk (a created workspace survives restart
+            // with zero infrastructure, like git init); the library default
+            // stays ram. An explicit store always wins.
+            store: args.options.store ?? new DiskWorkspaceStateStore({ root: deps.stateRoot }),
+            // Whichever of the two built it, no sibling workspace shares
+            // it, so this workspace is the one that closes it.
+            ownsStore: true,
+          })
+        } catch (e) {
+          return reply.status(400).send({ detail: (e as Error).message })
         }
-        entry = deps.registry.add(ws, wid)
-        entry.configDigest = digest
-      } catch (e) {
-        await ws.close()
-        return reply.status(409).send({ detail: (e as Error).message })
-      }
-      return reply.status(201).send(await makeDetail(entry))
+        let entry
+        try {
+          for (const [prefix, [backend, mountpoint]] of Object.entries(args.kernelMounts)) {
+            await ws.addFuseMount(prefix, mountpoint, undefined, backend)
+          }
+          entry = deps.registry.add(ws, wid)
+          entry.configDigest = digest
+        } catch (e) {
+          await ws.close()
+          return reply.status(409).send({ detail: (e as Error).message })
+        }
+        return reply.status(201).send(await makeDetail(entry))
+      })
     },
   )
 

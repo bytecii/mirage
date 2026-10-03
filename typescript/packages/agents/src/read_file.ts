@@ -1,7 +1,7 @@
 import { detectFileType } from '@struktoai/mirage-core/commands/builtin/file_sniff'
 import type { Ops } from '@struktoai/mirage-core/ops/ops'
-import { FileType } from '@struktoai/mirage-core/types'
-import type { ContentType, FileStat } from '@struktoai/mirage-core/types'
+import { FileStat, FileType } from '@struktoai/mirage-core/types'
+import type { ContentType } from '@struktoai/mirage-core/types'
 import {
   MIME_FOR_EXTENSION,
   MIME_FOR_FILE_TYPE,
@@ -62,18 +62,16 @@ function mimeFor(path: string, bytes: Uint8Array, stat: FileStat): ReadFileMime 
 /**
  * A file a model takes as media, from the bytes already read: an image
  * the models read, or a PDF. Its extension decides; a name with none is
- * sniffed from its bytes and stat, as `readWorkspaceFile` does. Undefined
- * for anything else, which the text read answers.
+ * sniffed from its bytes alone, so no stat is needed beyond the read.
+ * Undefined for anything else, which the text read answers.
  */
-export async function mediaOf(
-  vfs: Ops,
-  path: string,
-  data: Uint8Array,
-): Promise<WorkspaceMediaRead | undefined> {
+export function mediaOf(path: string, data: Uint8Array): WorkspaceMediaRead | undefined {
   const ext = extOf(path)
   const mimeType =
     ext === ''
-      ? mimeForDetectedType(detectFileType(data, await vfs.stat(path)))
+      ? mimeForDetectedType(
+          detectFileType(data, new FileStat({ name: filenameOf(path), type: FileType.FILE })),
+        )
       : MIME_FOR_EXTENSION[ext]
   if (mimeType === undefined) return undefined
   const base = { path, mimeType, bytes: data.byteLength }

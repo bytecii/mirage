@@ -38,6 +38,7 @@ export interface WorkspaceRegistryOptions {
 export class WorkspaceRegistry {
   private entries = new Map<string, WorkspaceEntry>()
   private readonly removals = new Map<string, Promise<WorkspaceEntry>>()
+  private readonly creates = new Map<string, Promise<unknown>>()
   private readonly idleGraceSeconds: number
   private readonly onIdleExit: (() => void) | null
   private idleTimer: NodeJS.Timeout | null = null
@@ -49,6 +50,29 @@ export class WorkspaceRegistry {
 
   has(id: string): boolean {
     return this.entries.has(id)
+  }
+
+  /**
+   * Run one create of `id` at a time. A create that arrives while
+   * another of the same id is building waits for it, then finds the
+   * workspace it registered, rather than building a second over its
+   * state and failing to register it.
+   */
+  async creating<T>(id: string, run: () => Promise<T>): Promise<T> {
+    for (
+      let pending = this.creates.get(id);
+      pending !== undefined;
+      pending = this.creates.get(id)
+    ) {
+      await Promise.allSettled([pending])
+    }
+    const done = run()
+    this.creates.set(id, done)
+    try {
+      return await done
+    } finally {
+      this.creates.delete(id)
+    }
   }
 
   /** Whether `id` is still registered only to be deleted. */

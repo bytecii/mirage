@@ -121,7 +121,7 @@ export class MirageToolOperations {
     } catch (err) {
       return this.readFailure(path, err)
     }
-    const media = await mediaOf(this.versions.vfs, path, data)
+    const media = mediaOf(path, data)
     if (media === undefined) return this.numbered(path, data, offset, limit)
     this.versions.markSeen(path)
     return media

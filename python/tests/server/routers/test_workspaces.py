@@ -41,6 +41,11 @@ async def refuse_token(config: HeldSourceConfig, ref: str) -> ResolvedSecret:
     raise SecretsError("source unreachable")
 
 
+async def slow_token(config: HeldSourceConfig, ref: str) -> ResolvedSecret:
+    await asyncio.sleep(0.05)
+    return ResolvedSecret(fields={"credential": f"xoxb-{ref}"})
+
+
 def _minimal_config() -> dict:
     return {
         "config": {
@@ -272,6 +277,50 @@ async def test_create_answers_a_held_config_id_without_building(monkeypatch):
     assert again.json()["id"] == "named"
     assert refused.status_code == 409
     assert closed == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_creates_of_one_config_build_it_once(monkeypatch):
+    closed: list[Workspace] = []
+    real_close = Workspace.close
+
+    async def spy(self: Workspace) -> None:
+        closed.append(self)
+        await real_close(self)
+
+    register_secrets("slow-src", HeldSourceConfig, slow_token)
+    app, _ = _make_app_with_short_grace(grace=10.0)
+    body = {
+        "config": {
+            "mounts": {
+                "/": {"vfs": "ram", "mode": "WRITE"},
+                "/slack": {
+                    "vfs": "slack",
+                    "mode": "READ",
+                    "config": {
+                        "token": {
+                            "from": "prod",
+                            "ref": "bot",
+                            "key": "credential",
+                        }
+                    },
+                },
+            },
+            "secrets": {"prod": {"source": "slow-src"}},
+            "workspace_id": "racing",
+        }
+    }
+    monkeypatch.setattr(Workspace, "close", spy)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        answers = await asyncio.gather(
+            client.post("/v1/workspaces", json=body),
+            client.post("/v1/workspaces", json=body),
+        )
+    assert sorted(r.status_code for r in answers) == [200, 201]
+    assert closed == []
+    await app.state.registry.remove("racing")
 
 
 @pytest.mark.asyncio
