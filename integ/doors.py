@@ -27,6 +27,13 @@ and the HTTP API again. Then the daemon's own records are read: every MCP `shell
 is a job, the SSH sessions closed with their channels, a `mirage mcp`
 workspace with no name went with its process, and the MCP endpoint refuses
 a request with no token. Both hosts must give the expected answers.
+
+Then the tool corpus (integ/tools/cases.json, whose in-app door is
+integ/tools/run.py and run.ts) runs through each daemon door, each on a
+fresh workspace built by the corpus setup: the HTTP routes (POST /shell
+and the tool routes), the CLI (mirage shell and the tool verbs), MCP over
+HTTP, and SSH (ssh exec for shell, the mcp subsystem for the rest). Every
+door must give every case's answer.
 """
 
 import asyncio
@@ -48,6 +55,8 @@ from mcp import Client, StdioServerParameters
 from mcp.client.streamable_http import streamable_http_client
 
 ROOT = Path(__file__).resolve().parents[1]
+SUITE = json.loads((ROOT / "integ" / "tools" / "cases.json").read_text())
+DOORS = ("http", "cli", "mcp", "ssh")
 TOKEN = "doors-integ"
 WORKSPACE = "doors"
 RAM = "mounts:\n  /:\n    vfs: ram\n    mode: write\n"
@@ -239,13 +248,187 @@ async def run(
     return out.decode()
 
 
+async def run_raw(
+    command: list[str], env: dict[str, str] | None = None
+) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=ROOT,
+        env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    out, err = await process.communicate(b"")
+    return process.returncode or 0, out.decode(), err.decode()
+
+
+def shell_answer(stdout: str, stderr: str, code: int) -> tuple[str, bool]:
+    """A shell line's answer as the shell tool gives it.
+
+    Args:
+        stdout (str): the line's stdout.
+        stderr (str): the line's stderr.
+        code (int): its exit status.
+
+    Returns:
+        tuple[str, bool]: stdout, then stderr, and whether it failed.
+    """
+    text = f"{stdout}\n{stderr}" if stdout and stderr else stdout or stderr
+    return text, code != 0
+
+
+def io_answer(reply: dict) -> tuple[str, bool]:
+    code = reply.get("exit_code", reply.get("exitCode"))
+    return shell_answer(reply["stdout"], reply["stderr"], int(code))
+
+
+def tool_answer(reply: dict) -> tuple[str, bool]:
+    return reply["text"], bool(reply.get("is_error", reply.get("isError")))
+
+
+def cli_args(tool: str, args: dict) -> list[str]:
+    """A tool's JSON input as its CLI verb's arguments.
+
+    Args:
+        tool (str): the tool.
+        args (dict): its input.
+
+    Returns:
+        list[str]: the verb's flags and operands.
+    """
+    if tool == "read":
+        words = [args["path"]]
+        for key in ("offset", "limit"):
+            if key in args:
+                words += [f"--{key}", str(args[key])]
+        return words
+    if tool == "write":
+        return [args["path"], "--content", args["content"]]
+    if tool == "edit":
+        words = [args["path"], args["old_string"], args["new_string"]]
+        return words + (["--replace-all"] if args.get("replace_all") else [])
+    if tool == "ls":
+        return [args["path"]]
+    if tool == "glob":
+        return [args["pattern"], args.get("path", "/")]
+    flags = {
+        "ignore_case": "-i",
+        "fixed_strings": "-F",
+        "files_with_matches": "-l",
+        "count": "-c",
+    }
+    words = [flag for key, flag in flags.items() if args.get(key)]
+    for key, flag in (("include", "--include"), ("context", "-C")):
+        if key in args:
+            words += [flag, str(args[key])]
+    if "max_count" in args:
+        words += ["-m", str(args["max_count"])]
+    return words + [args["pattern"], args["path"]]
+
+
+async def corpus(
+    host: str, env: dict[str, str], api: httpx.Client
+) -> dict[str, list[tuple[str, bool]]]:
+    """Run the tool corpus through each daemon door.
+
+    Args:
+        host (str): ``python`` or ``typescript``.
+        env (dict[str, str]): the environment reaching this host's daemon.
+        api (httpx.Client): an authenticated client of its HTTP API.
+
+    Returns:
+        dict[str, list[tuple[str, bool]]]: per door, each case's answer.
+    """
+    answers: dict[str, list[tuple[str, bool]]] = {}
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    for door in DOORS:
+        wid = f"tools-{door}"
+        created = api.post(
+            "/v1/workspaces",
+            json={
+                "id": wid,
+                "config": {"mounts": {"/": {"vfs": "ram", "mode": "write"}}},
+            },
+        )
+        created.raise_for_status()
+        for line in SUITE["setup"]:
+            api.post(
+                f"/v1/workspaces/{wid}/shell", json={"command": line}
+            ).raise_for_status()
+        got: list[tuple[str, bool]] = []
+        if door == "http":
+            for case in SUITE["cases"]:
+                route = case["tool"]
+                reply = api.post(
+                    f"/v1/workspaces/{wid}/{route}", json=case["input"]
+                )
+                reply.raise_for_status()
+                got.append(
+                    io_answer(reply.json())
+                    if route == "shell"
+                    else tool_answer(reply.json())
+                )
+        elif door == "cli":
+            for case in SUITE["cases"]:
+                tool, args = case["tool"], case["input"]
+                if tool == "shell":
+                    command = mirage_cli(
+                        host, "shell", "-w", wid, "-c", args["command"]
+                    )
+                else:
+                    command = mirage_cli(
+                        host, tool, "-w", wid, *cli_args(tool, args)
+                    )
+                _, out, _ = await run_raw(command, env)
+                reply = json.loads(out)
+                got.append(
+                    io_answer(reply) if tool == "shell" else tool_answer(reply)
+                )
+        elif door == "mcp":
+            url = f"{env['MIRAGE_DAEMON_URL']}/v1/workspaces/{wid}/mcp"
+            async with (
+                httpx2.AsyncClient(headers=auth) as http,
+                Client(
+                    streamable_http_client(url, http_client=http)
+                ) as client,
+            ):
+                for case in SUITE["cases"]:
+                    result = await client.call_tool(
+                        case["tool"], case["input"]
+                    )
+                    text = result.content[0].text if result.content else ""
+                    got.append((text, bool(result.is_error)))
+        else:
+            login = f"{wid}@127.0.0.1"
+            subsystem = ssh_command(env, "-T", login, "-s", "mcp")
+            async with Client(stdio(subsystem, env)) as client:
+                for case in SUITE["cases"]:
+                    if case["tool"] == "shell":
+                        command = ssh_command(
+                            env, "-T", login, case["input"]["command"]
+                        )
+                        code, out, err = await run_raw(command)
+                        got.append(shell_answer(out, err, code))
+                        continue
+                    result = await client.call_tool(
+                        case["tool"], case["input"]
+                    )
+                    text = result.content[0].text if result.content else ""
+                    got.append((text, bool(result.is_error)))
+        answers[door] = got
+    return answers
+
+
 def wait_until(check: Callable[[], bool], timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while not check() and time.monotonic() < deadline:
         time.sleep(0.05)
 
 
-async def probe(host: str, root: Path) -> dict[str, str]:
+async def probe(
+    host: str, root: Path
+) -> tuple[dict[str, str], dict[str, list[tuple[str, bool]]]]:
     """Walk one workspace through every door of one host's daemon.
 
     Args:
@@ -253,7 +436,9 @@ async def probe(host: str, root: Path) -> dict[str, str]:
         root (Path): a private directory for this host.
 
     Returns:
-        dict[str, str]: one answer per probe, keyed as ``EXPECTED`` is.
+        tuple[dict[str, str], dict[str, list[tuple[str, bool]]]]: one
+            answer per wiring probe, keyed as ``EXPECTED`` is, and the
+            corpus answers per door.
     """
     got: dict[str, str] = {}
     auth = {"Authorization": f"Bearer {TOKEN}"}
@@ -374,7 +559,8 @@ async def probe(host: str, root: Path) -> dict[str, str]:
             got["mcp_stdio.unnamed_while_open"] = str(workspaces())
         wait_until(lambda: workspaces() == 1)
         got["mcp_stdio.unnamed_after_close"] = str(workspaces())
-    return got
+        answers = await corpus(host, env, api)
+    return got, answers
 
 
 def main() -> int:
@@ -383,7 +569,7 @@ def main() -> int:
         for host in ("python", "typescript"):
             root = Path(tmp) / host
             root.mkdir()
-            got = asyncio.run(probe(host, root))
+            got, answers = asyncio.run(probe(host, root))
             for key, want in EXPECTED.items():
                 answer = got.get(key)
                 if answer == want:
@@ -393,6 +579,24 @@ def main() -> int:
                     print(
                         f"FAIL {host:<10} {key}: got {answer!r}, want {want!r}"
                     )
+            for door, door_answers in answers.items():
+                passed = 0
+                for case, (text, is_error) in zip(
+                    SUITE["cases"], door_answers, strict=True
+                ):
+                    want = case["expect"]
+                    if [text, is_error] == [want["text"], want["is_error"]]:
+                        passed += 1
+                        continue
+                    failures += 1
+                    print(
+                        f"FAIL {host:<10} tools.{door}.{case['id']}: "
+                        f"got {(text, is_error)!r}, want {want!r}"
+                    )
+                print(
+                    f"ok   {host:<10} tools.{door} "
+                    f"{passed}/{len(SUITE['cases'])}"
+                )
     print(f"{failures} failure(s)")
     return 1 if failures else 0
 

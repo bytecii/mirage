@@ -280,6 +280,9 @@ importers:
       '@qdrant/js-client-rest':
         specifier: ^1.18.0
         version: 1.18.0(typescript@6.0.3)
+      '@struktoai/mirage-agents':
+        specifier: workspace:*
+        version: link:../typescript/packages/agents
       '@struktoai/mirage-browser':
         specifier: workspace:*
         version: link:../typescript/packages/browser

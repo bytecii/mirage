@@ -63,6 +63,7 @@
     "@pydantic/monty": "1.0.0",
     "@qdrant/js-client-rest": "^1.18.0",
     "@struktoai/mirage-browser": "workspace:*",
+    "@struktoai/mirage-agents": "workspace:*",
     "@struktoai/mirage-core": "workspace:*",
     "@struktoai/mirage-node": "workspace:*",
     "chromadb": "^3.4.3",
