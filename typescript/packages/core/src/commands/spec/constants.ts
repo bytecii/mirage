@@ -50,6 +50,49 @@ export const STDOUT_DASH_OPTIONS: ReadonlyMap<string, string> = new Map([
 
 // CPython and node read the script from stdin for a lone `-`, including
 // after `--`. Explicit `./-` still names a file (CPython 3.12, node 22).
+// The commands that read standard input for a lone `-` operand, so the word
+// names no path and routes nowhere: `split - /data/x` runs on /data from any
+// working directory. Everywhere else (`touch -`, `rev -`) it is a file in the
+// working directory, and explicit `./-` always is.
+export const STDIN_DASH_COMMANDS: ReadonlySet<string> = new Set([
+  'awk',
+  'base64',
+  'cat',
+  'cmp',
+  'comm',
+  'csplit',
+  'cut',
+  'diff',
+  'expand',
+  'fmt',
+  'fold',
+  'grep',
+  'gunzip',
+  'gzip',
+  'head',
+  'join',
+  'md5sum',
+  'nl',
+  'od',
+  'paste',
+  'rg',
+  'sed',
+  'sha1sum',
+  'sha224sum',
+  'sha256sum',
+  'sha384sum',
+  'sha512sum',
+  'sort',
+  'split',
+  'tac',
+  'tail',
+  'unexpand',
+  'uniq',
+  'wc',
+  'xxd',
+  'zcat',
+])
+
 export const STDIN_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
   'python',
   'python3',
@@ -75,8 +118,9 @@ export const OPERAND = ''
 // RETURN_IN_ORDER too, so `join a b c -a 3` refuses the extra operand before
 // the bad file number, and a missing-operand line names the line's last word
 // rather than its last operand: `join a.txt -t ,` is missing an operand after
-// ',' (coreutils 9.7).
-export const IN_ORDER_OPERANDS: ReadonlySet<string> = new Set(['jq', 'join'])
+// ',' (coreutils 9.7). Info-ZIP's unzip reads its words in order too: -x takes
+// every operand after it, up to a -d (UnZip 6.00).
+export const IN_ORDER_OPERANDS: ReadonlySet<string> = new Set(['jq', 'join', 'unzip'])
 
 // The option words an IN_ORDER_OPERANDS program's own loop reads by their
 // spelling, so the tape keeps each one where it was typed, as [SPELLED, word]

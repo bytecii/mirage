@@ -184,7 +184,7 @@ describe('Policies', () => {
   it('registry seeds the mount-root policy', async () => {
     const reg = registry()
     const deny = await reg.policies.preCommand(ctx('rm', [path('/data')], reg))
-    expect(deny?.reason).toContain('Device or resource busy')
+    expect(deny?.reason).toContain("cannot remove '/data'")
   })
 
   it('builtin runs first, then user policies in order', async () => {
@@ -192,7 +192,7 @@ describe('Policies', () => {
     policies.add(new RulePolicy({ reason: 'user rule', commands: ['rm'] }))
     // Both match `rm /data`; the built-in GNU message wins by order.
     let deny = await policies.preCommand(ctx('rm', [path('/data')]))
-    expect(deny?.reason).toContain('Device or resource busy')
+    expect(deny?.reason).toContain('Is a directory')
     // Only the user rule matches `rm /data/x`.
     deny = await policies.preCommand(ctx('rm', [path('/data/x')]))
     expect(deny).toEqual({ kind: 'deny', reason: 'user rule', policy: 'RulePolicy' })

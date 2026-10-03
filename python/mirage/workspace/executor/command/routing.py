@@ -20,7 +20,11 @@ from mirage.commands.builtin.generic.program import FILE_KEYS
 from mirage.commands.cli.walk import walk
 from mirage.commands.spec import SPECS, parse_command, parse_to_kwargs
 from mirage.commands.spec.builtins import is_builtin_grammar
-from mirage.commands.spec.constants import OWN_OPTION_LOOP, REFUSED
+from mirage.commands.spec.constants import (
+    OWN_OPTION_LOOP,
+    REFUSED,
+    STDIN_DASH_COMMANDS,
+)
 from mirage.commands.spec.flag_view import FlagView
 from mirage.commands.spec.types import CommandSpec
 from mirage.core.awk.builtins import split_assignment
@@ -240,12 +244,16 @@ def routable_scopes(cmd_name: str, scopes: list[PathSpec]) -> list[PathSpec]:
 
     An awk ``var=value`` operand is an assignment awk makes when its
     input reaches it, so it routes nowhere: ``awk p /data/a x=1
-    /data/b`` runs on /data like the same line without it.
+    /data/b`` runs on /data like the same line without it. A lone ``-``
+    is standard input to the commands in ``STDIN_DASH_COMMANDS``, so it
+    routes nowhere either.
 
     Args:
         cmd_name (str): command name.
         scopes (list[PathSpec]): the line's routing path words.
     """
+    if cmd_name in STDIN_DASH_COMMANDS:
+        scopes = [s for s in scopes if s.raw_path != "-"]
     if cmd_name != "awk":
         return scopes
     return [s for s in scopes if split_assignment(s.raw_path) is None]

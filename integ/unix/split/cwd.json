@@ -65,6 +65,24 @@
         "stdout": "2\n2\nxx00\nxx01\n",
         "stderr": ""
       }
+    },
+    {
+      "id": "split_stdin_outputs_land_in_a_nested_cwd",
+      "seq": 15300315,
+      "targets": [
+        "ram",
+        "opfs",
+        "disk"
+      ],
+      "command": "mkdir -p /data/fcC_sc/sub && (cd /data/fcC_sc/sub && printf 'a\\nb\\n' | split -l 1 && ls && cat xab); rm -r /data/fcC_sc",
+      "expect": {
+        "exit": 0,
+        "stdout": "xaa\nxab\nb\n",
+        "stderr": ""
+      },
+      "flags": [
+        "l"
+      ]
     }
   ]
 }

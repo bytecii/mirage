@@ -896,7 +896,10 @@ def combine(left: CharSet, right: CharSet, op: str | None) -> CharSet:
 
 
 def translate_rust(
-    patterns: list[str], ignore_case: bool = False, multi_line: bool = False
+    patterns: list[str],
+    ignore_case: bool = False,
+    multi_line: bool = False,
+    unicode: bool = True,
 ) -> HostRegex:
     """Translate a ripgrep pattern list into this host's regex dialect.
 
@@ -905,6 +908,8 @@ def translate_rust(
         ignore_case (bool): -i, or -S over an all-lowercase pattern.
         multi_line (bool): ``^``/``$`` also match at a ``\\n`` inside
             the subject (--null-data).
+        unicode (bool): Unicode mode, off under --no-unicode, the way
+            a leading ``(?-u)`` turns it off.
 
     Returns:
         HostRegex: host source matching exactly what ripgrep's default
@@ -915,7 +920,9 @@ def translate_rust(
     """
     display = display_of(patterns)
     if ignore_case and not INLINE_CASE.search(display):
-        source = RustTranslator(display, Flags(m=multi_line)).translate()
+        source = RustTranslator(
+            display, Flags(m=multi_line, u=unicode)
+        ).translate()
         return HostRegex(source, True)
-    flags = Flags(i=ignore_case, m=multi_line)
+    flags = Flags(i=ignore_case, m=multi_line, u=unicode)
     return HostRegex(RustTranslator(display, flags).translate())

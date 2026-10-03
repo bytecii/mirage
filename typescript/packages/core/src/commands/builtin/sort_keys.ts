@@ -399,18 +399,37 @@ function isPrintingCharacter(char: string): boolean {
   return code > 31 && code !== 127
 }
 
+// glibc strtold's reading of a leading number in the C locale: blanks, a
+// sign, then a hex float, a decimal float, inf or nan. The rest of the field
+// is ignored, as GNU sort -g ignores it.
+const LEADING_FLOAT = new RegExp(
+  '^[ \\t\\n\\v\\f\\r]*([+-]?)(?:' +
+    '(0[xX](?:[0-9a-fA-F]+(?:\\.[0-9a-fA-F]*)?|\\.[0-9a-fA-F]+)(?:[pP][+-]?[0-9]+)?)' +
+    '|((?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?)' +
+    '|([iI][nN][fF](?:[iI][nN][iI][tT][yY])?)' +
+    '|([nN][aA][nN](?:\\([0-9A-Za-z_]*\\))?))',
+)
+
+// A hex float such as 0x1.8p3, rounded once from its exact mantissa.
+function hexFloat(text: string): number {
+  const [mantissa = '', power = '0'] = text.slice(2).split(/[pP]/)
+  const [whole = '', fraction = ''] = mantissa.split('.')
+  const digits = BigInt('0x' + (whole + fraction || '0'))
+  if (digits === 0n) return 0
+  return Number(digits) * 2 ** (Number(power) - 4 * fraction.length)
+}
+
+// The number strtold reads at the start of a field, null for none.
 function parseGeneralFloat(field: string): number | null {
-  const trimmed = field.trim()
-  if (trimmed === '') return null
-  const collapsed = trimmed.replace(/(\d)_(?=\d)/g, '$1')
-  if (collapsed.includes('_')) return null
-  const lowered = collapsed.toLowerCase()
-  if (/^[+-]?(inf(inity)?|nan)$/.test(lowered)) {
-    if (lowered.endsWith('nan')) return Number.NaN
-    return lowered.startsWith('-') ? -Infinity : Infinity
-  }
-  if (!/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/.test(collapsed)) return null
-  return Number(collapsed)
+  const found = LEADING_FLOAT.exec(field)
+  if (found === null) return null
+  const [, sign, hexa, decimal, inf, nan] = found
+  if (nan !== undefined) return Number.NaN
+  let value: number
+  if (inf !== undefined) value = Infinity
+  else if (hexa !== undefined) value = hexFloat(hexa)
+  else value = Number(decimal)
+  return sign === '-' ? -value : value
 }
 
 function transform(field: string, mods: KeyMods): SortKey {

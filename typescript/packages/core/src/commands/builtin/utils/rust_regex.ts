@@ -746,19 +746,25 @@ function combine(left: CharSet, right: CharSet, op: string | null): CharSet {
  * source matching exactly what ripgrep's default engine matches, and whether
  * the host folds case (the whole pattern is caseless: -i, or -S over an
  * all-lowercase pattern). `multiLine` makes `^`/`$` also match at a `\n`
- * inside the subject (--null-data). Throws RustRegexError for a pattern
- * ripgrep refuses. The source is `u`-flag syntax.
+ * inside the subject (--null-data); `unicode` off (--no-unicode) is a leading
+ * `(?-u)`. Throws RustRegexError for a pattern ripgrep refuses. The source is
+ * `u`-flag syntax.
  */
 export function translateRust(
   patterns: readonly string[],
   ignoreCase = false,
   multiLine = false,
+  unicode = true,
 ): HostRegex {
   const display = displayOf(patterns)
   if (ignoreCase && !INLINE_CASE.test(display)) {
-    const source = new RustTranslator(display, { ...DEFAULT_FLAGS, m: multiLine }).translate()
+    const source = new RustTranslator(display, {
+      ...DEFAULT_FLAGS,
+      m: multiLine,
+      u: unicode,
+    }).translate()
     return { source, ignoreCase: true }
   }
-  const flags = { ...DEFAULT_FLAGS, i: ignoreCase, m: multiLine }
+  const flags = { ...DEFAULT_FLAGS, i: ignoreCase, m: multiLine, u: unicode }
   return { source: new RustTranslator(display, flags).translate(), ignoreCase: false }
 }

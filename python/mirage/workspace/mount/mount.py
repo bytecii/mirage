@@ -32,6 +32,7 @@ from mirage.commands.config import CommandOpts, ExecContext, RegisteredCommand
 from mirage.commands.errors import CommandTimeoutError, UsageError
 from mirage.commands.resolve import get_extension
 from mirage.commands.spec import CommandSpec
+from mirage.commands.spec.constants import STDIN_DASH_COMMANDS
 from mirage.commands.spec.flag_view import FlagBag
 from mirage.commands.spec.standard import has_injected_version
 from mirage.commands.spec.types import FlagValue
@@ -742,8 +743,15 @@ class MountEntry:
                 extension is not None and (cmd_name, extension) in self._cmds
             )
 
+            # A stdin `-` routed nowhere, so it rides on whichever mount
+            # runs the line, beside the operands that chose it.
+            stdin_dash = cmd_name in STDIN_DASH_COMMANDS
             paths = [
                 dataclasses.replace(
+                    p, virtual=f"{mount_prefix}/-", vfs_path="-"
+                )
+                if isinstance(p, PathSpec) and stdin_dash and p.raw_path == "-"
+                else dataclasses.replace(
                     p, vfs_path=mount_key(p.virtual, mount_prefix)
                 )
                 if isinstance(p, PathSpec)

@@ -47,6 +47,8 @@ from mirage.policy.errors import PolicyDenied, PolicyError
 from mirage.types import (
     DEFAULT_READ_TTL,
     CacheFacts,
+    CapacityResult,
+    CapacityState,
     EntryGate,
     FileStat,
     FileType,
@@ -460,6 +462,8 @@ class Dispatcher:
             _judge(rule_gate, typed, walked, path)
         if op in XATTR_OPS:
             return await self._xattr_op(op, path, kwargs, report), IOResult()
+        if op == "statfs":
+            return await self._statfs(path), IOResult()
         mount = self._namespace.try_mount_for(path.virtual)
         if mount is None:
             # No mount serves the path, but the namespace may still know
@@ -1315,6 +1319,29 @@ class Dispatcher:
         if bound is not None:
             return await apply_op_limit(result, bound)
         return result
+
+    async def _statfs(self, path: PathSpec) -> tuple[str, CapacityResult]:
+        """Answer statfs(2) for a path: the type name and the capacity of
+        the mount that holds it, which is what df reports for that mount.
+
+        The path must exist, as statfs's own walk requires. The namespace
+        above every mount has no file system behind it, so its type is
+        ``-`` and its capacity unknown.
+
+        Args:
+            path (PathSpec): the path, already followed.
+        """
+        mount = self._namespace.try_mount_for(path.virtual)
+        owner = mount.prefix if mount is not None else ""
+        policies = self._namespace.registry.policies
+        await pre_ops_gate(
+            policies, "statfs", path, False, owner, _session_id()
+        )
+        await self._xattr_target(mount, path)
+        if mount is None:
+            return "-", CapacityResult(state=CapacityState.UNKNOWN)
+        async with mount.use():
+            return mount.vfs.name, await mount.vfs.capacity()
 
     async def _xattr_target(
         self, mount: MountEntry | None, path: PathSpec

@@ -62,8 +62,13 @@ class CreateResult:
 
 @dataclass(frozen=True, slots=True)
 class ReadResult:
-    """An opened archive, its gzip failure and independent tar diagnostics."""
+    """An opened archive, its gzip failure and independent tar diagnostics.
+
+    ``cut`` is the index of the first member whose data ran past the end
+    of the stream, None when every member is whole.
+    """
 
     archive: TarFile | None
     failure: GzipDataError | None
     notices: tuple[str, ...] = ()
+    cut: int | None = None

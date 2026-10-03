@@ -1986,6 +1986,288 @@
           }
         }
       ]
+    },
+    {
+      "id": "option_refusals_follow_cpython",
+      "world": {
+        "runtimes": [
+          "monty",
+          "workspace"
+        ]
+      },
+      "steps": [
+        {
+          "command": "python3 -zz -c 'print(1)'",
+          "expect": {
+            "exit": 2,
+            "stdout": "",
+            "stderr": "Unknown option: -z\nusage: python3 [option] ... [-c cmd | -m mod | file | -] [arg] ...\nTry `python -h' for more information.\n"
+          }
+        },
+        {
+          "command": "python3 -c",
+          "expect": {
+            "exit": 2,
+            "stdout": "",
+            "stderr": "Argument expected for the -c option\nusage: python3 [option] ... [-c cmd | -m mod | file | -] [arg] ...\nTry `python -h' for more information.\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "version_names_the_monty_guest",
+      "world": {
+        "runtimes": [
+          "monty",
+          "workspace"
+        ],
+        "mounts": {
+          "/ram": {
+            "vfs": "ram",
+            "files": {
+              "version.py": "print(argv[-1])\n"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "for n in python python3; do for f in --version -V -VV; do $n $f; done; done",
+          "expect": {
+            "exit": 0,
+            "stdout": "Python 3.14.0 (monty)\nPython 3.14.0 (monty)\nPython 3.14.0 (monty)\nPython 3.14.0 (monty)\nPython 3.14.0 (monty)\nPython 3.14.0 (monty)\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 -c 'print(argv[-1])' --version",
+          "expect": {
+            "exit": 0,
+            "stdout": "--version\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 /ram/version.py --version",
+          "expect": {
+            "exit": 0,
+            "stdout": "--version\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "echo 'print(argv[-1])' | python3 - --version",
+          "expect": {
+            "exit": 0,
+            "stdout": "--version\n",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "script_operand_flags_and_argv",
+      "world": {
+        "runtimes": [
+          "monty",
+          "workspace"
+        ],
+        "mounts": {
+          "/ram": {
+            "vfs": "ram",
+            "files": {
+              "n.py": "print(42)\n",
+              "a0.py": "print(argv[0])\n",
+              "a1.py": "print(argv[1])\n"
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "python3 -u /ram/n.py",
+          "expect": {
+            "exit": 0,
+            "stdout": "42\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 /ram/a0.py",
+          "expect": {
+            "exit": 0,
+            "stdout": "/ram/a0.py\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 /ram/a1.py --not-my-flag",
+          "expect": {
+            "exit": 0,
+            "stdout": "--not-my-flag\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "echo 'print(7)' | python3 -",
+          "expect": {
+            "exit": 0,
+            "stdout": "7\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 -u -q -c 'print(1)'",
+          "expect": {
+            "exit": 0,
+            "stdout": "1\n",
+            "stderr": ""
+          }
+        },
+        {
+          "command": "python3 -O -c 'print(1)'",
+          "expect": {
+            "exit": 0,
+            "stdout": "1\n",
+            "stderr": "python3: warning: -O is ignored by the 'monty' runtime\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "invoked_name_errors_and_help",
+      "world": {
+        "runtimes": [
+          "monty",
+          "workspace"
+        ]
+      },
+      "steps": [
+        {
+          "command": "python /missing-script",
+          "expect": {
+            "exit": 1,
+            "stdout": "",
+            "stderr": "python: /missing-script: No such file\n"
+          }
+        },
+        {
+          "command": "python3 /missing-script",
+          "expect": {
+            "exit": 1,
+            "stdout": "",
+            "stderr": "python3: /missing-script: No such file\n"
+          }
+        },
+        {
+          "command": "python3 -h",
+          "expect": {
+            "exit": 0,
+            "stdout_contains": "Usage: python3"
+          }
+        }
+      ]
+    },
+    {
+      "id": "shadowing_function_takes_the_words_as_typed",
+      "world": {
+        "runtimes": [
+          "monty",
+          "workspace"
+        ]
+      },
+      "steps": [
+        {
+          "command": "python3() { echo \"$@\"; }",
+          "expect": {
+            "exit": 0
+          }
+        },
+        {
+          "command": "python3 -c payload -u x",
+          "expect": {
+            "exit": 0,
+            "stdout": "-c payload -u x\n",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "script_rule_reads_the_operand_as_typed",
+      "world": {
+        "runtimes": [
+          "monty",
+          "workspace"
+        ],
+        "mounts": {
+          "/ram": {
+            "vfs": "ram",
+            "files": {
+              "secret.py": "print('secret')\n"
+            }
+          }
+        },
+        "profiles": {
+          "default": {
+            "commands": {
+              "deny": [
+                {
+                  "reason": "protected",
+                  "commands": {
+                    "python3": [
+                      "/ram/secret.py"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "command": "cd /ram",
+          "expect": {
+            "exit": 0
+          }
+        },
+        {
+          "command": "python3 ./secret.py",
+          "expect": {
+            "exit": 1,
+            "stdout": "",
+            "stderr": "python3: ./secret.py: protected\n"
+          }
+        },
+        {
+          "command": "python3 -c 'print(argv[1:])' secret.py",
+          "expect": {
+            "exit": 0,
+            "stdout": "['secret.py']\n",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "unknown_long_option_follows_cpython",
+      "world": {
+        "runtimes": [
+          "monty",
+          "workspace"
+        ]
+      },
+      "steps": [
+        {
+          "command": "python3 --nope",
+          "expect": {
+            "exit": 2,
+            "stdout": "",
+            "stderr": "Unknown option: --nope\nusage: python3 [option] ... [-c cmd | -m mod | file | -] [arg] ...\nTry `python -h' for more information.\n"
+          }
+        }
+      ]
     }
   ]
 }
