@@ -13,6 +13,7 @@
 # ========= Copyright 2026 @ Strukto.AI All Rights Reserved. =========
 
 import errno
+import logging
 import posixpath
 from dataclasses import replace
 
@@ -33,6 +34,8 @@ from mirage.types import FileType, PathSpec
 from mirage.utils.errors import FS_ERRORS, fs_strerror
 from mirage.utils.key_prefix import mount_prefix_of, mounted_path
 from mirage.utils.path import CycleError, resolve_path
+
+logger = logging.getLogger(__name__)
 
 # What rmdir(2) answers for a mount point, which is what the walk up from
 # `-p` meets at the mount root.
@@ -59,7 +62,8 @@ def followed_parent(virtual: str, links: LinkView | None) -> str:
     parent, name = posixpath.split(virtual)
     try:
         return f"{links.resolve(parent).rstrip('/')}/{name}"
-    except CycleError:
+    except CycleError as exc:
+        logger.debug("rmdir: following %s failed: %s", parent, exc)
         return virtual
 
 

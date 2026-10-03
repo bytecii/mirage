@@ -40,10 +40,12 @@ const VANISHED = 'No such file or directory'
 function followedParent(virtual: string, links: LinkView | null): string {
   if (links === null) return virtual
   const cut = virtual.lastIndexOf('/')
+  const parent = virtual.slice(0, cut) || '/'
   try {
-    return `${rstripSlash(links.resolve(virtual.slice(0, cut) || '/'))}/${virtual.slice(cut + 1)}`
+    return `${rstripSlash(links.resolve(parent))}/${virtual.slice(cut + 1)}`
   } catch (err) {
     if (!(err instanceof CycleError)) throw err
+    console.warn(`rmdir: following ${parent} failed: ${String(err)}`)
     return virtual
   }
 }
